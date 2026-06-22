@@ -276,20 +276,21 @@ function App() {
         }}>
         
         <nav className="no-print" style={navBarStyle}>
-          <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
-            Vote Now
-          </button>
-        
           <img src={logoUrl} alt="Logo" style={logoStyle} />
         
-          <button onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
-            Live Results
-          </button>
+          <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+              Vote Now
+            </button>
         
-          {/* ADD THIS */}
-          <button onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
-            Apply
-          </button>
+            <button onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
+              Live Results
+            </button>
+        
+            <button onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
+              Apply
+            </button>
+          </div>
         </nav>
 
         {view === "results" && <Results apiBase={API_BASE} />}
@@ -496,7 +497,7 @@ function App() {
 // --- STYLES ---
 const containerStyle = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: 'var(--bg-color)', padding: '20px', boxSizing: 'border-box' };
 
-const navBarStyle = { marginBottom: '30px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px', padding: '15px 0', width: '100%', borderBottom: '1px solid var(--border-color)' };
+const navBarStyle = { marginBottom: '30px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '16px', padding: '15px 0', width: '100%', borderBottom: '1px solid var(--border-color)' };
 
 const logoStyle = { height: '120px', width: 'auto', objectFit: 'contain', margin: '0 10px', filter: 'drop-shadow(0px 0px 4px rgba(241, 196, 15, 0.3))' };
 
