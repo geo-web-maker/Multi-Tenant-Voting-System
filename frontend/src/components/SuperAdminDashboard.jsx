@@ -400,9 +400,13 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
               <form onSubmit={handleAddCandidate} style={formCol}>
                 <input style={inp} placeholder="Full name" value={newCandidate.name}
                   onChange={e => setNewCandidate({ ...newCandidate, name: e.target.value })} required />
-                <input style={inp} placeholder="Position title (must match positions list)"
-                  value={newCandidate.position}
-                  onChange={e => setNewCandidate({ ...newCandidate, position: e.target.value })} required />
+                <select style={inp} value={newCandidate.position}
+                  onChange={e => setNewCandidate({ ...newCandidate, position: e.target.value })} required>
+                  <option value="">— Select position —</option>
+                  {positions.map(p => (
+                    <option key={p._id} value={p.title}>{p.title}</option>
+                  ))}
+                </select>
                 <input style={inp} type="number" placeholder="Display order (0 = first)"
                   value={newCandidate.order}
                   onChange={e => setNewCandidate({ ...newCandidate, order: e.target.value })} />
@@ -426,8 +430,13 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
                     <div style={{ ...formCol, width: '100%' }}>
                       <input style={inp} value={editForm.name}
                         onChange={e => setEditForm({ ...editForm, name: e.target.value })} />
-                      <input style={inp} value={editForm.position}
-                        onChange={e => setEditForm({ ...editForm, position: e.target.value })} />
+                      <select style={inp} value={editForm.position}
+                        onChange={e => setEditForm({ ...editForm, position: e.target.value })}>
+                        <option value="">— Select position —</option>
+                        {positions.map(p => (
+                          <option key={p._id} value={p.title}>{p.title}</option>
+                        ))}
+                      </select>
                       <input style={inp} type="number" value={editForm.order}
                         onChange={e => setEditForm({ ...editForm, order: e.target.value })} />
                       <label style={fileLabel}>
