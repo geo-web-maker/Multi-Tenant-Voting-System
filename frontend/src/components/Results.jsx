@@ -24,17 +24,21 @@ export default function Results({ apiBase }) {
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified] = useState(false); // NEW: Certification State
   const [lastSynced, setLastSynced] = useState(new Date());
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366' });
+  const [logoUrl, setLogoUrl] = useState("https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png");
 
+  
   const API_URL = apiBase || "https://your-railway-url.app";
   const PRIVACY_THRESHOLD = 50;
   const BATCH_SIZE = 10; 
 
   const fetchData = async () => {
     try {
-      const [resultsRes, statusRes, votersRes] = await Promise.all([
-        axios.get(`${API_URL}/election-results`), 
+      const [resultsRes, statusRes, votersRes, brandingRes] = await Promise.all([
+        axios.get(`${API_URL}/election-results`),
         axios.get(`${API_URL}/election-status`),
-        axios.get(`${API_URL}/admin/voters`)
+        axios.get(`${API_URL}/admin/voters`),
+        axios.get(`${API_URL}/superadmin/branding`).catch(() => ({ data: {} }))  // silent fallback
       ]);
 
       const votedList = (votersRes.data || []).filter(v => v.has_voted);
@@ -56,6 +60,10 @@ export default function Results({ apiBase }) {
     }
   };
 
+  useEffect(() => {
+  axios.get(`${API_URL}/superadmin/branding`).then(res => setBranding(res.data)).catch(() => {});
+}, [API_URL]);
+  
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5000);
@@ -274,7 +282,8 @@ export default function Results({ apiBase }) {
           data={electionData} 
           totalVotes={electionData.voter_turnout} 
           isElectionOpen={isElectionOpen}
-          isCertified={isCertified} // PASSING THE NEW PROP
+          isCertified={isCertified}
+          logoUrl={logoUrl}   {/* ADD THIS */}
         />
       </div>
     </div>
