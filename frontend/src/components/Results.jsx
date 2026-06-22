@@ -281,7 +281,7 @@ const fetchData = async () => {
           totalVotes={electionData.voter_turnout} 
           isElectionOpen={isElectionOpen}
           isCertified={isCertified}
-          logoUrl={logoUrl}   {/* ADD THIS */}
+          logoUrl={logoUrl}
         />
       </div>
     </div>
