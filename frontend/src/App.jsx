@@ -211,41 +211,46 @@ function App() {
     }
   };
 
-  const handleVerifyOtp = async () => {
-    try {
-      const res = await axios.post(`${API_BASE}/verify-otp`, {
-        student_id: studentId,
-        code: otp
-      });
-      
-      setOtp(""); 
-      
-      if (isAdminPath) {
-        setStatusModal({
-          show: true,
-          title: "Admin Authorized",
-          message: "Welcome back. You now have access to the election controls.",
-          type: "success"
-        });
-        const role = sessionStorage.getItem("admin_role");
-        if (role == "superadmin"){
-          setView("superadmin");
-        }else{
-          setView("commission");
-      } else {
-        setStep(3);
-      }
-    } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
+ const handleVerifyOtp = async () => {
+  try {
+    const res = await axios.post(`${API_BASE}/verify-otp`, {
+      student_id: studentId,
+      code: otp
+    });
+
+    setOtp("");
+
+    if (isAdminPath) {
       setStatusModal({
         show: true,
-        title: "Verification Failed",
-        message: errorMsg,
-        type: "error"
+        title: "Admin Authorized",
+        message: "Welcome back. You now have access to the election controls.",
+        type: "success"
       });
-      setOtp(""); 
+
+      // Store commissioner ID so CommissionDashboard can tag votes
+      sessionStorage.setItem("commissioner_id", studentId);
+
+      const role = sessionStorage.getItem("admin_role");
+      if (role === "superadmin") {
+        setView("superadmin");
+      } else {
+        setView("commission");
+      }          // ← this closing brace was missing
+    } else {
+      setStep(3);
     }
-  };
+  } catch (err) {
+    const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
+    setStatusModal({
+      show: true,
+      title: "Verification Failed",
+      message: errorMsg,
+      type: "error"
+    });
+    setOtp("");
+  }
+};
 
   const resetFlow = () => {
     setStep(1);
