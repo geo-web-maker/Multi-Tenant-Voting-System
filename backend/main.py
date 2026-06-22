@@ -44,7 +44,7 @@ client = motor.motor_asyncio.AsyncIOMotorClient(
     minPoolSize=1,
     waitQueueTimeoutMS=2500
 )
-db = client["election-db"]
+db = client["electiondbaccounting"]
 
 app.add_middleware(
     CORSMiddleware,
