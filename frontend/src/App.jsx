@@ -4,6 +4,9 @@ import OtpInput from './components/OtpInput';
 import BallotBox from './components/BallotBox';
 import Results from './components/Results';
 import AdminDashboard from './components/AdminDashboard';
+import SuperAdminDashboard from './components/SuperAdminDashboard';
+import CommissionDashboard from './components/CommissionDashboard';
+import ApplicantPortal from './components/ApplicantPortal';
 
 function App() {
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
@@ -37,9 +40,22 @@ function App() {
 ];
 
   const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+  const [logoUrl, setLogoUrl] = useState(
+  "https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png"
+);
 
   // --- USEEFFECTS ---
 // --- USEEFFECTS ---
+  useEffect(() => {
+  axios.get(`${API_BASE}/superadmin/branding`).then(res => {
+    if (res.data.logo_url) setLogoUrl(res.data.logo_url);
+    if (res.data.primary_color)
+      document.documentElement.style.setProperty('--brand-primary', res.data.primary_color);
+    if (res.data.accent_color)
+      document.documentElement.style.setProperty('--brand-accent', res.data.accent_color);
+  }).catch(() => {});
+}, [API_BASE]);
+  
   useEffect(() => {
     // Stop the animation if the user has already started typing
     if (studentId !== "" || name !== "") return;
@@ -159,9 +175,12 @@ function App() {
       });
 
       if (res.data.bypass === true) {
-        setView("admin");
-        return; 
+        sessionStorage.setItem("admin_role", res.data.role);
+        setView(res.data.role);
+        return;
       }
+      //Before setStep(2), also store role for OTP path
+      sessionStorage.setItem("admin_role",res.data.role || "commission");
 
       if (res.data.status === "needs_selection") {
         setMaskedNumbers(res.data.masked_numbers);
@@ -208,7 +227,11 @@ function App() {
           message: "Welcome back. You now have access to the election controls.",
           type: "success"
         });
-        setView("admin");
+        const role = sessionStorage.getItem("admin_role");
+        if (role == "superadmin"){
+          setView("superadmin");
+        }else{
+          setView("commission");
       } else {
         setStep(3);
       }
@@ -233,7 +256,8 @@ function App() {
     setOtp("");
     setMaskedNumbers([]);
     setTimer(0);
-    setSelectedPhone(""); 
+    setSelectedPhone("");
+    sessionStorage.removeItem("admin_role");
   };
 
   return (
@@ -254,7 +278,7 @@ function App() {
           </button>
           
           <img 
-            src="https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png" 
+            src={logoUrl}
             alt="Logo" 
             style={logoStyle} 
           />
@@ -268,7 +292,9 @@ function App() {
         </nav>
 
         {view === "results" && <Results apiBase={API_BASE} />}
-        {view === "admin" && <AdminDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "superadmin" && <SuperAdminDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "commission" && <CommissionDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "apply" && <ApplicantPortal apiBase={API_BASE} />}
 
         {view === "voter" && (
           <div style={{ width: '100%' }}>
@@ -304,6 +330,12 @@ function App() {
                 </button>
                 <button onClick={() => setIsAdminPath(!isAdminPath)} style={linkBtnStyle}>
                   {isAdminPath ? "Switch to Voter Login" : "Are you an Admin? Login here"}
+                </button>
+                <button
+                  onClick={() => setView("apply")}
+                  style={view === "apply" ? activeNavBtnStyle : navBtnStyle}
+                >
+                  Apply for Position
                 </button>
                 <div style={{ marginTop: '20px', borderTop: '1px solid var(--border-color)', paddingTop: '15px' }}>
                     <button 
