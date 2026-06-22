@@ -1,0 +1,14 @@
+# Ignore local environment variables
+.env
+.env.local
+.env.*.local
+
+# Ignore dependencies
+frontend/node_modules/
+backend/venv/
+
+# Ignore build files
+frontend/dist/
+
+# System files
+.DS_Store
