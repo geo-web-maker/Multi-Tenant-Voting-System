@@ -24,7 +24,6 @@ export default function Results({ apiBase }) {
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified] = useState(false); // NEW: Certification State
   const [lastSynced, setLastSynced] = useState(new Date());
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366' });
   const [logoUrl, setLogoUrl] = useState("https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png");
 
   
@@ -62,11 +61,7 @@ const fetchData = async () => {
     setLoading(false);
   }
 };
-
-  useEffect(() => {
-  axios.get(`${API_URL}/superadmin/branding`).then(res => setBranding(res.data)).catch(() => {});
-}, [API_URL]);
-  
+ 
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5000);
