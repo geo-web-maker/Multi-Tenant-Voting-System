@@ -61,6 +61,17 @@ app.add_middleware(
 )
 
 # --- MODELS ---
+class ApplicationDecision(BaseModel):
+    decision: str   # "approved" or "denied"
+    reason: str = ""
+    
+class ApplicationSubmit(BaseModel):
+    student_id: str
+    full_name: str
+    position_id: str
+    manifesto: str = ""
+    image_url: str = ""
+    
 class IdentityCheck(BaseModel):
     student_id: str
     full_name: str
@@ -139,9 +150,50 @@ async def send_sms_via_egosms(to_number: str, message_text: str):
     except Exception as e:
         logger.error(f"❌ Connection Error: {e}")
         return False
-        
-# --- SYSTEM & HEALTH ---
 
+# ── Superadmin: branding ──
+@app.get("/superadmin/branding")
+async def get_branding():
+    doc = await db.settings.find_one({"name": "branding"})
+    if not doc:
+        return {"logo_url": "", "primary_color": "#003366", "accent_color": "#f1c40f"}
+    doc.pop("_id", None)
+    return doc
+
+@app.post("/superadmin/branding")
+async def save_branding(data: BrandingUpdate):
+    await db.settings.update_one(
+        {"name": "branding"},
+        {"$set": {**data.dict(), "name": "branding"}},
+        upsert=True
+    )
+    return {"status": "saved"}
+
+# ── Superadmin: positions ──
+class PositionCreate(BaseModel):
+    title: str
+    description: str = ""
+    order: int = 0
+
+@app.get("/positions")
+async def get_positions():
+    positions = []
+    async for p in db.positions.find({}).sort("order", 1):
+        p["_id"] = str(p["_id"])
+        positions.append(p)
+    return positions
+
+@app.post("/positions")
+async def add_position(data: PositionCreate):
+    result = await db.positions.insert_one(data.dict())
+    return {"id": str(result.inserted_id)}
+
+@app.delete("/positions/{position_id}")
+async def delete_position(position_id: str):
+    await db.positions.delete_one({"_id": ObjectId(position_id)})
+    return {"status": "deleted"}
+    
+# --- SYSTEM & HEALTH ---
 @app.get("/")
 def read_root():
     return {"status": "Online", "sms_provider": "EgoSMS"}
@@ -168,7 +220,6 @@ async def get_status():
     }
 
 # --- VOTER ROUTES ---
-
 @app.post("/verify-identity")
 async def verify_identity(data: IdentityCheck):
     now = datetime.utcnow()
@@ -528,3 +579,60 @@ async def get_election_results():
         "voter_turnout": voter_turnout,
         "results": results
     }
+
+@app.post("/apply")
+async def submit_application(data: ApplicationSubmit):
+    # Block duplicate applications for the same position
+    existing = await db.applications.find_one({
+        "student_id": data.student_id,
+        "position_id": data.position_id
+    })
+    if existing:
+        raise HTTPException(400, "You have already applied for this position.")
+    
+    await db.applications.insert_one({
+        **data.dict(),
+        "status": "pending",
+        "submitted_at": datetime.utcnow()
+    })
+    return {"status": "submitted"}
+
+@app.get("/admin/applications")
+async def list_applications(status: str = None):
+    query = {}
+    if status:
+        query["status"] = status
+    apps = []
+    async for a in db.applications.find(query).sort("submitted_at", -1):
+        a["_id"] = str(a["_id"])
+        # Resolve position title
+        if a.get("position_id"):
+            pos = await db.positions.find_one({"_id": ObjectId(a["position_id"])})
+            a["position_title"] = pos["title"] if pos else a.get("position_id", "")
+        apps.append(a)
+    return apps
+
+@app.post("/admin/applications/{app_id}/decide")
+async def decide_application(app_id: str, data: ApplicationDecision):
+    app_doc = await db.applications.find_one({"_id": ObjectId(app_id)})
+    if not app_doc:
+        raise HTTPException(404, "Application not found")
+    
+    await db.applications.update_one(
+        {"_id": ObjectId(app_id)},
+        {"$set": {"status": data.decision, "decided_at": datetime.utcnow(), "reason": data.reason}}
+    )
+    
+    # If approved → auto-create the candidate (shows on ballot immediately)
+    if data.decision == "approved":
+        pos = await db.positions.find_one({"_id": ObjectId(app_doc["position_id"])})
+        await db.candidates.insert_one({
+            "name": app_doc["full_name"],
+            "position": pos["title"] if pos else app_doc.get("position_id", ""),
+            "image_url": app_doc.get("image_url", ""),
+            "order": pos.get("order", 0) if pos else 0,
+            "votes": 0,
+            "application_id": app_id
+        })
+    
+    return {"status": data.decision}
