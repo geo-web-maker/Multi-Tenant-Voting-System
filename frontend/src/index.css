@@ -8,6 +8,8 @@
   --text-color: #213547;
   --card-bg: #ffffff;
   --border-color: #dddddd;
+  --brand-primary: #003366;
+  --brand-accent:  #f1c40f;
 
   color-scheme: light dark;
   color: var(--text-color);
