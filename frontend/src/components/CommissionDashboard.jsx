@@ -278,12 +278,12 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                         Payment method: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
                       </p>
                       {app.payment_proof_url && (
-                        
+                        <a
                           href={app.payment_proof_url}
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        <a>
+                        >
                           🧾 View Receipt
                         </a>
                       )}
