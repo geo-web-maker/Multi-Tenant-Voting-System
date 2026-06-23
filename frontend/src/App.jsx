@@ -23,6 +23,7 @@ function App() {
   const [isAdminPath, setIsAdminPath] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
+  const [orgName, setOrgName] = useState("Geo_Web Solutions Voting Systems");
   const [timer, setTimer] = useState(0);
   const [selectedPhone, setSelectedPhone] = useState("");
   const [statusModal, setStatusModal] = useState({ 
@@ -59,6 +60,8 @@ useEffect(() => {
       document.documentElement.style.setProperty('--brand-primary', res.data.primary_color);
     if (res.data.accent_color)
       document.documentElement.style.setProperty('--brand-accent', res.data.accent_color);
+    if (res.data.org_name) 
+      setOrgName(res.data.org_name);
 
     // Update browser tab title dynamically
     if (res.data.org_name) document.title = `${res.data.org_name} Election Portal`;
@@ -286,7 +289,18 @@ useEffect(() => {
         
         <nav className="no-print" style={navBarStyle}>
           <img src={logoUrl} alt="Logo" style={logoStyle} />
-        
+          <span style={{
+            color: 'var(--text-color)',
+            fontSize: '13px',
+            fontWeight: '700',
+            letterSpacing: '1px',
+            textTransform: 'uppercase',
+            opacity: 0.8,
+            marginTop: '-10px'
+          }}>
+            {orgName}
+          </span>
+          
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
               Vote Now
