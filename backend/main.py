@@ -245,9 +245,10 @@ def read_root():
 @app.get("/health")
 async def health_check():
     try:
+        await db.command("ping")
         return {"status": "healthy", "database": "connected"}
     except Exception:
-        raise HTTPException(status_code=500, detail="Database down")
+        raise HTTPException(status_code=500, detail="Database connection failed")
 
 @app.get("/election-status")
 async def get_status():
