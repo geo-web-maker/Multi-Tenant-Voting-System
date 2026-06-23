@@ -283,7 +283,7 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        >
+                        <a>
                           🧾 View Receipt
                         </a>
                       )}
