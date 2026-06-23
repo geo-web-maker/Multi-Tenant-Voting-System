@@ -267,9 +267,27 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                   </p>
 
                   {app.manifesto && (
-                    <p style={{ margin: '10px 0 0', fontSize: '13px', lineHeight: '1.6', opacity: 0.85, whiteSpace: 'pre-line' }}>
+                    <p style={{ margin: '10px 0 0', fontSize: '13px', opacity: 0.85, lineHeight: '1.6', whiteSpace: 'pre-line' }}>
                       {app.manifesto}
                     </p>
+                  )}
+                  
+                  {app.payment_method && (
+                    <div style={{ marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                      <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
+                        Payment method: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
+                      </p>
+                      {app.payment_proof_url && (
+                        
+                          href={app.payment_proof_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          🧾 View Receipt
+                        </a>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
