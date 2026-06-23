@@ -56,7 +56,15 @@ app.add_middleware(
 # =============================================================================
 # MODELS
 # =============================================================================
-
+class ApplicationSubmit(BaseModel):
+    student_id:        str
+    full_name:         str
+    position_id:       str
+    manifesto:         str = ""
+    image_url:         str = ""
+    payment_method:    str = ""     
+    payment_proof_url: str = ""      
+    
 class IdentityCheck(BaseModel):
     student_id: str
     full_name: str
