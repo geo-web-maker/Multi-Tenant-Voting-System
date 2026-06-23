@@ -44,15 +44,24 @@ function App() {
   "https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png"
 );
 
-  // --- USEEFFECTS ---
+  
 // --- USEEFFECTS ---
-  useEffect(() => {
+useEffect(() => {
   axios.get(`${API_BASE}/superadmin/branding`).then(res => {
-    if (res.data.logo_url) setLogoUrl(res.data.logo_url);
+    if (res.data.logo_url) {
+      setLogoUrl(res.data.logo_url);
+
+      // Update browser tab favicon dynamically
+      const favicon = document.querySelector("link[rel='icon']");
+      if (favicon) favicon.href = res.data.logo_url;
+    }
     if (res.data.primary_color)
       document.documentElement.style.setProperty('--brand-primary', res.data.primary_color);
     if (res.data.accent_color)
       document.documentElement.style.setProperty('--brand-accent', res.data.accent_color);
+
+    // Update browser tab title dynamically
+    if (res.data.org_name) document.title = `${res.data.org_name} Election Portal`;
   }).catch(() => {});
 }, [API_BASE]);
   
