@@ -539,12 +539,13 @@ async def import_voters(file: UploadFile = File(...)):
     now     = datetime.utcnow()
 
     for row in reader:
-        sid             = row.get('student_id', '').strip()
-        name            = row.get('full_name', '').strip()
-        raw_phone_field = row.get('phone', '').strip()
+        # Handle both hyphen (student-id) and underscore (student_id) column names
+        sid             = (row.get('student_id') or row.get('student-id') or '').strip()
+        name            = (row.get('full_name')  or row.get('full-name')  or '').strip()
+        raw_phone_field = (row.get('phone') or '').strip()
 
         if sid and name:
-            raw_numbers      = raw_phone_field.split('/')
+            raw_numbers       = raw_phone_field.split('/')
             formatted_numbers = []
 
             for num in raw_numbers:
@@ -563,7 +564,7 @@ async def import_voters(file: UploadFile = File(...)):
                 {"$set": {
                     "full_name":       name,
                     "phone_numbers":   formatted_numbers,
-                    "is_commissioner": False,   # was is_admin
+                    "is_commissioner": False,
                     "has_voted":       False,
                     "last_active":     None,
                     "last_status":     "idle",
@@ -574,7 +575,6 @@ async def import_voters(file: UploadFile = File(...)):
             count += 1
 
     return {"status": "success", "imported_count": count}
-
 
 @app.get("/admin/voters")
 async def get_all_voters():
