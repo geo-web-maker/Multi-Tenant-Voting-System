@@ -30,7 +30,11 @@ export default function ApplicantPortal({ apiBase }) {
     image:       null,
   });
 
-  const [preview, setPreview] = useState(null); // photo preview URL
+  const [preview, setPreview] = useState(null);
+  const [paymentMethod, setPaymentMethod] = useState('');
+  const [paymentProof, setPaymentProof] = useState(null);
+  const [paymentProofPreview, setPaymentProofPreview] = useState(null);
+  const [uploadingProof, setUploadingProof] = useState(false);
 
   useEffect(() => {
     axios.get(`${API_URL}/positions`)
@@ -46,6 +50,13 @@ export default function ApplicantPortal({ apiBase }) {
     setPreview(URL.createObjectURL(file));
   };
 
+  const handlePaymentProofChange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  setPaymentProof(file);
+  setPaymentProofPreview(URL.createObjectURL(file));
+  };
+  
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -56,20 +67,31 @@ export default function ApplicantPortal({ apiBase }) {
     if (!form.manifesto.trim())   { setError('Manifesto cannot be empty.');  return; }
 
     setUploading(true);
-    try {
+      if (!paymentMethod) { setError('Please select a payment method.'); return; }
+      if (!paymentProof)  { setError('Please upload proof of payment.'); return; }
+      
       let image_url = '';
       if (form.image) {
         image_url = await uploadToCloudinary(form.image);
       }
-
+      
+      setUploadingProof(true);
+      let payment_proof_url = '';
+      if (paymentProof) {
+        payment_proof_url = await uploadToCloudinary(paymentProof);
+      }
+      setUploadingProof(false);
+      
       await axios.post(`${API_URL}/apply`, {
-        student_id:  form.student_id.trim(),
-        full_name:   form.full_name.trim(),
-        position_id: form.position_id,
-        manifesto:   form.manifesto.trim(),
+        student_id:        form.student_id.trim(),
+        full_name:         form.full_name.trim(),
+        position_id:       form.position_id,
+        manifesto:         form.manifesto.trim(),
         image_url,
+        payment_method:    paymentMethod,
+        payment_proof_url,
       });
-
+    
       setSubmittedName(form.full_name.trim());
       setSubmitted(true);
     } catch (err) {
@@ -226,6 +248,81 @@ export default function ApplicantPortal({ apiBase }) {
             </small>
           </div>
 
+          {/* ── Payment Proof ── */}
+          <div style={card}>
+            <h4 style={sectionTitle}>Proof of Payment *</h4>
+            <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 14px' }}>
+              Select your payment method and upload a screenshot or photo of the payment receipt.
+            </p>
+          
+            {/* Payment method selector */}
+            <label style={lbl}>Payment Method *</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
+              {['Mobile Money (MTN)', 'Mobile Money (Airtel)', 'Bank Transfer', 'Cash Receipt'].map(method => (
+                <div
+                  key={method}
+                  onClick={() => setPaymentMethod(method)}
+                  style={{
+                    ...positionOption,
+                    border: paymentMethod === method
+                      ? '2px solid #2ecc71'
+                      : '1px solid var(--border-color)',
+                    backgroundColor: paymentMethod === method
+                      ? '#2ecc7110'
+                      : 'var(--bg-color)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{
+                      width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
+                      border: paymentMethod === method
+                        ? '2px solid #2ecc71'
+                        : '2px solid var(--border-color)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      {paymentMethod === method && (
+                        <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#2ecc71' }} />
+                      )}
+                    </div>
+                    <span style={{ color: 'var(--text-color)', fontSize: '14px' }}>{method}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          
+            {/* Proof upload */}
+            <label style={lbl}>Payment Receipt / Screenshot *</label>
+            <label style={{ ...photoUploadArea, minHeight: '120px' }}>
+              {paymentProofPreview ? (
+                <img src={paymentProofPreview} alt="Payment proof preview"
+                  style={{ maxWidth: '100%', maxHeight: '200px', objectFit: 'contain', borderRadius: '8px' }} />
+              ) : (
+                <div style={{ textAlign: 'center', opacity: 0.5 }}>
+                  <div style={{ fontSize: '32px', marginBottom: '6px' }}>🧾</div>
+                  <span style={{ fontSize: '13px' }}>Click to upload receipt or screenshot</span>
+                  <br />
+                  <span style={{ fontSize: '11px', opacity: 0.7 }}>JPG, PNG, PDF accepted</span>
+                </div>
+              )}
+              <input
+                type="file"
+                accept="image/*,application/pdf"
+                style={{ display: 'none' }}
+                onChange={handlePaymentProofChange}
+              />
+            </label>
+          
+            {paymentProofPreview && (
+              <button
+                type="button"
+                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: '#e74c3c' }}
+                onClick={() => { setPaymentProofPreview(null); setPaymentProof(null); }}
+              >
+                Remove receipt
+              </button>
+            )}
+          </div>
+          
           {/* ── Photo ── */}
           <div style={card}>
             <h4 style={sectionTitle}>Passport Photo (optional)</h4>
@@ -280,7 +377,7 @@ export default function ApplicantPortal({ apiBase }) {
               style={{ ...greenBtn, width: '100%', padding: '14px', fontSize: '15px' }}
               disabled={uploading || positions.length === 0}
             >
-              {uploading ? '⏳ Submitting…' : '📨 Submit Application'}
+              {uploadingProof ? '⏳ Uploading receipt…' : uploading ? '⏳ Submitting…' : '📨 Submit Application'}
             </button>
           </div>
 
