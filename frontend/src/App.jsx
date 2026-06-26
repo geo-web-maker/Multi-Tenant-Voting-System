@@ -9,6 +9,8 @@ import CommissionDashboard from './components/CommissionDashboard';
 import ApplicantPortal from './components/ApplicantPortal';
 
 function App() {
+  const [supportPdfUrl, setSupportPdfUrl] = useState("");
+  const [supportPhone, setSupportPhone] = useState("");
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
   const [candidates, setCandidates] = useState([]); // To store candidates for preview
   const [step, setStep] = useState(1); 
@@ -23,7 +25,7 @@ function App() {
   const [isAdminPath, setIsAdminPath] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
-  const [orgName, setOrgName] = useState("Geo_Web Solutions Voting Systems");
+  const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(0);
   const [selectedPhone, setSelectedPhone] = useState("");
   const [statusModal, setStatusModal] = useState({ 
@@ -41,9 +43,7 @@ function App() {
 ];
 
   const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-  const [logoUrl, setLogoUrl] = useState(
-  "https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png"
-);
+  const [logoUrl, setLogoUrl] = useState("");
 
   
 // --- USEEFFECTS ---
@@ -51,7 +51,11 @@ useEffect(() => {
   axios.get(`${API_BASE}/superadmin/branding`).then(res => {
     if (res.data.logo_url) {
       setLogoUrl(res.data.logo_url);
-
+    if (res.data.support_pdf_url) 
+      setSupportPdfUrl(res.data.support_pdf_url);
+    if (res.data.support_phone) 
+      setSupportPhone(res.data.support_phone);
+    
       // Update browser tab favicon dynamically
       const favicon = document.querySelector("link[rel='icon']");
       if (favicon) favicon.href = res.data.logo_url;
@@ -365,7 +369,7 @@ useEffect(() => {
                     </button>
                     {/* NEW: Download Register Button */}
                     <a 
-                      href="https://pub-ca810c4c8017497f9b398c30a2f82037.r2.dev/election%20details%20review%20KYUCCU.pdf" 
+                      href={supportPdfUrl}
                       target="_blank" 
                       rel="noopener noreferrer"
                       style={{ 
@@ -381,7 +385,7 @@ useEffect(() => {
                       📥 Download Official Register (PDF)
                     </a>
                     <a 
-                      href="https://wa.me/256745707723?text=Hello%20Admin,%20I%20am%20having%20issues%20logging%20into%20the%20KYUCCU%20Election%20Portal."
+                      href={supportPhone ? `https://wa.me/${supportPhone}?text=Hello%20Admin,%20I%20am%20having%20issues%20with%20the%20Election%20Portal.` : "#"}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{ 
