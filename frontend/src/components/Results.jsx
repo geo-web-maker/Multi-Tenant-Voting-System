@@ -24,7 +24,9 @@ export default function Results({ apiBase }) {
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified] = useState(false); // NEW: Certification State
   const [lastSynced, setLastSynced] = useState(new Date());
-  const [logoUrl, setLogoUrl] = useState("https://res.cloudinary.com/dyn2729ou/image/upload/v1773050338/IMG-20260307-WA0117-removebg-preview_ou65sh.png");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [commissionerName, setCommissionerName] = useState("");
 
   
   const API_URL = apiBase || "https://your-railway-url.app";
@@ -54,7 +56,12 @@ const fetchData = async () => {
     setLastSynced(new Date());
     setLoading(false);
 
-    if (brandingRes.data.logo_url) setLogoUrl(brandingRes.data.logo_url);  // ← ADD THIS
+    if (brandingRes.data.logo_url) 
+      setLogoUrl(brandingRes.data.logo_url);
+    if (brandingRes.data.org_name) 
+      setOrgName(brandingRes.data.org_name);
+    if (brandingRes.data.commissioner_name) 
+      setCommissionerName(brandingRes.data.commissioner_name);
 
   } catch (err) {
     console.error("Error fetching data:", err);
@@ -282,6 +289,8 @@ const fetchData = async () => {
           isElectionOpen={isElectionOpen}
           isCertified={isCertified}
           logoUrl={logoUrl}
+          orgName={orgName}
+          commissionerName={commissionerName}
         />
       </div>
     </div>
