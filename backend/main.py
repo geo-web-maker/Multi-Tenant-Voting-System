@@ -782,7 +782,7 @@ async def list_commissioners():
         result.append(v)
     return result
     
-@app.post("/superadmin/commissioners/{student_id}/set-chief")
+@app.post("/superadmin/commissioners/{student_id:path}/set-chief")
 async def set_chief_commissioner(student_id: str):
     voter = await db.voters.find_one(get_forgiving_filter(student_id))
     if not voter:
@@ -797,7 +797,7 @@ async def set_chief_commissioner(student_id: str):
     return {"student_id": student_id, "is_chief_commissioner": True}
 
 
-@app.post("/superadmin/commissioners/{student_id}/clear-chief")
+@app.post("/superadmin/commissioners/{student_id:path}/clear-chief")
 async def clear_chief_commissioner(student_id: str):
     await db.voters.update_one(
         get_forgiving_filter(student_id),
@@ -817,7 +817,7 @@ async def get_chief_commissioner():
     return chief
 
 
-@app.post("/superadmin/commissioners/{student_id}/set-role")
+@app.post("/superadmin/commissioners/{student_id:path}/set-role")
 async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate):
     voter = await db.voters.find_one(get_forgiving_filter(student_id))
     if not voter:
@@ -830,7 +830,7 @@ async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate):
     )
     return {"student_id": student_id, "commissioner_role": data.role}
 
-@app.post("/superadmin/commissioners/{student_id}/toggle")
+@app.post("/superadmin/commissioners/{student_id:path}/toggle")
 async def toggle_commissioner(student_id: str):
     """Grant or revoke commissioner status for any voter."""
     voter = await db.voters.find_one(get_forgiving_filter(student_id))
@@ -843,7 +843,7 @@ async def toggle_commissioner(student_id: str):
     )
     return {"student_id": student_id, "is_commissioner": new_val}
 
-@app.post("/superadmin/commissioners/{student_id}/set-credentials")
+@app.post("/superadmin/commissioners/{student_id:path}/set-credentials")
 async def set_commissioner_credentials(student_id: str, data: CommissionerCredentials):
     """Superadmin assigns email + password to a commissioner."""
     voter = await db.voters.find_one(get_forgiving_filter(student_id))
