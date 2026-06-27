@@ -19,7 +19,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const [activeTab, setActiveTab] = useState('candidates');
 
   // --- Branding state ---
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', commissioner_name: '', support_phone: '', support_pdf_url: '' });
+const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [] });
   const [brandSaving, setBrandSaving] = useState(false);
 
   // --- Positions state ---
