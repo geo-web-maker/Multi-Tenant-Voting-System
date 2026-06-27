@@ -183,14 +183,13 @@ useEffect(() => {
   
   const handleVerifyIdentity = async (selectedIdx = null) => {
     try {
-    const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
+      const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
     
       const payload = isAdminPath
         ? { email: studentId, password: name }
         : { student_id: studentId, full_name: name, phone_index: selectedIdx };
   
       const res = await axios.post(`${API_BASE}${endpoint}`, payload);
-      });
 
       if (res.data.bypass === true) {
         sessionStorage.setItem("admin_role", res.data.role);
