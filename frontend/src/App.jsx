@@ -469,7 +469,8 @@ useEffect(() => {
                 studentId={studentId} 
                 onVoteSuccess={handleVoteSuccess}
                 apiBase={API_BASE} 
-                propCandidates={candidates} // Pass the data here!
+                propCandidates={candidates}
+                orgName={orgName}
               />
             )}
             
@@ -535,10 +536,11 @@ useEffect(() => {
             </button>
       
             {/* Reusing BallotBox in Preview Mode */}
-            <BallotBox 
+           <BallotBox 
               candidates={candidates} 
               isPreview={true} 
-              apiBase={API_BASE} 
+              apiBase={API_BASE}
+              orgName={orgName}
             />
             
             <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
