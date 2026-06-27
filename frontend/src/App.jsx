@@ -306,7 +306,7 @@ useEffect(() => {
             opacity: 0.8,
             marginTop: '-10px'
           }}>
-            {orgName}
+            {orgName} Election Portal
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
