@@ -31,7 +31,7 @@ const shuffleArray = (array) => {
   return shuffled;
 };
 
-export default function FinalReport({ data, totalVotes, isElectionOpen, isCertified, logoUrl, orgName = "the Organisation", universityName = "", universityLogoUrl = "", commissionerName = "The Electoral Commissioner", ccList = [] }) {
+export default function FinalReport({ data, totalVotes, isElectionOpen, isCertified, logoUrl, orgName = "the Organisation", universityName = "", universityLogoUrl = "", commissionerName = "The Electoral Commissioner", commissioners = [], ccList = [] }) {
   if (!data || !data.results) {
     return null; 
   }
@@ -213,12 +213,11 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
                 members, and voters for participating and upholding the principles of a free, 
                 fair, and transparent election.
               </p>
-            </div>
-
-           
-            
+           </div>
+          </div>
+        )}            
         
-{/* EXECUTIVE SUMMARY */}
+      {/* EXECUTIVE SUMMARY */}
       {!isElectionOpen && (
         <div style={{ marginBottom: '30px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
           <h3 style={{ borderBottom: `2px solid ${config.color}`, color: config.color, paddingBottom: '5px', fontSize: '16px' }}>
@@ -333,7 +332,7 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
       {/* MANDATE EXPLANATION FOOTNOTE */}
       <div style={{ marginTop: '-15px', marginBottom: '30px', padding: '10px', border: '1px solid #ddd', backgroundColor: '#f9f9f9', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
         <p style={{ margin: 0, fontSize: '9px', color: '#444', lineHeight: '1.4' }}>
-          <strong>Note on Minimum Mandate:</strong> In accordance with the {orgName} Election Guidelines 2026, 
+          <strong>Note on Minimum Mandate:</strong> In accordance with the {orgName} Election Guidelines, 
           candidates running unopposed (solo) in any position must secure a minimum of <strong>100 valid votes</strong> 
            to be declared constitutionally elected. Failure to meet this threshold results in an 'Undermandated' 
            status, requiring a by-election or appointment per union bylaws.
@@ -369,8 +368,6 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
             ))}
           </div>
           )}
-        )}
-              
 
       {/* FOOTER STAMP */}
       <div style={{ textAlign: 'center', marginTop: '60px', borderTop: `1px dashed ${config.color}`, paddingTop: '20px', position: 'relative', zIndex: 1 }}>
