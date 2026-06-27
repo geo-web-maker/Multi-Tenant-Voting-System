@@ -43,7 +43,8 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const [voters, setVoters]             = useState([]);
   const [commissioners, setCommissioners] = useState([]);
   const [voterSearch, setVoterSearch]   = useState('');
-
+  const [credInputs, setCredInputs] = useState({});
+  
   // --- Voters / election state ---
   const [electionVoters, setElectionVoters] = useState([]);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
@@ -137,6 +138,20 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     return () => clearInterval(interval);
   }, []);
 
+  const handleSetCredentials = async (studentId, email, password) => {
+    if (!email || !password) return alert('Both email and password are required.');
+    try {
+      await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
+        email,
+        password
+      });
+      alert('Credentials saved.');
+      fetchCommissioners();
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Failed to set credentials.');
+    }
+  };
+  
   // ── Branding ──
 
   const handleSaveBranding = async () => {
@@ -633,6 +648,44 @@ const handleSetRole = async (studentId, role) => {
                     <button style={redLink} onClick={() => handleToggleCommissioner(c.student_id)}>
                       Revoke
                     </button>
+                    {/* Credentials section */}
+                  <div style={{ width: '100%', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
+                    <small style={{ opacity: 0.5, fontSize: '11px' }}>
+                      {c.commissioner_email
+                        ? `Login email: ${c.commissioner_email} — password set ✓`
+                        : '⚠️ No login credentials set yet'}
+                    </small>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                      <input
+                        style={{ ...inp, flex: 1, fontSize: '12px', padding: '6px 8px' }}
+                        placeholder="Email e.g. comm@example.com"
+                        type="email"
+                        value={credInputs[c.student_id]?.email ?? c.commissioner_email ?? ''}
+                        onChange={e => setCredInputs(prev => ({
+                          ...prev,
+                          [c.student_id]: { ...prev[c.student_id], email: e.target.value }
+                        }))}
+                      />
+                      <input
+                        style={{ ...inp, flex: 1, fontSize: '12px', padding: '6px 8px' }}
+                        placeholder="Password e.g. Comm@2026!"
+                        type="text"
+                        value={credInputs[c.student_id]?.password ?? c.commissioner_password ?? ''}
+                        onChange={e => setCredInputs(prev => ({
+                          ...prev,
+                          [c.student_id]: { ...prev[c.student_id], password: e.target.value }
+                        }))}
+                      />
+                      <button
+                        style={{ ...greenBtn, fontSize: '12px', padding: '6px 12px' }}
+                        onClick={() => handleSetCredentials(
+                          c.student_id,
+                          credInputs[c.student_id]?.email ?? c.commissioner_email ?? '',
+                          credInputs[c.student_id]?.password ?? c.commissioner_password ?? ''
+                        )}
+                      >
+                        Save
+                      </button>
                   </div>
                 </div>
               ))}
