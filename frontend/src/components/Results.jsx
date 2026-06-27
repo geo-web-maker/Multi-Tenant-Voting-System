@@ -22,7 +22,7 @@ export default function Results({ apiBase }) {
   const [publicRoll, setPublicRoll] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
-  const [isCertified, setIsCertified] = useState(false); // NEW: Certification State
+  const [isCertified, setIsCertified] = useState(false); 
   const [lastSynced, setLastSynced] = useState(new Date());
   const [logoUrl, setLogoUrl] = useState("");
   const [orgName, setOrgName] = useState("");
