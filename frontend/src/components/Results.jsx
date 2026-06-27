@@ -295,15 +295,19 @@ const fetchData = async () => {
       </div>
 
       <div className="print-only">
-        <FinalReport 
-          data={electionData} 
-          totalVotes={electionData.voter_turnout} 
-          isElectionOpen={isElectionOpen}
-          isCertified={isCertified}
-          logoUrl={logoUrl}
-          orgName={orgName}
-          commissionerName={commissionerName}
-        />
+      <FinalReport 
+        data={electionData} 
+        totalVotes={electionData.voter_turnout} 
+        isElectionOpen={isElectionOpen}
+        isCertified={isCertified}
+        logoUrl={logoUrl}
+        orgName={orgName}
+        universityName={universityName}
+        universityLogoUrl={universityLogoUrl}
+        commissionerName={commissionerName}
+        commissioners={commissioners}
+        ccList={ccList}
+      />
       </div>
     </div>
   );
