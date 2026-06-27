@@ -766,10 +766,10 @@ async def delete_position(position_id: str):
 @app.get("/superadmin/commissioners")
 async def list_commissioners():
     result = []
-        async for v in db.voters.find(
-            {"is_commissioner": True},
-            {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1}
-        ):
+    async for v in db.voters.find(
+        {"is_commissioner": True},
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1}
+    ):
         result.append(v)
     return result
 
