@@ -29,6 +29,7 @@ export default function Results({ apiBase }) {
   const [universityName, setUniversityName] = useState("");
   const [universityLogoUrl, setUniversityLogoUrl] = useState("");
   const [commissionerName, setCommissionerName] = useState("");
+  const [commissioners, setCommissioners] = useState([]);
   const [ccList, setCcList] = useState([]);
   
   const API_URL = apiBase || "https://your-railway-url.app";
@@ -74,6 +75,9 @@ const fetchData = async () => {
     setCommissioners(commList);
     const chief = commList.find(c => c.is_chief_commissioner);
     if (chief) setCommissionerName(chief.full_name);
+    
+    if (brandingRes.data.cc_list?.length)
+      setCcList(brandingRes.data.cc_list);
 
   } catch (err) {
     console.error("Error fetching data:", err);
