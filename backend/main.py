@@ -775,13 +775,13 @@ async def delete_position(position_id: str):
 @app.get("/superadmin/commissioners")
 async def list_commissioners():
     result = []
-        async for v in db.voters.find(
-            {"is_commissioner": True},
-            {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1, "commissioner_password": 1}
-        ):
+    async for v in db.voters.find(
+        {"is_commissioner": True},
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1, "commissioner_password": 1}
+    ):
         result.append(v)
     return result
-
+    
 @app.post("/superadmin/commissioners/{student_id}/set-chief")
 async def set_chief_commissioner(student_id: str):
     voter = await db.voters.find_one(get_forgiving_filter(student_id))
