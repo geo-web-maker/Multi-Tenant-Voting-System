@@ -82,6 +82,14 @@ class OTPCheck(BaseModel):
     student_id: str
     code: str
 
+class AdminLoginCheck(BaseModel):
+    email:    str
+    password: str
+
+class CommissionerCredentials(BaseModel):
+    email:    str
+    password: str
+
 class VoteRequest(BaseModel):
     student_id: str
     candidate_id: str
@@ -448,9 +456,9 @@ async def submit_application(data: ApplicationSubmit):
 # =============================================================================
 
 @app.post("/verify-admin")
-async def verify_admin(data: AdminIdentityCheck):
-    # ── Superadmin: instant bypass, no OTP ──
-    if data.student_id == SUPER_ADMIN_ID and data.full_name == SUPER_ADMIN_NAME:
+async def verify_admin(data: AdminLoginCheck):
+    # ── Superadmin: email + password from env ──
+    if data.email == SUPER_ADMIN_ID and data.password == SUPER_ADMIN_NAME:
         return {
             "status": "success",
             "bypass": True,
@@ -458,24 +466,25 @@ async def verify_admin(data: AdminIdentityCheck):
             "message": "Superadmin bypass active."
         }
 
-    # ── Commission member: OTP required ──
+    # ── Commissioner: email + password stored in DB ──
     commissioner = await db.voters.find_one({
-        "student_id": {"$regex": f"^{re.escape(data.student_id)}$", "$options": "i"},
+        "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_commissioner": True
     })
     if not commissioner:
-        raise HTTPException(status_code=404, detail="Admin access denied.")
+        raise HTTPException(status_code=404, detail="Invalid email or password.")
 
-    otp = str(random.randint(100000, 999999))
-    if await send_sms_via_egosms(commissioner["phone_numbers"][0], f"Commission Auth Code: {otp}"):
-        await db.admin_otps.update_one(
-            {"student_id": data.student_id},
-            {"$set": {"code": otp, "created_at": datetime.utcnow()}},
-            upsert=True
-        )
-        return {"status": "success", "bypass": False, "role": "commission"}
+    stored_password = commissioner.get("commissioner_password", "")
+    if not stored_password or stored_password != data.password:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    raise HTTPException(status_code=500, detail="SMS Error")
+    return {
+        "status": "success",
+        "bypass": True,
+        "role": "commission",
+        "commissioner_id": commissioner["student_id"],
+        "full_name": commissioner.get("full_name", "")
+    }
 
 
 @app.post("/admin/toggle-election")
@@ -766,10 +775,10 @@ async def delete_position(position_id: str):
 @app.get("/superadmin/commissioners")
 async def list_commissioners():
     result = []
-    async for v in db.voters.find(
-        {"is_commissioner": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1}
-    ):
+        async for v in db.voters.find(
+            {"is_commissioner": True},
+            {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1, "commissioner_password": 1}
+        ):
         result.append(v)
     return result
 
@@ -834,7 +843,24 @@ async def toggle_commissioner(student_id: str):
     )
     return {"student_id": student_id, "is_commissioner": new_val}
 
-
+@app.post("/superadmin/commissioners/{student_id}/set-credentials")
+async def set_commissioner_credentials(student_id: str, data: CommissionerCredentials):
+    """Superadmin assigns email + password to a commissioner."""
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_commissioner"):
+        raise HTTPException(400, "This person is not a commissioner.")
+    
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "commissioner_email":    data.email,
+            "commissioner_password": data.password
+        }}
+    )
+    return {"status": "credentials_set", "student_id": student_id}
+    
 # --- Application overrides ---
 
 @app.post("/superadmin/applications/{app_id}/force-approve")
