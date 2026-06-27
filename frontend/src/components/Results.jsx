@@ -26,8 +26,10 @@ export default function Results({ apiBase }) {
   const [lastSynced, setLastSynced] = useState(new Date());
   const [logoUrl, setLogoUrl] = useState("");
   const [orgName, setOrgName] = useState("");
+  const [universityName, setUniversityName] = useState("");
+  const [universityLogoUrl, setUniversityLogoUrl] = useState("");
   const [commissionerName, setCommissionerName] = useState("");
-
+  const [ccList, setCcList] = useState([]);
   
   const API_URL = apiBase || "https://your-railway-url.app";
   const PRIVACY_THRESHOLD = 50;
@@ -35,11 +37,12 @@ export default function Results({ apiBase }) {
 
 const fetchData = async () => {
   try {
-    const [resultsRes, statusRes, votersRes, brandingRes] = await Promise.all([
+    const [resultsRes, statusRes, votersRes, brandingRes, commissionersRes] = await Promise.all([
       axios.get(`${API_URL}/election-results`),
       axios.get(`${API_URL}/election-status`),
       axios.get(`${API_URL}/admin/voters`),
-      axios.get(`${API_URL}/superadmin/branding`).catch(() => ({ data: {} }))
+      axios.get(`${API_URL}/superadmin/branding`).catch(() => ({ data: {} })),
+      axios.get(`${API_URL}/superadmin/commissioners`).catch(() => ({ data: [] }))
     ]);
 
     const votedList = (votersRes.data || []).filter(v => v.has_voted);
@@ -56,12 +59,21 @@ const fetchData = async () => {
     setLastSynced(new Date());
     setLoading(false);
 
-    if (brandingRes.data.logo_url) 
+    if (brandingRes.data.logo_url)
       setLogoUrl(brandingRes.data.logo_url);
-    if (brandingRes.data.org_name) 
+    if (brandingRes.data.org_name)
       setOrgName(brandingRes.data.org_name);
-    if (brandingRes.data.commissioner_name) 
-      setCommissionerName(brandingRes.data.commissioner_name);
+    if (brandingRes.data.university_name)
+      setUniversityName(brandingRes.data.university_name);
+    if (brandingRes.data.university_logo_url)
+      setUniversityLogoUrl(brandingRes.data.university_logo_url);
+    if (brandingRes.data.cc_list?.length)
+      setCcList(brandingRes.data.cc_list);
+    
+    const commList = commissionersRes.data || [];
+    setCommissioners(commList);
+    const chief = commList.find(c => c.is_chief_commissioner);
+    if (chief) setCommissionerName(chief.full_name);
 
   } catch (err) {
     console.error("Error fetching data:", err);
