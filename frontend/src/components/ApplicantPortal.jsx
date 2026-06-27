@@ -12,7 +12,7 @@ async function uploadToCloudinary(file) {
   return res.data.secure_url;
 }
 
-export default function ApplicantPortal({ apiBase }) {
+export default function ApplicantPortal({ apiBase, orgName = "the Organisation" }) {
   const API_URL = apiBase.replace(/\/$/, '');
 
   const [positions, setPositions]   = useState([]);
@@ -152,7 +152,7 @@ const handleSubmit = async (e) => {
           <p style={{ margin: 0, fontSize: '13px', opacity: 0.85, lineHeight: '1.7' }}>
             <strong>How it works:</strong> Fill in the form below and submit your application.
             The Election Commission will review it — <em>all commissioners must unanimously approve</em> before
-            your name appears on the ballot. The superadmin may also approve or deny at any time.
+            your name appears on the ballot.
           </p>
         </div>
 
@@ -368,8 +368,7 @@ const handleSubmit = async (e) => {
             <div style={{ ...infoBox, marginBottom: '16px' }}>
               <p style={{ margin: 0, fontSize: '12px', opacity: 0.8, lineHeight: '1.6' }}>
                 By submitting this form I confirm that the information provided is accurate,
-                I am a registered student of Kyambogo University, and I consent to my details
-                being reviewed by the Election Commission.
+                I consent to my details being reviewed by the Election Commission.
               </p>
             </div>
             <button
