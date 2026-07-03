@@ -253,6 +253,7 @@ async def _resolve_application(app_id: str, app_doc: dict):
             {"_id": ObjectId(app_id)},
             {"$set": {"status": "approved"}}
         )
+        await log_action("application_approved", "commission", {"app_id": app_id})
         logger.info(f"✅ Application {app_id} approved by full commission consensus.")
     elif deny_count > 0:
         # Any single deny blocks the application
@@ -260,6 +261,7 @@ async def _resolve_application(app_id: str, app_doc: dict):
             {"_id": ObjectId(app_id)},
             {"$set": {"status": "denied"}}
         )
+        await log_action("application_denied", "commission", {"app_id": app_id})
         logger.info(f"❌ Application {app_id} denied — commissioner voted against.")
 
 async def _resolve_removal(app_id: str, app_doc: dict):
@@ -544,6 +546,10 @@ async def submit_application(data: ApplicationSubmit):
         "removal_votes": {},  # same structure, used after approval
         "submitted_at": datetime.utcnow()
     })
+    await log_action("application_submitted", data.student_id, {
+    "position_id": data.position_id,
+    "full_name":   data.full_name
+    })
     return {"status": "submitted"}
 
 # =============================================================================
@@ -610,7 +616,8 @@ async def toggle_election():
         {"$set": {"is_open": new_status}},
         upsert=True
     )
-    logger.info(f"🗳️ Election toggled to: {'OPEN' if new_status else 'CLOSED'}")
+    await log_action("election_toggled", "superadmin", {"is_open": new_status})
+    logger.info(f" Election toggled to: {'OPEN' if new_status else 'CLOSED'}")
     return {"is_open": new_status}
 
 
@@ -650,6 +657,7 @@ async def toggle_certification():
         {"$set": {"is_certified": new_status}},
         upsert=True
     )
+    await log_action("results_certified", "superadmin", {"is_certified": new_status})
     return {"is_certified": new_status}
 
 
@@ -708,7 +716,7 @@ async def import_voters(file: UploadFile = File(...)):
                 upsert=True
             )
             count += 1
-
+    await log_action("voters_imported", "admin", {"count": count})
     return {"status": "success", "imported_count": count}
 
 @app.get("/admin/voters")
@@ -724,6 +732,9 @@ async def get_all_voters():
 @app.post("/candidates")
 async def add_candidate(candidate: CandidateCreate):
     result = await db.candidates.insert_one(candidate.dict())
+    await log_action("candidate_added", "superadmin", {
+        "name": candidate.name, "position": candidate.position
+    })
     return {"id": str(result.inserted_id)}
 
 
@@ -955,6 +966,9 @@ async def toggle_commissioner(student_id: str):
         {"_id": voter["_id"]},
         {"$set": {"is_commissioner": new_val}}
     )
+    await log_action("commissioner_toggled", "superadmin", {
+    "student_id": student_id, "is_commissioner": new_val
+    })
     return {"student_id": student_id, "is_commissioner": new_val}
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-credentials")
@@ -995,7 +1009,8 @@ async def superadmin_force_approve(app_id: str):
             "decided_at": datetime.utcnow()
         }}
     )
-    logger.info(f"⚡ Superadmin force-approved application {app_id}.")
+    await log_action("application_force_approved", "superadmin", {"app_id": app_id})
+    logger.info(f" Superadmin force-approved application {app_id}.")
     return {"status": "force_approved"}
 
 
@@ -1016,7 +1031,8 @@ async def superadmin_force_deny(app_id: str):
             "decided_at": datetime.utcnow()
         }}
     )
-    logger.info(f"⚡ Superadmin force-denied application {app_id}.")
+    await log_action("application_force_denied", "superadmin", {"app_id": app_id})
+    logger.info(f" Superadmin force-denied application {app_id}.")
     return {"status": "force_denied"}
 
 
@@ -1028,7 +1044,10 @@ async def superadmin_remove_candidate(candidate_id: str):
         raise HTTPException(404, "Candidate not found.")
 
     await db.candidates.delete_one({"_id": ObjectId(candidate_id)})
-
+    await log_action("candidate_removed", "superadmin", {
+    "name": cand.get("name"), "position": cand.get("position")
+    })
+    
     # If the candidate came from an application, mark it removed
     if cand.get("application_id"):
         await db.applications.update_one(
@@ -1061,3 +1080,325 @@ async def get_election_results():
             "order":    cand.get("order", 0)
         })
     return {"voter_turnout": voter_turnout, "results": results}
+
+
+# =============================================================================
+# IT ADMIN ROUTES
+# =============================================================================
+
+@app.post("/it-admin/students/request-add")
+async def request_add_student(data: ITAdminStudentAdd):
+    # Prevent duplicate pending requests for same student
+    existing = await db.student_changes.find_one({
+        "student_id":  data.student_id,
+        "change_type": "add",
+        "status":      "pending"
+    })
+    if existing:
+        raise HTTPException(400, "A pending add request already exists for this student.")
+
+    result = await db.student_changes.insert_one({
+        **data.dict(),
+        "change_type":  "add",
+        "status":       "pending",
+        "votes":        {},
+        "requested_at": datetime.utcnow()
+    })
+    await log_action("student_add_requested", data.requested_by, {
+        "student_id": data.student_id,
+        "full_name":  data.full_name,
+        "reason":     data.reason
+    })
+    return {"status": "requested", "id": str(result.inserted_id)}
+
+
+@app.post("/it-admin/students/request-remove")
+async def request_remove_student(data: ITAdminStudentRemove):
+    student = await db.voters.find_one(get_forgiving_filter(data.student_id))
+    if not student:
+        raise HTTPException(404, "Student not found in voter register.")
+
+    existing = await db.student_changes.find_one({
+        "student_id":  data.student_id,
+        "change_type": "remove",
+        "status":      "pending"
+    })
+    if existing:
+        raise HTTPException(400, "A pending removal request already exists for this student.")
+
+    result = await db.student_changes.insert_one({
+        **data.dict(),
+        "full_name":    student.get("full_name", ""),
+        "change_type":  "remove",
+        "status":       "pending",
+        "votes":        {},
+        "requested_at": datetime.utcnow()
+    })
+    await log_action("student_remove_requested", data.requested_by, {
+        "student_id": data.student_id,
+        "full_name":  student.get("full_name", ""),
+        "reason":     data.reason
+    })
+    return {"status": "requested", "id": str(result.inserted_id)}
+
+
+@app.post("/it-admin/students/requests/{change_id}/cancel")
+async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest):
+    change = await db.student_changes.find_one({"_id": ObjectId(change_id)})
+    if not change:
+        raise HTTPException(404, "Request not found.")
+    if change.get("requested_by") != data.requested_by:
+        raise HTTPException(403, "You can only cancel your own requests.")
+    if change.get("status") != "pending":
+        raise HTTPException(400, f"Cannot cancel a request that is already {change.get('status')}.")
+
+    await db.student_changes.update_one(
+        {"_id": ObjectId(change_id)},
+        {"$set": {
+            "status":            "cancelled",
+            "cancelled_at":      datetime.utcnow(),
+            "cancelled_reason":  data.cancelled_reason
+        }}
+    )
+    await log_action("student_change_cancelled", data.requested_by, {
+        "change_id":        change_id,
+        "change_type":      change.get("change_type"),
+        "student_id":       change.get("student_id"),
+        "original_reason":  change.get("reason"),
+        "cancel_reason":    data.cancelled_reason
+    })
+    return {"status": "cancelled"}
+
+
+@app.get("/it-admin/students/my-requests/{it_admin_id}")
+async def get_my_requests(it_admin_id: str):
+    changes = []
+    async for c in db.student_changes.find(
+        {"requested_by": it_admin_id}
+    ).sort("requested_at", -1):
+        c["_id"] = str(c["_id"])
+        changes.append(c)
+    return changes
+
+
+# =============================================================================
+# COMMISSION — STUDENT CHANGES
+# =============================================================================
+
+@app.get("/admin/student-changes")
+async def list_student_changes(status: str = None):
+    query = {}
+    if status:
+        query["status"] = status
+    else:
+        # Default: exclude cancelled so commission doesn't see withdrawn requests
+        query["status"] = {"$nin": ["cancelled"]}
+    changes = []
+    async for c in db.student_changes.find(query).sort("requested_at", -1):
+        c["_id"] = str(c["_id"])
+        changes.append(c)
+    return changes
+
+
+@app.post("/admin/student-changes/{change_id}/vote")
+async def vote_student_change(change_id: str, data: StudentChangeVote):
+    if data.vote not in ("approve", "deny"):
+        raise HTTPException(400, "vote must be 'approve' or 'deny'.")
+
+    change = await db.student_changes.find_one({"_id": ObjectId(change_id)})
+    if not change:
+        raise HTTPException(404, "Change request not found.")
+    if change.get("status") != "pending":
+        raise HTTPException(400, f"This request is already {change.get('status')}.")
+
+    commissioner = await db.voters.find_one({
+        **get_forgiving_filter(data.commissioner_id),
+        "is_commissioner": True
+    })
+    if not commissioner:
+        raise HTTPException(403, "Not a registered commissioner.")
+
+    safe_key = data.commissioner_id.replace('.', '_').replace('/', '_')
+    await db.student_changes.update_one(
+        {"_id": ObjectId(change_id)},
+        {"$set": {f"votes.{safe_key}": data.vote}}
+    )
+
+    updated = await db.student_changes.find_one({"_id": ObjectId(change_id)})
+    await _resolve_student_change(change_id, updated)
+    return {"status": "vote_recorded"}
+
+
+# =============================================================================
+# SUPERADMIN — IT ADMIN MANAGEMENT + STUDENT CHANGE OVERRIDES
+# =============================================================================
+
+@app.get("/superadmin/it-admins")
+async def list_it_admins():
+    result = []
+    async for v in db.voters.find(
+        {"is_it_admin": True},
+        {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1}
+    ):
+        result.append(v)
+    return result
+
+
+@app.post("/superadmin/it-admins/{student_id:path}/toggle")
+async def toggle_it_admin(student_id: str):
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    new_val = not voter.get("is_it_admin", False)
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_it_admin": new_val}}
+    )
+    await log_action("it_admin_toggled", "superadmin", {
+        "student_id": student_id, "is_it_admin": new_val
+    })
+    return {"student_id": student_id, "is_it_admin": new_val}
+
+
+@app.post("/superadmin/it-admins/{student_id:path}/set-credentials")
+async def set_it_admin_credentials(student_id: str, data: ITAdminCredentials):
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_it_admin"):
+        raise HTTPException(400, "This person is not an IT admin.")
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "it_admin_email":    data.email,
+            "it_admin_password": data.password
+        }}
+    )
+    await log_action("it_admin_credentials_set", "superadmin", {
+        "student_id": student_id
+    })
+    return {"status": "credentials_set"}
+
+
+@app.get("/superadmin/student-changes")
+async def superadmin_list_student_changes(status: str = None):
+    # Superadmin sees ALL including cancelled
+    query = {}
+    if status:
+        query["status"] = status
+    changes = []
+    async for c in db.student_changes.find(query).sort("requested_at", -1):
+        c["_id"] = str(c["_id"])
+        changes.append(c)
+    return changes
+
+
+@app.post("/superadmin/student-changes/{change_id}/force-approve")
+async def superadmin_force_student_change_approve(change_id: str):
+    change = await db.student_changes.find_one({"_id": ObjectId(change_id)})
+    if not change:
+        raise HTTPException(404, "Change request not found.")
+    if change.get("status") in ("approved", "force_approved"):
+        raise HTTPException(400, "Already approved.")
+    if change.get("status") == "cancelled":
+        raise HTTPException(400, "Cannot approve a cancelled request.")
+
+    await _execute_student_change(change)
+    await db.student_changes.update_one(
+        {"_id": ObjectId(change_id)},
+        {"$set": {
+            "status":               "force_approved",
+            "superadmin_override":  True,
+            "resolved_at":          datetime.utcnow()
+        }}
+    )
+    await log_action("student_change_force_approved", "superadmin", {
+        "change_type":  change["change_type"],
+        "student_id":   change["student_id"],
+        "requested_by": change.get("requested_by", "")
+    })
+    return {"status": "force_approved"}
+
+
+@app.post("/superadmin/student-changes/{change_id}/force-deny")
+async def superadmin_force_student_change_deny(change_id: str):
+    change = await db.student_changes.find_one({"_id": ObjectId(change_id)})
+    if not change:
+        raise HTTPException(404, "Change request not found.")
+    if change.get("status") in ("denied", "force_denied", "cancelled"):
+        raise HTTPException(400, f"Request is already {change.get('status')}.")
+
+    await db.student_changes.update_one(
+        {"_id": ObjectId(change_id)},
+        {"$set": {
+            "status":               "force_denied",
+            "superadmin_override":  True,
+            "resolved_at":          datetime.utcnow()
+        }}
+    )
+    await log_action("student_change_force_denied", "superadmin", {
+        "change_type":  change["change_type"],
+        "student_id":   change["student_id"],
+        "requested_by": change.get("requested_by", "")
+    })
+    return {"status": "force_denied"}
+
+
+@app.post("/superadmin/students/add")
+async def superadmin_add_student(data: ITAdminStudentAdd):
+    phone = data.phone
+    clean = re.sub(r'\D', '', phone)
+    if clean.startswith('0'):
+        clean = '256' + clean[1:]
+    elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
+        clean = '256' + clean
+    await db.voters.update_one(
+        {"student_id": data.student_id},
+        {"$set": {
+            "full_name":       data.full_name,
+            "phone_numbers":   [clean],
+            "is_commissioner": False,
+            "is_it_admin":     False,
+            "has_voted":       False,
+            "last_status":     "idle",
+            "added_by":        "superadmin",
+            "add_reason":      data.reason
+        }},
+        upsert=True
+    )
+    await log_action("student_added_by_superadmin", "superadmin", {
+        "student_id": data.student_id,
+        "full_name":  data.full_name,
+        "reason":     data.reason
+    })
+    return {"status": "added"}
+
+
+@app.post("/superadmin/students/remove")
+async def superadmin_remove_student(data: ITAdminStudentRemove):
+    student = await db.voters.find_one(get_forgiving_filter(data.student_id))
+    if not student:
+        raise HTTPException(404, "Student not found.")
+    await db.voters.delete_one(get_forgiving_filter(data.student_id))
+    await log_action("student_removed_by_superadmin", "superadmin", {
+        "student_id": data.student_id,
+        "full_name":  student.get("full_name", ""),
+        "reason":     data.reason
+    })
+    return {"status": "removed"}
+
+
+# =============================================================================
+# AUDIT LOG
+# =============================================================================
+
+@app.get("/superadmin/audit-log")
+async def get_audit_log(limit: int = 200, action: str = None):
+    query = {}
+    if action:
+        query["action"] = {"$regex": action, "$options": "i"}
+    logs = []
+    async for entry in db.audit_log.find(query).sort("timestamp", -1).limit(limit):
+        entry["_id"] = str(entry["_id"])
+        logs.append(entry)
+    return logs
