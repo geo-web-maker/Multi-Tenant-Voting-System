@@ -1210,7 +1210,224 @@ const handleSuperAdminRemoveStudent = async () => {
             </div>
           </div>
         )}
+               {/* ══════════════ IT ADMINS TAB ══════════════ */}
+        {activeTab === 'it_admins' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Current IT Admins ({itAdmins.length})</h4>
+              {itAdmins.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No IT admins assigned yet. Find voters below and toggle them.</p>
+              )}
+              {itAdmins.map(a => (
+                <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{a.student_id}</small>
+                      {a.it_admin_email && (
+                        <>
+                          <br />
+                          <small style={{ color: '#3498db' }}>{a.it_admin_email}</small>
+                        </>
+                      )}
+                    </div>
+                    <button style={redLink} onClick={() => handleToggleItAdmin(a.student_id)}>
+                      Revoke
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                      style={{ ...inp, flex: 1 }}
+                      placeholder="Email"
+                      value={itCredForm[a.student_id]?.email || ''}
+                      onChange={e => setItCredForm(prev => ({
+                        ...prev,
+                        [a.student_id]: { ...prev[a.student_id], email: e.target.value }
+                      }))}
+                    />
+                    <input
+                      style={{ ...inp, flex: 1 }}
+                      placeholder="Password"
+                      type="text"
+                      value={itCredForm[a.student_id]?.password || ''}
+                      onChange={e => setItCredForm(prev => ({
+                        ...prev,
+                        [a.student_id]: { ...prev[a.student_id], password: e.target.value }
+                      }))}
+                    />
+                    <button style={greenBtn} onClick={() => handleSetItAdminCredentials(a.student_id)}>
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
 
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant IT Admin Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={itAdminSearch}
+                onChange={e => setItAdminSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {voters
+                  .filter(v => !itAdmins.some(a => a.student_id === v.student_id))
+                  .filter(v =>
+                    v.full_name?.toLowerCase().includes(itAdminSearch.toLowerCase()) ||
+                    v.student_id?.toLowerCase().includes(itAdminSearch.toLowerCase())
+                  )
+                  .map(v => (
+                    <div key={v.student_id} style={rowCard}>
+                      <div>
+                        <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                        <br />
+                        <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                      </div>
+                      <button style={greenBtn} onClick={() => handleToggleItAdmin(v.student_id)}>
+                        + Make IT Admin
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ STUDENT CHANGES TAB (superadmin view) ══════════════ */}
+        {activeTab === 'student_changes' && (
+          <div>
+            <div style={twoCol}>
+              <div style={card}>
+                <h4 style={cardTitle}>Add Student Directly</h4>
+                <form onSubmit={handleSuperAdminAddStudent} style={formCol}>
+                  <input style={inp} placeholder="Student ID" value={saDirectAdd.student_id}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, student_id: e.target.value })} required />
+                  <input style={inp} placeholder="Full name" value={saDirectAdd.full_name}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, full_name: e.target.value })} required />
+                  <input style={inp} placeholder="Phone" value={saDirectAdd.phone}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, phone: e.target.value })} required />
+                  <input style={inp} placeholder="Reason" value={saDirectAdd.reason}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, reason: e.target.value })} required />
+                  <button type="submit" style={greenBtn}>+ Add Student Instantly</button>
+                </form>
+              </div>
+
+              <div style={card}>
+                <h4 style={cardTitle}>Remove Student Directly</h4>
+                <div style={formCol}>
+                  <input style={inp} placeholder="Student ID" value={saDirectRemove.student_id}
+                    onChange={e => setSaDirectRemove({ ...saDirectRemove, student_id: e.target.value })} />
+                  <input style={inp} placeholder="Reason" value={saDirectRemove.reason}
+                    onChange={e => setSaDirectRemove({ ...saDirectRemove, reason: e.target.value })} />
+                  <button style={redBtn} onClick={handleSuperAdminRemoveStudent}>
+                    🗑️ Remove Student Instantly
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
+              {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
+                <button key={f} onClick={() => setScFilter(f)}
+                  style={{ ...ghostBtn, borderColor: scFilter === f ? '#2ecc71' : undefined, color: scFilter === f ? '#2ecc71' : undefined }}>
+                  {f.replace('_', ' ')}
+                  {' '}({f === 'all' ? studentChanges.length : studentChanges.filter(c => c.status === f).length})
+                </button>
+              ))}
+            </div>
+
+            {(scFilter === 'all' ? studentChanges : studentChanges.filter(c => c.status === scFilter)).map(change => (
+              <div key={change._id} style={appCard}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                  <div>
+                    <b style={{ color: 'var(--text-color)' }}>
+                      {change.change_type === 'add' ? '➕ Add' : '➖ Remove'}
+                    </b>
+                    <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
+                      {change.status.toUpperCase().replace('_', ' ')}
+                    </span>
+                  </div>
+                  <small style={{ opacity: 0.45 }}>
+                    {new Date(change.requested_at).toLocaleDateString()}
+                  </small>
+                </div>
+                <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
+                  <b>{change.full_name}</b> — <code style={{ fontSize: '12px' }}>{change.student_id}</code>
+                </p>
+                <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
+                  Reason: {change.reason}
+                </p>
+                <p style={{ margin: '2px 0', fontSize: '11px', opacity: 0.5 }}>
+                  Requested by: {change.requested_by}
+                </p>
+                {change.status === 'pending' && (
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'approve')}>
+                      ⚡ Force Approve
+                    </button>
+                    <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'deny')}>
+                      ✕ Force Deny
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ══════════════ AUDIT LOG TAB ══════════════ */}
+        {activeTab === 'audit_log' && (
+          <div>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
+              <input
+                style={{ ...inp, maxWidth: '300px' }}
+                placeholder="Filter by action e.g. 'application'"
+                value={auditFilter}
+                onChange={e => setAuditFilter(e.target.value)}
+              />
+              <button style={ghostBtn} onClick={fetchAuditLog}>🔍 Filter</button>
+              {auditFilter && (
+                <button style={ghostBtn} onClick={() => { setAuditFilter(''); fetchAuditLog(); }}>Clear</button>
+              )}
+            </div>
+
+            {auditLoading && <p style={{ opacity: 0.5 }}>Loading…</p>}
+
+            <div style={{ maxHeight: '600px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead style={{ position: 'sticky', top: 0, backgroundColor: '#1e293b' }}>
+                  <tr>
+                    {['Timestamp', 'Action', 'Actor', 'Details'].map(h => (
+                      <th key={h} style={th}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLog.map(entry => (
+                    <tr key={entry._id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                      <td style={{ ...td, whiteSpace: 'nowrap', fontSize: '11px', opacity: 0.7 }}>
+                        {new Date(entry.timestamp).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
+                      </td>
+                      <td style={{ ...td, fontWeight: '600' }}>{entry.action.replace(/_/g, ' ')}</td>
+                      <td style={{ ...td, fontSize: '12px' }}>{entry.actor}</td>
+                      <td style={{ ...td, fontSize: '11px', opacity: 0.7 }}>
+                        {Object.entries(entry.details || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                      </td>
+                    </tr>
+                  ))}
+                  {auditLog.length === 0 && !auditLoading && (
+                    <tr>
+                      <td colSpan={4} style={{ ...td, textAlign: 'center', opacity: 0.4, padding: '30px' }}>
+                        No log entries found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
