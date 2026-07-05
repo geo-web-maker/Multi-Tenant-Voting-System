@@ -42,7 +42,11 @@ function App() {
     { id: "21/U/BSE/44556/PE", name: "Sserwadda Valentino" },
     { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
   ];
-
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [pendingAdminEmail, setPendingAdminEmail]     = useState('');
+  const [newPasswordForm, setNewPasswordForm]         = useState({ old_password: '', new_password: '', confirm_password: '' });
+  const [passwordChangeError, setPasswordChangeError] = useState('');
+  const [passwordChangeSubmitting, setPasswordChangeSubmitting] = useState(false);
   const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
   const [logoUrl, setLogoUrl] = useState("");
 
@@ -182,101 +186,153 @@ useEffect(() => {
     return false;
   };
   
-  const handleVerifyIdentity = async (selectedIdx = null) => {
-    try {
-      const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
+    const handleVerifyIdentity = async (selectedIdx = null) => {
+      try {
+        const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
+      
+        const payload = isAdminPath
+          ? { email: studentId, password: name }
+          : { student_id: studentId, full_name: name, phone_index: selectedIdx };
     
-      const payload = isAdminPath
-        ? { email: studentId, password: name }
-        : { student_id: studentId, full_name: name, phone_index: selectedIdx };
+        const res = await axios.post(`${API_BASE}${endpoint}`, payload);
   
-      const res = await axios.post(`${API_BASE}${endpoint}`, payload);
-
-      if (res.data.bypass === true) {
-        sessionStorage.setItem("admin_role", res.data.role);
-        if (res.data.commissioner_id) {
-          sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
-        }
+        if (res.data.bypass === true) {
+          sessionStorage.setItem("admin_role", res.data.role);
+          if (res.data.commissioner_id) {
+            sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
+          }
           if (res.data.it_admin_id) {
-          sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
-          sessionStorage.setItem("it_admin_name", res.data.full_name || "");
-        }
-        setView(res.data.role);
-        return;
-      }
-      //Before setStep(2), also store role for OTP path
-      sessionStorage.setItem("admin_role",res.data.role || "commission");
-
-      if (res.data.status === "needs_selection") {
-        setMaskedNumbers(res.data.masked_numbers);
-        setStep(1.5);
-      } else {
-        if (res.data.phone) {
-          setSelectedPhone(res.data.phone);
-        }
+            sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
+            sessionStorage.setItem("it_admin_name", res.data.full_name || "");
+          }
         
+          // Superadmin never needs to change password (env-based login)
+          if (res.data.role !== "superadmin" && res.data.must_change_password) {
+            setPendingAdminEmail(studentId);   // studentId field holds the email for admin login
+            setMustChangePassword(true);
+            return;
+          }
+        
+          setView(res.data.role);
+          return;
+        }
+        //Before setStep(2), also store role for OTP path
+        sessionStorage.setItem("admin_role",res.data.role || "commission");
+  
+        if (res.data.status === "needs_selection") {
+          setMaskedNumbers(res.data.masked_numbers);
+          setStep(1.5);
+        } else {
+          if (res.data.phone) {
+            setSelectedPhone(res.data.phone);
+          }
+          
+          setStatusModal({
+            show: true,
+            title: "Code Sent!",
+            message: res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}.`,
+            type: "success"
+          });
+          
+          setStep(2);
+          setTimer(60);
+        }
+      } catch (err) {
+        const errorData = err.response?.data?.detail || "Verification Failed";
         setStatusModal({
           show: true,
-          title: "Code Sent!",
-          message: res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}.`,
+          title: "Login Error",
+          message: typeof errorData === 'object' ? JSON.stringify(errorData) : errorData,
+          type: "error"
+        });
+      }
+    };
+
+   const handleVerifyOtp = async () => {
+    try {
+      const res = await axios.post(`${API_BASE}/verify-otp`, {
+        student_id: studentId,
+        code: otp
+      });
+  
+      setOtp("");
+  
+      if (isAdminPath) {
+        setStatusModal({
+          show: true,
+          title: "Admin Authorized",
+          message: "Welcome back. You now have access to the election controls.",
           type: "success"
         });
-        
-        setStep(2);
-        setTimer(60);
+  
+        // Store commissioner ID so CommissionDashboard can tag votes
+        sessionStorage.setItem("commissioner_id", studentId);
+  
+        const role = sessionStorage.getItem("admin_role");
+        if (role === "superadmin") {
+          setView("superadmin");
+        } else {
+          setView("commission");
+        }          // ← this closing brace was missing
+      } else {
+        setStep(3);
       }
     } catch (err) {
-      const errorData = err.response?.data?.detail || "Verification Failed";
+      const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
       setStatusModal({
         show: true,
-        title: "Login Error",
-        message: typeof errorData === 'object' ? JSON.stringify(errorData) : errorData,
+        title: "Verification Failed",
+        message: errorMsg,
         type: "error"
       });
+      setOtp("");
     }
   };
 
- const handleVerifyOtp = async () => {
-  try {
-    const res = await axios.post(`${API_BASE}/verify-otp`, {
-      student_id: studentId,
-      code: otp
-    });
-
-    setOtp("");
-
-    if (isAdminPath) {
-      setStatusModal({
-        show: true,
-        title: "Admin Authorized",
-        message: "Welcome back. You now have access to the election controls.",
-        type: "success"
-      });
-
-      // Store commissioner ID so CommissionDashboard can tag votes
-      sessionStorage.setItem("commissioner_id", studentId);
-
-      const role = sessionStorage.getItem("admin_role");
-      if (role === "superadmin") {
-        setView("superadmin");
-      } else {
-        setView("commission");
-      }          // ← this closing brace was missing
-    } else {
-      setStep(3);
+    const handleSetNewPassword = async (e) => {
+    e.preventDefault();
+    setPasswordChangeError('');
+  
+    if (newPasswordForm.new_password.length < 6) {
+      setPasswordChangeError('New password must be at least 6 characters.');
+      return;
     }
-  } catch (err) {
-    const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
-    setStatusModal({
-      show: true,
-      title: "Verification Failed",
-      message: errorMsg,
-      type: "error"
-    });
-    setOtp("");
-  }
-};
-
+    if (newPasswordForm.new_password !== newPasswordForm.confirm_password) {
+      setPasswordChangeError('Passwords do not match.');
+      return;
+    }
+  
+    setPasswordChangeSubmitting(true);
+    try {
+      await axios.post(`${API_BASE}/admin/set-password`, {
+        email:        pendingAdminEmail,
+        old_password: newPasswordForm.old_password,
+        new_password: newPasswordForm.new_password,
+      });
+  
+      // Re-run login with the new password to get the role and proceed
+      const res = await axios.post(`${API_BASE}/verify-admin`, {
+        email: pendingAdminEmail,
+        password: newPasswordForm.new_password,
+      });
+  
+      sessionStorage.setItem("admin_role", res.data.role);
+      if (res.data.commissioner_id) sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
+      if (res.data.it_admin_id) {
+        sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
+        sessionStorage.setItem("it_admin_name", res.data.full_name || "");
+      }
+  
+      setMustChangePassword(false);
+      setNewPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
+      setView(res.data.role);
+    } catch (err) {
+      setPasswordChangeError(err.response?.data?.detail || 'Failed to update password.');
+    } finally {
+      setPasswordChangeSubmitting(false);
+    }
+  };
+  
   const resetFlow = () => {
     setStep(1);
     setView("voter");
@@ -492,6 +548,56 @@ useEffect(() => {
           </div>
         )}
 
+        {mustChangePassword && (
+          <div style={modalOverlayStyle}>
+            <div className="modal-content" style={{ ...modalContentStyle, maxWidth: '420px' }}>
+              <div style={{ fontSize: '40px', textAlign: 'center', marginBottom: '10px' }}>🔒</div>
+              <h2 style={{ textAlign: 'center', marginTop: 0, color: '#2c3e50' }}>Set a New Password</h2>
+              <p style={{ textAlign: 'center', fontSize: '13px', color: '#64748b', marginBottom: '20px' }}>
+                For your security, you must set a new password before continuing.
+              </p>
+        
+              <form onSubmit={handleSetNewPassword}>
+                <input
+                  type="password"
+                  placeholder="Temporary password (from SMS)"
+                  style={{ ...inputStyle, color: '#1e293b', backgroundColor: '#f8fafc' }}
+                  value={newPasswordForm.old_password}
+                  onChange={e => setNewPasswordForm({ ...newPasswordForm, old_password: e.target.value })}
+                />
+                <input
+                  type="password"
+                  placeholder="New password (min 6 characters)"
+                  style={{ ...inputStyle, color: '#1e293b', backgroundColor: '#f8fafc' }}
+                  value={newPasswordForm.new_password}
+                  onChange={e => setNewPasswordForm({ ...newPasswordForm, new_password: e.target.value })}
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm new password"
+                  style={{ ...inputStyle, color: '#1e293b', backgroundColor: '#f8fafc' }}
+                  value={newPasswordForm.confirm_password}
+                  onChange={e => setNewPasswordForm({ ...newPasswordForm, confirm_password: e.target.value })}
+                />
+        
+                {passwordChangeError && (
+                  <p style={{ color: '#e74c3c', fontSize: '13px', textAlign: 'center', marginBottom: '10px' }}>
+                    ⚠️ {passwordChangeError}
+                  </p>
+                )}
+        
+                <button
+                  type="submit"
+                  style={{ ...primaryBtnStyle, backgroundColor: '#2ecc71' }}
+                  disabled={passwordChangeSubmitting}
+                >
+                  {passwordChangeSubmitting ? 'Updating…' : 'Set Password & Continue'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+        
         {statusModal.show && (
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={modalContentStyle}>
