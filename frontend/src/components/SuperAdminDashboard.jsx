@@ -69,6 +69,10 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const [saDirectAdd, setSaDirectAdd]       = useState({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
   const [saDirectRemove, setSaDirectRemove] = useState({ student_id: '', reason: '', requested_by: 'superadmin' });
 
+  //--Remove Students--
+  const [removeSearch, setRemoveSearch]         = useState('');
+  const [showRemoveDropdown, setShowRemoveDropdown] = useState(false);
+  
   // ── Fetch helpers ──
 
   const fetchBranding = async () => {
@@ -437,6 +441,7 @@ const handleSuperAdminRemoveStudent = async () => {
       await axios.post(`${API_URL}/superadmin/students/remove`, saDirectRemove);
       alert('Student removed.');
       setSaDirectRemove({ student_id: '', reason: '' });
+      setRemoveSearch('');
       fetchElectionData();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
   };
@@ -1318,8 +1323,53 @@ const handleSuperAdminRemoveStudent = async () => {
               <div style={card}>
                 <h4 style={cardTitle}>Remove Student Directly</h4>
                 <div style={formCol}>
-                  <input style={inp} placeholder="Student ID" value={saDirectRemove.student_id}
-                    onChange={e => setSaDirectRemove({ ...saDirectRemove, student_id: e.target.value })} />
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      style={inp}
+                      placeholder="Search by name or student ID…"
+                      value={removeSearch}
+                      onChange={e => {
+                        setRemoveSearch(e.target.value);
+                        setSaDirectRemove({ ...saDirectRemove, student_id: '' });
+                        setShowRemoveDropdown(true);
+                      }}
+                      onFocus={() => setShowRemoveDropdown(true)}
+                    />
+                    {showRemoveDropdown && removeSearch && (
+                      <div style={dropdownList}>
+                        {voters
+                          .filter(v =>
+                            v.full_name?.toLowerCase().includes(removeSearch.toLowerCase()) ||
+                            v.student_id?.toLowerCase().includes(removeSearch.toLowerCase())
+                          )
+                          .slice(0, 8)
+                          .map(v => (
+                            <div
+                              key={v.student_id}
+                              style={dropdownItem}
+                              onClick={() => {
+                                setSaDirectRemove({ ...saDirectRemove, student_id: v.student_id });
+                                setRemoveSearch(`${v.full_name} (${v.student_id})`);
+                                setShowRemoveDropdown(false);
+                              }}
+                            >
+                              <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{v.student_id}</span>
+                            </div>
+                          ))}
+                        {voters.filter(v =>
+                          v.full_name?.toLowerCase().includes(removeSearch.toLowerCase()) ||
+                          v.student_id?.toLowerCase().includes(removeSearch.toLowerCase())
+                        ).length === 0 && (
+                          <div style={{ ...dropdownItem, opacity: 0.5, cursor: 'default' }}>No matching students.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {saDirectRemove.student_id && (
+                    <p style={{ fontSize: '11px', color: '#2ecc71', margin: '2px 0 0' }}>
+                      ✓ Selected: {saDirectRemove.student_id}
+                    </p>
+                  )}
                   <input style={inp} placeholder="Reason" value={saDirectRemove.reason}
                     onChange={e => setSaDirectRemove({ ...saDirectRemove, reason: e.target.value })} />
                   <button style={redBtn} onClick={handleSuperAdminRemoveStudent}>
@@ -1327,7 +1377,6 @@ const handleSuperAdminRemoveStudent = async () => {
                   </button>
                 </div>
               </div>
-            </div>
 
             <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
               {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
@@ -1465,6 +1514,8 @@ function statusBadge(status) {
 }
 
 // ── Styles ──
+const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto', zIndex: 20 };
+const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const headerFlex  = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' };
