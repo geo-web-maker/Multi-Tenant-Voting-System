@@ -65,7 +65,9 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const [auditLog, setAuditLog]             = useState([]);
   const [auditFilter, setAuditFilter]       = useState('');
   const [auditLoading, setAuditLoading]     = useState(false);
-  const [itCredForm, setItCredForm]         = useState({});
+  const [itCredEmail, setItCredEmail]   = useState({});   // { student_id: email }
+  const [commCredEmail, setCommCredEmail] = useState({}); // { student_id: email }
+  const [resetting, setResetting]       = useState({});   // { student_id: bool }
   const [saDirectAdd, setSaDirectAdd]       = useState({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
   const [saDirectRemove, setSaDirectRemove] = useState({ student_id: '', reason: '', requested_by: 'superadmin' });
 
@@ -75,6 +77,36 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   
   // ── Fetch helpers ──
 
+  const handleSetCommissionerCredentials = async (studentId) => {
+    const email = commCredEmail[studentId];
+    if (!email) {
+      alert('Email is required.');
+      return;
+    }
+    try {
+      const res = await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
+        email
+      });
+      alert(res.data.sms_notified
+        ? 'Email saved. A temporary password was sent via SMS.'
+        : 'Email saved, but SMS notification failed to send.');
+      setCommCredEmail(prev => ({ ...prev, [studentId]: '' }));
+      fetchCommissioners();
+    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  };
+
+  const handleResetCommissionerPassword = async (studentId) => {
+    if (!window.confirm('Send a new temporary password to this commissioner via SMS?')) return;
+    setResetting(prev => ({ ...prev, [studentId]: true }));
+    try {
+      const res = await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
+      alert(res.data.sms_notified
+        ? 'New temporary password sent via SMS.'
+        : 'Password reset, but SMS failed to send.');
+    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+  };
+  
   const fetchBranding = async () => {
     try {
       const res = await axios.get(`${API_URL}/superadmin/branding`);
@@ -398,20 +430,34 @@ const fetchAuditLog = async () => {
   };
 
 const handleSetItAdminCredentials = async (studentId) => {
-  const creds = itCredForm[studentId];
-  if (!creds?.email || !creds?.password) {
-    alert('Email and password are required.');
+  const email = itCredEmail[studentId];
+  if (!email) {
+    alert('Email is required.');
     return;
   }
   try {
-      await axios.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
-        email: creds.email, password: creds.password
-      });
-      alert('Credentials saved.');
-      setItCredForm(prev => ({ ...prev, [studentId]: { email: '', password: '' } }));
-      fetchItAdmins();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
-  };
+    const res = await axios.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
+      email
+    });
+    alert(res.data.sms_notified
+      ? 'Email saved. A temporary password was sent via SMS.'
+      : 'Email saved, but SMS notification failed to send.');
+    setItCredEmail(prev => ({ ...prev, [studentId]: '' }));
+    fetchItAdmins();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+};
+
+const handleResetItAdminPassword = async (studentId) => {
+  if (!window.confirm('Send a new temporary password to this IT admin via SMS?')) return;
+  setResetting(prev => ({ ...prev, [studentId]: true }));
+  try {
+    const res = await axios.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
+    alert(res.data.sms_notified
+      ? 'New temporary password sent via SMS.'
+      : 'Password reset, but SMS failed to send.');
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+};
 
 const handleForceStudentChange = async (changeId, action) => {
   const endpoint = action === 'approve'
@@ -1243,29 +1289,25 @@ const handleSuperAdminRemoveStudent = async () => {
                       Revoke
                     </button>
                   </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <input
-                      style={{ ...inp, flex: 1 }}
+                      style={{ ...inp, flex: 1, minWidth: '180px' }}
                       placeholder="Email"
-                      value={itCredForm[a.student_id]?.email || ''}
-                      onChange={e => setItCredForm(prev => ({
-                        ...prev,
-                        [a.student_id]: { ...prev[a.student_id], email: e.target.value }
-                      }))}
-                    />
-                    <input
-                      style={{ ...inp, flex: 1 }}
-                      placeholder="Password"
-                      type="text"
-                      value={itCredForm[a.student_id]?.password || ''}
-                      onChange={e => setItCredForm(prev => ({
-                        ...prev,
-                        [a.student_id]: { ...prev[a.student_id], password: e.target.value }
-                      }))}
+                      value={itCredEmail[a.student_id] || ''}
+                      onChange={e => setItCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
                     />
                     <button style={greenBtn} onClick={() => handleSetItAdminCredentials(a.student_id)}>
-                      Save
+                      Send Credentials
                     </button>
+                    {a.it_admin_email && (
+                      <button
+                        style={ghostBtn}
+                        disabled={resetting[a.student_id]}
+                        onClick={() => handleResetItAdminPassword(a.student_id)}
+                      >
+                        {resetting[a.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
