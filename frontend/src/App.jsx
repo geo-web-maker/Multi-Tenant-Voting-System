@@ -399,7 +399,7 @@ useEffect(() => {
             {step === 1 && (
               <div style={cardStyle}>
               <h1 style={{ textAlign: 'center', color: 'var(--text-color)' }}>
-                {isAdminPath ? "🔐 Admin Login" : "🗳️ Voter Login"}
+                {isAdminPath ? "Admin Login" : "Voter Login"}
               </h1>
               {!isElectionOpen && !isAdminPath && (
                 <div style={noticeStyle}>
@@ -476,7 +476,7 @@ useEffect(() => {
                           marginTop: '10px'
                         }}
                       >
-                        📥 Download Official Register (PDF)
+                        Download Official Register (PDF)
                       </a>
                     )}
                     <a 
@@ -497,7 +497,7 @@ useEffect(() => {
                         fontSize: '13px'
                       }}
                     >
-                      💬 Login issues? Click here to contact Support for help
+                      Login issues? Click here to contact Support for help
                     </a>
                 </div>
               </div>
@@ -523,7 +523,7 @@ useEffect(() => {
                   {timer > 0 ? (
                     <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
                   ) : (
-                    <button onClick={() => handleVerifyIdentity()} style={resendBtnStyle}>📩 Resend SMS</button>
+                    <button onClick={() => handleVerifyIdentity()} style={resendBtnStyle}>Resend SMS</button>
                   )}
                 </div>
               </div>
@@ -541,7 +541,7 @@ useEffect(() => {
             
             {step === 4 && (
               <div style={{ ...cardStyle, textAlign: 'center' }}>
-                <h2 style={{ color: '#2ecc71' }}>✅ Vote Cast Successfully!</h2>
+                <h2 style={{ color: '#2ecc71' }}>Vote Cast Successfully!</h2>
                 <button onClick={resetFlow} style={primaryBtnStyle}>Return Home</button>
               </div>
             )}
