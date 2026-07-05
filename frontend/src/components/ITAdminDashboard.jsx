@@ -30,6 +30,9 @@ export default function ITAdminDashboard({ apiBase, onLogout }) {
   const [removeSubmitting, setRemoveSubmitting] = useState(false);
   const [removeError, setRemoveError]           = useState('');
   const [removeSuccess, setRemoveSuccess]       = useState('');
+  const [voters, setVoters]                     = useState([]);
+  const [removeSearch, setRemoveSearch]         = useState('');
+  const [showRemoveDropdown, setShowRemoveDropdown] = useState(false);
 
   // ── Cancel state ──
   const [cancelling, setCancelling] = useState({});
@@ -45,12 +48,20 @@ export default function ITAdminDashboard({ apiBase, onLogout }) {
     );
     return res.data.secure_url;
   }
-
+  
   useEffect(() => {
     fetchMyRequests();
+    fetchVoters();
     const interval = setInterval(fetchMyRequests, 20000);
     return () => clearInterval(interval);
   }, []);
+  
+  const fetchVoters = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/admin/voters`);
+      setVoters(res.data);
+    } catch (e) {}
+  };
 
   const fetchMyRequests = async () => {
     if (!itAdminId) return;
@@ -127,6 +138,7 @@ export default function ITAdminDashboard({ apiBase, onLogout }) {
       });
       setRemoveSuccess('Request submitted. Waiting for commission approval.');
       setRemoveForm({ student_id: '', reason: '' });
+      setRemoveSearch('');
       fetchMyRequests();
     } catch (e) {
       setRemoveError(e.response?.data?.detail || 'Failed to submit request.');
@@ -303,9 +315,53 @@ export default function ITAdminDashboard({ apiBase, onLogout }) {
 
               <form onSubmit={handleRemoveSubmit} style={formCol}>
                 <label style={lbl}>Student Registration Number *</label>
-                <input style={inp} placeholder="e.g. 22/U/IED/1086/GV"
-                  value={removeForm.student_id}
-                  onChange={e => setRemoveForm({ ...removeForm, student_id: e.target.value })} />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    style={inp}
+                    placeholder="Search by name or student ID…"
+                    value={removeSearch}
+                    onChange={e => {
+                      setRemoveSearch(e.target.value);
+                      setRemoveForm({ ...removeForm, student_id: '' });
+                      setShowRemoveDropdown(true);
+                    }}
+                    onFocus={() => setShowRemoveDropdown(true)}
+                  />
+                  {showRemoveDropdown && removeSearch && (
+                    <div style={dropdownList}>
+                      {voters
+                        .filter(v =>
+                          v.full_name?.toLowerCase().includes(removeSearch.toLowerCase()) ||
+                          v.student_id?.toLowerCase().includes(removeSearch.toLowerCase())
+                        )
+                        .slice(0, 8)
+                        .map(v => (
+                          <div
+                            key={v.student_id}
+                            style={dropdownItem}
+                            onClick={() => {
+                              setRemoveForm({ ...removeForm, student_id: v.student_id });
+                              setRemoveSearch(`${v.full_name} (${v.student_id})`);
+                              setShowRemoveDropdown(false);
+                            }}
+                          >
+                            <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{v.student_id}</span>
+                          </div>
+                        ))}
+                      {voters.filter(v =>
+                        v.full_name?.toLowerCase().includes(removeSearch.toLowerCase()) ||
+                        v.student_id?.toLowerCase().includes(removeSearch.toLowerCase())
+                      ).length === 0 && (
+                        <div style={{ ...dropdownItem, opacity: 0.5, cursor: 'default' }}>No matching students.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {removeForm.student_id && (
+                  <p style={{ fontSize: '11px', color: '#2ecc71', margin: '4px 0 0' }}>
+                    ✓ Selected: {removeForm.student_id}
+                  </p>
+                )}
 
                 <label style={{ ...lbl, marginTop: '10px' }}>Reason for Removal *</label>
                 <textarea style={{ ...inp, height: '80px', resize: 'vertical' }}
@@ -417,6 +473,8 @@ function statusBadge(status) {
 }
 
 // ── Styles ──
+const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto', zIndex: 20 };
+const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
 const twoColLayout = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', alignItems: 'start' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
