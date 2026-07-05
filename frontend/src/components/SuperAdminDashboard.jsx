@@ -1210,7 +1210,8 @@ const handleSuperAdminRemoveStudent = async () => {
             </div>
           </div>
         )}
-               {/* ══════════════ IT ADMINS TAB ══════════════ */}
+        
+        {/* ══════════════ IT ADMINS TAB ══════════════ */}
         {activeTab === 'it_admins' && (
           <div style={twoCol}>
             <div style={card}>
@@ -1361,6 +1362,21 @@ const handleSuperAdminRemoveStudent = async () => {
                 <p style={{ margin: '2px 0', fontSize: '11px', opacity: 0.5 }}>
                   Requested by: {change.requested_by}
                 </p>
+                
+                {change.payment_method && (
+                  <div style={{ marginTop: '8px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
+                      Payment: <strong style={{ color: 'var(--text-color)' }}>{change.payment_method}</strong>
+                    </p>
+                    {change.payment_proof_url && (
+                      <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
+                        style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
+                        🧾 View Receipt
+                      </a>
+                    )}
+                  </div>
+                )}
+
                 {change.status === 'pending' && (
                   <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
                     <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'approve')}>
