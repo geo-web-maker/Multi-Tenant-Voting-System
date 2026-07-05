@@ -238,9 +238,13 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
     phone_list = voter.get("phone_numbers", [])
     if not phone_list:
         return False
+
+    branding_doc = await db.settings.find_one({"name": "branding"})
+    sms_org_name = (branding_doc or {}).get("org_name", "Election")
+
     message = (
         f"Hello {voter.get('full_name', 'User')}, your temporary {role_label} login code "
-        f"for the KYUCCU Election Portal is {temp_password}. "
+        f"for the {sms_org_name} Election Portal is {temp_password}. "
         f"You will be asked to set a new password on first login. "
         f"Do not share this code with anyone."
     )
