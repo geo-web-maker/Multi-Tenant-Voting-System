@@ -1395,6 +1395,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </button>
                 </div>
               </div>
+            </div>
 
             <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
               {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
