@@ -43,7 +43,6 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const [voters, setVoters]             = useState([]);
   const [commissioners, setCommissioners] = useState([]);
   const [voterSearch, setVoterSearch]   = useState('');
-  const [credInputs, setCredInputs] = useState({});
   
   // --- Voters / election state ---
   const [electionVoters, setElectionVoters] = useState([]);
@@ -185,20 +184,6 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     }, 30000);
     return () => clearInterval(interval);
   }, []);
-
-  const handleSetCredentials = async (studentId, email, password) => {
-    if (!email || !password) return alert('Both email and password are required.');
-    try {
-      await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
-        email,
-        password
-      });
-      alert('Credentials saved.');
-      fetchCommissioners();
-    } catch (e) {
-      alert(e.response?.data?.detail || 'Failed to set credentials.');
-    }
-  };
   
   // ── Branding ──
 
