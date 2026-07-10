@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import random
@@ -56,8 +56,34 @@ app.add_middleware(
 )
 
 # =============================================================================
+# MULTI-TENANCY: ORG CONTEXT MIDDLEWARE
+# =============================================================================
+# Every request may carry an X-Org-Slug header (set by the frontend at build
+# time via VITE_ORG_SLUG). This middleware resolves it to an org_id and
+# attaches it to request.state so route handlers can filter by tenant.
+#
+# IMPORTANT: absence of the header is NOT rejected here — requests without it
+# get request.state.org_id = None, so the existing single-tenant deployment
+# keeps working unmodified during rollout. Individual routes decide whether
+# org scoping is required once they're retrofitted in the next pass.
+
+@app.middleware("http")
+async def org_context_middleware(request: Request, call_next):
+    org_slug = request.headers.get("X-Org-Slug")
+    request.state.org_id = None
+    request.state.org_slug = None
+    if org_slug:
+        org_doc = await db.organizations.find_one({"slug": org_slug})
+        if org_doc:
+            request.state.org_id = str(org_doc["_id"])
+            request.state.org_slug = org_slug
+    response = await call_next(request)
+    return response
+
+# =============================================================================
 # MODELS
-# ============================================================================= 
+# =============================================================================
+
 class ApplicationSubmit(BaseModel):
     student_id:        str
     full_name:         str
@@ -143,7 +169,9 @@ class CommissionerVote(BaseModel):
     commissioner_id: str   # the commissioner's student_id
     vote: str              # "approve" or "deny"
     reason: str = ""
-    
+
+class FinanceClear(BaseModel):
+    commissioner_id: str   # must belong to the voter flagged is_finance_commissioner
 
 class ITAdminStudentAdd(BaseModel):
     student_id:        str
@@ -159,10 +187,10 @@ class ITAdminStudentRemove(BaseModel):
     reason:       str
     requested_by: str
 
-class StudentChangeVote(BaseModel):
-    commissioner_id: str
-    vote:            str   # "approve" or "deny"
-    reason:          str = ""
+class FinancialControllerDecision(BaseModel):
+    financial_controller_id: str   # must belong to a voter flagged is_financial_controller
+    decision:                 str   # "approve" or "deny"
+    reason:                   str = ""
 
 class StudentChangeCancelRequest(BaseModel):
     requested_by:      str   # must match original requester
@@ -178,7 +206,11 @@ class SetNewPassword(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     pass   # no body needed — student_id comes from the URL path
-    
+
+class OrganizationCreate(BaseModel):
+    name: str            # display name, e.g. "KYUCCU"
+    slug: str = ""        # url/header-safe identifier; auto-generated from name if blank
+
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
@@ -214,6 +246,22 @@ async def send_sms_via_egosms(to_number: str, message_text: str):
     except Exception as e:
         logger.error(f"❌ Connection Error: {e}")
         return False
+        
+# =============================================================================
+# MULTI-TENANCY HELPERS
+# =============================================================================
+
+async def generate_unique_org_slug(name: str) -> str:
+    """Slugify an org name and guarantee uniqueness against existing orgs."""
+    base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    if not base:
+        base = "org"
+    slug = base
+    suffix = 1
+    while await db.organizations.find_one({"slug": slug}):
+        suffix += 1
+        slug = f"{base}-{suffix}"
+    return slug
 
 # =============================================================================
 # PASSWORD HELPERS
@@ -279,22 +327,22 @@ async def _create_candidate_from_application(app_doc: dict):
 async def _resolve_application(app_id: str, app_doc: dict):
     """
     Called after every commissioner vote.
-    Promotes to approved (creating candidate) when ALL commissioners approve.
-    Marks denied as soon as ANY commissioner denies — full consensus required.
+    Resolves as soon as either side reaches a majority of the TOTAL commissioner
+    count (floor(total/2) + 1) — not full consensus, and not just majority of
+    votes cast. Works the same way whether the EC has 5 commissioners or 50.
     """
     total = await get_commissioner_count()
     if total == 0:
         return
 
-    votes = app_doc.get("votes", {})
-    if len(votes) < total:
-        return  # not everyone has voted yet
+    required = (total // 2) + 1  # majority of total commissioner count
 
+    votes = app_doc.get("votes", {})
     approve_count = sum(1 for v in votes.values() if v == "approve")
     deny_count    = sum(1 for v in votes.values() if v == "deny")
 
-    if approve_count == total:
-        # Full consensus — create candidate and mark approved
+    if approve_count >= required:
+        # Majority reached — create candidate and mark approved
         await _create_candidate_from_application(app_doc)
         await db.applications.update_one(
             {"_id": ObjectId(app_id)},
@@ -302,8 +350,8 @@ async def _resolve_application(app_id: str, app_doc: dict):
         )
         await log_action("application_approved", "commission", {"app_id": app_id})
         logger.info(f"✅ Application {app_id} approved by full commission consensus.")
-    elif deny_count > 0:
-        # Any single deny blocks the application
+    elif deny_count >= required:
+        # Majority reached against — application denied
         await db.applications.update_one(
             {"_id": ObjectId(app_id)},
             {"$set": {"status": "denied"}}
@@ -362,39 +410,6 @@ async def _execute_student_change(change_doc: dict):
         await db.voters.delete_one(
             get_forgiving_filter(change_doc["student_id"])
         )
-
-async def _resolve_student_change(change_id: str, change_doc: dict):
-    total = await get_commissioner_count()
-    if total == 0:
-        return
-    votes = change_doc.get("votes", {})
-    if len(votes) < total:
-        return
-
-    approve_count = sum(1 for v in votes.values() if v == "approve")
-    deny_count    = sum(1 for v in votes.values() if v == "deny")
-
-    if approve_count == total:
-        await _execute_student_change(change_doc)
-        await db.student_changes.update_one(
-            {"_id": ObjectId(change_id)},
-            {"$set": {"status": "approved", "resolved_at": datetime.utcnow()}}
-        )
-        await log_action("student_change_approved", "commission", {
-            "change_type": change_doc["change_type"],
-            "student_id":  change_doc["student_id"],
-            "requested_by": change_doc.get("requested_by", "")
-        })
-    elif deny_count > 0:
-        await db.student_changes.update_one(
-            {"_id": ObjectId(change_id)},
-            {"$set": {"status": "denied", "resolved_at": datetime.utcnow()}}
-        )
-        await log_action("student_change_denied", "commission", {
-            "change_type": change_doc["change_type"],
-            "student_id":  change_doc["student_id"],
-            "requested_by": change_doc.get("requested_by", "")
-        })
 
 async def log_action(action: str, actor: str, details: dict = {}):
     await db.audit_log.insert_one({
@@ -591,6 +606,9 @@ async def submit_application(data: ApplicationSubmit):
         "status": "pending",
         "votes": {},          # { commissioner_student_id: "approve" | "deny" }
         "removal_votes": {},  # same structure, used after approval
+        "finance_cleared": False,      # gate: Finance Commissioner must clear before voting opens
+        "finance_cleared_by": None,
+        "finance_cleared_at": None,
         "submitted_at": datetime.utcnow()
     })
     await log_action("application_submitted", data.student_id, {
@@ -631,6 +649,44 @@ async def verify_admin(data: AdminLoginCheck):
             "it_admin_id":         it_admin["student_id"],
             "full_name":           it_admin.get("full_name", ""),
             "must_change_password": it_admin.get("it_admin_must_change_password", True)
+        }
+
+    # ── Financial Controller ──
+    financial_controller = await db.voters.find_one({
+        "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "is_financial_controller": True
+    })
+    if financial_controller:
+        stored_hash = financial_controller.get("financial_controller_password_hash", "")
+        if not verify_password(data.password, stored_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+        await log_action("financial_controller_login", financial_controller["student_id"], {"email": data.email})
+        return {
+            "status":              "success",
+            "bypass":              True,
+            "role":                "financial_controller",
+            "financial_controller_id": financial_controller["student_id"],
+            "full_name":           financial_controller.get("full_name", ""),
+            "must_change_password": financial_controller.get("financial_controller_must_change_password", True)
+        }
+
+    # ── Overseer ──
+    overseer = await db.voters.find_one({
+        "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "is_overseer": True
+    })
+    if overseer:
+        stored_hash = overseer.get("overseer_password_hash", "")
+        if not verify_password(data.password, stored_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+        await log_action("overseer_login", overseer["student_id"], {"email": data.email})
+        return {
+            "status":              "success",
+            "bypass":              True,
+            "role":                "overseer",
+            "overseer_id":         overseer["student_id"],
+            "full_name":           overseer.get("full_name", ""),
+            "must_change_password": overseer.get("overseer_must_change_password", True)
         }
 
     # ── Commissioner ──
@@ -797,6 +853,46 @@ async def set_new_password(data: SetNewPassword):
         await log_action("it_admin_password_changed", it_admin["student_id"], {})
         return {"status": "password_updated"}
 
+    # Try Financial Controller
+    financial_controller = await db.voters.find_one({
+        "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "is_financial_controller": True
+    })
+    if financial_controller:
+        if not verify_password(data.old_password, financial_controller.get("financial_controller_password_hash", "")):
+            raise HTTPException(401, "Current password is incorrect.")
+        if len(data.new_password) < 6:
+            raise HTTPException(400, "New password must be at least 6 characters.")
+        await db.voters.update_one(
+            {"_id": financial_controller["_id"]},
+            {"$set": {
+                "financial_controller_password_hash":        hash_password(data.new_password),
+                "financial_controller_must_change_password": False
+            }}
+        )
+        await log_action("financial_controller_password_changed", financial_controller["student_id"], {})
+        return {"status": "password_updated"}
+
+    # Try Overseer
+    overseer = await db.voters.find_one({
+        "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "is_overseer": True
+    })
+    if overseer:
+        if not verify_password(data.old_password, overseer.get("overseer_password_hash", "")):
+            raise HTTPException(401, "Current password is incorrect.")
+        if len(data.new_password) < 6:
+            raise HTTPException(400, "New password must be at least 6 characters.")
+        await db.voters.update_one(
+            {"_id": overseer["_id"]},
+            {"$set": {
+                "overseer_password_hash":        hash_password(data.new_password),
+                "overseer_must_change_password": False
+            }}
+        )
+        await log_action("overseer_password_changed", overseer["student_id"], {})
+        return {"status": "password_updated"}
+
     # Try commissioner
     commissioner = await db.voters.find_one({
         "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
@@ -884,6 +980,8 @@ async def commissioner_vote(app_id: str, data: CommissionerVote):
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("approved", "denied", "removed"):
         raise HTTPException(400, "This application is already resolved.")
+    if not app_doc.get("finance_cleared"):
+        raise HTTPException(400, "Awaiting Finance Commissioner clearance before voting can open.")
 
     # Verify the voter exists and is actually a commissioner
     commissioner = await db.voters.find_one({
@@ -930,12 +1028,308 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote):
         {"$set": {f"removal_votes.{safe_key}": data.vote}}
     )
 
-    updated = await db.applications.find_one({"_id": ObjectId(app_id)})
+updated = await db.applications.find_one({"_id": ObjectId(app_id)})
     await _resolve_removal(app_id, updated)
 
     return {"status": "removal_vote_recorded"}
 
 
+@app.post("/admin/applications/{app_id}/finance-clear")
+async def finance_clear_application(app_id: str, data: FinanceClear):
+    """
+    The Finance Commissioner verifies the candidate's payment status and clears
+    the application for voting. No commissioner (including her) can cast a vote
+    on this application until this is done.
+    """
+    app_doc = await db.applications.find_one({"_id": ObjectId(app_id)})
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") in ("approved", "denied", "removed"):
+        raise HTTPException(400, "This application is already resolved.")
+    if app_doc.get("finance_cleared"):
+        raise HTTPException(400, "This application has already been finance-cleared.")
+
+    finance_commissioner = await db.voters.find_one({
+        **get_forgiving_filter(data.commissioner_id),
+        "is_commissioner": True,
+        "is_finance_commissioner": True
+    })
+    if not finance_commissioner:
+        raise HTTPException(403, "Only the designated Finance Commissioner can clear applications.")
+
+    await db.applications.update_one(
+        {"_id": ObjectId(app_id)},
+        {"$set": {
+            "finance_cleared": True,
+            "finance_cleared_by": data.commissioner_id,
+            "finance_cleared_at": datetime.utcnow()
+        }}
+    )
+    await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id})
+    logger.info(f"💰 Application {app_id} finance-cleared by {data.commissioner_id}.")
+    return {"status": "finance_cleared"}
+
+
+@app.get("/commission/results/detailed")
+async def get_commission_detailed_results():
+    """
+    Detailed, per-position results view for the Commission portal so
+    commissioners can monitor and announce standings themselves. Built entirely
+    from the aggregate `candidates.votes` counters — no voter identity is ever
+    linked to a candidate choice in this schema, so this view carries no
+    anonymity risk; it's the same anonymous data /election-results already
+    exposes publicly, just grouped and enriched for commission use.
+    """
+    total_voters = await db.voters.count_documents({})
+    voted_count  = await db.voters.count_documents({"has_voted": True})
+
+    positions_by_id = {}
+    async for pos in db.positions.find({}).sort("order", 1):
+        positions_by_id[str(pos["_id"])] = pos
+
+    grouped: dict = {}
+    async for cand in db.candidates.find({}).sort("order", 1):
+        position_title = cand.get("position", "Unknown Position")
+        grouped.setdefault(position_title, []).append(cand)
+
+    detailed = []
+    for position_title, candidates in grouped.items():
+        position_total_votes = sum(c.get("votes", 0) for c in candidates)
+        candidate_rows = []
+        for c in sorted(candidates, key=lambda x: x.get("votes", 0), reverse=True):
+            votes = c.get("votes", 0)
+            candidate_rows.append({
+                "id":           str(c["_id"]),
+                "name":         c["name"],
+                "votes":        votes,
+                "pct_of_position": round((votes / position_total_votes) * 100, 1) if position_total_votes else 0,
+                "unopposed":    len(candidates) == 1
+            })
+        detailed.append({
+            "position":       position_title,
+            "total_votes":    position_total_votes,
+            "candidates":     candidate_rows
+        })
+
+    return {
+        "voter_turnout": {
+            "total_voters": total_voters,
+            "voted_count":  voted_count,
+            "turnout_pct":  round((voted_count / total_voters) * 100, 1) if total_voters else 0
+        },
+        "positions": detailed,
+        "generated_at": datetime.utcnow()
+    }
+
+
+# =============================================================================
+# SUPERADMIN — ORGANIZATION MANAGEMENT (multi-tenancy)
+# =============================================================================
+# One platform-wide Superadmin (George) provisions orgs here. The returned
+# `slug` is what gets set as VITE_ORG_SLUG in that org's frontend deployment.
+
+@app.post("/superadmin/orgs")
+async def create_organization(data: OrganizationCreate):
+    slug = data.slug.strip().lower() if data.slug.strip() else await generate_unique_org_slug(data.name)
+    if data.slug.strip():
+        existing = await db.organizations.find_one({"slug": slug})
+        if existing:
+            raise HTTPException(400, f"Slug '{slug}' is already taken.")
+
+    org_doc = {
+        "name":              data.name,
+        "slug":              slug,
+        "created_at":        datetime.utcnow(),
+        "branding_defaults": {
+            "org_name": data.name
+        }
+    }
+    result = await db.organizations.insert_one(org_doc)
+    await log_action("organization_created", "superadmin", {
+        "org_id": str(result.inserted_id), "name": data.name, "slug": slug
+    })
+    logger.info(f"🏢 Organization '{data.name}' provisioned with slug '{slug}'.")
+    return {
+        "org_id": str(result.inserted_id),
+        "name":   data.name,
+        "slug":   slug
+    }
+
+
+@app.get("/superadmin/orgs")
+async def list_organizations():
+    orgs = []
+    async for o in db.organizations.find({}).sort("created_at", -1):
+        o["_id"] = str(o["_id"])
+        orgs.append(o)
+    return orgs
+
+
+# =============================================================================
+# SUPERADMIN ROUTES  (instant overrides — no voting required)
+# =============================================================================
+
+# --- Branding ---
+
+@app.get("/superadmin/financial-controllers")
+async def list_financial_controllers():
+    result = []
+    async for v in db.voters.find(
+        {"is_financial_controller": True},
+        {"_id": 0, "student_id": 1, "full_name": 1, "financial_controller_email": 1}
+    ):
+        result.append(v)
+    return result
+
+
+@app.post("/superadmin/financial-controllers/{student_id:path}/toggle")
+async def toggle_financial_controller(student_id: str):
+    """Grant or revoke Financial Controller status for any voter. Independent
+    of is_commissioner — this role never touches candidate business."""
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    new_val = not voter.get("is_financial_controller", False)
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_financial_controller": new_val}}
+    )
+    await log_action("financial_controller_toggled", "superadmin", {
+        "student_id": student_id, "is_financial_controller": new_val
+    })
+    return {"student_id": student_id, "is_financial_controller": new_val}
+
+
+@app.post("/superadmin/financial-controllers/{student_id:path}/set-credentials")
+async def set_financial_controller_credentials(student_id: str, data: SetEmailOnly):
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_financial_controller"):
+        raise HTTPException(400, "This person is not a Financial Controller.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "financial_controller_email":                data.email,
+            "financial_controller_password_hash":        hashed,
+            "financial_controller_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
+    await log_action("financial_controller_credentials_set", "superadmin", {
+        "student_id": student_id, "email": data.email, "sms_notified": sms_sent
+    })
+    return {"status": "credentials_set", "sms_notified": sms_sent}
+
+@app.post("/superadmin/financial-controllers/{student_id:path}/reset-password")
+async def reset_financial_controller_password(student_id: str):
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter or not voter.get("is_financial_controller"):
+        raise HTTPException(404, "Financial Controller not found.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "financial_controller_password_hash":        hashed,
+            "financial_controller_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
+    await log_action("financial_controller_password_reset", "superadmin", {
+        "student_id": student_id, "sms_notified": sms_sent
+    })
+    return {"status": "password_reset", "sms_notified": sms_sent}
+
+
+# =============================================================================
+# SUPERADMIN — OVERSEER MANAGEMENT (read-only, anonymized platform view)
+# =============================================================================
+
+@app.get("/superadmin/overseers")
+async def list_overseers():
+    result = []
+    async for v in db.voters.find(
+        {"is_overseer": True},
+        {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1}
+    ):
+        result.append(v)
+    return result
+
+
+@app.post("/superadmin/overseers/{student_id:path}/toggle")
+async def toggle_overseer(student_id: str):
+    """Grant or revoke Overseer status for any voter. Read-only role — never
+    touches votes, applications, or student changes, only observes them."""
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    new_val = not voter.get("is_overseer", False)
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_overseer": new_val}}
+    )
+    await log_action("overseer_toggled", "superadmin", {
+        "student_id": student_id, "is_overseer": new_val
+    })
+    return {"student_id": student_id, "is_overseer": new_val}
+
+
+@app.post("/superadmin/overseers/{student_id:path}/set-credentials")
+async def set_overseer_credentials(student_id: str, data: SetEmailOnly):
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_overseer"):
+        raise HTTPException(400, "This person is not an Overseer.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "overseer_email":                data.email,
+            "overseer_password_hash":        hashed,
+            "overseer_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
+    await log_action("overseer_credentials_set", "superadmin", {
+        "student_id": student_id, "email": data.email, "sms_notified": sms_sent
+    })
+    return {"status": "credentials_set", "sms_notified": sms_sent}
+
+
+@app.post("/superadmin/overseers/{student_id:path}/reset-password")
+async def reset_overseer_password(student_id: str):
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter or not voter.get("is_overseer"):
+        raise HTTPException(404, "Overseer not found.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "overseer_password_hash":        hashed,
+            "overseer_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
+    await log_action("overseer_password_reset", "superadmin", {
+        "student_id": student_id, "sms_notified": sms_sent
+    })
+    return {"status": "password_reset", "sms_notified": sms_sent}
+
+    
 # =============================================================================
 # SUPERADMIN ROUTES  (instant overrides — no voting required)
 # =============================================================================
@@ -1033,6 +1427,44 @@ async def get_chief_commissioner():
         return {"full_name": None}
     return chief
 
+
+@app.post("/superadmin/commissioners/{student_id:path}/set-finance-commissioner")
+async def set_finance_commissioner(student_id: str):
+    """Designate one commissioner as the Finance Commissioner (Treasurer).
+    Only one at a time — mirrors the chief-commissioner exclusivity pattern."""
+    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_commissioner"):
+        raise HTTPException(400, "This person is not a commissioner.")
+    await db.voters.update_many({}, {"$set": {"is_finance_commissioner": False}})
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_finance_commissioner": True}}
+    )
+    await log_action("finance_commissioner_set", "superadmin", {"student_id": student_id})
+    return {"student_id": student_id, "is_finance_commissioner": True}
+
+
+@app.post("/superadmin/commissioners/{student_id:path}/clear-finance-commissioner")
+async def clear_finance_commissioner(student_id: str):
+    await db.voters.update_one(
+        get_forgiving_filter(student_id),
+        {"$set": {"is_finance_commissioner": False}}
+    )
+    await log_action("finance_commissioner_cleared", "superadmin", {"student_id": student_id})
+    return {"student_id": student_id, "is_finance_commissioner": False}
+
+
+@app.get("/superadmin/finance-commissioner")
+async def get_finance_commissioner():
+    fc = await db.voters.find_one(
+        {"is_finance_commissioner": True},
+        {"_id": 0, "student_id": 1, "full_name": 1}
+    )
+    if not fc:
+        return {"full_name": None}
+    return fc
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-role")
 async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate):
@@ -1138,6 +1570,29 @@ async def superadmin_force_deny(app_id: str):
     return {"status": "force_denied"}
 
 
+@app.post("/superadmin/applications/{app_id}/force-finance-clear")
+async def superadmin_force_finance_clear(app_id: str):
+    """Bypass the Finance Commissioner gate — for cases where no Finance
+    Commissioner is currently assigned. Voting can proceed after this."""
+    app_doc = await db.applications.find_one({"_id": ObjectId(app_id)})
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("finance_cleared"):
+        raise HTTPException(400, "This application has already been finance-cleared.")
+
+    await db.applications.update_one(
+        {"_id": ObjectId(app_id)},
+        {"$set": {
+            "finance_cleared": True,
+            "finance_cleared_by": "superadmin_override",
+            "finance_cleared_at": datetime.utcnow()
+        }}
+    )
+    await log_action("application_force_finance_cleared", "superadmin", {"app_id": app_id})
+    logger.info(f"💰 Superadmin force-cleared finance gate for application {app_id}.")
+    return {"status": "force_finance_cleared"}
+
+
 @app.post("/superadmin/candidates/{candidate_id}/remove")
 async def superadmin_remove_candidate(candidate_id: str):
     """Remove an approved candidate from the ballot instantly."""
@@ -1185,6 +1640,83 @@ async def get_election_results():
 
 
 # =============================================================================
+# OVERSEER ROUTES  (read-only, platform-wide, anonymized)
+# =============================================================================
+
+@app.get("/overseer/dashboard")
+async def get_overseer_dashboard():
+    """
+    Platform-wide read-only view for the Overseer. Deliberately strips the
+    per-commissioner votes map from every application — the Overseer can see
+    aggregate counts and outcomes, but never which commissioner voted which way.
+    """
+    status_doc = await db.settings.find_one({"name": "election_config"})
+    election_status = {
+        "is_open":      (status_doc or {}).get("is_open", True),
+        "is_certified": (status_doc or {}).get("is_certified", False),
+        "start":        (status_doc or {}).get("start_time"),
+        "end":          (status_doc or {}).get("end_time")
+    }
+
+    total_voters   = await db.voters.count_documents({})
+    voted_count    = await db.voters.count_documents({"has_voted": True})
+    total_commissioners = await get_commissioner_count()
+
+    applications_summary = []
+    async for a in db.applications.find({}).sort("submitted_at", -1):
+        votes = a.get("votes", {})
+        removal_votes = a.get("removal_votes", {})
+        applications_summary.append({
+            "id":               str(a["_id"]),
+            "full_name":        a.get("full_name", ""),
+            "position_id":      a.get("position_id", ""),
+            "status":           a.get("status", "pending"),
+            "finance_cleared":  a.get("finance_cleared", False),
+            "approve_count":    sum(1 for v in votes.values() if v == "approve"),
+            "deny_count":       sum(1 for v in votes.values() if v == "deny"),
+            "votes_cast":       len(votes),
+            "removal_approve_count": sum(1 for v in removal_votes.values() if v == "approve"),
+            "submitted_at":     a.get("submitted_at")
+            # NOTE: raw `votes` / `removal_votes` maps intentionally omitted —
+            # those identify which commissioner cast which vote.
+        })
+
+    student_changes_summary = []
+    async for c in db.student_changes.find({}).sort("requested_at", -1):
+        student_changes_summary.append({
+            "id":            str(c["_id"]),
+            "change_type":   c.get("change_type", ""),
+            "student_id":    c.get("student_id", ""),
+            "full_name":     c.get("full_name", ""),
+            "status":        c.get("status", "pending"),
+            "requested_by":  c.get("requested_by", ""),
+            "decided_by":    c.get("decided_by"),
+            "requested_at":  c.get("requested_at")
+        })
+
+    candidates_results = []
+    async for cand in db.candidates.find({}).sort("order", 1):
+        candidates_results.append({
+            "name":     cand["name"],
+            "position": cand["position"],
+            "votes":    cand.get("votes", 0)
+        })
+
+    return {
+        "election_status":       election_status,
+        "voter_turnout": {
+            "total_voters": total_voters,
+            "voted_count":  voted_count,
+            "turnout_pct":  round((voted_count / total_voters) * 100, 1) if total_voters else 0
+        },
+        "total_commissioners":   total_commissioners,
+        "applications":          applications_summary,
+        "student_changes":       student_changes_summary,
+        "candidate_results":     candidates_results
+    }
+
+
+# =============================================================================
 # IT ADMIN ROUTES
 # =============================================================================
 
@@ -1203,7 +1735,6 @@ async def request_add_student(data: ITAdminStudentAdd):
         **data.dict(),
         "change_type":  "add",
         "status":       "pending",
-        "votes":        {},
         "requested_at": datetime.utcnow()
     })
     await log_action("student_add_requested", data.requested_by, {
@@ -1277,7 +1808,6 @@ async def request_remove_student(data: ITAdminStudentRemove):
         "full_name":    student.get("full_name", ""),
         "change_type":  "remove",
         "status":       "pending",
-        "votes":        {},
         "requested_at": datetime.utcnow()
     })
     await log_action("student_remove_requested", data.requested_by, {
@@ -1346,10 +1876,15 @@ async def list_student_changes(status: str = None):
     return changes
 
 
-@app.post("/admin/student-changes/{change_id}/vote")
-async def vote_student_change(change_id: str, data: StudentChangeVote):
-    if data.vote not in ("approve", "deny"):
-        raise HTTPException(400, "vote must be 'approve' or 'deny'.")
+@app.post("/admin/student-changes/{change_id}/decide")
+async def financial_controller_decide_student_change(change_id: str, data: FinancialControllerDecision):
+    """
+    The Financial Controller verifies payment status and makes the final call on
+    an IT Admin's student-register change. Single-approver decision — this is
+    completely separate from Commission voting on candidates.
+    """
+    if data.decision not in ("approve", "deny"):
+        raise HTTPException(400, "decision must be 'approve' or 'deny'.")
 
     change = await db.student_changes.find_one({"_id": ObjectId(change_id)})
     if not change:
@@ -1357,22 +1892,38 @@ async def vote_student_change(change_id: str, data: StudentChangeVote):
     if change.get("status") != "pending":
         raise HTTPException(400, f"This request is already {change.get('status')}.")
 
-    commissioner = await db.voters.find_one({
-        **get_forgiving_filter(data.commissioner_id),
-        "is_commissioner": True
+    financial_controller = await db.voters.find_one({
+        **get_forgiving_filter(data.financial_controller_id),
+        "is_financial_controller": True
     })
-    if not commissioner:
-        raise HTTPException(403, "Not a registered commissioner.")
+    if not financial_controller:
+        raise HTTPException(403, "Not a registered Financial Controller.")
 
-    safe_key = data.commissioner_id.replace('.', '_').replace('/', '_')
-    await db.student_changes.update_one(
-        {"_id": ObjectId(change_id)},
-        {"$set": {f"votes.{safe_key}": data.vote}}
-    )
+    if data.decision == "approve":
+        await _execute_student_change(change)
+        await db.student_changes.update_one(
+            {"_id": ObjectId(change_id)},
+            {"$set": {
+                "status":          "approved",
+                "decided_by":      data.financial_controller_id,
+                "decision_reason": data.reason,
+                "resolved_at":     datetime.utcnow()
+            }}
+        )
+        await log_action("student_change_approved", data.financial_controller_id, {...})
+    else:
+        await db.student_changes.update_one(
+            {"_id": ObjectId(change_id)},
+            {"$set": {
+                "status":          "denied",
+                "decided_by":      data.financial_controller_id,
+                "decision_reason": data.reason,
+                "resolved_at":     datetime.utcnow()
+            }}
+        )
+        await log_action("student_change_denied", data.financial_controller_id, {...})
 
-    updated = await db.student_changes.find_one({"_id": ObjectId(change_id)})
-    await _resolve_student_change(change_id, updated)
-    return {"status": "vote_recorded"}
+    return {"status": "decision_recorded", "decision": data.decision}
 
 
 # =============================================================================
@@ -1383,8 +1934,8 @@ async def vote_student_change(change_id: str, data: StudentChangeVote):
 async def list_it_admins():
     result = []
     async for v in db.voters.find(
-        {"is_it_admin": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1}
+        {"is_commissioner": True},
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
     ):
         result.append(v)
     return result
