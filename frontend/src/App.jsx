@@ -195,7 +195,7 @@ useEffect(() => {
           ? { email: studentId, password: name }
           : { student_id: studentId, full_name: name, phone_index: selectedIdx };
     
-        const res = await axios.post(`${API_BASE}${endpoint}`, payload);
+        const res = await api.post(endpoint, payload);
   
         if (res.data.bypass === true) {
           sessionStorage.setItem("admin_role", res.data.role);
@@ -251,7 +251,7 @@ useEffect(() => {
 
    const handleVerifyOtp = async () => {
     try {
-      const res = await axios.post(`${API_BASE}/verify-otp`, {
+      const res = await api.post(endpoint, payload);
         student_id: studentId,
         code: otp
       });
@@ -305,14 +305,14 @@ useEffect(() => {
   
     setPasswordChangeSubmitting(true);
     try {
-      await axios.post(`${API_BASE}/admin/set-password`, {
+      await api.post('/admin/set-password', {
         email:        pendingAdminEmail,
         old_password: newPasswordForm.old_password,
         new_password: newPasswordForm.new_password,
       });
   
       // Re-run login with the new password to get the role and proceed
-      const res = await axios.post(`${API_BASE}/verify-admin`, {
+      const res = await api.post('/verify-admin', {
         email: pendingAdminEmail,
         password: newPasswordForm.new_password,
       });
@@ -322,6 +322,12 @@ useEffect(() => {
       if (res.data.it_admin_id) {
         sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
         sessionStorage.setItem("it_admin_name", res.data.full_name || "");
+      }
+      if (res.data.financial_controller_id) {
+        sessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
+      }
+      if (res.data.overseer_id) {
+        sessionStorage.setItem("overseer_id", res.data.overseer_id);
       }
   
       setMustChangePassword(false);
@@ -348,6 +354,8 @@ useEffect(() => {
     sessionStorage.removeItem("commissioner_id");
     sessionStorage.removeItem("it_admin_id");
     sessionStorage.removeItem("it_admin_name");
+    sessionStorage.removeItem("financial_controller_id");
+    sessionStorage.removeItem("overseer_id");
   };
 
   return (
@@ -393,6 +401,8 @@ useEffect(() => {
         {view === "commission" && <CommissionDashboard apiBase={API_BASE} onLogout={resetFlow} />}
         {view === "apply" && <ApplicantPortal apiBase={API_BASE} orgName={orgName} />}
         {view === "it_admin" && <ITAdminDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "financial_controller" && <FinancialControllerDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "overseer" && <OverseerDashboard apiBase={API_BASE} onLogout={resetFlow} />}
         
         
         {view === "voter" && (
