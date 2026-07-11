@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import api from '../api';
 
-export default function CommissionDashboard({ apiBase, onLogout }) {
-  const API_URL = apiBase.replace(/\/$/, '');
+export default function CommissionDashboard({ onLogout }) {
 
   const [activeTab, setActiveTab]       = useState('pending');
   const [applications, setApplications] = useState([]);
@@ -13,7 +12,8 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
   const [showDenyBox, setShowDenyBox]   = useState({});  // { app_id: bool }
   const [voting, setVoting]             = useState({});  // { app_id: bool }
   const [studentChanges, setStudentChanges] = useState([]);
-  const [scVoting, setScVoting] = useState({});
+  const [commissioners, setCommissioners] = useState([]);
+  const [financeClearing, setFinanceClearing] = useState({});
 
   // On mount — figure out who this commissioner is from sessionStorage
   useEffect(() => {
@@ -26,13 +26,14 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
     setLoading(true);
     try {
       const [appsRes, commRes, scRes] = await Promise.all([
-        axios.get(`${API_URL}/admin/applications`),
-        axios.get(`${API_URL}/superadmin/commissioners`),
-        axios.get(`${API_URL}/admin/student-changes`),
-      ]);
-      setApplications(appsRes.data);
-      setTotalCommissioners(commRes.data.length);
-      setStudentChanges(scRes.data);
+          api.get('/admin/applications'),
+          api.get('/superadmin/commissioners'),
+          api.get('/admin/student-changes'),
+        ]);
+        setApplications(appsRes.data);
+        setCommissioners(commRes.data);
+        setTotalCommissioners(commRes.data.length);
+        setStudentChanges(scRes.data);
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
@@ -49,7 +50,7 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
     }
     setVoting(prev => ({ ...prev, [appId]: true }));
     try {
-      await axios.post(`${API_URL}/admin/applications/${appId}/vote`, {
+      await api.post(`/admin/applications/${appId}/vote`, {
         commissioner_id: commissionerId,
         vote,
         reason: denyReasons[appId] || '',
@@ -71,7 +72,7 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
     }
     setVoting(prev => ({ ...prev, [`remove_${appId}`]: true }));
     try {
-      await axios.post(`${API_URL}/admin/applications/${appId}/vote-remove`, {
+      await api.post(`/admin/applications/${appId}/vote-remove`, {
         commissioner_id: commissionerId,
         vote,
         reason: denyReasons[`remove_${appId}`] || '',
@@ -84,22 +85,21 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
     }
   };
 
-  const castStudentChangeVote = async (changeId, vote) => {
+  const castFinanceClear = async (appId) => {
     if (!commissionerId.trim()) {
-      alert('Your commissioner ID was not found. Please log out and log in again.');
+      alert('Your commissioner ID was not found in this session. Please log out and log in again.');
       return;
     }
-    setScVoting(prev => ({ ...prev, [changeId]: true }));
+    setFinanceClearing(prev => ({ ...prev, [appId]: true }));
     try {
-      await axios.post(`${API_URL}/admin/student-changes/${changeId}/vote`, {
+      await api.post(`/admin/applications/${appId}/finance-clear`, {
         commissioner_id: commissionerId,
-        vote,
       });
       await fetchAll();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Vote failed.');
+      alert(e.response?.data?.detail || 'Finance clearance failed.');
     } finally {
-      setScVoting(prev => ({ ...prev, [changeId]: false }));
+      setFinanceClearing(prev => ({ ...prev, [appId]: false }));
     }
   };
 
@@ -134,6 +134,12 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
       total:   Object.keys(votes).length,
     };
   };
+
+  const isFinanceCommissioner = commissioners.some(
+    c => c.student_id === commissionerId && c.is_finance_commissioner
+  );
+
+  const majorityRequired = (total) => Math.floor(total / 2) + 1;
 
   // ── Filtered lists ──
 
@@ -317,7 +323,7 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
               </div>
 
               {/* Vote tally */}
-              {app.status === 'pending' && totalCommissioners > 0 && (
+              {app.status === 'pending' && app.finance_cleared && totalCommissioners > 0 && (
                 <div style={tallyRow}>
                   <span style={{ opacity: 0.6, fontSize: '12px' }}>
                     Commission votes ({vc.total} of {totalCommissioners}):
@@ -328,11 +334,9 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                   <span style={{ color: '#e74c3c', fontWeight: '600', fontSize: '13px' }}>
                     {vc.deny} deny
                   </span>
-                  {vc.total < totalCommissioners && (
-                    <span style={{ opacity: 0.45, fontSize: '12px' }}>
-                      · {totalCommissioners - vc.total} yet to vote
-                    </span>
-                  )}
+                  <span style={{ opacity: 0.45, fontSize: '12px' }}>
+                    · majority needs {majorityRequired(totalCommissioners)}
+                  </span>
                 </div>
               )}
 
@@ -348,19 +352,36 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                   <span style={{ color: '#2ecc71', fontWeight: '600', fontSize: '13px' }}>
                     {rvc.deny} against
                   </span>
+                  <span style={{ opacity: 0.45, fontSize: '12px' }}>
+                    · majority needs {majorityRequired(totalCommissioners)}
+                  </span>
                 </div>
               )}
 
-              {/* ── Pending: approve / deny actions ── */}
+              {/* ── Pending: finance-clear gate, then approve / deny actions ── */}
               {app.status === 'pending' && !app.superadmin_override && (
                 <div style={{ marginTop: '14px' }}>
-                  {myVote ? (
+                  {!app.finance_cleared ? (
+                    isFinanceCommissioner ? (
+                      <button
+                        style={{ ...greenBtn, width: '100%' }}
+                        disabled={financeClearing[app._id]}
+                        onClick={() => castFinanceClear(app._id)}
+                      >
+                        {financeClearing[app._id] ? 'Clearing…' : '💰 Clear for Finance'}
+                      </button>
+                    ) : (
+                      <div style={lockedNote}>
+                        🔒 Awaiting Finance Commissioner clearance before voting can open.
+                      </div>
+                    )
+                  ) : myVote ? (
                     <div style={myVoteRow(myVote)}>
                       {myVote === 'approve'
                         ? '✅ You voted to approve this application.'
                         : '❌ You voted to deny this application.'}
                       <span style={{ opacity: 0.6, fontSize: '12px', marginLeft: '8px' }}>
-                        Waiting for remaining commissioners.
+                        Resolves once a majority is reached.
                       </span>
                     </div>
                   ) : (
@@ -422,7 +443,7 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                         ? '🗑️ You voted to remove this candidate.'
                         : '🛡️ You voted to keep this candidate.'}
                       <span style={{ opacity: 0.6, fontSize: '12px', marginLeft: '8px' }}>
-                        Waiting for remaining commissioners.
+                        Resolves once a majority is reached.
                       </span>
                     </div>
                   ) : (
@@ -467,10 +488,6 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
               </div>
             )}
             {studentChanges.map(change => {
-              const myVote   = change.votes?.[safeKey(commissionerId)] || null;
-              const voteTotal = Object.keys(change.votes || {}).length;
-              const isVoting  = scVoting[change._id];
-
               return (
                 <div key={change._id} style={appCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
@@ -516,48 +533,15 @@ export default function CommissionDashboard({ apiBase, onLogout }) {
                     </div>
                   )}
 
-                  {change.status === 'pending' && totalCommissioners > 0 && (
-                    <div style={tallyRow}>
-                      <span style={{ opacity: 0.6, fontSize: '12px' }}>
-                        Votes ({voteTotal} of {totalCommissioners}):
-                      </span>
-                      <span style={{ color: '#2ecc71', fontWeight: '600', fontSize: '13px' }}>
-                        {Object.values(change.votes || {}).filter(v => v === 'approve').length} approve
-                      </span>
-                      <span style={{ color: '#e74c3c', fontWeight: '600', fontSize: '13px' }}>
-                        {Object.values(change.votes || {}).filter(v => v === 'deny').length} deny
-                      </span>
+                   {change.status === 'pending' ? (
+                    <div style={lockedNote}>
+                      🔒 Awaiting the Financial Controller's decision on this request.
                     </div>
-                  )}
-
-                  {change.status === 'pending' && (
-                    <div style={{ marginTop: '12px' }}>
-                      {myVote ? (
-                        <div style={myVoteRow(myVote)}>
-                          {myVote === 'approve' ? '✅ You voted to approve.' : '❌ You voted to deny.'}
-                          <span style={{ opacity: 0.6, fontSize: '12px', marginLeft: '8px' }}>
-                            Waiting for remaining commissioners.
-                          </span>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', gap: '10px' }}>
-                          <button
-                            style={{ ...greenBtn, flex: 1 }}
-                            disabled={isVoting}
-                            onClick={() => castStudentChangeVote(change._id, 'approve')}
-                          >
-                            {isVoting ? 'Submitting…' : '✅ Approve'}
-                          </button>
-                          <button
-                            style={{ ...redBtn, flex: 1 }}
-                            disabled={isVoting}
-                            onClick={() => castStudentChangeVote(change._id, 'deny')}
-                          >
-                            {isVoting ? 'Submitting…' : '❌ Deny'}
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                  ) : (
+                    <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.6 }}>
+                      Decided by: {change.decided_by || '—'}
+                      {change.decision_reason && ` · "${change.decision_reason}"`}
+                    </p>
                   )}
                 </div>
               );
@@ -614,4 +598,5 @@ const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid
 const promptBox  = { border: '1px dashed var(--border-color)', borderRadius: '12px', padding: '20px', marginBottom: '20px', backgroundColor: 'var(--bg-color)' };
 const infoPill   = { fontSize: '13px', opacity: 0.7, marginBottom: '18px', padding: '8px 14px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center' };
 const overrideNote = { marginTop: '12px', fontSize: '12px', opacity: 0.55, fontStyle: 'italic' };
+const lockedNote = { padding: '10px 14px', backgroundColor: '#f1c40f15', borderRadius: '8px', border: '1px solid #f1c40f40', color: '#f1c40f', fontSize: '12px', fontWeight: '600' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
