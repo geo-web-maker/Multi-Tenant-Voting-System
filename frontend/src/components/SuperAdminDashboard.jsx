@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import api from '../api';
 
 // Reuse Cloudinary upload helper
 async function uploadToCloudinary(file) {
@@ -13,8 +14,7 @@ async function uploadToCloudinary(file) {
   return res.data.secure_url;
 }
 
-export default function SuperAdminDashboard({ apiBase, onLogout }) {
-  const API_URL = apiBase.replace(/\/$/, '');
+export default function SuperAdminDashboard({ onLogout }) {
 
   const [activeTab, setActiveTab] = useState('candidates');
 
@@ -70,6 +70,17 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const [saDirectAdd, setSaDirectAdd]       = useState({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
   const [saDirectRemove, setSaDirectRemove] = useState({ student_id: '', reason: '', requested_by: 'superadmin' });
 
+  //--Financial Controllers, Overseers, Organizations--
+  const [financialControllers, setFinancialControllers] = useState([]);
+  const [overseers, setOverseers]                       = useState([]);
+  const [organizations, setOrganizations]                = useState([]);
+  const [fcCredEmail, setFcCredEmail]     = useState({}); // { student_id: email }
+  const [ovCredEmail, setOvCredEmail]     = useState({}); // { student_id: email }
+  const [fcSearch, setFcSearch]           = useState('');
+  const [ovSearch, setOvSearch]           = useState('');
+  const [orgForm, setOrgForm]             = useState({ name: '', slug: '' });
+  const [orgCreating, setOrgCreating]     = useState(false);
+
   //--Remove Students--
   const [removeSearch, setRemoveSearch]         = useState('');
   const [showRemoveDropdown, setShowRemoveDropdown] = useState(false);
@@ -83,7 +94,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
       return;
     }
     try {
-      const res = await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
+      const res = await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
         email
       });
       alert(res.data.sms_notified
@@ -98,7 +109,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     if (!window.confirm('Send a new temporary password to this commissioner via SMS?')) return;
     setResetting(prev => ({ ...prev, [studentId]: true }));
     try {
-      const res = await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
+      const res = await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
       alert(res.data.sms_notified
         ? 'New temporary password sent via SMS.'
         : 'Password reset, but SMS failed to send.');
@@ -108,21 +119,21 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   
   const fetchBranding = async () => {
     try {
-      const res = await axios.get(`${API_URL}/superadmin/branding`);
+      const res = await api.get(`${API_URL}/superadmin/branding`);
       setBranding(res.data);
     } catch (e) { /* use defaults */ }
   };
 
   const fetchPositions = async () => {
     try {
-      const res = await axios.get(`${API_URL}/positions`);
+      const res = await api.get(`${API_URL}/positions`);
       setPositions(res.data);
     } catch (e) {}
   };
 
   const fetchCandidates = async () => {
     try {
-      const res = await axios.get(`${API_URL}/candidates`);
+      const res = await api.get(`${API_URL}/candidates`);
       setCandidates(res.data);
     } catch (e) {}
   };
@@ -130,7 +141,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const fetchApplications = async () => {
     setAppsLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/admin/applications`);
+      const res = await api.get(`${API_URL}/admin/applications`);
       setApplications(res.data);
     } catch (e) {}
     finally { setAppsLoading(false); }
@@ -138,7 +149,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
 
   const fetchCommissioners = async () => {
     try {
-      const res = await axios.get(`${API_URL}/superadmin/commissioners`);
+      const res = await api.get(`${API_URL}/superadmin/commissioners`);
       setCommissioners(res.data);
     } catch (e) {}
   };
@@ -147,8 +158,8 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     setLoading(true);
     try {
       const [voterRes, statusRes] = await Promise.all([
-        axios.get(`${API_URL}/admin/voters`),
-        axios.get(`${API_URL}/election-status`),
+        api.get(`${API_URL}/admin/voters`),
+        api.get(`${API_URL}/election-status`),
       ]);
       setElectionVoters(voterRes.data);
       setIsElectionOpen(statusRes.data.is_open);
@@ -162,10 +173,31 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     finally { setLoading(false); }
   };
 
-  const fetchVotersList = async () => {
+const fetchVotersList = async () => {
     try {
-      const res = await axios.get(`${API_URL}/admin/voters`);
+      const res = await api.get(`/admin/voters`);
       setVoters(res.data);
+    } catch (e) {}
+  };
+
+  const fetchFinancialControllers = async () => {
+    try {
+      const res = await api.get('/superadmin/financial-controllers');
+      setFinancialControllers(res.data);
+    } catch (e) {}
+  };
+
+  const fetchOverseers = async () => {
+    try {
+      const res = await api.get('/superadmin/overseers');
+      setOverseers(res.data);
+    } catch (e) {}
+  };
+
+  const fetchOrganizations = async () => {
+    try {
+      const res = await api.get('/superadmin/orgs');
+      setOrganizations(res.data);
     } catch (e) {}
   };
 
@@ -177,6 +209,11 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     fetchCommissioners();
     fetchElectionData();
     fetchVotersList();
+    fetchItAdmins();
+    fetchStudentChanges();
+    fetchFinancialControllers();
+    fetchOverseers();
+    fetchOrganizations();
     const interval = setInterval(() => {
       fetchCandidates();
       fetchApplications();
@@ -190,7 +227,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const handleSaveBranding = async () => {
     setBrandSaving(true);
     try {
-      await axios.post(`${API_URL}/superadmin/branding`, branding);
+      await api.post(`${API_URL}/superadmin/branding`, branding);
       // Apply immediately without reload
       document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
       document.documentElement.style.setProperty('--brand-accent',  branding.accent_color);
@@ -205,7 +242,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     if (!newPosition.title.trim()) return alert('Position title required.');
     setPosLoading(true);
     try {
-      await axios.post(`${API_URL}/positions`, newPosition);
+      await api.post(`${API_URL}/positions`, newPosition);
       setNewPosition({ title: '', description: '', order: 0 });
       fetchPositions();
     } catch (e) { alert('Failed to add position.'); }
@@ -215,7 +252,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const handleDeletePosition = async (id) => {
     if (!window.confirm('Delete this position? Existing candidates under this position are unaffected.')) return;
     try {
-      await axios.delete(`${API_URL}/positions/${id}`);
+      await api.delete(`${API_URL}/positions/${id}`);
       fetchPositions();
     } catch (e) { alert('Failed to delete position.'); }
   };
@@ -228,7 +265,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     try {
       let imageUrl = 'https://via.placeholder.com/150';
       if (newCandidate.image) imageUrl = await uploadToCloudinary(newCandidate.image);
-      await axios.post(`${API_URL}/candidates`, {
+      await api.post(`${API_URL}/candidates`, {
         name: newCandidate.name,
         position: newCandidate.position,
         image_url: imageUrl,
@@ -245,7 +282,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
     try {
       let imageUrl = null;
       if (editForm.newImage) imageUrl = await uploadToCloudinary(editForm.newImage);
-      await axios.put(`${API_URL}/candidates/${id}`, {
+      await api.put(`${API_URL}/candidates/${id}`, {
         name:     editForm.name,
         position: editForm.position,
         order:    parseInt(editForm.order) || 0,
@@ -260,7 +297,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const handleRemoveCandidateOverride = async (candidateId) => {
     if (!window.confirm('Remove this candidate instantly from the ballot?')) return;
     try {
-      await axios.post(`${API_URL}/superadmin/candidates/${candidateId}/remove`);
+      await api.post(`${API_URL}/superadmin/candidates/${candidateId}/remove`);
       fetchCandidates();
       fetchApplications();
     } catch (e) { alert('Failed to remove candidate.'); }
@@ -271,7 +308,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const handleForceApprove = async (appId) => {
     if (!window.confirm('Force-approve this application instantly? The candidate will appear on the ballot immediately.')) return;
     try {
-      await axios.post(`${API_URL}/superadmin/applications/${appId}/force-approve`);
+      await api.post(`${API_URL}/superadmin/applications/${appId}/force-approve`);
       fetchApplications();
       fetchCandidates();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
@@ -280,7 +317,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   const handleForceDeny = async (appId) => {
     if (!window.confirm('Force-deny this application?')) return;
     try {
-      await axios.post(`${API_URL}/superadmin/applications/${appId}/force-deny`);
+      await api.post(`${API_URL}/superadmin/applications/${appId}/force-deny`);
       fetchApplications();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
   };
@@ -289,7 +326,7 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
 
   const handleToggleCommissioner = async (studentId) => {
     try {
-      const res = await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
+      const res = await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
       alert(`${studentId} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`);
       fetchCommissioners();
       fetchVotersList();
@@ -297,17 +334,17 @@ export default function SuperAdminDashboard({ apiBase, onLogout }) {
   };
 
   const handleSetChief = async (studentId) => {
-  await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-chief`);
+  await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-chief`);
   fetchCommissioners();
 };
 
 const handleClearChief = async (studentId) => {
-  await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-chief`);
+  await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-chief`);
   fetchCommissioners();
 };
 
 const handleSetRole = async (studentId, role) => {
-  await axios.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role });
+  await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role });
   fetchCommissioners();
 };
 
@@ -315,7 +352,7 @@ const handleSetRole = async (studentId, role) => {
 
   const handleToggleElection = async () => {
     try {
-      const res = await axios.post(`${API_URL}/admin/toggle-election`);
+      const res = await api.post(`${API_URL}/admin/toggle-election`);
       setIsElectionOpen(res.data.is_open);
       alert(`Election is now ${res.data.is_open ? 'OPEN' : 'CLOSED'}.`);
     } catch (e) { alert('Toggle failed.'); }
@@ -328,7 +365,7 @@ const handleSetRole = async (studentId, role) => {
       : 'Mark results as FINAL and BINDING?';
     if (!window.confirm(msg)) return;
     try {
-      const res = await axios.post(`${API_URL}/admin/toggle-certification`);
+      const res = await api.post(`${API_URL}/admin/toggle-certification`);
       setIsCertified(res.data.is_certified);
       alert(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
     } catch (e) { alert('Failed.'); }
@@ -337,7 +374,7 @@ const handleSetRole = async (studentId, role) => {
   const handleScheduleTimer = async () => {
     if (!startTime || !endTime) { alert('Set both start and end times.'); return; }
     try {
-      await axios.post(`${API_URL}/admin/schedule-election`, { start: startTime, end: endTime });
+      await api.post(`${API_URL}/admin/schedule-election`, { start: startTime, end: endTime });
       setTimerActive(true);
       alert('Schedule saved!');
     } catch (e) { alert('Scheduling failed.'); }
@@ -346,7 +383,7 @@ const handleSetRole = async (studentId, role) => {
   const handleClearSchedule = async () => {
     if (!window.confirm('Clear the schedule?')) return;
     try {
-      await axios.post(`${API_URL}/admin/clear-schedule`);
+      await api.post(`${API_URL}/admin/clear-schedule`);
       setStartTime(''); setEndTime(''); setTimerActive(false);
     } catch (e) { alert('Failed to clear schedule.'); }
   };
@@ -355,7 +392,7 @@ const handleSetRole = async (studentId, role) => {
     if (!window.confirm('⚠️ DANGER: Delete ALL votes and reset?')) return;
     if (window.prompt("Type 'RESET' to confirm:") !== 'RESET') return;
     try {
-      await axios.post(`${API_URL}/admin/reset-election`);
+      await api.post(`${API_URL}/admin/reset-election`);
       alert('Election reset.');
       fetchElectionData();
     } catch (e) { alert('Reset failed.'); }
@@ -368,7 +405,7 @@ const handleSetRole = async (studentId, role) => {
     formData.append('file', file);
     setImporting(true);
     try {
-      const res = await axios.post(`${API_URL}/admin/import-voters`, formData, {
+      const res = await api.post(`${API_URL}/admin/import-voters`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       alert(`Imported ${res.data.imported_count} voters.`);
@@ -381,14 +418,14 @@ const handleSetRole = async (studentId, role) => {
   //--IT Admin changes
   const fetchItAdmins = async () => {
   try {
-      const res = await axios.get(`${API_URL}/superadmin/it-admins`);
+      const res = await api.get(`${API_URL}/superadmin/it-admins`);
       setItAdmins(res.data);
     } catch (e) {}
   };
 
 const fetchStudentChanges = async () => {
   try {
-      const res = await axios.get(`${API_URL}/superadmin/student-changes`);
+      const res = await api.get(`${API_URL}/superadmin/student-changes`);
       setStudentChanges(res.data);
     } catch (e) {}
   };
@@ -399,7 +436,7 @@ const fetchAuditLog = async () => {
       const url = auditFilter
         ? `${API_URL}/superadmin/audit-log?action=${auditFilter}`
         : `${API_URL}/superadmin/audit-log`;
-      const res = await axios.get(url);
+      const res = await api.get(url);
       setAuditLog(res.data);
     } catch (e) {}
     finally { setAuditLoading(false); }
@@ -407,7 +444,7 @@ const fetchAuditLog = async () => {
 
   const handleToggleItAdmin = async (studentId) => {
   try {
-      const res = await axios.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
+      const res = await api.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
       alert(`${studentId} is now ${res.data.is_it_admin ? 'an IT admin' : 'no longer an IT admin'}.`);
       fetchItAdmins();
       fetchVotersList();
@@ -421,7 +458,7 @@ const handleSetItAdminCredentials = async (studentId) => {
     return;
   }
   try {
-    const res = await axios.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
+    const res = await api.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
       email
     });
     alert(res.data.sms_notified
@@ -436,7 +473,7 @@ const handleResetItAdminPassword = async (studentId) => {
   if (!window.confirm('Send a new temporary password to this IT admin via SMS?')) return;
   setResetting(prev => ({ ...prev, [studentId]: true }));
   try {
-    const res = await axios.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
+    const res = await api.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
     alert(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
@@ -450,7 +487,7 @@ const handleForceStudentChange = async (changeId, action) => {
       : `${API_URL}/superadmin/student-changes/${changeId}/force-deny`;
     if (!window.confirm(`Force ${action} this request?`)) return;
     try {
-      await axios.post(endpoint);
+      await api.post(endpoint);
       fetchStudentChanges();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
   };
@@ -459,7 +496,7 @@ const handleSuperAdminAddStudent = async (e) => {
   e.preventDefault();
   // use a separate state for this form — add useState for saDirectAdd
   try {
-      await axios.post(`${API_URL}/superadmin/students/add`, saDirectAdd);
+      await api.post(`${API_URL}/superadmin/students/add`, saDirectAdd);
       alert('Student added.');
       setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '' });
       fetchElectionData();
@@ -469,7 +506,7 @@ const handleSuperAdminAddStudent = async (e) => {
 const handleSuperAdminRemoveStudent = async () => {
   if (!window.confirm('Remove this student from the voter register?')) return;
   try {
-      await axios.post(`${API_URL}/superadmin/students/remove`, saDirectRemove);
+      await api.post(`${API_URL}/superadmin/students/remove`, saDirectRemove);
       alert('Student removed.');
       setSaDirectRemove({ student_id: '', reason: '' });
       setRemoveSearch('');
