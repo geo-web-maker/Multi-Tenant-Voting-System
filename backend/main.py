@@ -263,6 +263,24 @@ async def generate_unique_org_slug(name: str) -> str:
         slug = f"{base}-{suffix}"
     return slug
 
+def org_query(request: Request, extra: dict = None) -> dict:
+    """
+    Merge tenant scoping into a query filter. If the request carries no
+    X-Org-Slug (request.state.org_id is None), the filter is returned
+    unchanged — this is what keeps the existing single-tenant KYUCCU
+    deployment working exactly as before, with no header set.
+    """
+    q = dict(extra) if extra else {}
+    if request.state.org_id:
+        q["org_id"] = request.state.org_id
+    return q
+
+def org_stamp(request: Request, doc: dict) -> dict:
+    """Stamp a new document with the current org_id (None for legacy/default)."""
+    doc = dict(doc)
+    doc["org_id"] = request.state.org_id
+    return doc
+
 # =============================================================================
 # PASSWORD HELPERS
 # =============================================================================
@@ -436,8 +454,8 @@ async def health_check():
         raise HTTPException(status_code=500, detail="Database connection failed")
 
 @app.get("/election-status")
-async def get_status():
-    status_doc = await db.settings.find_one({"name": "election_config"})
+async def get_status(request: Request):
+    status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     if not status_doc:
         return {"is_open": True, "is_certified": False, "start": None, "end": None}
     return {
@@ -452,9 +470,9 @@ async def get_status():
 # =============================================================================
 
 @app.post("/verify-identity")
-async def verify_identity(data: IdentityCheck):
+async def verify_identity(data: IdentityCheck, request: Request):
     now = datetime.utcnow()
-    status_doc = await db.settings.find_one({"name": "election_config"})
+    status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
 
     if status_doc:
         if not status_doc.get("is_open", True):
@@ -463,7 +481,7 @@ async def verify_identity(data: IdentityCheck):
         if start and end and not (start <= now <= end):
             raise HTTPException(status_code=403, detail="Not within scheduled time.")
 
-    student = await db.voters.find_one(get_forgiving_filter(data.student_id))
+    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(status_code=404, detail="Student ID not found")
 
@@ -500,7 +518,7 @@ async def verify_identity(data: IdentityCheck):
     otp       = str(random.randint(100000, 999999))
 
     first_name = student.get("full_name", "Voter").split()[0].capitalize()
-    branding_doc = await db.settings.find_one({"name": "branding"})
+    branding_doc = await db.settings.find_one(org_query(request, {"name": "branding"}))
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
     
     message = (
@@ -510,12 +528,12 @@ async def verify_identity(data: IdentityCheck):
 
     if await send_sms_via_egosms(raw_phone, message):
         await db.voters.update_one(
-            {"student_id": student["student_id"]},
+            org_query(request, {"student_id": student["student_id"]}),
             {"$set": {"last_status": "otp_sent"}, "$inc": {"otp_count": 1}}
         )
         await db.otps.update_one(
-            {"student_id": student["student_id"]},
-            {"$set": {"code": otp, "created_at": now}},
+            org_query(request, {"student_id": student["student_id"]}),
+            {"$set": org_stamp(request, {"code": otp, "created_at": now})},
             upsert=True
         )
         return {"status": "success", "phone": f"{raw_phone[:6]}****{raw_phone[-2:]}"}
@@ -524,8 +542,8 @@ async def verify_identity(data: IdentityCheck):
 
 
 @app.post("/verify-otp")
-async def verify_otp(data: OTPCheck):
-    search = get_forgiving_filter(data.student_id)
+async def verify_otp(data: OTPCheck, request: Request):
+    search = org_query(request, get_forgiving_filter(data.student_id))
     voter  = await db.voters.find_one(search)
     if not voter:
         raise HTTPException(status_code=404, detail="Voter not found")
@@ -538,7 +556,6 @@ async def verify_otp(data: OTPCheck):
         return {"status": "success"}
 
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
-
 
 @app.post("/vote")
 async def cast_vote(data: VoteRequest):
@@ -622,7 +639,7 @@ async def submit_application(data: ApplicationSubmit):
 # =============================================================================
 
 @app.post("/verify-admin")
-async def verify_admin(data: AdminLoginCheck):
+async def verify_admin(data: AdminLoginCheck, request: Request):
     # ── Superadmin ── (env var based, no hashing needed — this is you)
     if data.email == SUPER_ADMIN_ID and data.password == SUPER_ADMIN_NAME:
         return {
@@ -633,10 +650,10 @@ async def verify_admin(data: AdminLoginCheck):
         }
 
     # ── IT Admin ──
-    it_admin = await db.voters.find_one({
+    it_admin = await db.voters.find_one(org_query(request, {
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_it_admin": True
-    })
+    }))
     if it_admin:
         stored_hash = it_admin.get("it_admin_password_hash", "")
         if not verify_password(data.password, stored_hash):
@@ -652,10 +669,10 @@ async def verify_admin(data: AdminLoginCheck):
         }
 
     # ── Financial Controller ──
-    financial_controller = await db.voters.find_one({
+    financial_controller = await db.voters.find_one(org_query(request, {
         "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_financial_controller": True
-    })
+    }))
     if financial_controller:
         stored_hash = financial_controller.get("financial_controller_password_hash", "")
         if not verify_password(data.password, stored_hash):
@@ -671,10 +688,10 @@ async def verify_admin(data: AdminLoginCheck):
         }
 
     # ── Overseer ──
-    overseer = await db.voters.find_one({
+    overseer = await db.voters.find_one(org_query(request, {
         "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_overseer": True
-    })
+    }))
     if overseer:
         stored_hash = overseer.get("overseer_password_hash", "")
         if not verify_password(data.password, stored_hash):
@@ -690,10 +707,10 @@ async def verify_admin(data: AdminLoginCheck):
         }
 
     # ── Commissioner ──
-    commissioner = await db.voters.find_one({
+    commissioner = await db.voters.find_one(org_query(request, {
         "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_commissioner": True
-    })
+    }))
     if not commissioner:
         raise HTTPException(status_code=404, detail="Invalid email or password.")
 
@@ -702,6 +719,7 @@ async def verify_admin(data: AdminLoginCheck):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     await log_action("commissioner_login", commissioner["student_id"], {"email": data.email})
+    # ...returns commissioner session
     return {
         "status":              "success",
         "bypass":              True,
@@ -713,12 +731,12 @@ async def verify_admin(data: AdminLoginCheck):
 
 
 @app.post("/admin/toggle-election")
-async def toggle_election():
-    current    = await db.settings.find_one({"name": "election_config"})
+async def toggle_election(request: Request):
+    current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_open", True) if current else True)
     await db.settings.update_one(
-        {"name": "election_config"},
-        {"$set": {"is_open": new_status}},
+        org_query(request, {"name": "election_config"}),
+        {"$set": org_stamp(request, {"is_open": new_status, "name": "election_config"})},
         upsert=True
     )
     await log_action("election_toggled", "superadmin", {"is_open": new_status})
@@ -727,44 +745,41 @@ async def toggle_election():
 
 
 @app.post("/admin/schedule-election")
-async def schedule_election(data: ElectionSchedule):
+async def schedule_election(data: ElectionSchedule, request: Request):
     await db.settings.update_one(
-        {"name": "election_config"},
-        {"$set": {"start_time": data.start, "end_time": data.end, "is_open": True}},
+        org_query(request, {"name": "election_config"}),
+        {"$set": org_stamp(request, {"start_time": data.start, "end_time": data.end, "is_open": True, "name": "election_config"})},
         upsert=True
     )
     return {"status": "scheduled"}
 
 
 @app.post("/admin/clear-schedule")
-async def clear_schedule():
+async def clear_schedule(request: Request):
     await db.settings.update_one(
-        {"name": "election_config"},
+        org_query(request, {"name": "election_config"}),
         {"$unset": {"start_time": "", "end_time": ""}}
     )
     return {"status": "cleared"}
 
 
 @app.post("/admin/reset-election")
-async def reset_election():
-    await db.otps.delete_many({})
-    await db.voters.update_many({}, {"$set": {"has_voted": False, "last_status": "idle"}})
-    await db.candidates.update_many({}, {"$set": {"votes": 0}})
+async def reset_election(request: Request):
+    await db.otps.delete_many(org_query(request))
+    await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
+    await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
     return {"status": "success"}
 
 
 @app.post("/admin/toggle-certification")
-async def toggle_certification():
-    current    = await db.settings.find_one({"name": "election_config"})
+async def toggle_certification(request: Request):
+    current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_certified", False) if current else False)
     await db.settings.update_one(
-        {"name": "election_config"},
+        org_query(request, {"name": "election_config"}),
         {"$set": {"is_certified": new_status}},
         upsert=True
     )
-    await log_action("results_certified", "superadmin", {"is_certified": new_status})
-    return {"is_certified": new_status}
-
 
 @app.get("/admin/sms-balance")
 async def get_sms_balance():
@@ -832,12 +847,12 @@ async def get_all_voters():
     return voters
 
 @app.post("/admin/set-password")
-async def set_new_password(data: SetNewPassword):
+async def set_new_password(data: SetNewPassword, request: Request):
     # Try IT admin first
-    it_admin = await db.voters.find_one({
+    it_admin = await db.voters.find_one(org_query(request, {
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_it_admin": True
-    })
+    }))
     if it_admin:
         if not verify_password(data.old_password, it_admin.get("it_admin_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
@@ -854,10 +869,10 @@ async def set_new_password(data: SetNewPassword):
         return {"status": "password_updated"}
 
     # Try Financial Controller
-    financial_controller = await db.voters.find_one({
+    financial_controller = await db.voters.find_one(org_query(request, {
         "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_financial_controller": True
-    })
+    }))
     if financial_controller:
         if not verify_password(data.old_password, financial_controller.get("financial_controller_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
@@ -874,10 +889,10 @@ async def set_new_password(data: SetNewPassword):
         return {"status": "password_updated"}
 
     # Try Overseer
-    overseer = await db.voters.find_one({
+    overseer = await db.voters.find_one(org_query(request, {
         "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_overseer": True
-    })
+    }))
     if overseer:
         if not verify_password(data.old_password, overseer.get("overseer_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
@@ -894,10 +909,10 @@ async def set_new_password(data: SetNewPassword):
         return {"status": "password_updated"}
 
     # Try commissioner
-    commissioner = await db.voters.find_one({
+    commissioner = await db.voters.find_one(org_query(request, {
         "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_commissioner": True
-    })
+    }))
     if commissioner:
         if not verify_password(data.old_password, commissioner.get("commissioner_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
