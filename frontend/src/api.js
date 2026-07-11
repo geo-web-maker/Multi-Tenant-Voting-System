@@ -9,6 +9,13 @@ export const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 // to its legacy/default (non-multi-tenant) behavior automatically.
 export const ORG_SLUG = import.meta.env.VITE_ORG_SLUG || "";
 
+// sessionStorage key the Superadmin org-switcher dropdown writes to. This lets
+// one logged-in superadmin flip between organizations at runtime, without a
+// rebuild/redeploy. It only ever affects the browser tab that set it — every
+// other role (voters, commissioners, IT admins, etc.) never touches this key,
+// so their requests keep using the build-time ORG_SLUG exactly as before.
+export const SUPERADMIN_ORG_OVERRIDE_KEY = 'superadmin_active_org_slug';
+
 // Shared axios instance. Every component should import `api` from here
 // instead of importing axios directly, so every request automatically
 // carries the org context without each call site having to remember to add it.
@@ -17,10 +24,12 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  if (ORG_SLUG) {
-    config.headers['X-Org-Slug'] = ORG_SLUG;
+  const activeSlug = sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG;
+  if (activeSlug) {
+    config.headers['X-Org-Slug'] = activeSlug;
   }
   return config;
 });
 
 export default api;
+

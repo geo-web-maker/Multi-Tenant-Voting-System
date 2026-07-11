@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import api from '../api';
+import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
 
 // Reuse Cloudinary upload helper
 async function uploadToCloudinary(file) {
@@ -17,6 +17,12 @@ async function uploadToCloudinary(file) {
 export default function SuperAdminDashboard({ onLogout }) {
 
   const [activeTab, setActiveTab] = useState('candidates');
+
+  // --- Org switcher: which organization's data this session is scoped to ---
+  const [activeOrgSlug, setActiveOrgSlug] = useState(
+    sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ''
+  );
+  const [switchingOrg, setSwitchingOrg] = useState(false);
 
   // --- Branding state ---
   const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [] });
@@ -201,7 +207,7 @@ const fetchVotersList = async () => {
     } catch (e) {}
   };
 
-  useEffect(() => {
+  const refetchAll = () => {
     fetchBranding();
     fetchPositions();
     fetchCandidates();
@@ -213,6 +219,23 @@ const fetchVotersList = async () => {
     fetchStudentChanges();
     fetchFinancialControllers();
     fetchOverseers();
+  };
+
+  const handleSwitchOrg = (slug) => {
+    setSwitchingOrg(true);
+    if (slug) {
+      sessionStorage.setItem(SUPERADMIN_ORG_OVERRIDE_KEY, slug);
+    } else {
+      sessionStorage.removeItem(SUPERADMIN_ORG_OVERRIDE_KEY);
+    }
+    setActiveOrgSlug(slug);
+    setActiveTab('candidates');
+    refetchAll();
+    setSwitchingOrg(false);
+  };
+
+  useEffect(() => {
+    refetchAll();
     fetchOrganizations();
     const interval = setInterval(() => {
       fetchCandidates();
@@ -681,6 +704,33 @@ const handleSuperAdminRemoveStudent = async () => {
             </button>
             <button onClick={onLogout} style={{ ...btn, backgroundColor: '#e74c3c' }}>Logout</button>
           </div>
+        </div>
+
+        {/* ── Org switcher ── */}
+        <div style={orgSwitcherBar}>
+          <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
+            🏢 Managing:
+          </span>
+          <select
+            style={{ ...inp, width: 'auto', minWidth: '220px', fontSize: '13px' }}
+            value={activeOrgSlug}
+            onChange={e => handleSwitchOrg(e.target.value)}
+            disabled={switchingOrg}
+          >
+            <option value="">— All / Legacy (unscoped) —</option>
+            {organizations.map(o => (
+              <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>
+            ))}
+          </select>
+          {activeOrgSlug ? (
+            <span style={{ fontSize: '11px', color: '#2ecc71', fontWeight: '600' }}>
+              ✓ Viewing only this organization's data
+            </span>
+          ) : (
+            <span style={{ fontSize: '11px', color: '#f1c40f', fontWeight: '600' }}>
+              ⚠️ Unscoped — showing data across all organizations combined
+            </span>
+          )}
         </div>
 
         {/* ── Tabs ── */}
@@ -1903,6 +1953,7 @@ const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--tex
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const headerFlex  = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' };
+const orgSwitcherBar = { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px', padding: '10px 14px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '10px' };
 const tabBar      = { display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap' };
 const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', whiteSpace: 'nowrap' };
 const twoCol      = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' };

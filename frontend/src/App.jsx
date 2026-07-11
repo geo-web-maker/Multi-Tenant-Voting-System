@@ -263,6 +263,7 @@ useEffect(() => {
         student_id: studentId,
         code: otp
       });
+  
       setOtp("");
   
       if (isAdminPath) {
