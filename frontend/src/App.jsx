@@ -206,6 +206,14 @@ useEffect(() => {
             sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
             sessionStorage.setItem("it_admin_name", res.data.full_name || "");
           }
+          if (res.data.financial_controller_id) {
+            sessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
+            sessionStorage.setItem("financial_controller_name", res.data.full_name || "");
+          }
+          if (res.data.overseer_id) {
+            sessionStorage.setItem("overseer_id", res.data.overseer_id);
+            sessionStorage.setItem("overseer_name", res.data.full_name || "");
+          }
         
           // Superadmin never needs to change password (env-based login)
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
@@ -324,10 +332,12 @@ useEffect(() => {
         sessionStorage.setItem("it_admin_name", res.data.full_name || "");
       }
       if (res.data.financial_controller_id) {
-        sessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
+          sessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
+          sessionStorage.setItem("financial_controller_name", res.data.full_name || "");
       }
       if (res.data.overseer_id) {
-        sessionStorage.setItem("overseer_id", res.data.overseer_id);
+          sessionStorage.setItem("overseer_id", res.data.overseer_id);
+          sessionStorage.setItem("overseer_name", res.data.full_name || "");
       }
   
       setMustChangePassword(false);
@@ -355,7 +365,9 @@ useEffect(() => {
     sessionStorage.removeItem("it_admin_id");
     sessionStorage.removeItem("it_admin_name");
     sessionStorage.removeItem("financial_controller_id");
+    sessionStorage.removeItem("financial_controller_name");
     sessionStorage.removeItem("overseer_id");
+    sessionStorage.removeItem("overseer_name");
   };
 
   return (
