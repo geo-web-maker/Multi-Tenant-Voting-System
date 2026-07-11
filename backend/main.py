@@ -82,8 +82,7 @@ async def org_context_middleware(request: Request, call_next):
 
 # =============================================================================
 # MODELS
-# =============================================================================
-
+# ============================================================================= 
 class ApplicationSubmit(BaseModel):
     student_id:        str
     full_name:         str
@@ -172,6 +171,7 @@ class CommissionerVote(BaseModel):
 
 class FinanceClear(BaseModel):
     commissioner_id: str   # must belong to the voter flagged is_finance_commissioner
+    
 
 class ITAdminStudentAdd(BaseModel):
     student_id:        str
@@ -246,7 +246,18 @@ async def send_sms_via_egosms(to_number: str, message_text: str):
     except Exception as e:
         logger.error(f"❌ Connection Error: {e}")
         return False
-        
+
+# =============================================================================
+# PASSWORD HELPERS
+# =============================================================================
+
+def generate_temp_password() -> str:
+    """Simple 6-digit numeric code — easy to read and type from an SMS."""
+    return ''.join(random.choices(string.digits, k=6))
+
+def hash_password(plain_password: str) -> str:
+    return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
+
 # =============================================================================
 # MULTI-TENANCY HELPERS
 # =============================================================================
@@ -280,17 +291,6 @@ def org_stamp(request: Request, doc: dict) -> dict:
     doc = dict(doc)
     doc["org_id"] = request.state.org_id
     return doc
-
-# =============================================================================
-# PASSWORD HELPERS
-# =============================================================================
-
-def generate_temp_password() -> str:
-    """Simple 6-digit numeric code — easy to read and type from an SMS."""
-    return ''.join(random.choices(string.digits, k=6))
-
-def hash_password(plain_password: str) -> str:
-    return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not hashed_password:
@@ -375,7 +375,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         )
         await log_action("application_approved", "commission", {
             "app_id": app_id, "approve_count": approve_count, "total_commissioners": total
-        })
+        }, org_id=org_id)
         logger.info(f"✅ Application {app_id} approved by commission majority ({approve_count}/{total}).")
     elif deny_count >= required:
         # Majority reached against — application denied
@@ -385,7 +385,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         )
         await log_action("application_denied", "commission", {
             "app_id": app_id, "deny_count": deny_count, "total_commissioners": total
-        })
+        }, org_id=org_id)
         logger.info(f"❌ Application {app_id} denied by commission majority ({deny_count}/{total}).")
 
 async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
@@ -445,11 +445,12 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             q["org_id"] = org_id
         await db.voters.delete_one(q)
 
-async def log_action(action: str, actor: str, details: dict = {}):
+async def log_action(action: str, actor: str, details: dict = {}, org_id: str = None):
     await db.audit_log.insert_one({
         "action":    action,
         "actor":     actor,
         "details":   details,
+        "org_id":    org_id,
         "timestamp": datetime.utcnow()
     })
 
@@ -573,6 +574,7 @@ async def verify_otp(data: OTPCheck, request: Request):
 
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
 
+
 @app.post("/vote")
 async def cast_vote(data: VoteRequest, request: Request):
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
@@ -647,7 +649,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     await log_action("application_submitted", data.student_id, {
     "position_id": data.position_id,
     "full_name":   data.full_name
-    })
+    }, org_id=request.state.org_id)
     return {"status": "submitted"}
 
 # =============================================================================
@@ -674,7 +676,7 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         stored_hash = it_admin.get("it_admin_password_hash", "")
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
-        await log_action("it_admin_login", it_admin["student_id"], {"email": data.email})
+        await log_action("it_admin_login", it_admin["student_id"], {"email": data.email}, org_id=request.state.org_id)
         return {
             "status":              "success",
             "bypass":              True,
@@ -693,7 +695,7 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         stored_hash = financial_controller.get("financial_controller_password_hash", "")
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
-        await log_action("financial_controller_login", financial_controller["student_id"], {"email": data.email})
+        await log_action("financial_controller_login", financial_controller["student_id"], {"email": data.email}, org_id=request.state.org_id)
         return {
             "status":              "success",
             "bypass":              True,
@@ -712,7 +714,7 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         stored_hash = overseer.get("overseer_password_hash", "")
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
-        await log_action("overseer_login", overseer["student_id"], {"email": data.email})
+        await log_action("overseer_login", overseer["student_id"], {"email": data.email}, org_id=request.state.org_id)
         return {
             "status":              "success",
             "bypass":              True,
@@ -734,8 +736,7 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
     if not verify_password(data.password, stored_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    await log_action("commissioner_login", commissioner["student_id"], {"email": data.email})
-    # ...returns commissioner session
+    await log_action("commissioner_login", commissioner["student_id"], {"email": data.email}, org_id=request.state.org_id)
     return {
         "status":              "success",
         "bypass":              True,
@@ -755,7 +756,7 @@ async def toggle_election(request: Request):
         {"$set": org_stamp(request, {"is_open": new_status, "name": "election_config"})},
         upsert=True
     )
-    await log_action("election_toggled", "superadmin", {"is_open": new_status})
+    await log_action("election_toggled", "superadmin", {"is_open": new_status}, org_id=request.state.org_id)
     logger.info(f" Election toggled to: {'OPEN' if new_status else 'CLOSED'}")
     return {"is_open": new_status}
 
@@ -796,6 +797,9 @@ async def toggle_certification(request: Request):
         {"$set": {"is_certified": new_status}},
         upsert=True
     )
+    await log_action("results_certified", "superadmin", {"is_certified": new_status}, org_id=request.state.org_id)
+    return {"is_certified": new_status}
+
 
 @app.get("/admin/sms-balance")
 async def get_sms_balance():
@@ -852,7 +856,7 @@ async def import_voters(request: Request, file: UploadFile = File(...)):
                 upsert=True
             )
             count += 1
-    await log_action("voters_imported", "admin", {"count": count})
+    await log_action("voters_imported", "admin", {"count": count}, org_id=request.state.org_id)
     return {"status": "success", "imported_count": count}
 
 @app.get("/admin/voters")
@@ -881,7 +885,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
                 "it_admin_must_change_password": False
             }}
         )
-        await log_action("it_admin_password_changed", it_admin["student_id"], {})
+        await log_action("it_admin_password_changed", it_admin["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
 
     # Try Financial Controller
@@ -901,7 +905,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
                 "financial_controller_must_change_password": False
             }}
         )
-        await log_action("financial_controller_password_changed", financial_controller["student_id"], {})
+        await log_action("financial_controller_password_changed", financial_controller["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
 
     # Try Overseer
@@ -921,7 +925,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
                 "overseer_must_change_password": False
             }}
         )
-        await log_action("overseer_password_changed", overseer["student_id"], {})
+        await log_action("overseer_password_changed", overseer["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
 
     # Try commissioner
@@ -941,7 +945,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
                 "commissioner_must_change_password": False
             }}
         )
-        await log_action("commissioner_password_changed", commissioner["student_id"], {})
+        await log_action("commissioner_password_changed", commissioner["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
 
     raise HTTPException(404, "Account not found.")
@@ -953,7 +957,7 @@ async def add_candidate(candidate: CandidateCreate, request: Request):
     result = await db.candidates.insert_one(org_stamp(request, candidate.dict()))
     await log_action("candidate_added", "superadmin", {
         "name": candidate.name, "position": candidate.position
-    })
+    }, org_id=request.state.org_id)
     return {"id": str(result.inserted_id)}
 
 
@@ -1066,7 +1070,7 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
 
 
 @app.post("/admin/applications/{app_id}/finance-clear")
-async def finance_clear_application(app_id: str, data: FinanceClear):
+async def finance_clear_application(app_id: str, data: FinanceClear, request: Request):
     """
     The Finance Commissioner verifies the candidate's payment status and clears
     the application for voting. No commissioner (including her) can cast a vote
@@ -1096,7 +1100,7 @@ async def finance_clear_application(app_id: str, data: FinanceClear):
             "finance_cleared_at": datetime.utcnow()
         }}
     )
-    await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id})
+    await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"💰 Application {app_id} finance-cleared by {data.commissioner_id}.")
     return {"status": "finance_cleared"}
 
@@ -1122,7 +1126,7 @@ async def get_commission_detailed_results(request: Request):
     async for cand in db.candidates.find(org_query(request)).sort("order", 1):
         position_title = cand.get("position", "Unknown Position")
         grouped.setdefault(position_title, []).append(cand)
-        
+
     detailed = []
     for position_title, candidates in grouped.items():
         position_total_votes = sum(c.get("votes", 0) for c in candidates)
@@ -1196,171 +1200,6 @@ async def list_organizations():
     return orgs
 
 
-# =============================================================================
-# SUPERADMIN ROUTES  (instant overrides — no voting required)
-# =============================================================================
-
-# --- Branding ---
-
-@app.get("/superadmin/financial-controllers")
-async def list_financial_controllers(request: Request):
-    result = []
-    async for v in db.voters.find(
-        (org_query(request, {"is_financial_controller": True}),
-        {"_id": 0, "student_id": 1, "full_name": 1, "financial_controller_email": 1}
-    ):
-        result.append(v)
-    return result
-
-
-@app.post("/superadmin/financial-controllers/{student_id:path}/toggle")
-async def toggle_financial_controller(student_id: str, request: Request):
-    """Grant or revoke Financial Controller status for any voter. Independent
-    of is_commissioner — this role never touches candidate business."""
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
-    if not voter:
-        raise HTTPException(404, "Voter not found.")
-    new_val = not voter.get("is_financial_controller", False)
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {"is_financial_controller": new_val}}
-    )
-    await log_action("financial_controller_toggled", "superadmin", {
-        "student_id": student_id, "is_financial_controller": new_val
-    })
-    return {"student_id": student_id, "is_financial_controller": new_val}
-
-
-@app.post("/superadmin/financial-controllers/{student_id:path}/set-credentials")
-async def set_financial_controller_credentials(student_id: str, data: SetEmailOnly, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
-    if not voter:
-        raise HTTPException(404, "Voter not found.")
-    if not voter.get("is_financial_controller"):
-        raise HTTPException(400, "This person is not a Financial Controller.")
-
-    temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
-
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {
-            "financial_controller_email":                data.email,
-            "financial_controller_password_hash":        hashed,
-            "financial_controller_must_change_password": True
-        }}
-    )
-    sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
-    await log_action("financial_controller_credentials_set", "superadmin", {
-        "student_id": student_id, "email": data.email, "sms_notified": sms_sent
-    })
-    return {"status": "credentials_set", "sms_notified": sms_sent}
-
-@app.post("/superadmin/financial-controllers/{student_id:path}/reset-password")
-async def reset_financial_controller_password(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
-    if not voter or not voter.get("is_financial_controller"):
-        raise HTTPException(404, "Financial Controller not found.")
-
-    temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
-
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {
-            "financial_controller_password_hash":        hashed,
-            "financial_controller_must_change_password": True
-        }}
-    )
-    sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
-    await log_action("financial_controller_password_reset", "superadmin", {
-        "student_id": student_id, "sms_notified": sms_sent
-    })
-    return {"status": "password_reset", "sms_notified": sms_sent}
-
-
-# =============================================================================
-# SUPERADMIN — OVERSEER MANAGEMENT (read-only, anonymized platform view)
-# =============================================================================
-
-@app.get("/superadmin/overseers")
-async def list_overseers():
-    result = []
-    async for v in db.voters.find(
-        {"is_overseer": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1}
-    ):
-        result.append(v)
-    return result
-
-
-@app.post("/superadmin/overseers/{student_id:path}/toggle")
-async def toggle_overseer(student_id: str):
-    """Grant or revoke Overseer status for any voter. Read-only role — never
-    touches votes, applications, or student changes, only observes them."""
-    voter = await db.voters.find_one(get_forgiving_filter(student_id))
-    if not voter:
-        raise HTTPException(404, "Voter not found.")
-    new_val = not voter.get("is_overseer", False)
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {"is_overseer": new_val}}
-    )
-    await log_action("overseer_toggled", "superadmin", {
-        "student_id": student_id, "is_overseer": new_val
-    })
-    return {"student_id": student_id, "is_overseer": new_val}
-
-
-@app.post("/superadmin/overseers/{student_id:path}/set-credentials")
-async def set_overseer_credentials(student_id: str, data: SetEmailOnly):
-    voter = await db.voters.find_one(get_forgiving_filter(student_id))
-    if not voter:
-        raise HTTPException(404, "Voter not found.")
-    if not voter.get("is_overseer"):
-        raise HTTPException(400, "This person is not an Overseer.")
-
-    temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
-
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {
-            "overseer_email":                data.email,
-            "overseer_password_hash":        hashed,
-            "overseer_must_change_password": True
-        }}
-    )
-    sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
-    await log_action("overseer_credentials_set", "superadmin", {
-        "student_id": student_id, "email": data.email, "sms_notified": sms_sent
-    })
-    return {"status": "credentials_set", "sms_notified": sms_sent}
-
-
-@app.post("/superadmin/overseers/{student_id:path}/reset-password")
-async def reset_overseer_password(student_id: str):
-    voter = await db.voters.find_one(get_forgiving_filter(student_id))
-    if not voter or not voter.get("is_overseer"):
-        raise HTTPException(404, "Overseer not found.")
-
-    temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
-
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {
-            "overseer_password_hash":        hashed,
-            "overseer_must_change_password": True
-        }}
-    )
-    sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
-    await log_action("overseer_password_reset", "superadmin", {
-        "student_id": student_id, "sms_notified": sms_sent
-    })
-    return {"status": "password_reset", "sms_notified": sms_sent}
-
-    
 # =============================================================================
 # SUPERADMIN ROUTES  (instant overrides — no voting required)
 # =============================================================================
@@ -1473,7 +1312,7 @@ async def set_finance_commissioner(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_finance_commissioner": True}}
     )
-    await log_action("finance_commissioner_set", "superadmin", {"student_id": student_id})
+    await log_action("finance_commissioner_set", "superadmin", {"student_id": student_id}, org_id=request.state.org_id)
     return {"student_id": student_id, "is_finance_commissioner": True}
 
 
@@ -1483,7 +1322,7 @@ async def clear_finance_commissioner(student_id: str, request: Request):
         org_query(request, get_forgiving_filter(student_id)),
         {"$set": {"is_finance_commissioner": False}}
     )
-    await log_action("finance_commissioner_cleared", "superadmin", {"student_id": student_id})
+    await log_action("finance_commissioner_cleared", "superadmin", {"student_id": student_id}, org_id=request.state.org_id)
     return {"student_id": student_id, "is_finance_commissioner": False}
 
 
@@ -1511,7 +1350,7 @@ async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate, r
     )
     await log_action("commissioner_role_set", "superadmin", {
         "student_id": student_id, "role_label": data.role_label
-    })
+    }, org_id=request.state.org_id)
     return {"student_id": student_id, "commissioner_role": data.role_label}
 
 @app.post("/superadmin/commissioners/{student_id:path}/toggle")
@@ -1527,7 +1366,7 @@ async def toggle_commissioner(student_id: str, request: Request):
     )
     await log_action("commissioner_toggled", "superadmin", {
     "student_id": student_id, "is_commissioner": new_val
-    })
+    }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_commissioner": new_val}
 
 @app.post("/superadmin/it-admins/{student_id:path}/set-credentials")
@@ -1552,7 +1391,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
     sms_sent = await send_temp_password_sms(voter, "IT Admin", temp_password)
     await log_action("it_admin_credentials_set", "superadmin", {
         "student_id": student_id, "email": data.email, "sms_notified": sms_sent
-    })
+    }, org_id=request.state.org_id)
     return {"status": "credentials_set", "sms_notified": sms_sent}
     
 # --- Application overrides ---
@@ -1575,7 +1414,7 @@ async def superadmin_force_approve(app_id: str, request: Request):
             "decided_at": datetime.utcnow()
         }}
     )
-    await log_action("application_force_approved", "superadmin", {"app_id": app_id})
+    await log_action("application_force_approved", "superadmin", {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-approved application {app_id}.")
     return {"status": "force_approved"}
 
@@ -1597,7 +1436,7 @@ async def superadmin_force_deny(app_id: str, request: Request):
             "decided_at": datetime.utcnow()
         }}
     )
-    await log_action("application_force_denied", "superadmin", {"app_id": app_id})
+    await log_action("application_force_denied", "superadmin", {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-denied application {app_id}.")
     return {"status": "force_denied"}
 
@@ -1620,7 +1459,7 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
             "finance_cleared_at": datetime.utcnow()
         }}
     )
-    await log_action("application_force_finance_cleared", "superadmin", {"app_id": app_id})
+    await log_action("application_force_finance_cleared", "superadmin", {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"💰 Superadmin force-cleared finance gate for application {app_id}.")
     return {"status": "force_finance_cleared"}
 
@@ -1635,7 +1474,7 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
     await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
     await log_action("candidate_removed", "superadmin", {
     "name": cand.get("name"), "position": cand.get("position")
-    })
+    }, org_id=request.state.org_id)
     
     # If the candidate came from an application, mark it removed
     if cand.get("application_id"):
@@ -1683,7 +1522,7 @@ async def get_overseer_dashboard(request: Request):
     aggregate counts and outcomes, but never which commissioner voted which way.
     """
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
-    election_status =  {
+    election_status = {
         "is_open":      (status_doc or {}).get("is_open", True),
         "is_certified": (status_doc or {}).get("is_certified", False),
         "start":        (status_doc or {}).get("start_time"),
@@ -1773,7 +1612,7 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request):
         "student_id": data.student_id,
         "full_name":  data.full_name,
         "reason":     data.reason
-    })
+    }, org_id=request.state.org_id)
     return {"status": "requested", "id": str(result.inserted_id)}
 
 @app.post("/superadmin/it-admins/{student_id:path}/reset-password")
@@ -1795,7 +1634,7 @@ async def reset_it_admin_password(student_id: str, request: Request):
     sms_sent = await send_temp_password_sms(voter, "IT Admin", temp_password)
     await log_action("it_admin_password_reset", "superadmin", {
         "student_id": student_id, "sms_notified": sms_sent
-    })
+    }, org_id=request.state.org_id)
     return {"status": "password_reset", "sms_notified": sms_sent}
 
 
@@ -1818,7 +1657,7 @@ async def reset_commissioner_password(student_id: str, request: Request):
     sms_sent = await send_temp_password_sms(voter, "Commissioner", temp_password)
     await log_action("commissioner_password_reset", "superadmin", {
         "student_id": student_id, "sms_notified": sms_sent
-    })
+    }, org_id=request.state.org_id)
     return {"status": "password_reset", "sms_notified": sms_sent}
 
 @app.post("/it-admin/students/request-remove")
@@ -1846,7 +1685,7 @@ async def request_remove_student(data: ITAdminStudentRemove, request: Request):
         "student_id": data.student_id,
         "full_name":  student.get("full_name", ""),
         "reason":     data.reason
-    })
+    }, org_id=request.state.org_id)
     return {"status": "requested", "id": str(result.inserted_id)}
 
 
@@ -1874,7 +1713,7 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
         "student_id":       change.get("student_id"),
         "original_reason":  change.get("reason"),
         "cancel_reason":    data.cancelled_reason
-    })
+    }, org_id=request.state.org_id)
     return {"status": "cancelled"}
 
 
@@ -1910,7 +1749,11 @@ async def list_student_changes(request: Request, status: str = None):
 
 @app.post("/admin/student-changes/{change_id}/decide")
 async def financial_controller_decide_student_change(change_id: str, data: FinancialControllerDecision, request: Request):
-    """..."""
+    """
+    The Financial Controller verifies payment status and makes the final call on
+    an IT Admin's student-register change. Single-approver decision — this is
+    completely separate from Commission voting on candidates.
+    """
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "decision must be 'approve' or 'deny'.")
 
@@ -1932,24 +1775,32 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
         await db.student_changes.update_one(
             org_query(request, {"_id": ObjectId(change_id)}),
             {"$set": {
-                "status":          "approved",
-                "decided_by":      data.financial_controller_id,
-                "decision_reason": data.reason,
-                "resolved_at":     datetime.utcnow()
+                "status":                "approved",
+                "decided_by":            data.financial_controller_id,
+                "decision_reason":       data.reason,
+                "resolved_at":           datetime.utcnow()
             }}
         )
-        await log_action("student_change_approved", data.financial_controller_id, {...})
+        await log_action("student_change_approved", data.financial_controller_id, {
+            "change_type": change["change_type"],
+            "student_id":  change["student_id"],
+            "requested_by": change.get("requested_by", "")
+        }, org_id=request.state.org_id)
     else:
         await db.student_changes.update_one(
             org_query(request, {"_id": ObjectId(change_id)}),
             {"$set": {
-                "status":          "denied",
-                "decided_by":      data.financial_controller_id,
-                "decision_reason": data.reason,
-                "resolved_at":     datetime.utcnow()
+                "status":                "denied",
+                "decided_by":            data.financial_controller_id,
+                "decision_reason":       data.reason,
+                "resolved_at":           datetime.utcnow()
             }}
         )
-        await log_action("student_change_denied", data.financial_controller_id, {...})
+        await log_action("student_change_denied", data.financial_controller_id, {
+            "change_type": change["change_type"],
+            "student_id":  change["student_id"],
+            "requested_by": change.get("requested_by", "")
+        }, org_id=request.state.org_id)
 
     return {"status": "decision_recorded", "decision": data.decision}
 
@@ -1981,7 +1832,7 @@ async def toggle_it_admin(student_id: str, request: Request):
     )
     await log_action("it_admin_toggled", "superadmin", {
         "student_id": student_id, "is_it_admin": new_val
-    })
+    }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_it_admin": new_val}
 
 
@@ -2007,8 +1858,172 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
     sms_sent = await send_temp_password_sms(voter, "Commissioner", temp_password)
     await log_action("commissioner_credentials_set", "superadmin", {
         "student_id": student_id, "email": data.email, "sms_notified": sms_sent
-    })
+    }, org_id=request.state.org_id)
     return {"status": "credentials_set", "sms_notified": sms_sent}
+
+
+# =============================================================================
+# SUPERADMIN — FINANCIAL CONTROLLER MANAGEMENT (student register approvals)
+# =============================================================================
+
+@app.get("/superadmin/financial-controllers")
+async def list_financial_controllers(request: Request):
+    result = []
+    async for v in db.voters.find(
+        org_query(request, {"is_financial_controller": True}),
+        {"_id": 0, "student_id": 1, "full_name": 1, "financial_controller_email": 1}
+    ):
+        result.append(v)
+    return result
+
+
+@app.post("/superadmin/financial-controllers/{student_id:path}/toggle")
+async def toggle_financial_controller(student_id: str, request: Request):
+    """Grant or revoke Financial Controller status for any voter. Independent
+    of is_commissioner — this role never touches candidate business."""
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    new_val = not voter.get("is_financial_controller", False)
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_financial_controller": new_val}}
+    )
+    await log_action("financial_controller_toggled", "superadmin", {
+        "student_id": student_id, "is_financial_controller": new_val
+    }, org_id=request.state.org_id)
+    return {"student_id": student_id, "is_financial_controller": new_val}
+
+
+@app.post("/superadmin/financial-controllers/{student_id:path}/set-credentials")
+async def set_financial_controller_credentials(student_id: str, data: SetEmailOnly, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_financial_controller"):
+        raise HTTPException(400, "This person is not a Financial Controller.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "financial_controller_email":                data.email,
+            "financial_controller_password_hash":        hashed,
+            "financial_controller_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
+    await log_action("financial_controller_credentials_set", "superadmin", {
+        "student_id": student_id, "email": data.email, "sms_notified": sms_sent
+    }, org_id=request.state.org_id)
+    return {"status": "credentials_set", "sms_notified": sms_sent}
+
+
+@app.post("/superadmin/financial-controllers/{student_id:path}/reset-password")
+async def reset_financial_controller_password(student_id: str, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter or not voter.get("is_financial_controller"):
+        raise HTTPException(404, "Financial Controller not found.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "financial_controller_password_hash":        hashed,
+            "financial_controller_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
+    await log_action("financial_controller_password_reset", "superadmin", {
+        "student_id": student_id, "sms_notified": sms_sent
+    }, org_id=request.state.org_id)
+    return {"status": "password_reset", "sms_notified": sms_sent}
+
+
+# =============================================================================
+# SUPERADMIN — OVERSEER MANAGEMENT (read-only, anonymized platform view)
+# =============================================================================
+
+@app.get("/superadmin/overseers")
+async def list_overseers(request: Request):
+    result = []
+    async for v in db.voters.find(
+        org_query(request, {"is_overseer": True}),
+        {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1}
+    ):
+        result.append(v)
+    return result
+
+
+@app.post("/superadmin/overseers/{student_id:path}/toggle")
+async def toggle_overseer(student_id: str, request: Request):
+    """Grant or revoke Overseer status for any voter. Read-only role — never
+    touches votes, applications, or student changes, only observes them."""
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    new_val = not voter.get("is_overseer", False)
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_overseer": new_val}}
+    )
+    await log_action("overseer_toggled", "superadmin", {
+        "student_id": student_id, "is_overseer": new_val
+    }, org_id=request.state.org_id)
+    return {"student_id": student_id, "is_overseer": new_val}
+
+
+@app.post("/superadmin/overseers/{student_id:path}/set-credentials")
+async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_overseer"):
+        raise HTTPException(400, "This person is not an Overseer.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "overseer_email":                data.email,
+            "overseer_password_hash":        hashed,
+            "overseer_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
+    await log_action("overseer_credentials_set", "superadmin", {
+        "student_id": student_id, "email": data.email, "sms_notified": sms_sent
+    }, org_id=request.state.org_id)
+    return {"status": "credentials_set", "sms_notified": sms_sent}
+
+
+@app.post("/superadmin/overseers/{student_id:path}/reset-password")
+async def reset_overseer_password(student_id: str, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter or not voter.get("is_overseer"):
+        raise HTTPException(404, "Overseer not found.")
+
+    temp_password = generate_temp_password()
+    hashed = hash_password(temp_password)
+
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {
+            "overseer_password_hash":        hashed,
+            "overseer_must_change_password": True
+        }}
+    )
+    sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
+    await log_action("overseer_password_reset", "superadmin", {
+        "student_id": student_id, "sms_notified": sms_sent
+    }, org_id=request.state.org_id)
+    return {"status": "password_reset", "sms_notified": sms_sent}
 
 
 @app.get("/superadmin/student-changes")
@@ -2025,8 +2040,8 @@ async def superadmin_list_student_changes(request: Request, status: str = None):
 
 
 @app.post("/superadmin/student-changes/{change_id}/force-approve")
-async def superadmin_force_student_change_approve(change_id: str):
-    change = await db.student_changes.find_one({"_id": ObjectId(change_id)})
+async def superadmin_force_student_change_approve(change_id: str, request: Request):
+    change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") in ("approved", "force_approved"):
@@ -2034,9 +2049,9 @@ async def superadmin_force_student_change_approve(change_id: str):
     if change.get("status") == "cancelled":
         raise HTTPException(400, "Cannot approve a cancelled request.")
 
-    await _execute_student_change(change)
+    await _execute_student_change(change, request.state.org_id)
     await db.student_changes.update_one(
-        {"_id": ObjectId(change_id)},
+        org_query(request, {"_id": ObjectId(change_id)}),
         {"$set": {
             "status":               "force_approved",
             "superadmin_override":  True,
@@ -2047,7 +2062,7 @@ async def superadmin_force_student_change_approve(change_id: str):
         "change_type":  change["change_type"],
         "student_id":   change["student_id"],
         "requested_by": change.get("requested_by", "")
-    })
+    }, org_id=request.state.org_id)
     return {"status": "force_approved"}
 
 
@@ -2071,7 +2086,7 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
         "change_type":  change["change_type"],
         "student_id":   change["student_id"],
         "requested_by": change.get("requested_by", "")
-    })
+    }, org_id=request.state.org_id)
     return {"status": "force_denied"}
 
 
@@ -2101,7 +2116,7 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
         "student_id": data.student_id,
         "full_name":  data.full_name,
         "reason":     data.reason
-    })
+    }, org_id=request.state.org_id)
     return {"status": "added"}
 
 
@@ -2115,7 +2130,7 @@ async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request
         "student_id": data.student_id,
         "full_name":  student.get("full_name", ""),
         "reason":     data.reason
-    })
+    }, org_id=request.state.org_id)
     return {"status": "removed"}
 
 
@@ -2124,8 +2139,8 @@ async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request
 # =============================================================================
 
 @app.get("/superadmin/audit-log")
-async def get_audit_log(limit: int = 200, action: str = None):
-    query = {}
+async def get_audit_log(request: Request, limit: int = 200, action: str = None):
+    query = org_query(request)
     if action:
         query["action"] = {"$regex": action, "$options": "i"}
     logs = []
