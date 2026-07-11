@@ -410,9 +410,9 @@ useEffect(() => {
 
         {view === "results" && <Results apiBase={API_BASE} />}
         {view === "superadmin" && <SuperAdminDashboard apiBase={API_BASE} onLogout={resetFlow} />}
-        {view === "commission" && <CommissionDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "commission" && <CommissionDashboard onLogout={resetFlow} />}
         {view === "apply" && <ApplicantPortal apiBase={API_BASE} orgName={orgName} />}
-        {view === "it_admin" && <ITAdminDashboard apiBase={API_BASE} onLogout={resetFlow} />}
+        {view === "it_admin" && <ITAdminDashboard onLogout={resetFlow} />}
         {view === "financial_controller" && <FinancialControllerDashboard apiBase={API_BASE} onLogout={resetFlow} />}
         {view === "overseer" && <OverseerDashboard apiBase={API_BASE} onLogout={resetFlow} />}
         
