@@ -1553,17 +1553,17 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly):
 # --- Application overrides ---
 
 @app.post("/superadmin/applications/{app_id}/force-approve")
-async def superadmin_force_approve(app_id: str):
+async def superadmin_force_approve(app_id: str, request: Request):
     """Approve an application instantly, bypassing commission voting."""
-    app_doc = await db.applications.find_one({"_id": ObjectId(app_id)})
+    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") == "approved":
         raise HTTPException(400, "Already approved.")
 
-    await _create_candidate_from_application(app_doc)
+    await _create_candidate_from_application(app_doc, request.state.org_id)
     await db.applications.update_one(
-        {"_id": ObjectId(app_id)},
+        org_query(request, {"_id": ObjectId(app_id)}),
         {"$set": {
             "status": "approved",
             "superadmin_override": True,
@@ -1576,16 +1576,16 @@ async def superadmin_force_approve(app_id: str):
 
 
 @app.post("/superadmin/applications/{app_id}/force-deny")
-async def superadmin_force_deny(app_id: str):
+async def superadmin_force_deny(app_id: str, request: Request):
     """Deny an application instantly, bypassing commission voting."""
-    app_doc = await db.applications.find_one({"_id": ObjectId(app_id)})
+    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("denied", "removed"):
         raise HTTPException(400, "Application is already denied or removed.")
 
     await db.applications.update_one(
-        {"_id": ObjectId(app_id)},
+        org_query(request, {"_id": ObjectId(app_id)}),
         {"$set": {
             "status": "denied",
             "superadmin_override": True,
@@ -1598,17 +1598,17 @@ async def superadmin_force_deny(app_id: str):
 
 
 @app.post("/superadmin/applications/{app_id}/force-finance-clear")
-async def superadmin_force_finance_clear(app_id: str):
+async def superadmin_force_finance_clear(app_id: str, request: Request):
     """Bypass the Finance Commissioner gate — for cases where no Finance
     Commissioner is currently assigned. Voting can proceed after this."""
-    app_doc = await db.applications.find_one({"_id": ObjectId(app_id)})
+    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
     await db.applications.update_one(
-        {"_id": ObjectId(app_id)},
+        org_query(request, {"_id": ObjectId(app_id)}),
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": "superadmin_override",
@@ -1621,13 +1621,13 @@ async def superadmin_force_finance_clear(app_id: str):
 
 
 @app.post("/superadmin/candidates/{candidate_id}/remove")
-async def superadmin_remove_candidate(candidate_id: str):
+async def superadmin_remove_candidate(candidate_id: str, request: Request):
     """Remove an approved candidate from the ballot instantly."""
-    cand = await db.candidates.find_one({"_id": ObjectId(candidate_id)})
+    cand = await db.candidates.find_one(org_query(request, {"_id": ObjectId(candidate_id)}))
     if not cand:
         raise HTTPException(404, "Candidate not found.")
 
-    await db.candidates.delete_one({"_id": ObjectId(candidate_id)})
+    await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
     await log_action("candidate_removed", "superadmin", {
     "name": cand.get("name"), "position": cand.get("position")
     })
@@ -1635,7 +1635,7 @@ async def superadmin_remove_candidate(candidate_id: str):
     # If the candidate came from an application, mark it removed
     if cand.get("application_id"):
         await db.applications.update_one(
-            {"_id": ObjectId(cand["application_id"])},
+            org_query(request, {"_id": ObjectId(cand["application_id"])}),
             {"$set": {
                 "status": "removed",
                 "superadmin_override": True,
@@ -1795,8 +1795,8 @@ async def reset_it_admin_password(student_id: str):
 
 
 @app.post("/superadmin/commissioners/{student_id:path}/reset-password")
-async def reset_commissioner_password(student_id: str):
-    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+async def reset_commissioner_password(student_id: str, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
     if not voter or not voter.get("is_commissioner"):
         raise HTTPException(404, "Commissioner not found.")
 
@@ -1985,8 +1985,8 @@ async def toggle_it_admin(student_id: str):
 
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-credentials")
-async def set_commissioner_credentials(student_id: str, data: SetEmailOnly):
-    voter = await db.voters.find_one(get_forgiving_filter(student_id))
+async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_commissioner"):
