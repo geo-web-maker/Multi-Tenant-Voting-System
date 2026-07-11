@@ -94,7 +94,7 @@ export default function SuperAdminDashboard({ onLogout }) {
       return;
     }
     try {
-      const res = await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
+      const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
         email
       });
       alert(res.data.sms_notified
@@ -109,7 +109,7 @@ export default function SuperAdminDashboard({ onLogout }) {
     if (!window.confirm('Send a new temporary password to this commissioner via SMS?')) return;
     setResetting(prev => ({ ...prev, [studentId]: true }));
     try {
-      const res = await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
+      const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
       alert(res.data.sms_notified
         ? 'New temporary password sent via SMS.'
         : 'Password reset, but SMS failed to send.');
@@ -119,21 +119,21 @@ export default function SuperAdminDashboard({ onLogout }) {
   
   const fetchBranding = async () => {
     try {
-      const res = await api.get(`${API_URL}/superadmin/branding`);
+      const res = await api.get(`/superadmin/branding`);
       setBranding(res.data);
     } catch (e) { /* use defaults */ }
   };
 
   const fetchPositions = async () => {
     try {
-      const res = await api.get(`${API_URL}/positions`);
+      const res = await api.get(`/positions`);
       setPositions(res.data);
     } catch (e) {}
   };
 
   const fetchCandidates = async () => {
     try {
-      const res = await api.get(`${API_URL}/candidates`);
+      const res = await api.get(`/candidates`);
       setCandidates(res.data);
     } catch (e) {}
   };
@@ -141,7 +141,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const fetchApplications = async () => {
     setAppsLoading(true);
     try {
-      const res = await api.get(`${API_URL}/admin/applications`);
+      const res = await api.get(`/admin/applications`);
       setApplications(res.data);
     } catch (e) {}
     finally { setAppsLoading(false); }
@@ -149,7 +149,7 @@ export default function SuperAdminDashboard({ onLogout }) {
 
   const fetchCommissioners = async () => {
     try {
-      const res = await api.get(`${API_URL}/superadmin/commissioners`);
+      const res = await api.get(`/superadmin/commissioners`);
       setCommissioners(res.data);
     } catch (e) {}
   };
@@ -158,8 +158,8 @@ export default function SuperAdminDashboard({ onLogout }) {
     setLoading(true);
     try {
       const [voterRes, statusRes] = await Promise.all([
-        api.get(`${API_URL}/admin/voters`),
-        api.get(`${API_URL}/election-status`),
+        api.get(`/admin/voters`),
+        api.get(`/election-status`),
       ]);
       setElectionVoters(voterRes.data);
       setIsElectionOpen(statusRes.data.is_open);
@@ -227,7 +227,7 @@ const fetchVotersList = async () => {
   const handleSaveBranding = async () => {
     setBrandSaving(true);
     try {
-      await api.post(`${API_URL}/superadmin/branding`, branding);
+      await api.post(`/superadmin/branding`, branding);
       // Apply immediately without reload
       document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
       document.documentElement.style.setProperty('--brand-accent',  branding.accent_color);
@@ -242,7 +242,7 @@ const fetchVotersList = async () => {
     if (!newPosition.title.trim()) return alert('Position title required.');
     setPosLoading(true);
     try {
-      await api.post(`${API_URL}/positions`, newPosition);
+      await api.post(`/positions`, newPosition);
       setNewPosition({ title: '', description: '', order: 0 });
       fetchPositions();
     } catch (e) { alert('Failed to add position.'); }
@@ -252,7 +252,7 @@ const fetchVotersList = async () => {
   const handleDeletePosition = async (id) => {
     if (!window.confirm('Delete this position? Existing candidates under this position are unaffected.')) return;
     try {
-      await api.delete(`${API_URL}/positions/${id}`);
+      await api.delete(`/positions/${id}`);
       fetchPositions();
     } catch (e) { alert('Failed to delete position.'); }
   };
@@ -265,7 +265,7 @@ const fetchVotersList = async () => {
     try {
       let imageUrl = 'https://via.placeholder.com/150';
       if (newCandidate.image) imageUrl = await uploadToCloudinary(newCandidate.image);
-      await api.post(`${API_URL}/candidates`, {
+      await api.post(`/candidates`, {
         name: newCandidate.name,
         position: newCandidate.position,
         image_url: imageUrl,
@@ -282,7 +282,7 @@ const fetchVotersList = async () => {
     try {
       let imageUrl = null;
       if (editForm.newImage) imageUrl = await uploadToCloudinary(editForm.newImage);
-      await api.put(`${API_URL}/candidates/${id}`, {
+      await api.put(`/candidates/${id}`, {
         name:     editForm.name,
         position: editForm.position,
         order:    parseInt(editForm.order) || 0,
@@ -297,7 +297,7 @@ const fetchVotersList = async () => {
   const handleRemoveCandidateOverride = async (candidateId) => {
     if (!window.confirm('Remove this candidate instantly from the ballot?')) return;
     try {
-      await api.post(`${API_URL}/superadmin/candidates/${candidateId}/remove`);
+      await api.post(`/superadmin/candidates/${candidateId}/remove`);
       fetchCandidates();
       fetchApplications();
     } catch (e) { alert('Failed to remove candidate.'); }
@@ -308,7 +308,7 @@ const fetchVotersList = async () => {
   const handleForceApprove = async (appId) => {
     if (!window.confirm('Force-approve this application instantly? The candidate will appear on the ballot immediately.')) return;
     try {
-      await api.post(`${API_URL}/superadmin/applications/${appId}/force-approve`);
+      await api.post(`/superadmin/applications/${appId}/force-approve`);
       fetchApplications();
       fetchCandidates();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
@@ -317,7 +317,7 @@ const fetchVotersList = async () => {
   const handleForceDeny = async (appId) => {
     if (!window.confirm('Force-deny this application?')) return;
     try {
-      await api.post(`${API_URL}/superadmin/applications/${appId}/force-deny`);
+      await api.post(`/superadmin/applications/${appId}/force-deny`);
       fetchApplications();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
   };
@@ -326,7 +326,7 @@ const fetchVotersList = async () => {
 
   const handleToggleCommissioner = async (studentId) => {
     try {
-      const res = await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
+      const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
       alert(`${studentId} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`);
       fetchCommissioners();
       fetchVotersList();
@@ -334,25 +334,124 @@ const fetchVotersList = async () => {
   };
 
   const handleSetChief = async (studentId) => {
-  await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-chief`);
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-chief`);
   fetchCommissioners();
 };
 
 const handleClearChief = async (studentId) => {
-  await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-chief`);
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-chief`);
   fetchCommissioners();
 };
 
 const handleSetRole = async (studentId, role) => {
-  await api.post(`${API_URL}/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role });
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role });
   fetchCommissioners();
+};
+
+const handleSetFinanceCommissioner = async (studentId) => {
+  try {
+    await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-finance-commissioner`);
+    fetchCommissioners();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+};
+
+const handleClearFinanceCommissioner = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-finance-commissioner`);
+  fetchCommissioners();
+};
+
+// ── Financial Controllers ──
+
+const handleToggleFinancialController = async (studentId) => {
+  try {
+    const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/toggle`);
+    alert(`${studentId} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`);
+    fetchFinancialControllers();
+    fetchVotersList();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+};
+
+const handleSetFinancialControllerCredentials = async (studentId) => {
+  const email = fcCredEmail[studentId];
+  if (!email) { alert('Email is required.'); return; }
+  try {
+    const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/set-credentials`, { email });
+    alert(res.data.sms_notified
+      ? 'Email saved. A temporary password was sent via SMS.'
+      : 'Email saved, but SMS notification failed to send.');
+    setFcCredEmail(prev => ({ ...prev, [studentId]: '' }));
+    fetchFinancialControllers();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+};
+
+const handleResetFinancialControllerPassword = async (studentId) => {
+  if (!window.confirm('Send a new temporary password to this Financial Controller via SMS?')) return;
+  setResetting(prev => ({ ...prev, [studentId]: true }));
+  try {
+    const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/reset-password`);
+    alert(res.data.sms_notified
+      ? 'New temporary password sent via SMS.'
+      : 'Password reset, but SMS failed to send.');
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+};
+
+// ── Overseers ──
+
+const handleToggleOverseer = async (studentId) => {
+  try {
+    const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/toggle`);
+    alert(`${studentId} is now ${res.data.is_overseer ? 'an Overseer' : 'no longer an Overseer'}.`);
+    fetchOverseers();
+    fetchVotersList();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+};
+
+const handleSetOverseerCredentials = async (studentId) => {
+  const email = ovCredEmail[studentId];
+  if (!email) { alert('Email is required.'); return; }
+  try {
+    const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/set-credentials`, { email });
+    alert(res.data.sms_notified
+      ? 'Email saved. A temporary password was sent via SMS.'
+      : 'Email saved, but SMS notification failed to send.');
+    setOvCredEmail(prev => ({ ...prev, [studentId]: '' }));
+    fetchOverseers();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+};
+
+const handleResetOverseerPassword = async (studentId) => {
+  if (!window.confirm('Send a new temporary password to this Overseer via SMS?')) return;
+  setResetting(prev => ({ ...prev, [studentId]: true }));
+  try {
+    const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/reset-password`);
+    alert(res.data.sms_notified
+      ? 'New temporary password sent via SMS.'
+      : 'Password reset, but SMS failed to send.');
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+};
+
+// ── Organizations ──
+
+const handleCreateOrg = async (e) => {
+  e.preventDefault();
+  if (!orgForm.name.trim()) { alert('Organization name is required.'); return; }
+  setOrgCreating(true);
+  try {
+    const res = await api.post('/superadmin/orgs', { name: orgForm.name.trim(), slug: orgForm.slug.trim() });
+    alert(`Organization "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`);
+    setOrgForm({ name: '', slug: '' });
+    fetchOrganizations();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed to create organization.'); }
+  finally { setOrgCreating(false); }
 };
 
   // ── Election controls ──
 
   const handleToggleElection = async () => {
     try {
-      const res = await api.post(`${API_URL}/admin/toggle-election`);
+      const res = await api.post(`/admin/toggle-election`);
       setIsElectionOpen(res.data.is_open);
       alert(`Election is now ${res.data.is_open ? 'OPEN' : 'CLOSED'}.`);
     } catch (e) { alert('Toggle failed.'); }
@@ -365,7 +464,7 @@ const handleSetRole = async (studentId, role) => {
       : 'Mark results as FINAL and BINDING?';
     if (!window.confirm(msg)) return;
     try {
-      const res = await api.post(`${API_URL}/admin/toggle-certification`);
+      const res = await api.post(`/admin/toggle-certification`);
       setIsCertified(res.data.is_certified);
       alert(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
     } catch (e) { alert('Failed.'); }
@@ -374,7 +473,7 @@ const handleSetRole = async (studentId, role) => {
   const handleScheduleTimer = async () => {
     if (!startTime || !endTime) { alert('Set both start and end times.'); return; }
     try {
-      await api.post(`${API_URL}/admin/schedule-election`, { start: startTime, end: endTime });
+      await api.post(`/admin/schedule-election`, { start: startTime, end: endTime });
       setTimerActive(true);
       alert('Schedule saved!');
     } catch (e) { alert('Scheduling failed.'); }
@@ -383,7 +482,7 @@ const handleSetRole = async (studentId, role) => {
   const handleClearSchedule = async () => {
     if (!window.confirm('Clear the schedule?')) return;
     try {
-      await api.post(`${API_URL}/admin/clear-schedule`);
+      await api.post(`/admin/clear-schedule`);
       setStartTime(''); setEndTime(''); setTimerActive(false);
     } catch (e) { alert('Failed to clear schedule.'); }
   };
@@ -392,7 +491,7 @@ const handleSetRole = async (studentId, role) => {
     if (!window.confirm('⚠️ DANGER: Delete ALL votes and reset?')) return;
     if (window.prompt("Type 'RESET' to confirm:") !== 'RESET') return;
     try {
-      await api.post(`${API_URL}/admin/reset-election`);
+      await api.post(`/admin/reset-election`);
       alert('Election reset.');
       fetchElectionData();
     } catch (e) { alert('Reset failed.'); }
@@ -405,7 +504,7 @@ const handleSetRole = async (studentId, role) => {
     formData.append('file', file);
     setImporting(true);
     try {
-      const res = await api.post(`${API_URL}/admin/import-voters`, formData, {
+      const res = await api.post(`/admin/import-voters`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       alert(`Imported ${res.data.imported_count} voters.`);
@@ -418,14 +517,14 @@ const handleSetRole = async (studentId, role) => {
   //--IT Admin changes
   const fetchItAdmins = async () => {
   try {
-      const res = await api.get(`${API_URL}/superadmin/it-admins`);
+      const res = await api.get(`/superadmin/it-admins`);
       setItAdmins(res.data);
     } catch (e) {}
   };
 
 const fetchStudentChanges = async () => {
   try {
-      const res = await api.get(`${API_URL}/superadmin/student-changes`);
+      const res = await api.get(`/superadmin/student-changes`);
       setStudentChanges(res.data);
     } catch (e) {}
   };
@@ -434,8 +533,8 @@ const fetchAuditLog = async () => {
   setAuditLoading(true);
   try {
       const url = auditFilter
-        ? `${API_URL}/superadmin/audit-log?action=${auditFilter}`
-        : `${API_URL}/superadmin/audit-log`;
+        ? `/superadmin/audit-log?action=${auditFilter}`
+        : `/superadmin/audit-log`;
       const res = await api.get(url);
       setAuditLog(res.data);
     } catch (e) {}
@@ -444,7 +543,7 @@ const fetchAuditLog = async () => {
 
   const handleToggleItAdmin = async (studentId) => {
   try {
-      const res = await api.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
+      const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
       alert(`${studentId} is now ${res.data.is_it_admin ? 'an IT admin' : 'no longer an IT admin'}.`);
       fetchItAdmins();
       fetchVotersList();
@@ -458,7 +557,7 @@ const handleSetItAdminCredentials = async (studentId) => {
     return;
   }
   try {
-    const res = await api.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
+    const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
       email
     });
     alert(res.data.sms_notified
@@ -473,7 +572,7 @@ const handleResetItAdminPassword = async (studentId) => {
   if (!window.confirm('Send a new temporary password to this IT admin via SMS?')) return;
   setResetting(prev => ({ ...prev, [studentId]: true }));
   try {
-    const res = await api.post(`${API_URL}/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
+    const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
     alert(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
@@ -483,8 +582,8 @@ const handleResetItAdminPassword = async (studentId) => {
 
 const handleForceStudentChange = async (changeId, action) => {
   const endpoint = action === 'approve'
-      ? `${API_URL}/superadmin/student-changes/${changeId}/force-approve`
-      : `${API_URL}/superadmin/student-changes/${changeId}/force-deny`;
+      ? `/superadmin/student-changes/${changeId}/force-approve`
+      : `/superadmin/student-changes/${changeId}/force-deny`;
     if (!window.confirm(`Force ${action} this request?`)) return;
     try {
       await api.post(endpoint);
@@ -496,7 +595,7 @@ const handleSuperAdminAddStudent = async (e) => {
   e.preventDefault();
   // use a separate state for this form — add useState for saDirectAdd
   try {
-      await api.post(`${API_URL}/superadmin/students/add`, saDirectAdd);
+      await api.post(`/superadmin/students/add`, saDirectAdd);
       alert('Student added.');
       setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '' });
       fetchElectionData();
@@ -506,7 +605,7 @@ const handleSuperAdminAddStudent = async (e) => {
 const handleSuperAdminRemoveStudent = async () => {
   if (!window.confirm('Remove this student from the voter register?')) return;
   try {
-      await api.post(`${API_URL}/superadmin/students/remove`, saDirectRemove);
+      await api.post(`/superadmin/students/remove`, saDirectRemove);
       alert('Student removed.');
       setSaDirectRemove({ student_id: '', reason: '' });
       setRemoveSearch('');
@@ -543,6 +642,9 @@ const handleSuperAdminRemoveStudent = async () => {
     { id: 'election',     label: '⚙️ Election' },
     { id: 'it_admins',  label: '💻 IT Admins' },
     { id: 'student_changes', label: '👥 Student Changes' },
+    { id: 'financial_controllers', label: '💰 Financial Controllers' },
+    { id: 'overseers',  label: '👁️ Overseers' },
+    { id: 'organizations', label: '🏢 Organizations' },
     { id: 'audit_log',  label: '📋 Audit Log' },
   ];
 
@@ -785,6 +887,11 @@ const handleSuperAdminRemoveStudent = async () => {
                           ⭐ Chief
                         </span>
                       )}
+                      {c.is_finance_commissioner && (
+                        <span style={{ fontSize: '10px', backgroundColor: '#2ecc7120', color: '#2ecc71', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                          💰 Finance
+                        </span>
+                      )}
                     </div>
                     <small style={{ opacity: 0.6 }}>{c.student_id}</small>
                     <br />
@@ -816,6 +923,19 @@ const handleSuperAdminRemoveStudent = async () => {
                         onClick={() => handleSetChief(c.student_id)}
                         style={{ ...ghostBtn, fontSize: '12px' }}>
                         ⭐ Set Chief
+                      </button>
+                    )}
+                    {c.is_finance_commissioner ? (
+                      <button
+                        onClick={() => handleClearFinanceCommissioner(c.student_id)}
+                        style={{ ...ghostBtn, color: '#2ecc71', borderColor: '#2ecc71', fontSize: '12px' }}>
+                        Clear Finance
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleSetFinanceCommissioner(c.student_id)}
+                        style={{ ...ghostBtn, fontSize: '12px' }}>
+                        💰 Set Finance
                       </button>
                     )}
                     <button style={redLink} onClick={() => handleToggleCommissioner(c.student_id)}>
@@ -1495,6 +1615,214 @@ const handleSuperAdminRemoveStudent = async () => {
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* ══════════════ FINANCIAL CONTROLLERS TAB ══════════════ */}
+        {activeTab === 'financial_controllers' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Current Financial Controllers ({financialControllers.length})</h4>
+              {financialControllers.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No Financial Controllers assigned yet. Find voters below and toggle them.</p>
+              )}
+              {financialControllers.map(a => (
+                <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{a.student_id}</small>
+                      {a.financial_controller_email && (
+                        <>
+                          <br />
+                          <small style={{ color: '#3498db' }}>{a.financial_controller_email}</small>
+                        </>
+                      )}
+                    </div>
+                    <button style={redLink} onClick={() => handleToggleFinancialController(a.student_id)}>
+                      Revoke
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      style={{ ...inp, flex: 1, minWidth: '180px' }}
+                      placeholder="Email"
+                      value={fcCredEmail[a.student_id] || ''}
+                      onChange={e => setFcCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
+                    />
+                    <button style={greenBtn} onClick={() => handleSetFinancialControllerCredentials(a.student_id)}>
+                      Send Credentials
+                    </button>
+                    {a.financial_controller_email && (
+                      <button
+                        style={ghostBtn}
+                        disabled={resetting[a.student_id]}
+                        onClick={() => handleResetFinancialControllerPassword(a.student_id)}
+                      >
+                        {resetting[a.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant Financial Controller Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={fcSearch}
+                onChange={e => setFcSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {voters
+                  .filter(v => !financialControllers.some(a => a.student_id === v.student_id))
+                  .filter(v =>
+                    v.full_name?.toLowerCase().includes(fcSearch.toLowerCase()) ||
+                    v.student_id?.toLowerCase().includes(fcSearch.toLowerCase())
+                  )
+                  .map(v => (
+                    <div key={v.student_id} style={rowCard}>
+                      <div>
+                        <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                        <br />
+                        <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                      </div>
+                      <button style={greenBtn} onClick={() => handleToggleFinancialController(v.student_id)}>
+                        + Make Financial Controller
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ OVERSEERS TAB ══════════════ */}
+        {activeTab === 'overseers' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Current Overseers ({overseers.length})</h4>
+              {overseers.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No Overseers assigned yet. Find voters below and toggle them.</p>
+              )}
+              {overseers.map(a => (
+                <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{a.student_id}</small>
+                      {a.overseer_email && (
+                        <>
+                          <br />
+                          <small style={{ color: '#3498db' }}>{a.overseer_email}</small>
+                        </>
+                      )}
+                    </div>
+                    <button style={redLink} onClick={() => handleToggleOverseer(a.student_id)}>
+                      Revoke
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      style={{ ...inp, flex: 1, minWidth: '180px' }}
+                      placeholder="Email"
+                      value={ovCredEmail[a.student_id] || ''}
+                      onChange={e => setOvCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
+                    />
+                    <button style={greenBtn} onClick={() => handleSetOverseerCredentials(a.student_id)}>
+                      Send Credentials
+                    </button>
+                    {a.overseer_email && (
+                      <button
+                        style={ghostBtn}
+                        disabled={resetting[a.student_id]}
+                        onClick={() => handleResetOverseerPassword(a.student_id)}
+                      >
+                        {resetting[a.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant Overseer Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={ovSearch}
+                onChange={e => setOvSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {voters
+                  .filter(v => !overseers.some(a => a.student_id === v.student_id))
+                  .filter(v =>
+                    v.full_name?.toLowerCase().includes(ovSearch.toLowerCase()) ||
+                    v.student_id?.toLowerCase().includes(ovSearch.toLowerCase())
+                  )
+                  .map(v => (
+                    <div key={v.student_id} style={rowCard}>
+                      <div>
+                        <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                        <br />
+                        <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                      </div>
+                      <button style={greenBtn} onClick={() => handleToggleOverseer(v.student_id)}>
+                        + Make Overseer
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ ORGANIZATIONS TAB (multi-tenancy) ══════════════ */}
+        {activeTab === 'organizations' && (
+          <div>
+            <div style={{ ...card, marginBottom: '20px', maxWidth: '480px' }}>
+              <h4 style={cardTitle}>Provision New Organization</h4>
+              <form onSubmit={handleCreateOrg} style={formCol}>
+                <input
+                  style={inp}
+                  placeholder="Organization name (e.g. KYUCCU)"
+                  value={orgForm.name}
+                  onChange={e => setOrgForm(prev => ({ ...prev, name: e.target.value }))}
+                />
+                <input
+                  style={inp}
+                  placeholder="Slug (optional — auto-generated if blank)"
+                  value={orgForm.slug}
+                  onChange={e => setOrgForm(prev => ({ ...prev, slug: e.target.value }))}
+                />
+                <button type="submit" style={greenBtn} disabled={orgCreating}>
+                  {orgCreating ? 'Provisioning…' : '+ Create Organization'}
+                </button>
+              </form>
+              <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.55 }}>
+                The returned slug is what gets set as <code>VITE_ORG_SLUG</code> in that org's frontend deployment.
+              </p>
+            </div>
+
+            <div style={card}>
+              <h4 style={cardTitle}>Provisioned Organizations ({organizations.length})</h4>
+              {organizations.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No organizations provisioned yet.</p>
+              )}
+              {organizations.map(o => (
+                <div key={o._id} style={rowCard}>
+                  <div>
+                    <b style={{ color: 'var(--text-color)' }}>{o.name}</b>
+                    <br />
+                    <small style={{ opacity: 0.6 }}>slug: <code>{o.slug}</code></small>
+                  </div>
+                  <small style={{ opacity: 0.45 }}>
+                    {new Date(o.created_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </small>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
