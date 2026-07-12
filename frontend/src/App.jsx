@@ -374,7 +374,7 @@ useEffect(() => {
     <div style={containerStyle}>
       <div style={{ 
           width: '100%', 
-          maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '1500px' : '500px',
+          maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '1200px' : '500px',
           margin: '0 auto',
           transition: 'max-width 0.3s ease' 
         }}>
