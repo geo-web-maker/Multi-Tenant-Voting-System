@@ -76,7 +76,7 @@ useEffect(() => {
     // Update browser tab title dynamically
     if (res.data.org_name) document.title = `${res.data.org_name} Election Portal`;
   }).catch(() => {});
-}, [API_BASE]);
+}, []);
   
   useEffect(() => {
     // Stop the animation if the user has already started typing
@@ -134,7 +134,7 @@ useEffect(() => {
       }
     };
     checkStatus();
-  }, [API_BASE]);
+  }, []);
 
   useEffect(() => {
     let interval = null;
@@ -158,7 +158,7 @@ useEffect(() => {
         }
       };
       fetchCandidates();
-    }, [API_BASE]);
+    }, []);
 
   // --- HANDLERS ---
   const handleVoteSuccess = () => {
