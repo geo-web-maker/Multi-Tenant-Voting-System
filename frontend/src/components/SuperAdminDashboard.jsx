@@ -618,21 +618,23 @@ const handleSuperAdminAddStudent = async (e) => {
   e.preventDefault();
   // use a separate state for this form — add useState for saDirectAdd
   try {
-      await api.post(`/superadmin/students/add`, saDirectAdd);
+      await api.post('/superadmin/students/add', saDirectAdd);
       alert('Student added.');
       setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '' });
       fetchElectionData();
+      fetchVotersList();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
   };
 
 const handleSuperAdminRemoveStudent = async () => {
   if (!window.confirm('Remove this student from the voter register?')) return;
   try {
-      await api.post(`/superadmin/students/remove`, saDirectRemove);
+      await api.post('/superadmin/students/remove', saDirectRemove);
       alert('Student removed.');
       setSaDirectRemove({ student_id: '', reason: '' });
       setRemoveSearch('');
       fetchElectionData();
+      fetchVotersList();
     } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
   };
 
