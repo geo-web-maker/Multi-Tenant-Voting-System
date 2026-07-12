@@ -39,7 +39,11 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [uploading, setUploading]   = useState(false);
   const [editingId, setEditingId]   = useState(null);
   const [editForm, setEditForm]     = useState({ name: '', position: '', order: 0, newImage: null });
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
+  // --- Ported from AdminDashboard ---
+  const [smsBalance, setSmsBalance] = useState({ balance: 0, currency: 'UGX' });
+  
   // --- Applications state ---
   const [applications, setApplications] = useState([]);
   const [appsLoading, setAppsLoading]   = useState(false);
@@ -207,7 +211,14 @@ const fetchVotersList = async () => {
     } catch (e) {}
   };
 
-  const refetchAll = () => {
+  const fetchSmsBalance = async () => {
+    try {
+      const res = await api.get('/admin/sms-balance');
+      setSmsBalance(res.data);
+    } catch (e) { setSmsBalance({ balance: 'N/A', currency: '' }); }
+  };
+
+const refetchAll = () => {
     fetchBranding();
     fetchPositions();
     fetchCandidates();
@@ -219,6 +230,7 @@ const fetchVotersList = async () => {
     fetchStudentChanges();
     fetchFinancialControllers();
     fetchOverseers();
+    fetchSmsBalance();
   };
 
   const handleSwitchOrg = (slug) => {
@@ -657,6 +669,14 @@ const handleSuperAdminRemoveStudent = async () => {
     ? ((electionVoters.filter(v => v.has_voted).length / electionVoters.length) * 100).toFixed(1)
     : 0;
 
+  // --- Ported from AdminDashboard: funnel + duplicate detection ---
+  const stage1 = electionVoters.filter(v => v.last_status === "otp_sent").length;
+  const stage2 = electionVoters.filter(v => v.last_status === "authenticated").length;
+  const stage3 = electionVoters.filter(v => v.has_voted || v.last_status === "completed").length;
+  const duplicateIds = electionVoters
+    .map(v => v.student_id)
+    .filter((id, index, array) => array.indexOf(id) !== index);
+
   const tabs = [
     { id: 'candidates',   label: '🏅 Candidates' },
     { id: 'applications', label: '📋 Applications' },
@@ -777,9 +797,12 @@ const handleSuperAdminRemoveStudent = async () => {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>
-                Current Ballot ({candidates.length} candidates)
-              </h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h4 style={{ ...cardTitle, marginBottom: '5px' }}>
+                  Current Ballot ({candidates.length} candidates)
+                </h4>
+                <button style={ghostBtn} onClick={() => setIsPreviewOpen(true)}>👁️ Preview Ballot</button>
+              </div>
               {candidates.map(c => (
                 <div key={c._id} style={rowCard}>
                   {editingId === c._id ? (
@@ -830,6 +853,27 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Ported from AdminDashboard: ballot preview modal */}
+        {isPreviewOpen && (
+          <div style={modalOverlay}>
+            <div style={modalContent}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
+                <h3 style={{ margin: 0, color: 'var(--text-color)' }}>Ballot Preview</h3>
+                <button onClick={() => setIsPreviewOpen(false)} style={redLink}>Close</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                {candidates.map((c, idx) => (
+                  <div key={c._id} style={{ ...statCard, textAlign: 'left', display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 'bold', opacity: 0.3 }}>{idx + 1}</span>
+                    <img src={c.image_url} style={avatar} alt="" />
+                    <div><div style={{ fontWeight: 'bold', color: 'var(--text-color)' }}>{c.name}</div><small style={{ color: '#2ecc71' }}>{c.position}</small></div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -1067,8 +1111,35 @@ const handleSuperAdminRemoveStudent = async () => {
                 <div style={statCard}><small>Voted</small><h3 style={{ color: '#2ecc71' }}>{electionVoters.filter(v => v.has_voted).length}</h3></div>
                 <div style={statCard}><small>Turnout</small><h3>{turnout}%</h3></div>
                 <div style={statCard}><small>Pending</small><h3 style={{ color: '#f1c40f' }}>{electionVoters.filter(v => !v.has_voted).length}</h3></div>
+                <div style={statCard}><small>SMS Balance</small><h3>{smsBalance.balance} {smsBalance.currency}</h3></div>
               </div>
             </div>
+
+            {/* Ported from AdminDashboard: voter funnel by last_status */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%', marginBottom: '16px' }}>
+              <div style={statCard}><small>OTP Sent</small><h3 style={{ color: '#3498db' }}>{stage1}</h3></div>
+              <div style={statCard}><small>Authenticated</small><h3 style={{ color: '#9b59b6' }}>{stage2}</h3></div>
+              <div style={statCard}><small>Completed</small><h3 style={{ color: '#2ecc71' }}>{stage3}</h3></div>
+            </div>
+
+            {duplicateIds.length > 0 && (
+              <div style={{ padding: '12px 16px', border: '1px solid #e74c3c', borderRadius: '10px', marginBottom: '16px', color: '#e74c3c', fontSize: '13px' }}>
+                ⚠️ Duplicate student IDs detected: {[...new Set(duplicateIds)].join(', ')}
+              </div>
+            )}
+
+            {/* Ported from AdminDashboard: voter funnel by last_status */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%', marginBottom: '16px' }}>
+              <div style={statCard}><small>OTP Sent</small><h3 style={{ color: '#3498db' }}>{stage1}</h3></div>
+              <div style={statCard}><small>Authenticated</small><h3 style={{ color: '#9b59b6' }}>{stage2}</h3></div>
+              <div style={statCard}><small>Completed</small><h3 style={{ color: '#2ecc71' }}>{stage3}</h3></div>
+            </div>
+
+            {duplicateIds.length > 0 && (
+              <div style={{ padding: '12px 16px', border: '1px solid #e74c3c', borderRadius: '10px', marginBottom: '16px', color: '#e74c3c', fontSize: '13px' }}>
+                ⚠️ Duplicate student IDs detected: {[...new Set(duplicateIds)].join(', ')}
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '14px', alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ ...card, flexDirection: 'row', alignItems: 'center', padding: '14px', gap: '12px', flex: 1 }}>
@@ -1977,3 +2048,5 @@ const avatar      = { width: '44px', height: '44px', borderRadius: '6px', object
 const statCard    = { padding: '14px', border: '1px solid var(--border-color)', borderRadius: '10px', textAlign: 'center', color: 'var(--text-color)' };
 const th          = { padding: '10px 14px', textAlign: 'left', color: '#fff', fontSize: '11px', textTransform: 'uppercase' };
 const td          = { padding: '10px 14px', color: 'var(--text-color)', fontSize: '13px' };
+const modalOverlay = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
+const modalContent = { backgroundColor: 'var(--card-bg)', padding: '30px', borderRadius: '16px', width: '90%', maxWidth: '700px', maxHeight: '85vh', overflowY: 'auto' };
