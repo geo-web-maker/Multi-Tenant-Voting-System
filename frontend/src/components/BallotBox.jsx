@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import api from '../api';
 
-export default function BallotBox({ studentId, onVoteSuccess, apiBase, propCandidates, isPreview = false, orgName = "" }) {
+export default function BallotBox({ studentId, onVoteSuccess, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
   const [loading, setLoading] = useState(!propCandidates); // Don't show loading if we already have data
   const [isVoting, setIsVoting] = useState(false);
@@ -18,8 +18,6 @@ export default function BallotBox({ studentId, onVoteSuccess, apiBase, propCandi
   // NEW: State for the Clear All Confirmation Modal
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [countdown, setCountdown] = useState(0);
-
-  const API_URL = apiBase || "http://127.0.0.1:8000";
 
   // FIXED: Single declaration of handleSelect with Toggle Logic
   const handleSelect = (position, candidateId) => {
@@ -59,7 +57,7 @@ export default function BallotBox({ studentId, onVoteSuccess, apiBase, propCandi
         }
       };
       fetchCandidates();
-    }, [API_URL, propCandidates]);
+    }, [propCandidates]);
 
   useEffect(() => {
     let timer;
@@ -80,7 +78,7 @@ export default function BallotBox({ studentId, onVoteSuccess, apiBase, propCandi
     const selectedIds = Object.values(ballot);
     setIsVoting(true);
     try {
-      const res = await axios.post(`${API_URL}/vote-bulk`, {
+      const res = await axios.post(`/vote-bulk`, {
         student_id: studentId,
         candidate_ids: selectedIds
       });
