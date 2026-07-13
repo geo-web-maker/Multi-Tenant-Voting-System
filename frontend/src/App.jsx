@@ -575,8 +575,8 @@ useEffect(() => {
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={{ ...modalContentStyle, maxWidth: '420px' }}>
               <div style={{ fontSize: '40px', textAlign: 'center', marginBottom: '10px' }}>🔒</div>
-              <h2 style={{ textAlign: 'center', marginTop: 0, color: '#2c3e50' }}>Set a New Password</h2>
-              <p style={{ textAlign: 'center', fontSize: '13px', color: '#64748b', marginBottom: '20px' }}>
+              <h2 style={{ textAlign: 'center', marginTop: 0, color: 'var(--text-color)' }}>Set a New Password</h2>
+              <p style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
                 For your security, you must set a new password before continuing.
               </p>
         
@@ -584,16 +584,23 @@ useEffect(() => {
                 <input
                   type="password"
                   placeholder="Temporary password (from SMS)"
-                  style={{ ...inputStyle, color: '#1e293b', backgroundColor: '#f8fafc' }}
+                  style={inputStyle}
                   value={newPasswordForm.old_password}
                   onChange={e => setNewPasswordForm({ ...newPasswordForm, old_password: e.target.value })}
                 />
                 <input
                   type="password"
                   placeholder="New password (min 6 characters)"
-                  style={{ ...inputStyle, color: '#1e293b', backgroundColor: '#f8fafc' }}
+                  style={inputStyle}
                   value={newPasswordForm.new_password}
                   onChange={e => setNewPasswordForm({ ...newPasswordForm, new_password: e.target.value })}
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm new password"
+                  style={inputStyle}
+                  value={newPasswordForm.confirm_password}
+                  onChange={e => setNewPasswordForm({ ...newPasswordForm, confirm_password: e.target.value })}
                 />
                 <input
                   type="password"
@@ -630,7 +637,7 @@ useEffect(() => {
               <h2 style={{ color: statusModal.type === 'success' ? 'var(--success)' : 'var(--danger)', textAlign: 'center', marginTop: 0 }}>
                 {statusModal.title}
               </h2>
-              <p style={{ textAlign: 'center', marginBottom: '20px', color: '#475569' }}>{statusModal.message}</p>
+              <p style={{ textAlign: 'center', marginBottom: '20px', color: 'var(--text-muted)' }}>{statusModal.message}</p>
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
                 style={{ ...primaryBtnStyle, backgroundColor: statusModal.type === 'success' ? 'var(--success)' : 'var(--info)' }}
@@ -730,7 +737,7 @@ const noticeStyle = { backgroundColor: '#fff3cd', color: '#856404', padding: '10
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.9)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
 
-const modalContentStyle = { backgroundColor: '#fff', padding: '32px', borderRadius: '20px', width: '90%', maxWidth: '400px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', zIndex: 3001 };
+const modalContentStyle = { backgroundColor: 'var(--card-bg)', padding: '32px', borderRadius: '20px', width: '90%', maxWidth: '400px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', zIndex: 3001 };
 
 const selectionBtnStyle = { width: '100%', padding: '15px', backgroundColor: '#f8f9fa', color: '#2c3e50', border: '1px solid #dee2e6', borderRadius: '8px', marginBottom: '10px', textAlign: 'left', cursor: 'pointer' };
 
