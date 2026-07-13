@@ -639,6 +639,7 @@ const handleSuperAdminAddStudent = async (e) => {
   };
 
 const handleSuperAdminRemoveStudent = async () => {
+  if (!saDirectRemove.student_id) { alert('Please search and select a student from the list first.'); return; }
   if (!window.confirm('Remove this student from the voter register?')) return;
   try {
       await api.post('/superadmin/students/remove', saDirectRemove);
