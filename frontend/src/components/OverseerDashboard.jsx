@@ -170,11 +170,11 @@ export default function OverseerDashboard({ onLogout }) {
 // ── Helpers ──
 function statusBadge(status) {
   const map = {
-    pending:        { background: '#f1c40f20', color: '#f1c40f' },
-    approved:       { background: '#2ecc7120', color: '#2ecc71' },
-    force_approved: { background: '#2ecc7120', color: '#2ecc71' },
-    denied:         { background: '#e74c3c20', color: '#e74c3c' },
-    force_denied:   { background: '#e74c3c20', color: '#e74c3c' },
+    pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
+    approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
+    force_approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
+    denied:         { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
+    force_denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
     cancelled:      { background: '#95a5a620', color: '#95a5a6' },
   };
   return {
