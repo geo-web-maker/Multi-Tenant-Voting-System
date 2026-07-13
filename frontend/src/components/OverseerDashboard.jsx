@@ -196,5 +196,5 @@ const tabBtn         = { background: 'none', border: 'none', padding: '10px 16px
 const ghostBtn      = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const redBtn        = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', backgroundColor: '#e74c3c' };
 const appCard       = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
-const infoBox       = { padding: '12px 16px', backgroundColor: '#3498db10', borderRadius: '8px', border: '1px solid #3498db30' };
+const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const emptyState    = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
