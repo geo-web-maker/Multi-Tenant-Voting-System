@@ -653,6 +653,7 @@ const handleSuperAdminAddStudent = async (e) => {
       fetchElectionData();
       fetchVotersList();
     } catch (e) { alert(getErrorMessage(e)); }
+  };
 
 const handleSuperAdminRemoveStudent = async () => {
   if (!saDirectRemove.student_id) { alert('Please search and select a student from the list first.'); return; }
