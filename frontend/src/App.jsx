@@ -50,6 +50,18 @@ function App() {
   const [passwordChangeError, setPasswordChangeError] = useState('');
   const [passwordChangeSubmitting, setPasswordChangeSubmitting] = useState(false);
   const [logoUrl, setLogoUrl] = useState("");
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
 
   
 // --- USEEFFECTS ---
@@ -379,7 +391,20 @@ useEffect(() => {
           transition: 'max-width 0.3s ease' 
         }}>
         
-        <nav className="no-print" style={navBarStyle}>
+        <nav className="no-print" style={{ ...navBarStyle, position: 'relative' }}>
+          <button
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            style={{
+              position: 'absolute', top: '0', right: '0',
+              background: 'none', border: '1px solid var(--border-color)',
+              borderRadius: '20px', padding: '6px 12px', cursor: 'pointer',
+              fontSize: '13px', color: 'var(--text-color)',
+              display: 'flex', alignItems: 'center', gap: '6px',
+            }}
+          >
+            {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+          </button>
           <img src={logoUrl} alt="Logo" style={logoStyle} />
           <span style={{
             color: 'var(--text-color)',
