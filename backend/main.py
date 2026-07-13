@@ -82,16 +82,7 @@ async def org_context_middleware(request: Request, call_next):
 
 # =============================================================================
 # MODELS
-# ============================================================================= 
-class ApplicationSubmit(BaseModel):
-    student_id:        str
-    full_name:         str
-    position_id:       str
-    manifesto:         str = ""
-    image_url:         str = ""
-    payment_method:    str = ""     
-    payment_proof_url: str = ""      
-    
+# =============================================================================     
 class CommissionerRoleUpdate(BaseModel):
     role_label: str   # e.g. "Finance Commissioner", "Deputy Finance", "General Commissioner"
     
@@ -158,12 +149,14 @@ class PositionCreate(BaseModel):
 
 # --- Applications ---
 class ApplicationSubmit(BaseModel):
-    student_id: str
-    full_name: str
-    position_id: str
-    manifesto: str = ""
-    image_url: str = ""
-
+    student_id:        str
+    full_name:         str
+    position_id:       str
+    manifesto:         str = ""
+    image_url:         str = ""
+    payment_method:    str = ""     
+    payment_proof_url: str = ""      
+    
 class CommissionerVote(BaseModel):
     commissioner_id: str   # the commissioner's student_id
     vote: str              # "approve" or "deny"
@@ -629,6 +622,13 @@ async def get_positions(request: Request):
 
 @app.post("/apply")
 async def submit_application(data: ApplicationSubmit, request: Request):
+    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    if not student:
+        raise HTTPException(
+            status_code=404,
+            detail="Your Student ID was not found on the voter register. Please contact IT support if you believe this is an error."
+        )
+
     existing = await db.applications.find_one(org_query(request, {
         "student_id": data.student_id,
         "position_id": data.position_id
