@@ -241,7 +241,7 @@ export default function CommissionDashboard({ onLogout }) {
         </div>
 
         {/* ── Empty state ── */}
-        {currentList.length === 0 && !loading && (
+        {activeTab !== 'student_changes' && currentList.length === 0 && !loading && (
           <div style={emptyState}>
             <div style={{ fontSize: '40px', marginBottom: '10px' }}>
               {activeTab === 'pending' ? '📭' : activeTab === 'approved' ? '✅' : '📂'}
@@ -254,7 +254,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Application cards ── */}
-        {currentList.map(app => {
+        {activeTab !== 'student_changes' && currentList.map(app => {
           const vc      = voteCount(app);
           const rvc     = removalVoteCount(app);
           const myVote  = myVoteFor(app);
