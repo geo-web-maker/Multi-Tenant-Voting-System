@@ -112,7 +112,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
   const getCandidateName = (id) => candidates.find(c => (c._id || c.id) === id)?.name || "Unknown";
 
   return (
-    <div style={{ textAlign: 'center', color: '#fff', paddingBottom: '120px' }}>
+    <div style={{ textAlign: 'center', color: 'var(--text-color)', paddingBottom: '120px' }}>
       {isPreview && (
       <div style={{ 
         backgroundColor: '#fee2e2', 
@@ -159,14 +159,14 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
                   onClick={() => handleSelect(pos, c._id || c.id)}
                   style={{ 
                     ...horizontalCardStyle, 
-                    border: isSelected ? '2px solid #3b82f6' : '1px solid #334155',
-                    backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.15)' : '#1e293b'
+                    border: isSelected ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                    backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'var(--card-bg)'
                   }}
                 >
                   {/* 1. Image and Name (Grouped together on the left) */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
                     <img src={c.image_url} alt="" style={horizontalImageStyle} />
-                    <h4 style={{ color: '#fff', margin: 0, fontSize: '16px', fontWeight: '600' }}>
+                    <h4 style={{ color: 'var(--text-color)', margin: 0, fontSize: '16px', fontWeight: '600' }}>
                       {c.name}
                     </h4>
                   </div>
@@ -175,7 +175,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
                   <div style={{ 
                     ...tickBoxStyle, 
                     backgroundColor: isSelected ? '#3b82f6' : 'transparent',
-                    borderColor: isSelected ? '#3b82f6' : '#64748b'
+                    borderColor: isSelected ? '#3b82f6' : 'var(--border-color)'
                   }}>
                     {isSelected && <span style={{ color: '#fff', fontSize: '14px', fontWeight: 'bold' }}>✔</span>}
                   </div>
