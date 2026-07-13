@@ -14,6 +14,22 @@ async function uploadToCloudinary(file) {
   return res.data.secure_url;
 }
 
+// Safely turns any backend error shape (string detail, FastAPI 422 validation
+// array, or a network failure with no response at all) into a readable string.
+function getErrorMessage(e, fallback = 'Failed.') {
+  const detail = e?.response?.data?.detail;
+  if (Array.isArray(detail)) {
+    return detail.map(d => d?.msg || JSON.stringify(d)).join(', ');
+  }
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+  if (detail && typeof detail === 'object') {
+    return JSON.stringify(detail);
+  }
+  return fallback;
+}
+
 export default function SuperAdminDashboard({ onLogout }) {
 
   const [activeTab, setActiveTab] = useState('candidates');
@@ -112,7 +128,7 @@ export default function SuperAdminDashboard({ onLogout }) {
         : 'Email saved, but SMS notification failed to send.');
       setCommCredEmail(prev => ({ ...prev, [studentId]: '' }));
       fetchCommissioners();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
   };
 
   const handleResetCommissionerPassword = async (studentId) => {
@@ -123,7 +139,7 @@ export default function SuperAdminDashboard({ onLogout }) {
       alert(res.data.sms_notified
         ? 'New temporary password sent via SMS.'
         : 'Password reset, but SMS failed to send.');
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
     finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
   };
   
@@ -346,7 +362,7 @@ const refetchAll = () => {
       await api.post(`/superadmin/applications/${appId}/force-approve`);
       fetchApplications();
       fetchCandidates();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
   };
 
   const handleForceDeny = async (appId) => {
@@ -354,7 +370,7 @@ const refetchAll = () => {
     try {
       await api.post(`/superadmin/applications/${appId}/force-deny`);
       fetchApplications();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
   };
 
   // ── Commissioners ──
@@ -365,7 +381,7 @@ const refetchAll = () => {
       alert(`${studentId} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`);
       fetchCommissioners();
       fetchVotersList();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed to toggle commissioner.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Failed to toggle commissioner.')); }
   };
 
   const handleSetChief = async (studentId) => {
@@ -382,14 +398,14 @@ const handleSetRole = async (studentId, role) => {
   try {
     await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role_label: role });
     fetchCommissioners();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleSetFinanceCommissioner = async (studentId) => {
   try {
     await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-finance-commissioner`);
     fetchCommissioners();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleClearFinanceCommissioner = async (studentId) => {
@@ -405,7 +421,7 @@ const handleToggleFinancialController = async (studentId) => {
     alert(`${studentId} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`);
     fetchFinancialControllers();
     fetchVotersList();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleSetFinancialControllerCredentials = async (studentId) => {
@@ -418,7 +434,7 @@ const handleSetFinancialControllerCredentials = async (studentId) => {
       : 'Email saved, but SMS notification failed to send.');
     setFcCredEmail(prev => ({ ...prev, [studentId]: '' }));
     fetchFinancialControllers();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleResetFinancialControllerPassword = async (studentId) => {
@@ -429,7 +445,7 @@ const handleResetFinancialControllerPassword = async (studentId) => {
     alert(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
 
@@ -441,7 +457,7 @@ const handleToggleOverseer = async (studentId) => {
     alert(`${studentId} is now ${res.data.is_overseer ? 'an Overseer' : 'no longer an Overseer'}.`);
     fetchOverseers();
     fetchVotersList();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleSetOverseerCredentials = async (studentId) => {
@@ -454,7 +470,7 @@ const handleSetOverseerCredentials = async (studentId) => {
       : 'Email saved, but SMS notification failed to send.');
     setOvCredEmail(prev => ({ ...prev, [studentId]: '' }));
     fetchOverseers();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleResetOverseerPassword = async (studentId) => {
@@ -465,7 +481,7 @@ const handleResetOverseerPassword = async (studentId) => {
     alert(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
 
@@ -480,7 +496,7 @@ const handleCreateOrg = async (e) => {
     alert(`Organization "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`);
     setOrgForm({ name: '', slug: '' });
     fetchOrganizations();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed to create organization.'); }
+  } catch (e) { alert(getErrorMessage(e, 'Failed to create organization.')); }
   finally { setOrgCreating(false); }
 };
 
@@ -584,7 +600,7 @@ const fetchAuditLog = async () => {
       alert(`${studentId} is now ${res.data.is_it_admin ? 'an IT admin' : 'no longer an IT admin'}.`);
       fetchItAdmins();
       fetchVotersList();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
   };
 
 const handleSetItAdminCredentials = async (studentId) => {
@@ -602,7 +618,7 @@ const handleSetItAdminCredentials = async (studentId) => {
       : 'Email saved, but SMS notification failed to send.');
     setItCredEmail(prev => ({ ...prev, [studentId]: '' }));
     fetchItAdmins();
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
 };
 
 const handleResetItAdminPassword = async (studentId) => {
@@ -613,7 +629,7 @@ const handleResetItAdminPassword = async (studentId) => {
     alert(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
-  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+  } catch (e) { alert(getErrorMessage(e)); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
 
@@ -625,20 +641,18 @@ const handleForceStudentChange = async (changeId, action) => {
     try {
       await api.post(endpoint);
       fetchStudentChanges();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
   };
 
 const handleSuperAdminAddStudent = async (e) => {
   e.preventDefault();
-  // use a separate state for this form — add useState for saDirectAdd
   try {
       await api.post('/superadmin/students/add', saDirectAdd);
       alert('Student added.');
-      setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '' });
+      setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
       fetchElectionData();
       fetchVotersList();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
-  };
+    } catch (e) { alert(getErrorMessage(e)); }
 
 const handleSuperAdminRemoveStudent = async () => {
   if (!saDirectRemove.student_id) { alert('Please search and select a student from the list first.'); return; }
@@ -650,7 +664,7 @@ const handleSuperAdminRemoveStudent = async () => {
       setRemoveSearch('');
       fetchElectionData();
       fetchVotersList();
-    } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
+    } catch (e) { alert(getErrorMessage(e)); }
   };
 
   // ── Derived ──
