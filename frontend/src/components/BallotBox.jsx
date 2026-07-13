@@ -219,7 +219,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
             <h2 style={{ color: '#e11d48', marginTop: 0, fontWeight: '800' }}>
               Reset Entire Ballot?
             </h2>
-            <p style={{ color: '#64748b' }}>This will clear all your currently selected candidates. This action cannot be undone.</p>
+            <p style={{ color: 'var(--text-muted)' }}>This will clear all your currently selected candidates. This action cannot be undone.</p>
             <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
               <button onClick={() => setShowClearConfirm(false)} style={cancelBtnStyle}>Keep My Votes</button>
               <button onClick={confirmClearAll} style={{...confirmBtnStyle, backgroundColor: '#e11d48'}}>Yes, Clear All</button>
@@ -258,7 +258,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
                     }}>
                       {selectedCandidate ? (
                         <>
-                          <span style={{ color: '#0f172a', fontWeight: '700', fontSize: '13px', textAlign: 'right' }}>
+                          <span style={{ color: 'var(--text-color)', fontWeight: '700', fontSize: '13px', textAlign: 'right' }}>
                             {selectedCandidate.name}
                           </span>
                           <img 
@@ -269,15 +269,16 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
                               height: '35px', 
                               borderRadius: '50%', 
                               objectFit: 'cover', 
-                              border: '1px solid #e2e8f0',
-                              backgroundColor: '#f1f5f9'
+                              border: '1px solid var(--border-color)',
+                              backgroundColor: 'var(--surface-2)'
                             }} 
                           />
                         </>
                       ) : (
-                        <span style={{ color: '#64748b', fontStyle: 'italic', fontSize: '13px' }}>
+                        <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '13px' }}>
                           Abstain
                         </span>
+                      )}
                       )}
                     </div>
                   </div>
@@ -309,7 +310,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
               <div style={{ fontSize: '50px', marginBottom: '10px' }}>⚠️</div>
               
               <h2 style={{ color: '#e11d48' }}>{statusModal.title}</h2>
-              <p style={{ color: '#475569', marginBottom: '20px' }}>{statusModal.message}</p>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>{statusModal.message}</p>
         
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
@@ -332,17 +333,17 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
 // --- STYLES ---
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.9)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 };
 const modalContentStyle = { backgroundColor: '#fff', padding: '24px', borderRadius: '20px', width: '95%', maxWidth: '450px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', overflow: 'hidden' };
-const summaryListStyle = { margin: '20px 0', padding: '10px 15px', backgroundColor: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0', maxHeight: '350px', overflowY: 'auto', textAlign: 'left', WebkitOverflowScrolling: 'touch' };
+const summaryListStyle = { margin: '20px 0', padding: '10px 15px', backgroundColor: 'var(--surface-2)', borderRadius: '12px', border: '1px solid var(--border-color)', maxHeight: '350px', overflowY: 'auto', textAlign: 'left', WebkitOverflowScrolling: 'touch' };
 const summaryRowStyle = { 
   display: 'flex', 
   justifyContent: 'space-between', 
   padding: '10px 0', 
-  borderBottom: '1px solid #e2e8f0', 
+  borderBottom: '1px solid var(--border-color)', 
   alignItems: 'center',  // <--- This centers the name and the photo
   gap: '12px' 
 };
 const clearAllBtnStyle = { flex: 1, backgroundColor: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '16px', borderRadius: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' };
-const cancelBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: '1px solid #cbd5e1', color: '#64748b', fontWeight: '600', cursor: 'pointer', backgroundColor: 'transparent' };
+const cancelBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontWeight: '600', cursor: 'pointer', backgroundColor: 'transparent' };
 const confirmBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: 'none', color: '#fff', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' };
 const footerBarStyle = { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: '#1e293b', padding: '24px', borderTop: '1px solid #334155', zIndex: 1000 };
 const submitBallotBtnStyle = { backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '16px 48px', borderRadius: '14px', fontWeight: 'bold', fontSize: '18px', cursor: 'pointer' };
