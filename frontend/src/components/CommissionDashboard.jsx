@@ -598,5 +598,5 @@ const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid
 const promptBox  = { border: '1px dashed var(--border-color)', borderRadius: '12px', padding: '20px', marginBottom: '20px', backgroundColor: 'var(--bg-color)' };
 const infoPill   = { fontSize: '13px', opacity: 0.7, marginBottom: '18px', padding: '8px 14px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center' };
 const overrideNote = { marginTop: '12px', fontSize: '12px', opacity: 0.55, fontStyle: 'italic' };
-const lockedNote = { padding: '10px 14px', backgroundColor: '#f1c40f15', borderRadius: '8px', border: '1px solid #f1c40f40', color: '#f1c40f', fontSize: '12px', fontWeight: '600' };
+const lockedNote = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)', fontSize: '12px', fontWeight: '600' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
