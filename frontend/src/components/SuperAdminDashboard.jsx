@@ -379,8 +379,10 @@ const handleClearChief = async (studentId) => {
 };
 
 const handleSetRole = async (studentId, role) => {
-  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role });
-  fetchCommissioners();
+  try {
+    await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role_label: role });
+    fetchCommissioners();
+  } catch (e) { alert(e.response?.data?.detail || 'Failed.'); }
 };
 
 const handleSetFinanceCommissioner = async (studentId) => {
