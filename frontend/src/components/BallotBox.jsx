@@ -279,7 +279,6 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
                           Abstain
                         </span>
                       )}
-                      )}
                     </div>
                   </div>
                 );
