@@ -590,7 +590,7 @@ useEffect(() => {
             {step === 4 && (
               <div style={{ ...cardStyle, textAlign: 'center' }}>
                 <h2 style={{ color: 'var(--success)' }}>Vote Cast Successfully!</h2>
-                <button onClick={resetFlow} style={primaryBtnStyle}>Return Home</button>
+                <button onClick={resetFlow} style={{ ...primaryBtnStyle, backgroundColor: '#2ecc71' }}>Return Home</button>
               </div>
             )}
           </div>
