@@ -135,7 +135,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
             className="position-header" 
             style={{ 
               color: '#1e293b',             // Dark text for contrast on gold
-              backgroundColor: '#f1c40f',   // Gold/Yellow background
+              backgroundColor: 'var(--warning)',
               padding: '12px 20px', 
               borderRadius: '10px', 
               textAlign: 'left', 
