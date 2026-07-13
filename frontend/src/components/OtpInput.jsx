@@ -31,7 +31,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
     return (
       <div style={{ textAlign: 'center', color: '#fff', padding: '20px' }}>
         <div style={{ fontSize: '50px', marginBottom: '20px' }}>🔒</div>
-        <h2 style={{ fontSize: '20px', color: '#e74c3c', fontWeight: 'bold' }}>Access Restricted</h2>
+        <h2 style={{ fontSize: '20px', color: 'var(--danger)', fontWeight: 'bold' }}>Access Restricted</h2>
         <p style={{ color: '#cbd5e1', marginTop: '10px', lineHeight: '1.5' }}>
           Too many OTP requests detected. <br />
           Please contact the administrator to verify your identity.
@@ -44,7 +44,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
           style={{ 
             display: 'block', 
             marginTop: '15px', 
-            color: '#2ecc71', 
+            color: 'var(--success)', 
             fontWeight: 'bold', 
             textDecoration: 'none' 
           }}
@@ -60,7 +60,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
   return (
     <div style={{ textAlign: 'center', color: '#fff' }}>
       <h2 style={{ fontSize: '18px', marginBottom: '20px', fontWeight: '500' }}>
-        Confirm the code sent to <span style={{ color: '#2ecc71' }}>{phoneNumber}</span>
+        Confirm the code sent to <span style={{ color: 'var(--success)' }}>{phoneNumber}</span>
       </h2>
       
       <input
@@ -80,7 +80,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
           textAlign: 'center', 
           padding: '12px', 
           backgroundColor: '#0f172a',
-          border: hasError ? '2px solid #e74c3c' : '2px solid #334155',
+          border: hasError ? '2px solid var(--danger)' : '2px solid #334155',
           borderRadius: '12px',
           color: '#fff',
           letterSpacing: '8px',
@@ -89,7 +89,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
       />
 
       {hasError && (
-        <p style={{ color: '#e74c3c', fontSize: '14px', marginTop: '10px' }}>
+        <p style={{ color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}>
           Incorrect code. Please check your SMS and try again.
         </p>
       )}
@@ -100,7 +100,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
           onClick={handleVerify} 
           disabled={otp.length < 6}
           style={{ 
-            backgroundColor: otp.length < 6 ? '#1e293b' : '#2ecc71', 
+            backgroundColor: otp.length < 6 ? '#1e293b' : 'var(--success)', 
             color: 'white', 
             padding: '12px 30px', 
             border: 'none', 
