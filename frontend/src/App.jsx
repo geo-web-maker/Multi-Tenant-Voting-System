@@ -469,7 +469,7 @@ useEffect(() => {
               <button
                 onClick={() => handleVerifyIdentity()}
                 disabled={!isElectionOpen && !isAdminPath}
-                style={{ ...primaryBtnStyle, backgroundColor: (isElectionOpen || isAdminPath) ? '#2ecc71' : '#bdc3c7' }}
+                style={{ ...primaryBtnStyle, backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7' }}
               >
                 {isAdminPath ? "Login" : "Verify & Send Code"}
               </button>
@@ -479,7 +479,7 @@ useEffect(() => {
                 <div style={{ marginTop: '20px', borderTop: '1px solid var(--border-color)', paddingTop: '15px' }}>
                     <button 
                       onClick={() => setShowGuide(true)} 
-                      style={{ ...linkBtnStyle, color: '#2ecc71', fontWeight: 'bold' }}
+                      style={{ ...linkBtnStyle, color: 'var(--success)', fontWeight: 'bold' }}
                     >
                       📖 View Sample Ballot Paper
                     </button>
@@ -491,7 +491,7 @@ useEffect(() => {
                         rel="noopener noreferrer"
                         style={{ 
                           ...linkBtnStyle, 
-                          color: '#3498db', 
+                          color: 'var(--info)', 
                           fontWeight: 'bold',
                           textDecoration: 'none',
                           display: 'block',
@@ -535,7 +535,7 @@ useEffect(() => {
                     Receive code on {num}
                   </button>
                 ))}
-                <button onClick={() => setStep(1)} style={{ ...linkBtnStyle, color: '#e74c3c' }}>Cancel</button>
+                <button onClick={() => setStep(1)} style={{ ...linkBtnStyle, color: 'var(--danger)' }}>Cancel</button>
               </div>
             )}
 
@@ -564,7 +564,7 @@ useEffect(() => {
             
             {step === 4 && (
               <div style={{ ...cardStyle, textAlign: 'center' }}>
-                <h2 style={{ color: '#2ecc71' }}>Vote Cast Successfully!</h2>
+                <h2 style={{ color: 'var(--success)' }}>Vote Cast Successfully!</h2>
                 <button onClick={resetFlow} style={primaryBtnStyle}>Return Home</button>
               </div>
             )}
@@ -604,14 +604,14 @@ useEffect(() => {
                 />
         
                 {passwordChangeError && (
-                  <p style={{ color: '#e74c3c', fontSize: '13px', textAlign: 'center', marginBottom: '10px' }}>
+                  <p style={{ color: 'var(--danger)', fontSize: '13px', textAlign: 'center', marginBottom: '10px' }}>
                     ⚠️ {passwordChangeError}
                   </p>
                 )}
         
                 <button
                   type="submit"
-                  style={{ ...primaryBtnStyle, backgroundColor: '#2ecc71' }}
+                  style={{ ...primaryBtnStyle, backgroundcolor: 'var(--success)' }}
                   disabled={passwordChangeSubmitting}
                 >
                   {passwordChangeSubmitting ? 'Updating…' : 'Set Password & Continue'}
@@ -627,13 +627,13 @@ useEffect(() => {
               <div style={{ fontSize: '50px', marginBottom: '10px', textAlign: 'center' }}>
                 {statusModal.type === 'success' ? '📩' : '⚠️'}
               </div>
-              <h2 style={{ color: statusModal.type === 'success' ? '#2ecc71' : '#e74c3c', textAlign: 'center', marginTop: 0 }}>
+              <h2 style={{ color: statusModal.type === 'success' ? 'var(--success)' : 'var(--danger)', textAlign: 'center', marginTop: 0 }}>
                 {statusModal.title}
               </h2>
               <p style={{ textAlign: 'center', marginBottom: '20px', color: '#475569' }}>{statusModal.message}</p>
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
-                style={{ ...primaryBtnStyle, backgroundColor: statusModal.type === 'success' ? '#2ecc71' : '#3498db' }}
+                style={{ ...primaryBtnStyle, backgroundColor: statusModal.type === 'success' ? 'var(--success)' : 'var(--info)' }}
               >
                 {statusModal.type === 'success' ? 'Continue' : 'Try Again'}
               </button>
@@ -736,6 +736,6 @@ const selectionBtnStyle = { width: '100%', padding: '15px', backgroundColor: '#f
 
 const linkBtnStyle = { background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', marginTop: '15px', width: '100%' };
 
-const resendBtnStyle = { background: 'none', border: '1px solid #2ecc71', color: '#2ecc71', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '600' };
+const resendBtnStyle = { background: 'none', border: '1px solid #2ecc71', color: 'var(--success)', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '600' };
 
 export default App;
