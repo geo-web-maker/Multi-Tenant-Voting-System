@@ -41,7 +41,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [switchingOrg, setSwitchingOrg] = useState(false);
 
   // --- Branding state ---
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [] });
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: 'var(--warning)', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [] });
   const [brandSaving, setBrandSaving] = useState(false);
 
   // --- Positions state ---
@@ -725,7 +725,7 @@ const handleSuperAdminRemoveStudent = async () => {
           <div style={{ display: 'flex', gap: '10px' }}>
             <button
               onClick={handleToggleElection}
-              style={{ ...btn, backgroundColor: isElectionOpen ? '#e67e22' : '#2ecc71' }}
+              style={{ ...btn, backgroundColor: isElectionOpen ? '#e67e22' : 'var(--success)' }}
             >
               {isElectionOpen ? '⏸ Stop Election' : '▶️ Start Election'}
             </button>
@@ -741,7 +741,7 @@ const handleSuperAdminRemoveStudent = async () => {
             >
               {isCertified ? '✅ Certified' : '⚠️ Certify Results'}
             </button>
-            <button onClick={onLogout} style={{ ...btn, backgroundColor: '#e74c3c' }}>Logout</button>
+            <button onClick={onLogout} style={{ ...btn, backgroundColor: 'var(--danger)' }}>Logout</button>
           </div>
         </div>
 
@@ -762,11 +762,11 @@ const handleSuperAdminRemoveStudent = async () => {
             ))}
           </select>
           {activeOrgSlug ? (
-            <span style={{ fontSize: '11px', color: '#2ecc71', fontWeight: '600' }}>
+            <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
               ✓ Viewing only this organization's data
             </span>
           ) : (
-            <span style={{ fontSize: '11px', color: '#f1c40f', fontWeight: '600' }}>
+            <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
               ⚠️ Unscoped — showing data across all organizations combined
             </span>
           )}
@@ -851,7 +851,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         <div>
                           <b style={{ color: 'var(--text-color)' }}>{c.name}</b>
                           <br />
-                          <small style={{ color: '#2ecc71' }}>{c.position}</small>
+                          <small style={{ color: 'var(--success)' }}>{c.position}</small>
                           {c.application_id && (
                             <span style={badge}>via application</span>
                           )}
@@ -887,7 +887,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   <div key={c._id} style={{ ...statCard, textAlign: 'left', display: 'flex', gap: '10px', alignItems: 'center' }}>
                     <span style={{ fontWeight: 'bold', opacity: 0.3 }}>{idx + 1}</span>
                     <img src={c.image_url} style={avatar} alt="" />
-                    <div><div style={{ fontWeight: 'bold', color: 'var(--text-color)' }}>{c.name}</div><small style={{ color: '#2ecc71' }}>{c.position}</small></div>
+                    <div><div style={{ fontWeight: 'bold', color: 'var(--text-color)' }}>{c.name}</div><small style={{ color: 'var(--success)' }}>{c.position}</small></div>
                   </div>
                 ))}
               </div>
@@ -933,7 +933,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         {new Date(app.submitted_at).toLocaleDateString()}
                       </small>
                     </div>
-                    <p style={{ margin: '4px 0', fontSize: '13px', color: '#2ecc71' }}>
+                    <p style={{ margin: '4px 0', fontSize: '13px', color: 'var(--success)' }}>
                       Position: {app.position_title || app.position_id}
                     </p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
@@ -996,19 +996,18 @@ const handleSuperAdminRemoveStudent = async () => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
                       {c.is_chief_commissioner && (
-                        <span style={{ fontSize: '10px', backgroundColor: '#f1c40f20', color: '#f1c40f', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                          ⭐ Chief
+                       <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
                         </span>
                       )}
                       {c.is_finance_commissioner && (
-                        <span style={{ fontSize: '10px', backgroundColor: '#2ecc7120', color: '#2ecc71', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
                           💰 Finance
                         </span>
                       )}
                     </div>
                     <small style={{ opacity: 0.6 }}>{c.student_id}</small>
                     <br />
-                    <small style={{ color: '#3498db' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
+                    <small style={{ color: 'var(--info)' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
                   </div>
               
                   <select
@@ -1028,7 +1027,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     {c.is_chief_commissioner ? (
                       <button
                         onClick={() => handleClearChief(c.student_id)}
-                        style={{ ...ghostBtn, color: '#f1c40f', borderColor: '#f1c40f', fontSize: '12px' }}>
+                        style={{ ...ghostBtn, color: 'var(--warning)', bordercolor: 'var(--warning)', fontSize: '12px' }}>
                         Clear Chief
                       </button>
                     ) : (
@@ -1041,7 +1040,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     {c.is_finance_commissioner ? (
                       <button
                         onClick={() => handleClearFinanceCommissioner(c.student_id)}
-                        style={{ ...ghostBtn, color: '#2ecc71', borderColor: '#2ecc71', fontSize: '12px' }}>
+                        style={{ ...ghostBtn, color: 'var(--success)', bordercolor: 'var(--success)', fontSize: '12px' }}>
                         Clear Finance
                       </button>
                     ) : (
@@ -1125,18 +1124,18 @@ const handleSuperAdminRemoveStudent = async () => {
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%' }}>
                 <div style={statCard}><small>Total Voters</small><h3>{electionVoters.length}</h3></div>
-                <div style={statCard}><small>Voted</small><h3 style={{ color: '#2ecc71' }}>{electionVoters.filter(v => v.has_voted).length}</h3></div>
+                <div style={statCard}><small>Voted</small><h3 style={{ color: 'var(--success)' }}>{electionVoters.filter(v => v.has_voted).length}</h3></div>
                 <div style={statCard}><small>Turnout</small><h3>{turnout}%</h3></div>
-                <div style={statCard}><small>Pending</small><h3 style={{ color: '#f1c40f' }}>{electionVoters.filter(v => !v.has_voted).length}</h3></div>
+                <div style={statCard}><small>Pending</small><h3 style={{ color: 'var(--warning)' }}>{electionVoters.filter(v => !v.has_voted).length}</h3></div>
                 <div style={statCard}><small>SMS Balance</small><h3>{smsBalance.balance} {smsBalance.currency}</h3></div>
               </div>
             </div>
 
             {/* Ported from AdminDashboard: voter funnel by last_status */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%', marginBottom: '16px' }}>
-              <div style={statCard}><small>OTP Sent</small><h3 style={{ color: '#3498db' }}>{stage1}</h3></div>
+              <div style={statCard}><small>OTP Sent</small><h3 style={{ color: 'var(--info)' }}>{stage1}</h3></div>
               <div style={statCard}><small>Authenticated</small><h3 style={{ color: '#9b59b6' }}>{stage2}</h3></div>
-              <div style={statCard}><small>Completed</small><h3 style={{ color: '#2ecc71' }}>{stage3}</h3></div>
+              <div style={statCard}><small>Completed</small><h3 style={{ color: 'var(--success)' }}>{stage3}</h3></div>
             </div>
 
             {duplicateIds.length > 0 && (
@@ -1177,8 +1176,8 @@ const handleSuperAdminRemoveStudent = async () => {
                       <td style={td}>
                         <span style={{
                           fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
-                          background: v.has_voted ? '#2ecc7120' : '#f1c40f20',
-                          color: v.has_voted ? '#2ecc71' : '#f1c40f',
+                            background: v.has_voted ? 'color-mix(in srgb, var(--success) 20%, transparent)' : 'color-mix(in srgb, var(--warning) 20%, transparent)',
+                            color: v.has_voted ? 'var(--success)' : 'var(--warning)',
                         }}>
                           {v.has_voted ? 'VOTED' : (v.last_status || 'IDLE').toUpperCase()}
                         </span>
@@ -1222,7 +1221,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     <b style={{ color: 'var(--text-color)' }}>{p.title}</b>
                     {p.description && <><br /><small style={{ opacity: 0.6 }}>{p.description}</small></>}
                     <br />
-                    <small style={{ color: '#3498db' }}>Order: {p.order}</small>
+                    <small style={{ color: 'var(--info)' }}>Order: {p.order}</small>
                   </div>
                   <button style={redLink} onClick={() => handleDeletePosition(p._id)}>Delete</button>
                 </div>
@@ -1496,7 +1495,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                 </div>
                 {timerActive && (
-                  <p style={{ color: '#2ecc71', fontSize: '12px', margin: '4px 0 0' }}>
+                  <p style={{ color: 'var(--success)', fontSize: '12px', margin: '4px 0 0' }}>
                     Active: {new Date(startTime).toLocaleString()} — {new Date(endTime).toLocaleString()}
                   </p>
                 )}
@@ -1541,7 +1540,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       {a.it_admin_email && (
                         <>
                           <br />
-                          <small style={{ color: '#3498db' }}>{a.it_admin_email}</small>
+                          <small style={{ color: 'var(--info)' }}>{a.it_admin_email}</small>
                         </>
                       )}
                     </div>
@@ -1668,7 +1667,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     )}
                   </div>
                   {saDirectRemove.student_id && (
-                    <p style={{ fontSize: '11px', color: '#2ecc71', margin: '2px 0 0' }}>
+                    <p style={{ fontSize: '11px', color: 'var(--success)', margin: '2px 0 0' }}>
                       ✓ Selected: {saDirectRemove.student_id}
                     </p>
                   )}
@@ -1684,7 +1683,7 @@ const handleSuperAdminRemoveStudent = async () => {
             <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
               {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
                 <button key={f} onClick={() => setScFilter(f)}
-                  style={{ ...ghostBtn, borderColor: scFilter === f ? '#2ecc71' : undefined, color: scFilter === f ? '#2ecc71' : undefined }}>
+                  style={{ ...ghostBtn, borderColor: scFilter === f ? 'var(--success)' : undefined, color: scFilter === f ? 'var(--success)' : undefined }}>
                   {f.replace('_', ' ')}
                   {' '}({f === 'all' ? studentChanges.length : studentChanges.filter(c => c.status === f).length})
                 </button>
@@ -1723,7 +1722,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     </p>
                     {change.payment_proof_url && (
                       <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
-                        style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
+                        style={{ fontSize: '12px', color: 'var(--info)', textDecoration: 'none' }}>
                         🧾 View Receipt
                       </a>
                     )}
@@ -1763,7 +1762,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       {a.financial_controller_email && (
                         <>
                           <br />
-                          <small style={{ color: '#3498db' }}>{a.financial_controller_email}</small>
+                          <small style={{ color: 'var(--info)' }}>{a.financial_controller_email}</small>
                         </>
                       )}
                     </div>
@@ -1843,7 +1842,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       {a.overseer_email && (
                         <>
                           <br />
-                          <small style={{ color: '#3498db' }}>{a.overseer_email}</small>
+                          <small style={{ color: 'var(--info)' }}>{a.overseer_email}</small>
                         </>
                       )}
                     </div>
@@ -2042,12 +2041,12 @@ const formCol     = { display: 'flex', flexDirection: 'column', gap: '10px' };
 const inp         = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
 const fileLabel   = { fontSize: '12px', opacity: 0.7 };
 const btn         = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn    = { ...btn, backgroundColor: '#2ecc71' };
+const greenBtn    = { ...btn, backgroundColor: 'var(--success)' };
 const redBtn      = { ...btn, backgroundColor: '#e74c3c' };
 const ghostBtn    = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
-const editLink    = { background: 'none', border: 'none', color: '#3498db', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const editLink    = { background: 'none', border: 'none', color: 'var(--info)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const redLink     = { background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const badge       = { marginLeft: '8px', fontSize: '10px', backgroundColor: '#3498db20', color: '#3498db', padding: '2px 6px', borderRadius: '4px' };
+const badge       = { marginLeft: '8px', fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 6px', borderRadius: '4px' };
 const avatar      = { width: '44px', height: '44px', borderRadius: '6px', objectFit: 'cover' };
 const statCard    = { padding: '14px', border: '1px solid var(--border-color)', borderRadius: '10px', textAlign: 'center', color: 'var(--text-color)' };
 const th          = { padding: '10px 14px', textAlign: 'left', color: '#fff', fontSize: '11px', textTransform: 'uppercase' };
