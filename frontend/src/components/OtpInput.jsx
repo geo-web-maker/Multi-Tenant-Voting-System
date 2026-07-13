@@ -29,10 +29,10 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
 
   if (isLocked) {
     return (
-      <div style={{ textAlign: 'center', color: '#fff', padding: '20px' }}>
+      <div style={{ textAlign: 'center', color: 'var(--text-color)', padding: '20px' }}>
         <div style={{ fontSize: '50px', marginBottom: '20px' }}>🔒</div>
         <h2 style={{ fontSize: '20px', color: 'var(--danger)', fontWeight: 'bold' }}>Access Restricted</h2>
-        <p style={{ color: '#cbd5e1', marginTop: '10px', lineHeight: '1.5' }}>
+        <p style={{ color: 'var(--text-muted)', marginTop: '10px', lineHeight: '1.5' }}>
           Too many OTP requests detected. <br />
           Please contact the administrator to verify your identity.
         </p>
@@ -58,7 +58,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
   }
 
   return (
-    <div style={{ textAlign: 'center', color: '#fff' }}>
+    <div style={{ textAlign: 'center', color: 'var(--text-color)' }}>
       <h2 style={{ fontSize: '18px', marginBottom: '20px', fontWeight: '500' }}>
         Confirm the code sent to <span style={{ color: 'var(--success)' }}>{phoneNumber}</span>
       </h2>
@@ -79,10 +79,10 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
           width: '220px', 
           textAlign: 'center', 
           padding: '12px', 
-          backgroundColor: '#0f172a',
-          border: hasError ? '2px solid var(--danger)' : '2px solid #334155',
+          backgroundColor: 'var(--surface-2)',
+          border: hasError ? '2px solid #e74c3c' : '2px solid var(--border-color)',
           borderRadius: '12px',
-          color: '#fff',
+          color: 'var(--text-color)',
           letterSpacing: '8px',
           outline: 'none'
         }}
@@ -100,7 +100,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
           onClick={handleVerify} 
           disabled={otp.length < 6}
           style={{ 
-            backgroundColor: otp.length < 6 ? '#1e293b' : 'var(--success)', 
+            backgroundColor: otp.length < 6 ? 'var(--surface-2)' : '#2ecc71',
             color: 'white', 
             padding: '12px 30px', 
             border: 'none', 
@@ -119,8 +119,8 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber })
 const secondaryBtnStyle = { 
   padding: '12px 25px', 
   borderRadius: '8px', 
-  border: '1px solid #334155', 
+  border: '1px solid var(--border-color)', 
   background: 'transparent', 
-  color: '#fff', 
+  color: 'var(--text-color)', 
   cursor: 'pointer' 
 };
