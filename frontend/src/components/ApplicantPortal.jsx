@@ -187,8 +187,8 @@ const handleSubmit = async (e) => {
             {posLoading ? (
               <p style={{ opacity: 0.5, fontSize: '13px' }}>Loading available positions…</p>
             ) : positions.length === 0 ? (
-              <div style={{ ...infoBox, borderColor: '#e74c3c40' }}>
-                <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}>
+              <div style={{ ...infoBox, borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }}>
+                <p style={{ margin: 0, color: 'var(--danger)', fontSize: '13px' }}>
                   No positions have been set up yet. Please check back later or contact the administration.
                 </p>
               </div>
@@ -201,21 +201,21 @@ const handleSubmit = async (e) => {
                     style={{
                       ...positionOption,
                       border: form.position_id === p._id
-                        ? '2px solid #2ecc71'
+                        ? '2px solid var(--success)'
                         : '1px solid var(--border-color)',
                       backgroundColor: form.position_id === p._id
-                        ? '#2ecc7110'
+                        ? 'color-mix(in srgb, var(--success) 10%, transparent)'
                         : 'var(--bg-color)',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <div style={{
                         width: '22px', height: '22px', borderRadius: '50%', flexShrink: 0,
-                        border: form.position_id === p._id ? '2px solid #2ecc71' : '2px solid var(--border-color)',
+                        border: form.position_id === p._id ? '2px solid var(--success)' : '2px solid var(--border-color)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                       }}>
                         {form.position_id === p._id && (
-                          <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#2ecc71' }} />
+                          <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: 'var(--success)' }} />
                         )}
                       </div>
                       <div>
@@ -266,10 +266,10 @@ const handleSubmit = async (e) => {
                   style={{
                     ...positionOption,
                     border: paymentMethod === method
-                      ? '2px solid #2ecc71'
+                      ? '2px solid var(--success)'
                       : '1px solid var(--border-color)',
                     backgroundColor: paymentMethod === method
-                      ? '#2ecc7110'
+                      ? 'color-mix(in srgb, var(--success) 10%, transparent)'
                       : 'var(--bg-color)',
                   }}
                 >
@@ -277,12 +277,12 @@ const handleSubmit = async (e) => {
                     <div style={{
                       width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
                       border: paymentMethod === method
-                        ? '2px solid #2ecc71'
+                        ? '2px solid var(--success)'
                         : '2px solid var(--border-color)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
                       {paymentMethod === method && (
-                        <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#2ecc71' }} />
+                        <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: 'var(--success)' }} />
                       )}
                     </div>
                     <span style={{ color: 'var(--text-color)', fontSize: '14px' }}>{method}</span>
@@ -316,7 +316,7 @@ const handleSubmit = async (e) => {
             {paymentProofPreview && (
               <button
                 type="button"
-                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: '#e74c3c' }}
+                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: 'var(--danger)' }}
                 onClick={() => { setPaymentProofPreview(null); setPaymentProof(null); }}
               >
                 Remove receipt
@@ -349,7 +349,7 @@ const handleSubmit = async (e) => {
             {preview && (
               <button
                 type="button"
-                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: '#e74c3c' }}
+                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: 'var(--danger)' }}
                 onClick={() => { setPreview(null); setForm(prev => ({ ...prev, image: null })); }}
               >
                 Remove photo
@@ -400,5 +400,5 @@ const errorBox    = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb,
 const photoUploadArea = { display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed var(--border-color)', borderRadius: '10px', padding: '20px', cursor: 'pointer', minHeight: '100px' };
 const photoPreview  = { width: '100px', height: '100px', objectFit: 'cover', borderRadius: '8px' };
 const btn           = { padding: '10px 18px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', color: '#fff' };
-const greenBtn      = { ...btn, backgroundColor: '#2ecc71' };
+const greenBtn      = { ...btn, backgroundColor: 'var(--success)' };
 const ghostBtn      = { padding: '8px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
