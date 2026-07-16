@@ -395,20 +395,21 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           transition: 'max-width 0.3s ease' 
         }}>
         
-        <nav className="no-print" style={{ ...navBarStyle, position: 'relative' }}>
-          <button
-            onClick={toggleTheme}
-            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            style={{
-              position: 'absolute', top: '0', right: '0',
-              background: 'none', border: '1px solid var(--border-color)',
-              borderRadius: '20px', padding: '6px 12px', cursor: 'pointer',
-              fontSize: '13px', color: 'var(--text-color)',
-              display: 'flex', alignItems: 'center', gap: '6px',
-            }}
-          >
-            {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
-          </button>
+        <nav className="no-print" style={navBarStyle}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              style={{
+                background: 'none', border: '1px solid var(--border-color)',
+                borderRadius: '20px', padding: '6px 12px', cursor: 'pointer',
+                fontSize: '13px', color: 'var(--text-color)',
+                display: 'flex', alignItems: 'center', gap: '6px',
+              }}
+            >
+              {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+            </button>
+          </div>
           <img src={logoUrl} alt="Logo" style={logoStyle} />
           <span style={{
             color: 'var(--text-color)',
