@@ -35,7 +35,7 @@ export default function OverseerDashboard({ onLogout }) {
 
   return (
     <div style={outerWrap}>
-      <div style={container}>
+      <div style={container}  className="dashboard-shell">
 
         {/* ── Header ── */}
         <div style={headerFlex}>
@@ -84,7 +84,7 @@ export default function OverseerDashboard({ onLogout }) {
             </div>
 
             {/* ── Tabs ── */}
-            <div style={tabBar}>
+            <div style={tabBar} className="tab-scroll">
               {tabs.map(t => (
                 <button
                   key={t.id}
