@@ -201,7 +201,7 @@ button:hover {
   }
 
   .no-print img {
-    height: 40px !important; /* Shrinks the logo so buttons fit */
+    height: 90px !important; /* Bigger logo on mobile, still leaves room for buttons */
   }
 
   .no-print button {
