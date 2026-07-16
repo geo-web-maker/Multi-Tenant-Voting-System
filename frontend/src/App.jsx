@@ -417,7 +417,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             letterSpacing: '1px',
             textTransform: 'uppercase',
             opacity: 0.8,
-            marginTop: '-10px'
+            marginTop: '-10px',
+            textAlign: 'center'
           }}>
             {orgName} Election Portal
           </span>
