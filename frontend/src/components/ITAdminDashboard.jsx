@@ -179,7 +179,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
   return (
     <div style={outerWrap}>
-      <div style={container}>
+      <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
         <div style={headerFlex}>
@@ -202,7 +202,7 @@ export default function ITAdminDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <div style={tabBar}>
+        <div style={tabBar} className="tab-scroll">
           {tabs.map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
