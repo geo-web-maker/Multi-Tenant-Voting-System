@@ -31,6 +31,7 @@ function App() {
   const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(0);
   const [selectedPhone, setSelectedPhone] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
   const [statusModal, setStatusModal] = useState({ 
     show: false, 
     title: '', 
@@ -199,7 +200,8 @@ useEffect(() => {
     return false;
   };
   
-    const handleVerifyIdentity = async (selectedIdx = null) => {
+const handleVerifyIdentity = async (selectedIdx = null) => {
+      setIsVerifying(true);
       try {
         const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
       
@@ -227,9 +229,8 @@ useEffect(() => {
             sessionStorage.setItem("overseer_name", res.data.full_name || "");
           }
         
-          // Superadmin never needs to change password (env-based login)
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
-            setPendingAdminEmail(studentId);   // studentId field holds the email for admin login
+            setPendingAdminEmail(studentId);
             setMustChangePassword(true);
             return;
           }
@@ -237,7 +238,6 @@ useEffect(() => {
           setView(res.data.role);
           return;
         }
-        //Before setStep(2), also store role for OTP path
         sessionStorage.setItem("admin_role",res.data.role || "commission");
   
         if (res.data.status === "needs_selection") {
@@ -266,10 +266,13 @@ useEffect(() => {
           message: typeof errorData === 'object' ? JSON.stringify(errorData) : errorData,
           type: "error"
         });
+      } finally {
+        setIsVerifying(false);
       }
     };
 
    const handleVerifyOtp = async () => {
+    setIsVerifying(true);
     try {
       const res = await api.post('/verify-otp', {
         student_id: studentId,
@@ -286,7 +289,6 @@ useEffect(() => {
           type: "success"
         });
   
-        // Store commissioner ID so CommissionDashboard can tag votes
         sessionStorage.setItem("commissioner_id", studentId);
   
         const role = sessionStorage.getItem("admin_role");
@@ -294,7 +296,7 @@ useEffect(() => {
           setView("superadmin");
         } else {
           setView("commission");
-        }          // ← this closing brace was missing
+        }
       } else {
         setStep(3);
       }
@@ -307,6 +309,8 @@ useEffect(() => {
         type: "error"
       });
       setOtp("");
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -493,10 +497,15 @@ useEffect(() => {
               
               <button
                 onClick={() => handleVerifyIdentity()}
-                disabled={!isElectionOpen && !isAdminPath}
-                style={{ ...primaryBtnStyle, backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7' }}
+                disabled={(!isElectionOpen && !isAdminPath) || isVerifying}
+                style={{
+                  ...primaryBtnStyle,
+                  backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7',
+                  opacity: isVerifying ? 0.7 : 1,
+                  cursor: isVerifying ? 'wait' : 'pointer',
+                }}
               >
-                {isAdminPath ? "Login" : "Verify & Send Code"}
+                {isVerifying ? '⏳ Verifying…' : (isAdminPath ? "Login" : "Verify & Send Code")}
               </button>
               <button onClick={() => setIsAdminPath(!isAdminPath)} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an Admin? Login here"}
@@ -555,9 +564,14 @@ useEffect(() => {
               <div style={cardStyle}>
                 <h2 style={{ textAlign: 'center' }}>Select Phone Number</h2>
                 <p style={{ textAlign: 'center', opacity: 0.8, marginBottom: '20px' }}>Choose where to receive your code:</p>
-                {maskedNumbers.map((num, index) => (
-                  <button key={index} onClick={() => { setSelectedPhone(num); handleVerifyIdentity(index); }} style={selectionBtnStyle}>
-                    Receive code on {num}
+                  {maskedNumbers.map((num, index) => (
+                  <button
+                    key={index}
+                    onClick={() => { setSelectedPhone(num); handleVerifyIdentity(index); }}
+                    disabled={isVerifying}
+                    style={{ ...selectionBtnStyle, opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' }}
+                  >
+                    {isVerifying ? 'Sending…' : `Receive code on ${num}`}
                   </button>
                 ))}
                 <button onClick={() => setStep(1)} style={{ ...linkBtnStyle, color: 'var(--danger)' }}>Cancel</button>
@@ -566,7 +580,7 @@ useEffect(() => {
 
             {step === 2 && (
               <div style={cardStyle}>
-                <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} />
+               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying} />
                 <div style={{ marginTop: '20px', textAlign: 'center' }}>
                   {timer > 0 ? (
                     <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
