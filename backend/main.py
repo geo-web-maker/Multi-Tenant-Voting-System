@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import random
+import secrets
 import motor.motor_asyncio
 import os
 import csv
@@ -10,7 +10,7 @@ import io
 import re
 import httpx
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from bson import ObjectId
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -24,7 +24,9 @@ from auth import (
     decode_access_token,
     get_bearer_token,
     require_role,
+    set_revocation_check,
     ADMIN_ROLES,
+    JWT_EXPIRE_MINUTES,
 )
 
 load_dotenv()
@@ -45,6 +47,9 @@ if not SUPER_ADMIN_ID or not SUPER_ADMIN_NAME:
         "SUPER_ADMIN_ID / SUPER_ADMIN_NAME must be set via environment variables. "
         "No hardcoded fallback is used on purpose."
     )
+# NOTE: superadmin MFA (TOTP) deliberately deferred — the current election's
+# admins are already onboarded and re-running that flow mid-election isn't
+# worth it. Revisit after this election wraps. See ballotbox-remaining-todo.md.
 
 # --- CLOUDINARY (signed, server-side uploads only — no unsigned preset) ---
 cloudinary.config(
@@ -57,8 +62,23 @@ cloudinary.config(
 # --- MONGODB ---
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 
+async def _is_token_revoked(jti: str | None) -> bool:
+    if not jti:
+        return False
+    return await db.revoked_tokens.find_one({"jti": jti}) is not None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # OTP_EXPIRY_MINUTES is enforced explicitly in verify_otp too — this index
+    # is cleanup, not the actual security boundary, since Mongo's TTL monitor
+    # only sweeps roughly once a minute rather than at the exact expiry instant.
+    await db.otps.create_index("created_at", expireAfterSeconds=OTP_EXPIRY_MINUTES * 60)
+    # Revoked-token records only need to live as long as the token itself
+    # would have been valid — once it's past its natural exp it can't be
+    # replayed anyway, so there's no need to keep the revocation record.
+    await db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=JWT_EXPIRE_MINUTES * 60)
+    set_revocation_check(_is_token_revoked)
     yield
     client.close()
 
@@ -144,8 +164,14 @@ async def auth_guard_middleware(request: Request, call_next):
 
     try:
         token = get_bearer_token(request)
-        payload = decode_access_token(token)
+        payload = await decode_access_token(token)
     except HTTPException as exc:
+        # Logged at debug volume on purpose — this fires on every expired
+        # session, not just attacks. record_failed_login already covers the
+        # security-relevant signal (repeated bad *credentials*); this is
+        # mainly useful for spotting a sudden wave of 401s.
+        if exc.status_code == 401:
+            await log_action("admin_guard_401", "unknown", {"path": request.url.path}, org_id=None)
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     if payload.get("role") not in ADMIN_ROLES:
@@ -154,6 +180,10 @@ async def auth_guard_middleware(request: Request, call_next):
     # Superadmin-only namespace, even though every caller here already holds
     # a valid admin token.
     if request.url.path.startswith("/superadmin") and payload["role"] != "superadmin":
+        await log_action(
+            "admin_guard_403", payload.get("sub", "unknown"),
+            {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id")
+        )
         return JSONResponse(status_code=403, content={"detail": "Superadmin access required."})
 
     request.state.admin = payload
@@ -336,7 +366,7 @@ async def send_sms_via_egosms(to_number: str, message_text: str):
 
 def generate_temp_password() -> str:
     """Simple 6-digit numeric code — easy to read and type from an SMS."""
-    return ''.join(random.choices(string.digits, k=6))
+    return ''.join(secrets.choice(string.digits) for _ in range(6))
 
 def hash_password(plain_password: str) -> str:
     return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
@@ -538,6 +568,56 @@ async def log_action(action: str, actor: str, details: dict = {}, org_id: str = 
     })
 
 # =============================================================================
+# ADMIN LOGIN RATE LIMITING
+# =============================================================================
+# Mongo-backed (not in-memory) on purpose: this guards the highest-privilege
+# accounts in the system, so it needs to survive a backend restart and work
+# correctly even if this ever runs behind multiple instances — unlike the
+# best-effort in-memory limiter on the public upload endpoint, where the
+# stakes of a reset-on-restart are much lower.
+
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCKOUT_MINUTES = 15
+
+
+def _login_attempt_key(email: str, org_id: str | None) -> str:
+    return f"{org_id or 'default'}:{email}"
+
+
+async def enforce_login_rate_limit(email: str, org_id: str | None):
+    key = _login_attempt_key(email, org_id)
+    record = await db.login_attempts.find_one({"key": key})
+    if not record:
+        return
+
+    locked_until = record.get("locked_until")
+    if locked_until and locked_until > datetime.utcnow():
+        remaining_s = int((locked_until - datetime.utcnow()).total_seconds())
+        remaining_min = max(1, remaining_s // 60 + (1 if remaining_s % 60 else 0))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts. Try again in {remaining_min} minute(s)."
+        )
+
+
+async def record_failed_login(email: str, org_id: str | None):
+    key = _login_attempt_key(email, org_id)
+    record = await db.login_attempts.find_one({"key": key})
+    attempts = (record.get("attempts", 0) if record else 0) + 1
+
+    update = {"key": key, "attempts": attempts, "last_attempt": datetime.utcnow()}
+    if attempts >= LOGIN_MAX_ATTEMPTS:
+        update["locked_until"] = datetime.utcnow() + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+        await log_action("admin_login_locked", email, {"attempts": attempts}, org_id=org_id)
+
+    await db.login_attempts.update_one({"key": key}, {"$set": update}, upsert=True)
+
+
+async def clear_login_attempts(email: str, org_id: str | None):
+    key = _login_attempt_key(email, org_id)
+    await db.login_attempts.delete_one({"key": key})
+
+# =============================================================================
 # SYSTEM & HEALTH
 # =============================================================================
 
@@ -611,7 +691,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
 
     idx       = data.phone_index if data.phone_index is not None else 0
     raw_phone = phone_list[idx]
-    otp       = str(random.randint(100000, 999999))
+    otp       = str(secrets.randbelow(900000) + 100000)
 
     first_name = student.get("full_name", "Voter").split()[0].capitalize()
     branding_doc = await db.settings.find_one(org_query(request, {"name": "branding"}))
@@ -637,6 +717,9 @@ async def verify_identity(data: IdentityCheck, request: Request):
     raise HTTPException(status_code=500, detail="SMS Delivery Failed")
 
 
+OTP_EXPIRY_MINUTES = 10
+
+
 @app.post("/verify-otp")
 async def verify_otp(data: OTPCheck, request: Request):
     search = org_query(request, get_forgiving_filter(data.student_id))
@@ -646,46 +729,108 @@ async def verify_otp(data: OTPCheck, request: Request):
 
     record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
 
-    if record and record["code"] == data.code:
-        await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
-        await db.otps.delete_one(search)
-        return {"status": "success"}
+    if record:
+        created_at = record.get("created_at")
+        is_expired = (
+            created_at is None
+            or datetime.utcnow() - created_at > timedelta(minutes=OTP_EXPIRY_MINUTES)
+        )
+        if is_expired:
+            await db.otps.delete_one(search)
+            raise HTTPException(status_code=400, detail="This code has expired. Please request a new one.")
+
+        if record["code"] == data.code:
+            await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
+            await db.otps.delete_one(search)
+            return {"status": "success"}
 
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
 
 
 @app.post("/vote")
 async def cast_vote(data: VoteRequest, request: Request):
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
-    if not student or student.get("has_voted"):
-        raise HTTPException(status_code=400, detail="Ineligible voter")
-    if student.get("last_status") != "authenticated":
-        raise HTTPException(status_code=403, detail="OTP verification required before voting.")
-    await db.voters.update_one({"_id": student["_id"]}, {"$set": {"has_voted": True, "last_status": "completed"}})
-    await db.candidates.update_one(org_query(request, {"_id": ObjectId(data.candidate_id)}), {"$inc": {"votes": 1}})
+    try:
+        candidate_oid = ObjectId(data.candidate_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid candidate.")
+
+    # Wrapped in a transaction: previously "mark voter as having voted" and
+    # "increment the candidate's tally" were two independent writes. If the
+    # process died between them, a voter could end up marked as voted with
+    # no vote actually recorded (or vice versa). Atlas replica sets support
+    # multi-document transactions, so this makes the two writes all-or-nothing.
+    async with await client.start_session() as session:
+        async with session.start_transaction():
+            student = await db.voters.find_one(
+                org_query(request, get_forgiving_filter(data.student_id)), session=session
+            )
+            if not student or student.get("has_voted"):
+                raise HTTPException(status_code=400, detail="Ineligible voter")
+            if student.get("last_status") != "authenticated":
+                raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+
+            candidate = await db.candidates.find_one(
+                org_query(request, {"_id": candidate_oid}), session=session
+            )
+            if not candidate:
+                raise HTTPException(status_code=404, detail="Candidate not found.")
+
+            await db.voters.update_one(
+                {"_id": student["_id"]},
+                {"$set": {"has_voted": True, "last_status": "completed"}},
+                session=session
+            )
+            await db.candidates.update_one(
+                org_query(request, {"_id": candidate_oid}),
+                {"$inc": {"votes": 1}},
+                session=session
+            )
+
     return {"status": "success"}
 
 
 @app.post("/vote-bulk")
 async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
-    if not student:
-        raise HTTPException(status_code=404, detail="Voter not found")
-    if student.get("has_voted"):
-        raise HTTPException(status_code=400, detail="You have already cast your vote.")
-    if student.get("last_status") != "authenticated":
-        raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+    try:
+        candidate_oids = [ObjectId(c_id) for c_id in data.candidate_ids]
+    except Exception:
+        raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
-    await db.voters.update_one(
-        {"_id": student["_id"]},
-        {"$set": {"has_voted": True, "last_status": "completed"}}
-    )
+    async with await client.start_session() as session:
+        async with session.start_transaction():
+            student = await db.voters.find_one(
+                org_query(request, get_forgiving_filter(data.student_id)), session=session
+            )
+            if not student:
+                raise HTTPException(status_code=404, detail="Voter not found")
+            if student.get("has_voted"):
+                raise HTTPException(status_code=400, detail="You have already cast your vote.")
+            if student.get("last_status") != "authenticated":
+                raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
-    for c_id in data.candidate_ids:
-        try:
-            await db.candidates.update_one(org_query(request, {"_id": ObjectId(c_id)}), {"$inc": {"votes": 1}})
-        except Exception:
-            continue
+            # Validate every candidate exists BEFORE writing anything. The old
+            # version incremented whichever candidates happened to resolve and
+            # silently swallowed failures for the rest — a voter could end up
+            # marked as voted with some of their choices never counted. Now
+            # it's genuinely all-or-nothing: either every choice is recorded,
+            # or none are and the voter can retry.
+            candidates = await db.candidates.find(
+                org_query(request, {"_id": {"$in": candidate_oids}}), session=session
+            ).to_list(length=None)
+            if len(candidates) != len(set(candidate_oids)):
+                raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
+
+            await db.voters.update_one(
+                {"_id": student["_id"]},
+                {"$set": {"has_voted": True, "last_status": "completed"}},
+                session=session
+            )
+            for c_oid in candidate_oids:
+                await db.candidates.update_one(
+                    org_query(request, {"_id": c_oid}),
+                    {"$inc": {"votes": 1}},
+                    session=session
+                )
 
     return {"status": "success", "message": "Ballot cast successfully"}
 
@@ -814,6 +959,23 @@ async def submit_application(data: ApplicationSubmit, request: Request):
 
 @app.post("/verify-admin")
 async def verify_admin(data: AdminLoginCheck, request: Request):
+    email_key = data.email.strip().lower()
+    org_id = request.state.org_id
+
+    await enforce_login_rate_limit(email_key, org_id)
+
+    try:
+        result = await _verify_admin_credentials(data, request)
+    except HTTPException as exc:
+        if exc.status_code in (401, 404):
+            await record_failed_login(email_key, org_id)
+        raise
+    else:
+        await clear_login_attempts(email_key, org_id)
+        return result
+
+
+async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     # ── Superadmin ── (env var based, no hashing needed — this is you)
     if data.email == SUPER_ADMIN_ID and data.password == SUPER_ADMIN_NAME:
         token = create_access_token(subject="superadmin", role="superadmin", org_id=request.state.org_id)
@@ -923,6 +1085,19 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         "full_name":           commissioner.get("full_name", ""),
         "must_change_password": commissioner.get("commissioner_must_change_password", True)
     }
+
+
+@app.post("/admin/logout")
+async def admin_logout(request: Request):
+    """Revoke the current session token immediately, rather than leaving it
+    valid until its natural 8h expiry. Any admin role can call this on
+    themselves; there's no separate 'revoke someone else's session' endpoint
+    yet — see the superadmin org-reset / password-reset flows for dealing
+    with a compromised non-superadmin account in the meantime."""
+    admin = request.state.admin  # set by auth_guard_middleware
+    await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
+    await log_action("admin_logout", admin.get("sub", "unknown"), {}, org_id=admin.get("org_id"))
+    return {"status": "success"}
 
 
 @app.post("/admin/toggle-election")

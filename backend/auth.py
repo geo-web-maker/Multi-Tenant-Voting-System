@@ -14,8 +14,9 @@ Design notes for George:
 """
 
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 import jwt
 from fastapi import HTTPException, Request
@@ -36,6 +37,18 @@ if not JWT_SECRET:
 # to this session layer.
 ADMIN_ROLES = {"superadmin", "it_admin", "financial_controller", "overseer", "commission"}
 
+# main.py sets this to an async function that checks a token's jti against
+# db.revoked_tokens, so a logout (or "revoke all sessions") can invalidate a
+# token before its natural expiry. Kept as an injectable hook rather than
+# importing db directly here, to avoid a circular import between auth.py and
+# main.py.
+_revocation_check: Optional[Callable] = None
+
+
+def set_revocation_check(fn: Callable):
+    global _revocation_check
+    _revocation_check = fn
+
 
 def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_name: str = "") -> str:
     if role not in ADMIN_ROLES:
@@ -46,19 +59,26 @@ def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_
         "role": role,
         "org_id": org_id,        # None on single-tenant deployments
         "full_name": full_name,
+        "jti": secrets.token_hex(16),  # unique per-token id, used for revocation
         "iat": now,
         "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def decode_access_token(token: str) -> dict:
+async def decode_access_token(token: str, check_revocation: bool = True) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid session. Please log in again.")
+
+    if check_revocation and _revocation_check is not None:
+        if await _revocation_check(payload.get("jti")):
+            raise HTTPException(status_code=401, detail="Session has been signed out. Please log in again.")
+
+    return payload
 
 
 def get_bearer_token(request: Request) -> str:
@@ -71,14 +91,14 @@ def get_bearer_token(request: Request) -> str:
     return token
 
 
-def require_admin(request: Request) -> dict:
+async def require_admin(request: Request) -> dict:
     """FastAPI dependency: any authenticated admin, regardless of role.
 
     Use this directly, or wrap with require_role(...) below for
     role-specific endpoints.
     """
     token = get_bearer_token(request)
-    payload = decode_access_token(token)
+    payload = await decode_access_token(token)
     if payload.get("role") not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Not authorized.")
     return payload
@@ -91,8 +111,8 @@ def require_role(*roles: str):
     """
     allowed = set(roles)
 
-    def _dep(request: Request) -> dict:
-        payload = require_admin(request)
+    async def _dep(request: Request) -> dict:
+        payload = await require_admin(request)
         if payload["role"] not in allowed:
             raise HTTPException(status_code=403, detail="Not authorized for this action.")
         return payload

@@ -373,6 +373,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   };
   
   const resetFlow = () => {
+    // Best-effort server-side revocation — fire and forget, don't block the
+    // UI on it. Client-side clearing below happens regardless, so a failed
+    // revoke call never traps the user on a stuck screen.
+    if (sessionStorage.getItem(ADMIN_TOKEN_KEY)) {
+      api.post("/admin/logout").catch(() => {});
+    }
     setStep(1);
     setView("voter");
     setIsAdminPath(false);
