@@ -26,6 +26,8 @@ function App() {
   const [loopNum, setLoopNum] = useState(0);
   const [typingSpeed, setTypingSpeed] = useState(150);
   const [isAdminPath, setIsAdminPath] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
+  const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState("");
@@ -206,7 +208,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
       
         const payload = isAdminPath
-          ? { email: studentId, password: name }
+          ? { email: studentId, password: name, totp_code: totpCode || undefined }
           : { student_id: studentId, full_name: name, phone_index: selectedIdx };
     
         const res = await api.post(endpoint, payload);
@@ -262,6 +264,16 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           setTimer(60);
         }
       } catch (err) {
+        // Superadmin credentials matched but no code was entered yet — reveal
+        // the field and let them submit again, rather than showing this as
+        // a login failure. This is the only path that turns needsTotp on,
+        // so the field only ever appears once email+password have actually
+        // matched the superadmin account.
+        if (isAdminPath && err.response?.status === 428 && err.response?.data?.detail === "totp_required") {
+          setNeedsTotp(true);
+          setIsVerifying(false);
+          return;
+        }
         const errorData = err.response?.data?.detail || "Verification Failed";
         setStatusModal({
           show: true,
@@ -385,6 +397,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     setStudentId("");
     setName("");
     setOtp("");
+    setTotpCode("");
+    setNeedsTotp(false);
     setMaskedNumbers([]);
     setTimer(0);
     setSelectedPhone("");
@@ -479,7 +493,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   <input
                     style={inputStyle}
                     value={studentId}
-                    onChange={e => setStudentId(e.target.value)}
+                    onChange={e => { setStudentId(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
                     placeholder="Email e.g. commissioner@example.com"
                     type="email"
                     autoComplete="email"
@@ -487,11 +501,24 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   <input
                     style={inputStyle}
                     value={name}
-                    onChange={e => setName(e.target.value)}
+                    onChange={e => { setName(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
                     placeholder="Password e.g. Comm@2026!"
                     type="password"
                     autoComplete="current-password"
                   />
+                  {needsTotp && (
+                    <input
+                      style={inputStyle}
+                      value={totpCode}
+                      onChange={e => setTotpCode(e.target.value)}
+                      placeholder="Authenticator code"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      autoFocus
+                    />
+                  )}
                 </>
               ) : (
                 <>
@@ -522,7 +549,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               >
                 {isVerifying ? '⏳ Verifying…' : (isAdminPath ? "Login" : "Verify & Send Code")}
               </button>
-              <button onClick={() => setIsAdminPath(!isAdminPath)} style={linkBtnStyle}>
+              <button onClick={() => { setIsAdminPath(!isAdminPath); setNeedsTotp(false); setTotpCode(""); }} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an Admin? Login here"}
               </button>
                 <div style={{ marginTop: '20px', borderTop: '1px solid var(--border-color)', paddingTop: '15px' }}>

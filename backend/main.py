@@ -18,6 +18,7 @@ import bcrypt
 import string
 import cloudinary
 import cloudinary.uploader
+import pyotp
 
 from auth import (
     create_access_token,
@@ -47,9 +48,16 @@ if not SUPER_ADMIN_ID or not SUPER_ADMIN_NAME:
         "SUPER_ADMIN_ID / SUPER_ADMIN_NAME must be set via environment variables. "
         "No hardcoded fallback is used on purpose."
     )
-# NOTE: superadmin MFA (TOTP) deliberately deferred — the current election's
-# admins are already onboarded and re-running that flow mid-election isn't
-# worth it. Revisit after this election wraps. See ballotbox-remaining-todo.md.
+
+# Optional: once SUPERADMIN_TOTP_SECRET is set in the environment, MFA
+# becomes mandatory on the next login — no further code change needed.
+# One secret can be enrolled into multiple authenticator apps/devices (phone
+# AND laptop) — TOTP doesn't care how many places know the secret, it just
+# checks the 6-digit code against what the secret + current time produce.
+# Generate one via GET /superadmin/mfa/generate (works pre-MFA, as a one-time
+# bootstrap step) and scan/paste the same secret into every device you want
+# to use.
+SUPERADMIN_TOTP_SECRET = os.getenv("SUPERADMIN_TOTP_SECRET")
 
 # --- CLOUDINARY (signed, server-side uploads only — no unsigned preset) ---
 cloudinary.config(
@@ -212,6 +220,7 @@ class OTPCheck(BaseModel):
 class AdminLoginCheck(BaseModel):
     email:    str
     password: str
+    totp_code: str | None = None  # only used/required for superadmin, once SUPERADMIN_TOTP_SECRET is set
 
 class CommissionerCredentials(BaseModel):
     email:    str
@@ -978,6 +987,15 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
 async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     # ── Superadmin ── (env var based, no hashing needed — this is you)
     if data.email == SUPER_ADMIN_ID and data.password == SUPER_ADMIN_NAME:
+        if SUPERADMIN_TOTP_SECRET:
+            if not data.totp_code:
+                # Distinct status code from "wrong code" on purpose: this is
+                # the signal the frontend uses to reveal the TOTP field only
+                # once email+password have actually matched superadmin —
+                # never shown for a wrong password, or for any other role.
+                raise HTTPException(status_code=428, detail="totp_required")
+            if not pyotp.TOTP(SUPERADMIN_TOTP_SECRET).verify(data.totp_code, valid_window=1):
+                raise HTTPException(status_code=401, detail="Invalid authenticator code.")
         token = create_access_token(subject="superadmin", role="superadmin", org_id=request.state.org_id)
         return {
             "status": "success",
@@ -1535,6 +1553,51 @@ async def get_commission_detailed_results(request: Request):
         "positions": detailed,
         "generated_at": datetime.utcnow()
     }
+
+
+# =============================================================================
+# SUPERADMIN — MFA BOOTSTRAP
+# =============================================================================
+
+@app.get("/superadmin/mfa/generate")
+async def generate_superadmin_mfa_secret(request: Request):
+    """One-time bootstrap: call this once while logged in as superadmin
+    (works pre-MFA — plain email+password gets you in to run this).
+
+    To use MFA from BOTH your phone and your laptop: call this endpoint
+    ONCE, then enroll that SAME secret into an authenticator app on each
+    device (scan provisioning_uri as a QR code on your phone; on Linux,
+    paste the raw `secret` into KeePassXC's TOTP field, the GNOME
+    "Authenticator" app, or run `oathtool --totp -b <secret>` from a
+    terminal). One secret, multiple apps — they'll all produce the same
+    code at the same moment since it's derived from the secret + the
+    current time, not tied to any one device.
+
+    Refuses to run again once SUPERADMIN_TOTP_SECRET is already set —
+    generating a second secret would silently invalidate every device
+    you've already enrolled the moment it's deployed, locking you out
+    until you reset the env var by hand on Render. To rotate the secret
+    on purpose, unset SUPERADMIN_TOTP_SECRET, redeploy, call this again,
+    re-enroll every device, THEN set the new secret and redeploy again —
+    never skip straight to a new secret while the old one is still live.
+
+    Copy the returned secret into SUPERADMIN_TOTP_SECRET in Render's env
+    vars and redeploy. MFA becomes mandatory on the NEXT login after that —
+    this endpoint alone doesn't turn it on.
+    """
+    if SUPERADMIN_TOTP_SECRET:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "MFA is already configured. Generating a new secret now would invalidate "
+                "every device already enrolled and could lock you out. To rotate it: unset "
+                "SUPERADMIN_TOTP_SECRET, redeploy, call this endpoint again, re-enroll every "
+                "device with the new secret, THEN set it and redeploy."
+            )
+        )
+    secret = pyotp.random_base32()
+    uri = pyotp.TOTP(secret).provisioning_uri(name=SUPER_ADMIN_ID, issuer_name="BallotBox Superadmin")
+    return {"secret": secret, "provisioning_uri": uri}
 
 
 # =============================================================================
