@@ -1,15 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
 import api from '../api';
 
+// Signed, server-side upload via our own backend — replaces the old
+// unsigned Cloudinary preset upload that ran straight from the browser.
+// This is the one upload endpoint that has to stay public (applicants
+// aren't logged in), but the backend still validates file type/size and
+// rate-limits per IP, and the Cloudinary secret never touches the client.
 async function uploadToCloudinary(file) {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('upload_preset', import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET);
-  const res = await axios.post(
-    `https://api.cloudinary.com/v1_1/${import.meta.env.VITE_CLOUDINARY_CLOUD_NAME}/image/upload`,
-    formData
-  );
+  const res = await api.post('/apply/upload-image', formData);
   return res.data.secure_url;
 }
 

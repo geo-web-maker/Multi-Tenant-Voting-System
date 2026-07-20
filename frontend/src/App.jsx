@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'; 
-import api, { API_BASE } from './api';
+import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
 import OtpInput from './components/OtpInput';
 import BallotBox from './components/BallotBox';
 import Results from './components/Results';
@@ -213,6 +213,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   
         if (res.data.bypass === true) {
           sessionStorage.setItem("admin_role", res.data.role);
+          if (res.data.access_token) {
+            sessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
+          }
           if (res.data.commissioner_id) {
             sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
           }
@@ -342,6 +345,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       });
   
       sessionStorage.setItem("admin_role", res.data.role);
+      if (res.data.access_token) {
+        sessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
+      }
       if (res.data.commissioner_id) sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
       if (res.data.it_admin_id) {
         sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
@@ -377,6 +383,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     setTimer(0);
     setSelectedPhone("");
     sessionStorage.removeItem("admin_role");
+    sessionStorage.removeItem(ADMIN_TOKEN_KEY);
     sessionStorage.removeItem("commissioner_id");
     sessionStorage.removeItem("it_admin_id");
     sessionStorage.removeItem("it_admin_name");

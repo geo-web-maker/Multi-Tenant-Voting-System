@@ -16,9 +16,14 @@ export const ORG_SLUG = import.meta.env.VITE_ORG_SLUG || "";
 // so their requests keep using the build-time ORG_SLUG exactly as before.
 export const SUPERADMIN_ORG_OVERRIDE_KEY = 'superadmin_active_org_slug';
 
+// sessionStorage key the admin JWT (issued by /verify-admin) is stored under.
+// Set on login, cleared on logout, read here on every request.
+export const ADMIN_TOKEN_KEY = 'admin_token';
+
 // Shared axios instance. Every component should import `api` from here
 // instead of importing axios directly, so every request automatically
-// carries the org context without each call site having to remember to add it.
+// carries the org context and admin session token without each call site
+// having to remember to add it.
 const api = axios.create({
   baseURL: API_BASE,
 });
@@ -28,8 +33,29 @@ api.interceptors.request.use((config) => {
   if (activeSlug) {
     config.headers['X-Org-Slug'] = activeSlug;
   }
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  if (token) {
+    config.headers['Authorization'] = `Bearer ${token}`;
+  }
   return config;
 });
+
+// If a session token is missing/expired/invalid, the backend returns 401.
+// Clear the stale session and bounce back to login rather than leaving the
+// user stuck on a dashboard that will 401 on every subsequent action.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+      sessionStorage.removeItem('admin_role');
+      if (typeof window !== 'undefined' && !window.location.pathname.includes('login')) {
+        window.location.reload();
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 export default api;
 

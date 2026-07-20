@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import api from '../api';
 
 export default function AdminDashboard({ apiBase, onLogout }) {
   // --- STATE MANAGEMENT ---
@@ -28,17 +28,15 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ name: '', position: '', order: 0, newImage: null });
 
-  const API_URL = apiBase.replace(/\/$/, '');
-
   // --- DATA FETCHING ---
   const fetchData = async () => {
     try {
       setLoading(true);
       const [voterRes, statusRes, candidateRes, balanceRes] = await Promise.all([
-        axios.get(`${API_URL}/admin/voters`),
-        axios.get(`${API_URL}/election-status`),
-        axios.get(`${API_URL}/candidates`),
-        axios.get(`${API_URL}/admin/sms-balance`).catch(() => ({ data: { balance: "N/A", currency: "" } }))
+        api.get(`/admin/voters`),
+        api.get(`/election-status`),
+        api.get(`/candidates`),
+        api.get(`/admin/sms-balance`).catch(() => ({ data: { balance: "N/A", currency: "" } }))
       ]);
       
       setVoters(voterRes.data);
@@ -81,7 +79,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   if (window.confirm(msg)) {
     try {
       // Your backend doesn't need a body; it just toggles the current value
-      const res = await axios.post(`${API_URL}/admin/toggle-certification`);
+      const res = await api.post(`/admin/toggle-certification`);
       
       // We use the boolean returned by the backend to ensure UI matches DB exactly
       setIsCertified(res.data.is_certified);
@@ -98,7 +96,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   const handleToggleElection = async () => {
     try {
       // Change this line to remove the body and use the response from the server
-      const res = await axios.post(`${API_URL}/admin/toggle-election`);
+      const res = await api.post(`/admin/toggle-election`);
       setIsElectionOpen(res.data.is_open);
       alert(`Election is now ${res.data.is_open ? "STARTED" : "STOPPED"}`);
     } catch (err) { 
@@ -109,7 +107,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   const handleScheduleTimer = async () => {
     if (!startTime || !endTime) return alert("Please set both start and end times.");
     try {
-      await axios.post(`${API_URL}/admin/schedule-election`, { start: startTime, end: endTime });
+      await api.post(`/admin/schedule-election`, { start: startTime, end: endTime });
       setTimerActive(true);
       alert("Election schedule has been set!");
       fetchData();
@@ -119,7 +117,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   const handleClearSchedule = async () => {
     if (window.confirm("Remove the timer? The election will rely on the Manual Toggle only.")) {
       try {
-        await axios.post(`${API_URL}/admin/clear-schedule`);
+        await api.post(`/admin/clear-schedule`);
         setStartTime("");
         setEndTime("");
         setTimerActive(false);
@@ -133,7 +131,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
     if (window.confirm("⚠️ DANGER: This will delete ALL votes and reset the election. Proceed?")) {
       if (window.prompt("Type 'RESET' to confirm permanent deletion:") === "RESET") {
         try {
-          await axios.post(`${API_URL}/admin/reset-election`);
+          await api.post(`/admin/reset-election`);
           alert("Database cleared.");
           fetchData();
         } catch (err) { alert("Reset failed."); }
@@ -148,7 +146,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
     formData.append("file", file);
     setImporting(true);
     try {
-      const res = await axios.post(`${API_URL}/admin/import-voters`, formData, {
+      const res = await api.post(`/admin/import-voters`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       alert(`Import Successful! ${res.data.imported_count} records processed.`);
@@ -165,11 +163,10 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       if (newCandidate.image) {
         const formData = new FormData();
         formData.append("file", newCandidate.image);
-        formData.append("upload_preset", import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET);
-        const cloudRes = await axios.post(`https://api.cloudinary.com/v1_1/${import.meta.env.VITE_CLOUDINARY_CLOUD_NAME}/image/upload`, formData);
-        imageUrl = cloudRes.data.secure_url;
+        const uploadRes = await api.post(`/admin/upload-image`, formData);
+        imageUrl = uploadRes.data.secure_url;
       }
-      await axios.post(`${API_URL}/candidates`, { 
+      await api.post(`/candidates`, { 
         ...newCandidate, 
         image_url: imageUrl, 
         votes: 0,
@@ -188,11 +185,10 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       if (editForm.newImage) {
         const formData = new FormData();
         formData.append("file", editForm.newImage);
-        formData.append("upload_preset", import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET);
-        const cloudRes = await axios.post(`https://api.cloudinary.com/v1_1/${import.meta.env.VITE_CLOUDINARY_CLOUD_NAME}/image/upload`, formData);
-        imageUrl = cloudRes.data.secure_url;
+        const uploadRes = await api.post(`/admin/upload-image`, formData);
+        imageUrl = uploadRes.data.secure_url;
       }
-      await axios.put(`${API_URL}/candidates/${id}`, {
+      await api.put(`/candidates/${id}`, {
         name: editForm.name,
         position: editForm.position,
         order: parseInt(editForm.order) || 0,
@@ -206,7 +202,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
 
   const handleDeleteCandidate = async (id) => {
     if (window.confirm("Delete this candidate?")) {
-      await axios.delete(`${API_URL}/candidates/${id}`);
+      await api.delete(`/candidates/${id}`);
       fetchData();
     }
   };

@@ -6,3 +6,5 @@ python-dotenv
 httpx
 python-multipart
 bcrypt
+PyJWT
+cloudinary

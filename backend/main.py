@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import random
 import motor.motor_asyncio
@@ -15,6 +16,16 @@ from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import bcrypt
 import string
+import cloudinary
+import cloudinary.uploader
+
+from auth import (
+    create_access_token,
+    decode_access_token,
+    get_bearer_token,
+    require_role,
+    ADMIN_ROLES,
+)
 
 load_dotenv()
 
@@ -27,8 +38,21 @@ EGOSMS_USER = os.getenv("EGOSMS_USERNAME")
 EGOSMS_PASS = os.getenv("EGOSMS_PASSWORD")
 EGOSMS_SENDER_ID = os.getenv("ESMS_SENDER_ID", "SMS").strip()
 
-SUPER_ADMIN_ID   = os.getenv("SUPER_ADMIN_ID",   "geo_web@yahoo.com")
-SUPER_ADMIN_NAME = os.getenv("SUPER_ADMIN_NAME",  "dorothygeorge@QWE25")
+SUPER_ADMIN_ID   = os.getenv("SUPER_ADMIN_ID")
+SUPER_ADMIN_NAME = os.getenv("SUPER_ADMIN_NAME")
+if not SUPER_ADMIN_ID or not SUPER_ADMIN_NAME:
+    raise RuntimeError(
+        "SUPER_ADMIN_ID / SUPER_ADMIN_NAME must be set via environment variables. "
+        "No hardcoded fallback is used on purpose."
+    )
+
+# --- CLOUDINARY (signed, server-side uploads only — no unsigned preset) ---
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True,
+)
 
 # --- MONGODB ---
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
@@ -79,6 +103,61 @@ async def org_context_middleware(request: Request, call_next):
             request.state.org_slug = org_slug
     response = await call_next(request)
     return response
+
+# =============================================================================
+# AUTH GUARD MIDDLEWARE
+# =============================================================================
+# Fail-closed by design: everything is protected UNLESS it's explicitly listed
+# as public below. This is deliberately the opposite of sprinkling
+# Depends(require_role(...)) on individual routes one-by-one — with 80+ routes
+# in this file, a per-route allowlist is one forgotten decorator away from
+# reopening the hole we're closing here. A new /admin/whatever route is
+# protected automatically the moment it's added, with no extra step.
+#
+# Voter-facing endpoints (verify-identity, verify-otp, vote, apply, etc.) stay
+# public on purpose — voters authenticate per-request via student_id + OTP,
+# not via this admin session layer.
+
+PUBLIC_PATHS = {
+    "/", "/health", "/election-status",
+    "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
+    "/apply/check-eligibility", "/apply", "/apply/upload-image",
+    "/verify-admin",
+}
+PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
+
+
+def _is_public(path: str, method: str) -> bool:
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_DOC_PREFIXES):
+        return True
+    # Public read-only endpoints voters/applicants need before they're
+    # "logged in" anywhere.
+    if method == "GET" and path in {"/candidates", "/positions"}:
+        return True
+    return False
+
+
+@app.middleware("http")
+async def auth_guard_middleware(request: Request, call_next):
+    if _is_public(request.url.path, request.method):
+        return await call_next(request)
+
+    try:
+        token = get_bearer_token(request)
+        payload = decode_access_token(token)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    if payload.get("role") not in ADMIN_ROLES:
+        return JSONResponse(status_code=403, content={"detail": "Not authorized."})
+
+    # Superadmin-only namespace, even though every caller here already holds
+    # a valid admin token.
+    if request.url.path.startswith("/superadmin") and payload["role"] != "superadmin":
+        return JSONResponse(status_code=403, content={"detail": "Superadmin access required."})
+
+    request.state.admin = payload
+    return await call_next(request)
 
 # =============================================================================
 # MODELS
@@ -506,8 +585,11 @@ async def verify_identity(data: IdentityCheck, request: Request):
     if not student:
         raise HTTPException(status_code=404, detail="Student ID not found")
 
+    # otp_count tracks how many OTPs have already been SENT to this voter.
+    # We allow 3 total requests, so we only block once a 4th would be sent
+    # (i.e. once 3 have already gone out).
     otp_count = student.get("otp_count", 0)
-    if otp_count >= 2:
+    if otp_count >= 3:
         raise HTTPException(
             status_code=403,
             detail="Too many attempts. Please check the official register for your details."
@@ -577,6 +659,8 @@ async def cast_vote(data: VoteRequest, request: Request):
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student or student.get("has_voted"):
         raise HTTPException(status_code=400, detail="Ineligible voter")
+    if student.get("last_status") != "authenticated":
+        raise HTTPException(status_code=403, detail="OTP verification required before voting.")
     await db.voters.update_one({"_id": student["_id"]}, {"$set": {"has_voted": True, "last_status": "completed"}})
     await db.candidates.update_one(org_query(request, {"_id": ObjectId(data.candidate_id)}), {"$inc": {"votes": 1}})
     return {"status": "success"}
@@ -589,6 +673,8 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         raise HTTPException(status_code=404, detail="Voter not found")
     if student.get("has_voted"):
         raise HTTPException(status_code=400, detail="You have already cast your vote.")
+    if student.get("last_status") != "authenticated":
+        raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
     await db.voters.update_one(
         {"_id": student["_id"]},
@@ -623,6 +709,52 @@ async def get_positions(request: Request):
         p["_id"] = str(p["_id"])
         positions.append(p)
     return positions
+
+# Simple in-memory per-IP rate limit for the one unauthenticated upload
+# endpoint. Good enough for a single-instance deployment; if this ever runs
+# on multiple Render/Railway instances behind a load balancer, swap for a
+# Redis-backed limiter (e.g. slowapi) since in-memory state won't be shared
+# across instances.
+_upload_attempts: dict[str, list[float]] = {}
+UPLOAD_RATE_LIMIT = 8       # max uploads
+UPLOAD_RATE_WINDOW_S = 600  # per 10 minutes, per IP
+
+
+def _check_upload_rate_limit(request: Request):
+    ip = request.client.host if request.client else "unknown"
+    now = datetime.utcnow().timestamp()
+    attempts = [t for t in _upload_attempts.get(ip, []) if now - t < UPLOAD_RATE_WINDOW_S]
+    if len(attempts) >= UPLOAD_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many uploads. Please try again in a few minutes.")
+    attempts.append(now)
+    _upload_attempts[ip] = attempts
+
+
+@app.post("/apply/upload-image")
+async def apply_upload_image(request: Request, file: UploadFile = File(...)):
+    """Public upload used for candidate photos and payment proof during
+    application submission. Applicants have no login, so this can't require
+    an admin token — but it still keeps the Cloudinary secret server-side,
+    validates file type/size, and rate-limits per IP, none of which the old
+    unsigned-preset upload did.
+    """
+    _check_upload_rate_limit(request)
+
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP, or GIF images are allowed.")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Image must be under 5MB.")
+
+    try:
+        result = cloudinary.uploader.upload(content, folder="ballotbox/applicants")
+    except Exception as e:
+        logger.error(f"Cloudinary applicant upload failed: {e}")
+        raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
+
+    return {"secure_url": result["secure_url"]}
+
 
 @app.post("/apply/check-eligibility")
 async def check_application_eligibility(data: ApplicationEligibilityCheck, request: Request):
@@ -684,10 +816,12 @@ async def submit_application(data: ApplicationSubmit, request: Request):
 async def verify_admin(data: AdminLoginCheck, request: Request):
     # ── Superadmin ── (env var based, no hashing needed — this is you)
     if data.email == SUPER_ADMIN_ID and data.password == SUPER_ADMIN_NAME:
+        token = create_access_token(subject="superadmin", role="superadmin", org_id=request.state.org_id)
         return {
             "status": "success",
             "bypass": True,
             "role": "superadmin",
+            "access_token": token,
             "message": "Superadmin bypass active."
         }
 
@@ -701,10 +835,15 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         await log_action("it_admin_login", it_admin["student_id"], {"email": data.email}, org_id=request.state.org_id)
+        token = create_access_token(
+            subject=it_admin["student_id"], role="it_admin",
+            org_id=request.state.org_id, full_name=it_admin.get("full_name", "")
+        )
         return {
             "status":              "success",
             "bypass":              True,
             "role":                "it_admin",
+            "access_token":        token,
             "it_admin_id":         it_admin["student_id"],
             "full_name":           it_admin.get("full_name", ""),
             "must_change_password": it_admin.get("it_admin_must_change_password", True)
@@ -720,10 +859,15 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         await log_action("financial_controller_login", financial_controller["student_id"], {"email": data.email}, org_id=request.state.org_id)
+        token = create_access_token(
+            subject=financial_controller["student_id"], role="financial_controller",
+            org_id=request.state.org_id, full_name=financial_controller.get("full_name", "")
+        )
         return {
             "status":              "success",
             "bypass":              True,
             "role":                "financial_controller",
+            "access_token":        token,
             "financial_controller_id": financial_controller["student_id"],
             "full_name":           financial_controller.get("full_name", ""),
             "must_change_password": financial_controller.get("financial_controller_must_change_password", True)
@@ -739,10 +883,15 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         await log_action("overseer_login", overseer["student_id"], {"email": data.email}, org_id=request.state.org_id)
+        token = create_access_token(
+            subject=overseer["student_id"], role="overseer",
+            org_id=request.state.org_id, full_name=overseer.get("full_name", "")
+        )
         return {
             "status":              "success",
             "bypass":              True,
             "role":                "overseer",
+            "access_token":        token,
             "overseer_id":         overseer["student_id"],
             "full_name":           overseer.get("full_name", ""),
             "must_change_password": overseer.get("overseer_must_change_password", True)
@@ -761,10 +910,15 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     await log_action("commissioner_login", commissioner["student_id"], {"email": data.email}, org_id=request.state.org_id)
+    token = create_access_token(
+        subject=commissioner["student_id"], role="commission",
+        org_id=request.state.org_id, full_name=commissioner.get("full_name", "")
+    )
     return {
         "status":              "success",
         "bypass":              True,
         "role":                "commission",
+        "access_token":        token,
         "commissioner_id":     commissioner["student_id"],
         "full_name":           commissioner.get("full_name", ""),
         "must_change_password": commissioner.get("commissioner_must_change_password", True)
@@ -882,6 +1036,33 @@ async def import_voters(request: Request, file: UploadFile = File(...)):
             count += 1
     await log_action("voters_imported", "admin", {"count": count}, org_id=request.state.org_id)
     return {"status": "success", "imported_count": count}
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
+
+
+@app.post("/admin/upload-image")
+async def admin_upload_image(request: Request, file: UploadFile = File(...)):
+    """Signed, server-side Cloudinary upload for candidate photos etc.
+    Replaces the old unsigned-preset upload that ran directly from the
+    browser. Protected automatically by auth_guard_middleware (any admin
+    role) since this path starts with /admin.
+    """
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP, or GIF images are allowed.")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Image must be under 5MB.")
+
+    try:
+        result = cloudinary.uploader.upload(content, folder="ballotbox/admin")
+    except Exception as e:
+        logger.error(f"Cloudinary admin upload failed: {e}")
+        raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
+
+    return {"secure_url": result["secure_url"]}
+
 
 @app.get("/admin/voters")
 async def get_all_voters(request: Request):
