@@ -152,8 +152,10 @@ def _is_public(path: str, method: str) -> bool:
     if path in PUBLIC_PATHS or path.startswith(PUBLIC_DOC_PREFIXES):
         return True
     # Public read-only endpoints voters/applicants need before they're
-    # "logged in" anywhere.
-    if method == "GET" and path in {"/candidates", "/positions"}:
+    # "logged in" anywhere. Branding is logo/colors/org-name/support-contact —
+    # nothing sensitive — and is fetched unauthenticated on every page load
+    # by App.jsx and Results.jsx for every visitor, not just superadmin.
+    if method == "GET" and path in {"/candidates", "/positions", "/superadmin/branding"}:
         return True
     return False
 

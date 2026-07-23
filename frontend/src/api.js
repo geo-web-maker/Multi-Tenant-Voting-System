@@ -40,13 +40,24 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// If a session token is missing/expired/invalid, the backend returns 401.
-// Clear the stale session and bounce back to login rather than leaving the
-// user stuck on a dashboard that will 401 on every subsequent action.
+// If an authenticated admin request gets a 401, the token is dead — clear
+// the stale session and reload back to login rather than leaving the user
+// stuck on a dashboard that will 401 on every subsequent action.
+//
+// IMPORTANT: only do this when the request that failed actually carried an
+// Authorization header. Plenty of calls (branding fetch on page load,
+// election-status, candidates list, etc.) are intentionally public and
+// never had a token to begin with — a 401 there just means "not logged in
+// yet", not "your session died". Reloading unconditionally on any 401 turns
+// a single public-endpoint auth mistake into an infinite reload loop: the
+// reload remounts the app, the same public call fires again, 401s again,
+// reloads again. This check is what stops that class of bug from cascading
+// even if a future endpoint is accidentally over-protected again.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && error.response.status === 401) {
+    const hadToken = Boolean(error.config?.headers?.Authorization);
+    if (error.response && error.response.status === 401 && hadToken) {
       sessionStorage.removeItem(ADMIN_TOKEN_KEY);
       sessionStorage.removeItem('admin_role');
       if (typeof window !== 'undefined' && !window.location.pathname.includes('login')) {
