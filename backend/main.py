@@ -100,13 +100,6 @@ client = motor.motor_asyncio.AsyncIOMotorClient(
 )
 db = client["electiondbaccounting"]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # =============================================================================
 # MULTI-TENANCY: ORG CONTEXT MIDDLEWARE
 # =============================================================================
@@ -196,6 +189,26 @@ async def auth_guard_middleware(request: Request, call_next):
 
     request.state.admin = payload
     return await call_next(request)
+
+# =============================================================================
+# CORS — registered LAST on purpose
+# =============================================================================
+# Starlette's middleware stack runs in reverse-registration order: whatever
+# is added last becomes the OUTERMOST layer, executed first on the way in
+# and last on the way out. CORSMiddleware needs to be outermost so it can
+# intercept OPTIONS preflights and stamp Access-Control-Allow-Origin onto
+# every response — including 401/403 error responses from the two custom
+# middlewares above. Registering it earlier (before those) meant preflights
+# for any non-public route hit the auth guard first, got rejected with no
+# CORS headers attached, and the browser blocked the request entirely
+# before the real GET/POST was ever sent.
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =============================================================================
 # MODELS
