@@ -214,18 +214,25 @@ button:hover {
 
 /* --- Horizontally-scrolling tab bars (dashboards) --- */
 /* Prevents tabs from wrapping into a tall vertical stack on narrow screens */
-.tab-scroll {
-  flex-wrap: nowrap !important;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-.tab-scroll::-webkit-scrollbar {
-  display: none;
-}
-.tab-scroll > button {
-  flex-shrink: 0;
-  white-space: nowrap;
++/* Prevents tabs from wrapping into a tall vertical stack on narrow screens.
++   Scoped to mobile widths only — on desktop there's enough room to just
++   wrap onto a second line, and forcing nowrap+hidden-scrollbar there was
++   silently clipping tabs (Positions/Branding/Election/etc past the fold)
++   with no visible indication more tabs existed. */
+@media (max-width: 768px) {
+  .tab-scroll {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tab-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .tab-scroll > button {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
 }
 
 /* --- Dashboard shell: reclaim wasted padding on phones --- */
