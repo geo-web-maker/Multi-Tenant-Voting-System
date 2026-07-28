@@ -1017,9 +1017,11 @@ const handleSuperAdminRemoveStudent = async () => {
                     <option value="Chairperson EC">Chairperson EC</option>
                     <option value="Secretary EC">Secretary EC</option>
                     <option value="Commissioner">Commissioner</option>
-                    <option value="Finance Commissioner">Finance Commissioner</option>
-                    <option value="Deputy Finance">Deputy Finance</option>
+                    <option value="Treasurer">Treasurer</option>
+                    <option value="Deputy Treasurer">Deputy Treasurer</option>
                     <option value="Returning Officer">Returning Officer</option>
+                    <option value="Polling Assistant">Polling Assistant</option>
+                    <option value="Presiding Officer">Presiding Officer</option>
                   </select>
               
                   <div style={{ display: 'flex', gap: '8px' }}>
