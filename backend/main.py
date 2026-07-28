@@ -1832,13 +1832,14 @@ async def clear_finance_commissioner(student_id: str, request: Request):
 
 @app.get("/superadmin/finance-commissioner")
 async def get_finance_commissioner(request: Request):
-    fc = await db.voters.find_one(
+    """Returns all current finance commissioners (there can be more than one)."""
+    result = []
+    async for fc in db.voters.find(
         org_query(request, {"is_finance_commissioner": True}),
         {"_id": 0, "student_id": 1, "full_name": 1}
-    )
-    if not fc:
-        return {"full_name": None}
-    return fc
+    ):
+        result.append(fc)
+    return result
 
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-role")
