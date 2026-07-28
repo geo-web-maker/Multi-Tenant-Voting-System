@@ -255,9 +255,6 @@ export default function CommissionDashboard({ onLogout }) {
 
         {/* ── Tabs ── */}
         <div style={tabBar} className="tab-scroll">
-
-        {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll">
           {tabs.map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
