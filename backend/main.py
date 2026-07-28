@@ -1812,7 +1812,6 @@ async def set_finance_commissioner(student_id: str, request: Request):
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_commissioner"):
         raise HTTPException(400, "This person is not a commissioner.")
-    await db.voters.update_many(org_query(request), {"$set": {"is_finance_commissioner": False}})
     await db.voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_finance_commissioner": True}}
