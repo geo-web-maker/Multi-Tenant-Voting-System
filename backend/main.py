@@ -1451,14 +1451,14 @@ async def list_applications(request: Request, status: str = None):
     async for a in db.applications.find(query).sort("submitted_at", -1):
         a["_id"] = str(a["_id"])
         if a.get("position_id"):
-            try:
-                pos = await db.positions.find_one(org_query(request, {"_id": ObjectId(a["position_id"])}))
-                a["position_title"] = pos["title"] if pos else a.get("position_id", "")
-            except Exception:
-                a["position_title"] = a.get("position_id", "")
+            title, order = await _resolve_position_title(a["position_id"], request.state.org_id)
+            a["position_title"] = title
+            a["position_order"] = order
+        else:
+            a["position_order"] = 0
         apps.append(a)
+    apps.sort(key=lambda x: (x.get("position_order", 0), -x["submitted_at"].timestamp() if x.get("submitted_at") else 0))
     return apps
-
 
 # =============================================================================
 # COMMISSION ROUTES  (voting — requires commission login)
