@@ -14,6 +14,7 @@ export default function CommissionDashboard({ onLogout }) {
   const [studentChanges, setStudentChanges] = useState([]);
   const [commissioners, setCommissioners] = useState([]);
   const [financeClearing, setFinanceClearing] = useState({});
+  const [searchQuery, setSearchQuery] = useState('');
 
   // On mount — figure out who this commissioner is from sessionStorage
   useEffect(() => {
@@ -148,12 +149,23 @@ export default function CommissionDashboard({ onLogout }) {
   const denied   = applications.filter(a => a.status === 'denied');
   const removed  = applications.filter(a => a.status === 'removed');
 
+  const matchesSearch = (app) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      (app.full_name || '').toLowerCase().includes(q) ||
+      (app.student_id || '').toLowerCase().includes(q) ||
+      (app.position_title || app.position_id || '').toLowerCase().includes(q)
+    );
+  };
+
   const listFor = (tab) => {
-    if (tab === 'pending')  return pending;
-    if (tab === 'approved') return approved;
-    if (tab === 'denied')   return denied;
-    if (tab === 'removed')  return removed;
-    return [];
+    let list = [];
+    if (tab === 'pending')  list = pending;
+    if (tab === 'approved') list = approved;
+    if (tab === 'denied')   list = denied;
+    if (tab === 'removed')  list = removed;
+    return list.filter(matchesSearch);
   };
 
   const tabs = [
@@ -228,6 +240,21 @@ export default function CommissionDashboard({ onLogout }) {
             </button>
           </div>
         )}
+
+        {/* ── Search ── */}
+        {activeTab !== 'student_changes' && (
+          <div style={{ marginBottom: '16px' }}>
+            <input
+              style={inp}
+              placeholder="🔍 Search by name, student ID, or position…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+            />
+          </div>
+        )}
+
+        {/* ── Tabs ── */}
+        <div style={tabBar} className="tab-scroll">
 
         {/* ── Tabs ── */}
         <div style={tabBar} className="tab-scroll">
