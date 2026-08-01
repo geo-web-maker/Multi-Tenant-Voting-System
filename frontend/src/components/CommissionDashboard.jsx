@@ -15,6 +15,7 @@ export default function CommissionDashboard({ onLogout }) {
   const [commissioners, setCommissioners] = useState([]);
   const [financeClearing, setFinanceClearing] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
+  const [liveResults, setLiveResults] = useState(null);
 
   // On mount — figure out who this commissioner is from sessionStorage
   useEffect(() => {
@@ -26,7 +27,7 @@ export default function CommissionDashboard({ onLogout }) {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [appsRes, commRes, scRes] = await Promise.all([
+      const [appsRes, commRes, scRes, resultsRes] = await Promise.all([
           api.get('/admin/applications'),
           api.get('/superadmin/commissioners'),
           api.get('/admin/student-changes'),
@@ -35,6 +36,7 @@ export default function CommissionDashboard({ onLogout }) {
         setCommissioners(commRes.data);
         setTotalCommissioners(commRes.data.length);
         setStudentChanges(scRes.data);
+        setLiveResults(resultsRes.data);
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
@@ -174,6 +176,7 @@ export default function CommissionDashboard({ onLogout }) {
     { id: 'denied',          label: 'Denied',          count: denied.length },
     { id: 'removed',         label: 'Removed',         count: removed.length },
     { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
+    { id: 'results',         label: 'Live Results',    count: null },
   ];
 
   const currentList = listFor(activeTab);
@@ -242,7 +245,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Search ── */}
-        {activeTab !== 'student_changes' && (
+        {activeTab !== 'student_changes' && activeTab !== 'results' && (
           <div style={{ marginBottom: '16px' }}>
             <input
               style={inp}
@@ -259,13 +262,13 @@ export default function CommissionDashboard({ onLogout }) {
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
               {t.label}
-              <span style={countPill}>{t.count}</span>
+              {t.count !== null && <span style={countPill}>{t.count}</span>}
             </button>
           ))}
         </div>
 
         {/* ── Empty state ── */}
-        {activeTab !== 'student_changes' && currentList.length === 0 && !loading && (
+        {activeTab !== 'student_changes' && activeTab !== 'results' && currentList.length === 0 && !loading && (
           <div style={emptyState}>
             <div style={{ fontSize: '40px', marginBottom: '10px' }}>
               {activeTab === 'pending' ? '📭' : activeTab === 'approved' ? '✅' : '📂'}
@@ -278,7 +281,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Application cards ── */}
-        {activeTab !== 'student_changes' && currentList.map(app => {
+        {activeTab !== 'student_changes' && activeTab !== 'results' && currentList.map(app => {
           const vc      = voteCount(app);
           const myVote  = myVoteFor(app);
           const isVotingNow        = voting[app._id];
@@ -527,7 +530,73 @@ export default function CommissionDashboard({ onLogout }) {
             })}
           </div>
         )}
-        
+
+        {/* ── Live Results tab ── */}
+        {activeTab === 'results' && (
+          <div>
+            {!liveResults ? (
+              <div style={emptyState}>
+                <div style={{ fontSize: '40px', marginBottom: '10px' }}>📊</div>
+                <p style={{ opacity: 0.5 }}>Loading live results…</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ ...tallyRow, marginTop: 0, marginBottom: '20px' }}>
+                  <span style={{ opacity: 0.6, fontSize: '12px' }}>Voter turnout:</span>
+                  <span style={{ color: '#2ecc71', fontWeight: '700', fontSize: '15px' }}>
+                    {liveResults.voter_turnout.voted_count} / {liveResults.voter_turnout.total_voters}
+                  </span>
+                  <span style={{ opacity: 0.6, fontSize: '13px' }}>
+                    ({liveResults.voter_turnout.turnout_pct}%)
+                  </span>
+                  <span style={{ opacity: 0.4, fontSize: '11px', marginLeft: 'auto' }}>
+                    Updated {new Date(liveResults.generated_at).toLocaleTimeString('en-UG', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+
+                {liveResults.positions.length === 0 && (
+                  <div style={emptyState}>
+                    <div style={{ fontSize: '40px', marginBottom: '10px' }}>🗳️</div>
+                    <p style={{ opacity: 0.5 }}>No candidates on the ballot yet.</p>
+                  </div>
+                )}
+
+                {liveResults.positions.map(pos => (
+                  <div key={pos.position} style={appCard}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{pos.position}</b>
+                      <small style={{ opacity: 0.5 }}>{pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast</small>
+                    </div>
+                    <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {pos.candidates.map((c, idx) => (
+                        <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span style={{ fontSize: '12px', opacity: 0.5, width: '18px' }}>{idx + 1}.</span>
+                          <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
+                            {c.name}
+                          </span>
+                          {c.unopposed && (
+                            <span style={{ fontSize: '10px', opacity: 0.5 }}>unopposed</span>
+                          )}
+                          <div style={{ width: '120px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                            <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
+                          </div>
+                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', width: '70px', textAlign: 'right' }}>
+                            {c.votes} ({c.pct_of_position}%)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+
+                <p style={{ fontSize: '11px', opacity: 0.4, marginTop: '4px' }}>
+                  Figures are anonymous aggregate tallies — no voter's individual choice is ever linked to their identity here.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
       </div>
     </div>
   );
