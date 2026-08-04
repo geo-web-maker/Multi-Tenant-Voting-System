@@ -85,7 +85,14 @@ async def lifespan(app: FastAPI):
     # Revoked-token records only need to live as long as the token itself
     # would have been valid — once it's past its natural exp it can't be
     # replayed anyway, so there's no need to keep the revocation record.
-    await db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=JWT_EXPIRE_MINUTES * 60)
+    
+    await db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=JWT_EXPIRE_MINUTES * 60)    
+    
+    # student_id lookups happen on every OTP send, OTP verify, and vote cast
+    # — the single highest-traffic query pattern on election day. Requires
+    # student_id to already be normalized (see migrate_normalize_student_ids.py)
+    # so this can be a plain compound index rather than needing a text/regex index.
+    await db.voters.create_index([("org_id", 1), ("student_id", 1)])
     set_revocation_check(_is_token_revoked)
     yield
     client.close()
@@ -402,13 +409,11 @@ def normalize_student_id(student_id: str) -> str:
 
 
 def get_forgiving_filter(student_id: str):
-    clean_id = student_id.replace(" ", "").strip()
-    return {
-        "student_id": {
-            "$regex": f'^"?{re.escape(clean_id)}"?$',
-            "$options": "i"
-        }
-    }
+    """Exact-match filter on the normalized student_id. Renamed in spirit
+    only — kept this name so none of the ~23 call sites need to change.
+    Requires the migration script to have already normalized existing
+    voter documents; see migrate_normalize_student_ids.py."""
+    return {"student_id": normalize_student_id(student_id)}
 
 def names_match(registered_name: str, input_name: str) -> bool:
     reg_parts   = set(registered_name.strip().lower().split())
@@ -835,37 +840,42 @@ async def cast_vote(data: VoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid candidate.")
 
-    # Wrapped in a transaction: previously "mark voter as having voted" and
-    # "increment the candidate's tally" were two independent writes. If the
-    # process died between them, a voter could end up marked as voted with
-    # no vote actually recorded (or vice versa). Atlas replica sets support
-    # multi-document transactions, so this makes the two writes all-or-nothing.
+    # Wrapped in a transaction: "mark voter as having voted" and "increment
+    # the candidate's tally" are all-or-nothing. Uses with_transaction()
+    # rather than a bare start_transaction() context manager because it
+    # auto-retries on transient write conflicts — expected when many voters
+    # hit the same popular candidate's document concurrently on election
+    # day — instead of surfacing those as hard errors to the voter.
+    # HTTPException raised inside the callback isn't a PyMongoError, so
+    # with_transaction lets it propagate immediately rather than retrying it.
+    async def _do_vote(session):
+        student = await db.voters.find_one(
+            org_query(request, get_forgiving_filter(data.student_id)), session=session
+        )
+        if not student or student.get("has_voted"):
+            raise HTTPException(status_code=400, detail="Ineligible voter")
+        if student.get("last_status") != "authenticated":
+            raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+
+        candidate = await db.candidates.find_one(
+            org_query(request, {"_id": candidate_oid}), session=session
+        )
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Candidate not found.")
+
+        await db.voters.update_one(
+            {"_id": student["_id"]},
+            {"$set": {"has_voted": True, "last_status": "completed"}},
+            session=session
+        )
+        await db.candidates.update_one(
+            org_query(request, {"_id": candidate_oid}),
+            {"$inc": {"votes": 1}},
+            session=session
+        )
+
     async with await client.start_session() as session:
-        async with session.start_transaction():
-            student = await db.voters.find_one(
-                org_query(request, get_forgiving_filter(data.student_id)), session=session
-            )
-            if not student or student.get("has_voted"):
-                raise HTTPException(status_code=400, detail="Ineligible voter")
-            if student.get("last_status") != "authenticated":
-                raise HTTPException(status_code=403, detail="OTP verification required before voting.")
-
-            candidate = await db.candidates.find_one(
-                org_query(request, {"_id": candidate_oid}), session=session
-            )
-            if not candidate:
-                raise HTTPException(status_code=404, detail="Candidate not found.")
-
-            await db.voters.update_one(
-                {"_id": student["_id"]},
-                {"$set": {"has_voted": True, "last_status": "completed"}},
-                session=session
-            )
-            await db.candidates.update_one(
-                org_query(request, {"_id": candidate_oid}),
-                {"$inc": {"votes": 1}},
-                session=session
-            )
+        await session.with_transaction(_do_vote)
 
     return {"status": "success"}
 
@@ -877,41 +887,47 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
-    async with await client.start_session() as session:
-        async with session.start_transaction():
-            student = await db.voters.find_one(
-                org_query(request, get_forgiving_filter(data.student_id)), session=session
-            )
-            if not student:
-                raise HTTPException(status_code=404, detail="Voter not found")
-            if student.get("has_voted"):
-                raise HTTPException(status_code=400, detail="You have already cast your vote.")
-            if student.get("last_status") != "authenticated":
-                raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+    # with_transaction auto-retries transient write conflicts — expected
+    # under concurrent load when many voters hit the same popular
+    # candidate's document at once — instead of surfacing them as hard
+    # errors to the voter. See /vote for the same pattern.
+    async def _do_bulk_vote(session):
+        student = await db.voters.find_one(
+            org_query(request, get_forgiving_filter(data.student_id)), session=session
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Voter not found")
+        if student.get("has_voted"):
+            raise HTTPException(status_code=400, detail="You have already cast your vote.")
+        if student.get("last_status") != "authenticated":
+            raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
-            # Validate every candidate exists BEFORE writing anything. The old
-            # version incremented whichever candidates happened to resolve and
-            # silently swallowed failures for the rest — a voter could end up
-            # marked as voted with some of their choices never counted. Now
-            # it's genuinely all-or-nothing: either every choice is recorded,
-            # or none are and the voter can retry.
-            candidates = await db.candidates.find(
-                org_query(request, {"_id": {"$in": candidate_oids}}), session=session
-            ).to_list(length=None)
-            if len(candidates) != len(set(candidate_oids)):
-                raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
+        # Validate every candidate exists BEFORE writing anything. The old
+        # version incremented whichever candidates happened to resolve and
+        # silently swallowed failures for the rest — a voter could end up
+        # marked as voted with some of their choices never counted. Now
+        # it's genuinely all-or-nothing: either every choice is recorded,
+        # or none are and the voter can retry.
+        candidates = await db.candidates.find(
+            org_query(request, {"_id": {"$in": candidate_oids}}), session=session
+        ).to_list(length=None)
+        if len(candidates) != len(set(candidate_oids)):
+            raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
 
-            await db.voters.update_one(
-                {"_id": student["_id"]},
-                {"$set": {"has_voted": True, "last_status": "completed"}},
+        await db.voters.update_one(
+            {"_id": student["_id"]},
+            {"$set": {"has_voted": True, "last_status": "completed"}},
+            session=session
+        )
+        for c_oid in candidate_oids:
+            await db.candidates.update_one(
+                org_query(request, {"_id": c_oid}),
+                {"$inc": {"votes": 1}},
                 session=session
             )
-            for c_oid in candidate_oids:
-                await db.candidates.update_one(
-                    org_query(request, {"_id": c_oid}),
-                    {"$inc": {"votes": 1}},
-                    session=session
-                )
+
+    async with await client.start_session() as session:
+        await session.with_transaction(_do_bulk_vote)
 
     return {"status": "success", "message": "Ballot cast successfully"}
 
