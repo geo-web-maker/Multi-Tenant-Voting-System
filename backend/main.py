@@ -391,6 +391,15 @@ class ApplicationEligibilityCheck(BaseModel):
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+def normalize_student_id(student_id: str) -> str:
+    """Single source of truth for student_id normalization: lowercase,
+    strip whitespace, strip surrounding quotes. Used at write time (import,
+    student-add) and, after the migration script has run once against
+    existing data, at query time too — enabling a plain exact-match query
+    that can use a standard B-tree index instead of the case-insensitive
+    regex scan get_forgiving_filter requires."""
+    return student_id.strip().strip('"').replace(" ", "").lower()
+
 
 def get_forgiving_filter(student_id: str):
     clean_id = student_id.replace(" ", "").strip()
@@ -605,7 +614,7 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             clean = '256' + clean[1:]
         elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
             clean = '256' + clean
-        q = {"student_id": change_doc["student_id"]}
+        q = {"student_id": normalize_student_id(change_doc["student_id"])}
         if org_id:
             q["org_id"] = org_id
         await db.voters.update_one(
@@ -619,7 +628,8 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
                 "last_status":     "idle",
                 "added_by_it":     True,
                 "added_by":        change_doc.get("requested_by", ""),
-                "org_id":          org_id
+                "org_id":          org_id,
+                "student_id":      normalize_student_id(change_doc["student_id"])
             }},
             upsert=True
         )
@@ -1256,7 +1266,7 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
 
     for row in reader:
         # Handle both hyphen (student-id) and underscore (student_id) column names
-        sid             = (row.get('student_id') or row.get('student-id') or '').strip()
+        sid             = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
         name            = (row.get('full_name')  or row.get('full-name')  or '').strip()
         raw_phone_field = (row.get('phone') or '').strip()
 
