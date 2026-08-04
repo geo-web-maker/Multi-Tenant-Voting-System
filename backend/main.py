@@ -190,7 +190,7 @@ PUBLIC_PATHS = {
     "/", "/health", "/election-status",
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
-    "/verify-admin",
+    "/verify-admin","/election-results"
 }
 PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 
@@ -1248,7 +1248,7 @@ async def test_egosms_connection(data: AdminTestSMS):
 
 
 @app.post("/admin/import-voters")
-async def import_voters(request: Request, file: UploadFile = File(...)):
+async def import_voters(request: Request, file: UploadFile = File(...), admin: dict = Depends(require_role("it_admin", "superadmin"))):
     content = await file.read()
     reader  = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
     count   = 0
@@ -1297,7 +1297,7 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
 
 
 @app.post("/admin/upload-image")
-async def admin_upload_image(request: Request, file: UploadFile = File(...)):
+async def admin_upload_image(request: Request, file: UploadFile = File(...), admin: dict = Depends(require_role("it_admin", "superadmin"))):
     """Signed, server-side Cloudinary upload for candidate photos etc.
     Replaces the old unsigned-preset upload that ran directly from the
     browser. Protected automatically by auth_guard_middleware (any admin
@@ -1320,14 +1320,14 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...)):
 
 
 @app.get("/admin/voters")
-async def get_all_voters(request: Request):
+async def get_all_voters(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     voters = []
     async for v in db.voters.find(org_query(request), {"_id": 0}):
         voters.append(v)
     return voters
 
 @app.post("/admin/set-password")
-async def set_new_password(data: SetNewPassword, request: Request):
+async def set_new_password(data: SetNewPassword, request: Request, admin: dict = Depends(require_role("superadmin"))):
     # Try IT admin first
     it_admin = await db.voters.find_one(org_query(request, {
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
@@ -1413,7 +1413,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 # --- Candidates (superadmin can add/edit/delete freely; commission does not touch these) ---
 
 @app.post("/candidates")
-async def add_candidate(candidate: CandidateCreate, request: Request):
+async def add_candidate(candidate: CandidateCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
     result = await db.candidates.insert_one(org_stamp(request, candidate.dict()))
     await log_action("candidate_added", "superadmin", {
         "name": candidate.name, "position": candidate.position
@@ -1422,7 +1422,7 @@ async def add_candidate(candidate: CandidateCreate, request: Request):
 
 
 @app.put("/candidates/{candidate_id}")
-async def update_candidate(candidate_id: str, data: dict, request: Request):
+async def update_candidate(candidate_id: str, data: dict, request: Request, admin: dict = Depends(require_role("superadmin"))):
     upd = {
         "name":     data.get("name"),
         "position": data.get("position"),
@@ -1435,7 +1435,7 @@ async def update_candidate(candidate_id: str, data: dict, request: Request):
 
 
 @app.delete("/candidates/{candidate_id}")
-async def delete_candidate(candidate_id: str, request: Request):
+async def delete_candidate(candidate_id: str, request: Request, admin: dict = Depends(require_role("superadmin"))):
     await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
     return {"status": "deleted"}
 
@@ -2020,7 +2020,7 @@ async def get_election_results(request: Request):
 # =============================================================================
 
 @app.get("/overseer/dashboard")
-async def get_overseer_dashboard(request: Request):
+async def get_overseer_dashboard(request: Request, admin: dict = Depends(require_role("overseer", "superadmin"))):
     """
     Platform-wide read-only view for the Overseer. Deliberately strips the
     per-commissioner votes map from every application — the Overseer can see
@@ -2097,7 +2097,7 @@ async def get_overseer_dashboard(request: Request):
 # =============================================================================
 
 @app.post("/it-admin/students/request-add")
-async def request_add_student(data: ITAdminStudentAdd, request: Request):
+async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     # Prevent duplicate pending requests for same student
     existing = await db.student_changes.find_one(org_query(request, {
         "student_id":  data.student_id,
@@ -2166,7 +2166,7 @@ async def reset_commissioner_password(student_id: str, request: Request):
     return {"status": "password_reset", "sms_notified": sms_sent}
 
 @app.post("/it-admin/students/request-remove")
-async def request_remove_student(data: ITAdminStudentRemove, request: Request):
+async def request_remove_student(data: ITAdminStudentRemove, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(404, "Student not found in voter register.")
@@ -2195,7 +2195,7 @@ async def request_remove_student(data: ITAdminStudentRemove, request: Request):
 
 
 @app.post("/it-admin/students/requests/{change_id}/cancel")
-async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest, request: Request):
+async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
     if not change:
         raise HTTPException(404, "Request not found.")
@@ -2223,7 +2223,7 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
 
 
 @app.get("/it-admin/students/my-requests/{it_admin_id}")
-async def get_my_requests(it_admin_id: str, request: Request):
+async def get_my_requests(it_admin_id: str, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     changes = []
     async for c in db.student_changes.find(
         org_query(request, {"requested_by": it_admin_id})
