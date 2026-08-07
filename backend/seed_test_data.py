@@ -4,13 +4,9 @@ Run this AFTER the local backend is up and running (uvicorn main:app --reload).
 
 Creates:
   - Two orgs: "kyuccu" and "ask" (for multi-org testing)
-  - Positions + candidates for each org
-  - N normalized, pre-authenticated voters per org (so Locust/manual testing
-    can skip OTP entirely and go straight to /vote or /vote-bulk)
-
-For single-org testing, just point your frontend .env at one slug and ignore
-the other. To also test the legacy/no-org path, omit X-Org-Slug entirely
-when calling the API (works automatically — org_id stays None).
+  - A legacy/no-org dataset (no X-Org-Slug header — tests single-tenant fallback)
+  - Positions + candidates for each of the three
+  - N voters per dataset, imported via CSV (same real path ASK's IT admin uses)
 
 Usage:
     python seed_test_data.py
@@ -53,28 +49,21 @@ async def create_org(client: httpx.AsyncClient, token: str, org: dict) -> str:
     )
     if resp.status_code == 400 and "already taken" in resp.text:
         print(f"  org '{org['slug']}' already exists, skipping create")
-        # look it up instead
         listing = await client.get(f"{API_BASE}/superadmin/orgs", headers={"Authorization": f"Bearer {token}"})
         for o in listing.json():
             if o["slug"] == org["slug"]:
-                return o["org_id"] if "org_id" in o else o["_id"]
+                return o.get("org_id") or o.get("_id")
         raise RuntimeError(f"Could not find existing org '{org['slug']}' after 400")
     resp.raise_for_status()
     return resp.json()["org_id"]
 
 
-async def seed_org(client: httpx.AsyncClient, token: str, org: dict):
-    print(f"\n=== Seeding {org['name']} ({org['slug']}) ===")
-    org_id = await create_org(client, token, org)
-    headers = {"Authorization": f"Bearer {token}", "X-Org-Slug": org["slug"]}
-
-    # Positions
+async def seed_positions_and_candidates(client: httpx.AsyncClient, headers: dict, label: str):
     for i, pos_name in enumerate(POSITIONS):
         r = await client.post(f"{API_BASE}/positions", json={"name": pos_name, "order": i}, headers=headers)
         if r.status_code >= 400:
-            print(f"  position '{pos_name}' skipped/failed: {r.status_code} {r.text[:100]}")
+            print(f"  [{label}] position '{pos_name}' skipped/failed: {r.status_code} {r.text[:100]}")
 
-    # Two candidates per position
     for pos_name in POSITIONS:
         for j in range(2):
             cand = {
@@ -85,15 +74,16 @@ async def seed_org(client: httpx.AsyncClient, token: str, org: dict):
             }
             r = await client.post(f"{API_BASE}/candidates", json=cand, headers=headers)
             if r.status_code >= 400:
-                print(f"  candidate '{cand['name']}' skipped/failed: {r.status_code} {r.text[:100]}")
+                print(f"  [{label}] candidate '{cand['name']}' skipped/failed: {r.status_code} {r.text[:100]}")
 
-    print(f"  {len(POSITIONS)} positions, {len(POSITIONS) * 2} candidates created")
+    print(f"  [{label}] {len(POSITIONS)} positions, {len(POSITIONS) * 2} candidates created")
 
-    # Voters — imported via CSV upload, matching the real ASK IT-admin flow
+
+async def seed_voters(client: httpx.AsyncClient, headers: dict, label: str, prefix: str) -> list[str]:
     csv_lines = ["student_id,full_name,phone_numbers"]
     voter_ids = []
     for i in range(VOTERS_PER_ORG):
-        sid = f"{org['slug']}-voter-{i:04d}"
+        sid = f"{prefix}-voter-{i:04d}"
         voter_ids.append(sid)
         csv_lines.append(f"{sid},Test Voter {i},256700000{i:03d}")
     csv_content = "\n".join(csv_lines)
@@ -101,11 +91,27 @@ async def seed_org(client: httpx.AsyncClient, token: str, org: dict):
     files = {"file": ("voters.csv", csv_content, "text/csv")}
     r = await client.post(f"{API_BASE}/admin/import-voters", files=files, headers=headers)
     if r.status_code >= 400:
-        print(f"  voter import failed: {r.status_code} {r.text[:200]}")
-    else:
-        print(f"  {VOTERS_PER_ORG} voters imported")
-
+        print(f"  [{label}] voter import failed: {r.status_code} {r.text[:200]}")
+        return []
+    print(f"  [{label}] {VOTERS_PER_ORG} voters imported")
     return voter_ids
+
+
+async def seed_org(client: httpx.AsyncClient, token: str, org: dict) -> list[str]:
+    print(f"\n=== Seeding {org['name']} ({org['slug']}) ===")
+    await create_org(client, token, org)
+    headers = {"Authorization": f"Bearer {token}", "X-Org-Slug": org["slug"]}
+    await seed_positions_and_candidates(client, headers, org["slug"])
+    return await seed_voters(client, headers, org["slug"], org["slug"])
+
+
+async def seed_legacy_no_org(client: httpx.AsyncClient, token: str) -> list[str]:
+    """No X-Org-Slug header at all — tests the legacy/single-tenant fallback
+    path where request.state.org_id stays None throughout."""
+    print(f"\n=== Seeding legacy/no-org dataset ===")
+    headers = {"Authorization": f"Bearer {token}"}  # no X-Org-Slug
+    await seed_positions_and_candidates(client, headers, "legacy")
+    return await seed_voters(client, headers, "legacy", "legacy")
 
 
 async def main():
@@ -116,17 +122,20 @@ async def main():
 
         all_voter_ids = {}
         for org in ORGS:
-            voter_ids = await seed_org(client, token, org)
-            all_voter_ids[org["slug"]] = voter_ids
+            all_voter_ids[org["slug"]] = await seed_org(client, token, org)
+
+        all_voter_ids["_legacy_no_org"] = await seed_legacy_no_org(client, token)
 
         print("\n=== Done ===")
         for slug, ids in all_voter_ids.items():
-            print(f"{slug}: {len(ids)} voters, e.g. {ids[0]}")
+            if ids:
+                print(f"{slug}: {len(ids)} voters, e.g. {ids[0]}")
+            else:
+                print(f"{slug}: 0 voters (import failed — check errors above)")
         print(
-            "\nNote: seeded voters still need OTP verification (or a direct "
-            "DB/Locust flow) to reach 'authenticated' status before /vote will "
-            "accept them — DEBUG_MODE=true logs the OTP to the backend console "
-            "instead of sending real SMS."
+            "\nNote: seeded voters still need OTP verification before /vote "
+            "will accept them — DEBUG_MODE=true logs the OTP to the backend "
+            "console instead of sending real SMS."
         )
 
 
