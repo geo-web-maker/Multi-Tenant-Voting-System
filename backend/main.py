@@ -423,6 +423,12 @@ def names_match(registered_name: str, input_name: str) -> bool:
     return len(common_parts) >= match_threshold
 
 async def send_sms_via_egosms(to_number: str, message_text: str):
+    if DEBUG_MODE:
+        # Local/load-testing only: never hit the real EgoSMS API. Log the
+        # message (which contains the OTP) so Locust or a manual tester can
+        # read it back, and report success so the normal OTP flow proceeds.
+        logger.info(f"🧪 [DEBUG_MODE] SMS to {to_number}: {message_text}")
+        return True
     try:
         clean_number = to_number.replace("+", "").strip()
         params = {
