@@ -17,9 +17,12 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
+from dotenv import load_dotenv
 
 import jwt
 from fastapi import HTTPException, Request
+
+load_dotenv()
 
 JWT_SECRET = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = "HS256"
