@@ -3,16 +3,21 @@ Seeds local Mongo with test data for load-testing / manual multi-org testing.
 Run this AFTER the local backend is up and running (uvicorn main:app --reload).
 
 Creates:
-  - Two orgs: "kyuccu" and "ask" (for multi-org testing)
+  - Three orgs: "kyuccu", "ask", "umosan" (for multi-org testing)
   - A legacy/no-org dataset (no X-Org-Slug header — tests single-tenant fallback)
-  - Positions + candidates for each of the three
+  - Positions + candidates for each of the four
   - N voters per dataset, imported via CSV (same real path ASK's IT admin uses)
+
+NOTE: /admin/import-voters does one unbatched DB write per CSV row. At 5000
+rows this import will be genuinely slow (observe and time it) — that's
+useful data in itself, not a bug in this script.
 
 Usage:
     python seed_test_data.py
 """
 import asyncio
 import os
+import time
 import httpx
 from dotenv import load_dotenv
 
@@ -25,16 +30,17 @@ SUPER_ADMIN_PASSWORD = os.getenv("SUPER_ADMIN_PASSWORD", "LocalTest123!")
 ORGS = [
     {"name": "KYUCCU Test Org", "slug": "kyuccu"},
     {"name": "ASK Test Org",    "slug": "ask"},
+    {"name": "UMOSAN Test Org", "slug": "umosan"},
 ]
 
-VOTERS_PER_ORG = 50  # bump for a bigger Locust pool later
+VOTERS_PER_ORG = 5000  # thousands per institution, to genuinely stress-test at scale
 
 POSITIONS = ["President", "Vice President", "Treasurer"]
 
 
 async def login_superadmin(client: httpx.AsyncClient) -> str:
     resp = await client.post(f"{API_BASE}/verify-admin", json={
-        "student_id": SUPER_ADMIN_ID,
+        "email": SUPER_ADMIN_ID,
         "password": SUPER_ADMIN_PASSWORD,
     })
     resp.raise_for_status()
@@ -60,7 +66,7 @@ async def create_org(client: httpx.AsyncClient, token: str, org: dict) -> str:
 
 async def seed_positions_and_candidates(client: httpx.AsyncClient, headers: dict, label: str):
     for i, pos_name in enumerate(POSITIONS):
-        r = await client.post(f"{API_BASE}/positions", json={"name": pos_name, "order": i}, headers=headers)
+        r = await client.post(f"{API_BASE}/positions", json={"title": pos_name, "order": i}, headers=headers)
         if r.status_code >= 400:
             print(f"  [{label}] position '{pos_name}' skipped/failed: {r.status_code} {r.text[:100]}")
 
@@ -83,17 +89,20 @@ async def seed_voters(client: httpx.AsyncClient, headers: dict, label: str, pref
     csv_lines = ["student_id,full_name,phone_numbers"]
     voter_ids = []
     for i in range(VOTERS_PER_ORG):
-        sid = f"{prefix}-voter-{i:04d}"
+        sid = f"{prefix}-voter-{i:05d}"
         voter_ids.append(sid)
-        csv_lines.append(f"{sid},Test Voter {i},256700000{i:03d}")
+        csv_lines.append(f"{sid},Test Voter {i},2567{i:08d}"[:60])  # keep phone plausible-length
     csv_content = "\n".join(csv_lines)
 
     files = {"file": ("voters.csv", csv_content, "text/csv")}
+    print(f"  [{label}] importing {VOTERS_PER_ORG} voters, this may take a while (unbatched writes)...")
+    start = time.monotonic()
     r = await client.post(f"{API_BASE}/admin/import-voters", files=files, headers=headers)
+    elapsed = time.monotonic() - start
     if r.status_code >= 400:
-        print(f"  [{label}] voter import failed: {r.status_code} {r.text[:200]}")
+        print(f"  [{label}] voter import failed after {elapsed:.1f}s: {r.status_code} {r.text[:200]}")
         return []
-    print(f"  [{label}] {VOTERS_PER_ORG} voters imported")
+    print(f"  [{label}] {VOTERS_PER_ORG} voters imported in {elapsed:.1f}s ({VOTERS_PER_ORG/elapsed:.1f} rows/sec)")
     return voter_ids
 
 
@@ -115,7 +124,7 @@ async def seed_legacy_no_org(client: httpx.AsyncClient, token: str) -> list[str]
 
 
 async def main():
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         print("Logging in as superadmin...")
         token = await login_superadmin(client)
         print("Logged in.\n")
@@ -127,11 +136,14 @@ async def main():
         all_voter_ids["_legacy_no_org"] = await seed_legacy_no_org(client, token)
 
         print("\n=== Done ===")
+        total = 0
         for slug, ids in all_voter_ids.items():
             if ids:
                 print(f"{slug}: {len(ids)} voters, e.g. {ids[0]}")
+                total += len(ids)
             else:
                 print(f"{slug}: 0 voters (import failed — check errors above)")
+        print(f"\nTotal voters seeded across all datasets: {total}")
         print(
             "\nNote: seeded voters still need OTP verification before /vote "
             "will accept them — DEBUG_MODE=true logs the OTP to the backend "
