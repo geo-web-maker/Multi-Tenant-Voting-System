@@ -127,7 +127,7 @@ class VoterUser(HttpUser):
         by_position = {}
         for c in candidates:
             by_position.setdefault(c["position"], []).append(c)
-        chosen_ids = [random.choice(cands)["id"] for cands in by_position.values()]
+        chosen_ids = [random.choice(cands)["_id"] for cands in by_position.values()]
 
         with self.client.post(
             "/vote-bulk",
