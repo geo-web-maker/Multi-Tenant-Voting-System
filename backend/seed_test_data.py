@@ -86,12 +86,12 @@ async def seed_positions_and_candidates(client: httpx.AsyncClient, headers: dict
 
 
 async def seed_voters(client: httpx.AsyncClient, headers: dict, label: str, prefix: str) -> list[str]:
-    csv_lines = ["student_id,full_name,phone_numbers"]
+    csv_lines = ["student_id,full_name,phone"]
     voter_ids = []
     for i in range(VOTERS_PER_ORG):
         sid = f"{prefix}-voter-{i:05d}"
         voter_ids.append(sid)
-        csv_lines.append(f"{sid},Test Voter {i},2567{i:08d}"[:60])  # keep phone plausible-length
+        csv_lines.append(f"{sid},Test Voter {i},2567{i:08d}")
     csv_content = "\n".join(csv_lines)
 
     files = {"file": ("voters.csv", csv_content, "text/csv")}
