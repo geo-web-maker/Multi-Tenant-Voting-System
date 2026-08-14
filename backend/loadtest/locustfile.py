@@ -23,13 +23,14 @@ Then open http://localhost:8089 in a browser to set user count / spawn rate
 and start the test, or run headless (see notes at the bottom of this file).
 """
 import random
+import os
 import itertools
 from threading import Lock
 from pymongo import MongoClient
 from locust import HttpUser, task, between, events
 
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "electiondbaccounting"
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.getenv("MONGO_DB_NAME", "electiondbaccounting")
 
 # Which seeded dataset to hit. Change ORG_SLUG to "ask", "umosan", or "" (for
 # the legacy/no-org dataset) to test a different institution.

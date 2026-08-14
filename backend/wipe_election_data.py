@@ -35,7 +35,7 @@ CONFIRM_PHRASE = "WIPE ELECTION DATA"
 
 async def main(keep_nothing: bool, dry_run: bool):
     client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
-    db = client["electiondbaccounting"]
+    db = client[os.getenv("MONGO_DB_NAME", "electiondbaccounting")]
 
     targets = ALWAYS_WIPE + ([SETTINGS_COLLECTION] if keep_nothing else [])
 

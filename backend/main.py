@@ -93,6 +93,12 @@ async def lifespan(app: FastAPI):
     # student_id to already be normalized (see migrate_normalize_student_ids.py)
     # so this can be a plain compound index rather than needing a text/regex index.
     await db.voters.create_index([("org_id", 1), ("student_id", 1)])
+    # vote_events is the append-only ballot log: one document per candidate
+    # chosen, no voter identity in it (see /vote, /vote-bulk — deliberately
+    # excluded to preserve the existing ballot-secrecy property). Indexed by
+    # org_id + candidate_id since every read is "count events for this
+    # candidate, scoped to this org."
+    await db.vote_events.create_index([("org_id", 1), ("candidate_id", 1)])
     set_revocation_check(_is_token_revoked)
     yield
     client.close()
@@ -152,7 +158,7 @@ client = motor.motor_asyncio.AsyncIOMotorClient(
     minPoolSize=1,
     waitQueueTimeoutMS=2500
 )
-db = client["electiondbaccounting"]
+db = client[os.getenv("MONGO_DB_NAME", "electiondbaccounting")]
 
 # =============================================================================
 # MULTI-TENANCY: ORG CONTEXT MIDDLEWARE
@@ -874,9 +880,15 @@ async def cast_vote(data: VoteRequest, request: Request):
             {"$set": {"has_voted": True, "last_status": "completed"}},
             session=session
         )
-        await db.candidates.update_one(
-            org_query(request, {"_id": candidate_oid}),
-            {"$inc": {"votes": 1}},
+        # Append-only insert — no shared document for concurrent voters to
+        # lock against, unlike the $inc this replaces. No voter_id is stored:
+        # has_voted (on the voter doc) and this event are deliberately
+        # decoupled so nothing in the DB links a voter to their choice.
+        await db.vote_events.insert_one(
+            org_stamp(request, {
+                "candidate_id": candidate_oid,
+                "cast_at": datetime.utcnow(),
+            }),
             session=session
         )
 
@@ -925,12 +937,15 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             {"$set": {"has_voted": True, "last_status": "completed"}},
             session=session
         )
-        for c_oid in candidate_oids:
-            await db.candidates.update_one(
-                org_query(request, {"_id": c_oid}),
-                {"$inc": {"votes": 1}},
-                session=session
-            )
+        # Same append-only pattern as /vote, batched as one insert_many so a
+        # multi-position ballot is still a single round trip inside the
+        # transaction (still all-or-nothing with the has_voted update above).
+        cast_at = datetime.utcnow()
+        await db.vote_events.insert_many(
+            [org_stamp(request, {"candidate_id": c_oid, "cast_at": cast_at})
+             for c_oid in candidate_oids],
+            session=session
+        )
 
     async with await client.start_session() as session:
         await session.with_transaction(_do_bulk_vote)
@@ -1250,6 +1265,10 @@ async def reset_election(request: Request):
     await db.otps.delete_many(org_query(request))
     await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
     await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
+    # votes now live in vote_events, not candidates.votes — without this, a
+    # reset (used for testing/re-runs) would leave stale events behind and
+    # the next election's tally would include last time's votes.
+    await db.vote_events.delete_many(org_query(request))
     return {"status": "success"}
 
 
