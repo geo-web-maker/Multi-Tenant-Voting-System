@@ -502,6 +502,22 @@ def org_stamp(request: Request, doc: dict) -> dict:
     doc["org_id"] = request.state.org_id
     return doc
 
+async def get_vote_counts(request: Request) -> dict[str, int]:
+    """
+    Aggregate vote_events into per-candidate counts, scoped to the current
+    org. Replaces reads of the old candidates.votes counter now that writes
+    go to vote_events instead (see /vote, /vote-bulk). Candidates with zero
+    votes won't have a group row at all, so callers use
+    counts.get(str(candidate_id), 0) rather than indexing directly.
+    """
+    counts: dict[str, int] = {}
+    async for row in db.vote_events.aggregate([
+        {"$match": org_query(request)},
+        {"$group": {"_id": "$candidate_id", "count": {"$sum": 1}}}
+    ]):
+        counts[str(row["_id"])] = row["count"]
+    return counts
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not hashed_password:
         return False
@@ -1620,19 +1636,18 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
 async def get_commission_detailed_results(request: Request):
     """
     Detailed, per-position results view for the Commission portal so
-    commissioners can monitor and announce standings themselves. Built entirely
-    from the aggregate `candidates.votes` counters — no voter identity is ever
-    linked to a candidate choice in this schema, so this view carries no
-    anonymity risk; it's the same anonymous data /election-results already
-    exposes publicly, just grouped and enriched for commission use.
+    commissioners can monitor and announce standings themselves. Built from
+    an aggregation over `vote_events` — no voter identity is ever stored in
+    that collection, so this view carries no anonymity risk; it's the same
+    anonymous data /election-results already exposes publicly, just grouped
+    and enriched for commission use.
     """
     total_voters = await db.voters.count_documents(org_query(request))
-    voted_count  = await db.voters.count_documents(org_query(request, {"has_voted": True}))
-
+    voted_count = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    vote_counts = await get_vote_counts(request)
     positions_by_id = {}
     async for pos in db.positions.find(org_query(request)).sort("order", 1):
         positions_by_id[str(pos["_id"])] = pos
-
     grouped: dict = {}
     async for cand in db.candidates.find(org_query(request)).sort("order", 1):
         position_title = cand.get("position", "Unknown Position")
@@ -1640,21 +1655,21 @@ async def get_commission_detailed_results(request: Request):
 
     detailed = []
     for position_title, candidates in grouped.items():
-        position_total_votes = sum(c.get("votes", 0) for c in candidates)
+        position_total_votes = sum(vote_counts.get(str(c["_id"]), 0) for c in candidates)
         candidate_rows = []
-        for c in sorted(candidates, key=lambda x: x.get("votes", 0), reverse=True):
-            votes = c.get("votes", 0)
+        for c in sorted(candidates, key=lambda x: vote_counts.get(str(x["_id"]), 0), reverse=True):
+            votes = vote_counts.get(str(c["_id"]), 0)
             candidate_rows.append({
-                "id":           str(c["_id"]),
-                "name":         c["name"],
-                "votes":        votes,
+                "id": str(c["_id"]),
+                "name": c["name"],
+                "votes": votes,
                 "pct_of_position": round((votes / position_total_votes) * 100, 1) if position_total_votes else 0,
-                "unopposed":    len(candidates) == 1
+                "unopposed": len(candidates) == 1
             })
         detailed.append({
-            "position":       position_title,
-            "total_votes":    position_total_votes,
-            "candidates":     candidate_rows
+            "position": position_title,
+            "total_votes": position_total_votes,
+            "candidates": candidate_rows
         })
 
     return {
@@ -2054,17 +2069,17 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
 @app.get("/election-results")
 async def get_election_results(request: Request):
     voter_turnout = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    vote_counts = await get_vote_counts(request)
     results = []
     async for cand in db.candidates.find(org_query(request)).sort("order", 1):
         results.append({
-            "id":       str(cand["_id"]),
-            "name":     cand["name"],
+            "id": str(cand["_id"]),
+            "name": cand["name"],
             "position": cand["position"],
-            "votes":    cand.get("votes", 0),
-            "order":    cand.get("order", 0)
+            "votes": vote_counts.get(str(cand["_id"]), 0),
+            "order": cand.get("order", 0)
         })
     return {"voter_turnout": voter_turnout, "results": results}
-
 
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
@@ -2121,12 +2136,13 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
             "requested_at":  c.get("requested_at")
         })
 
+    vote_counts = await get_vote_counts(request)
     candidates_results = []
     async for cand in db.candidates.find(org_query(request)).sort("order", 1):
         candidates_results.append({
-            "name":     cand["name"],
+            "name": cand["name"],
             "position": cand["position"],
-            "votes":    cand.get("votes", 0)
+            "votes": vote_counts.get(str(cand["_id"]), 0)
         })
 
     return {
