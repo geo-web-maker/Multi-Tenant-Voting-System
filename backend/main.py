@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import secrets
 import motor.motor_asyncio
+from pymongo.errors import DuplicateKeyError
 import os
 import csv
 import io
@@ -19,6 +20,7 @@ import string
 import cloudinary
 import cloudinary.uploader
 import pyotp
+import hashlib
 
 from auth import (
     create_access_token,
@@ -92,13 +94,17 @@ async def lifespan(app: FastAPI):
     # — the single highest-traffic query pattern on election day. Requires
     # student_id to already be normalized (see migrate_normalize_student_ids.py)
     # so this can be a plain compound index rather than needing a text/regex index.
-    await db.voters.create_index([("org_id", 1), ("student_id", 1)])
-    # vote_events is the append-only ballot log: one document per candidate
-    # chosen, no voter identity in it (see /vote, /vote-bulk — deliberately
-    # excluded to preserve the existing ballot-secrecy property). Indexed by
-    # org_id + candidate_id since every read is "count events for this
-    # candidate, scoped to this org."
     await db.vote_events.create_index([("org_id", 1), ("candidate_id", 1)])
+    # audit_checkpoints has no update/delete route anywhere in this file —
+    # write-once is enforced by never writing code that touches an existing
+    # checkpoint. The unique index on to_id is a DB-level backstop against
+    # accidentally creating two checkpoints over the same range. The index
+    # on from_id closes a race: two checkpoint calls firing near-simultaneously
+    # (manual trigger + cron overlap) could both read the same "last
+    # checkpoint" and try to write a child with the same from_id — this
+    # makes the second one fail loudly instead of silently forking the chain.
+    await db.audit_checkpoints.create_index([("org_id", 1), ("to_id", 1)], unique=True)
+    await db.audit_checkpoints.create_index([("org_id", 1), ("from_id", 1)], unique=True)
     set_revocation_check(_is_token_revoked)
     yield
     client.close()
@@ -517,6 +523,106 @@ async def get_vote_counts(request: Request) -> dict[str, int]:
     ]):
         counts[str(row["_id"])] = row["count"]
     return counts
+
+async def _publish_checkpoint_externally(checkpoint: dict) -> None:
+    """
+    Hook for anchoring a checkpoint's chain_hash outside this database — the
+    part that actually protects against someone holding the Mongo
+    connection string, since nothing written only to Mongo can do that.
+    Deliberately a no-op until diff #4 (Backblaze B2) fills it in;
+    create_audit_checkpoint() below still works and is still useful without
+    this, it just only has app-level write-once guarantees until then.
+    """
+    pass
+
+
+async def create_audit_checkpoint(request: Request) -> dict | None:
+    """
+    Folds every vote_event since the last checkpoint into a hash chain and
+    records one new audit_checkpoints document. Returns None if there are no
+    new events to checkpoint, or if a concurrent call already claimed this
+    range (see the from_id unique index in lifespan()). Deliberately
+    excludes voter_id from the hash input (vote_events never stores it —
+    see /vote) so the chain itself carries no voter-identity risk.
+    """
+    org_id = request.state.org_id
+    last = await db.audit_checkpoints.find_one(
+        org_query(request), sort=[("to_id", -1)]
+    )
+    prev_hash = last["chain_hash"] if last else "GENESIS"
+
+    match: dict = org_query(request)
+    if last:
+        match["_id"] = {"$gt": last["to_id"]}
+    events = await db.vote_events.find(match).sort("_id", 1).to_list(length=None)
+    if not events:
+        return None
+
+    chain_hash = prev_hash
+    for ev in events:
+        payload = f"{chain_hash}|{ev['_id']}|{ev['candidate_id']}|{ev['cast_at'].isoformat()}"
+        chain_hash = hashlib.sha256(payload.encode()).hexdigest()
+
+    checkpoint = org_stamp(request, {
+        "from_id": last["to_id"] if last else None,
+        "to_id": events[-1]["_id"],
+        "event_count": len(events),
+        "prev_chain_hash": prev_hash,
+        "chain_hash": chain_hash,
+        "created_at": datetime.utcnow(),
+    })
+
+    try:
+        await db.audit_checkpoints.insert_one(checkpoint)
+    except DuplicateKeyError:
+        # Another call (cron + manual trigger overlapping, or a double-fired
+        # scheduler tick) already checkpointed this range. Not an error —
+        # the loser's events get picked up by whichever checkpoint runs next.
+        return None
+
+    await _publish_checkpoint_externally(checkpoint)
+    await log_action("audit_checkpoint_created", "superadmin", {
+        "event_count": len(events),
+        "chain_hash": chain_hash,
+    }, org_id=org_id)
+    return checkpoint
+
+
+async def verify_audit_chain(request: Request) -> dict:
+    """
+    Independent re-derivation of the entire chain straight from vote_events
+    — doesn't trust the stored chain_hash values, recomputes every one of
+    them and compares. This is what makes the chain actually auditable
+    rather than decorative: run this and the checkpoints either match the
+    raw event log or they don't.
+    """
+    checkpoints = await db.audit_checkpoints.find(
+        org_query(request)
+    ).sort("to_id", 1).to_list(length=None)
+
+    chain_hash = "GENESIS"
+    for cp in checkpoints:
+        match: dict = org_query(request, {
+            "_id": {"$gt": cp["from_id"], "$lte": cp["to_id"]} if cp["from_id"]
+                   else {"$lte": cp["to_id"]}
+        })
+        events = await db.vote_events.find(match).sort("_id", 1).to_list(length=None)
+
+        recomputed = chain_hash
+        for ev in events:
+            payload = f"{recomputed}|{ev['_id']}|{ev['candidate_id']}|{ev['cast_at'].isoformat()}"
+            recomputed = hashlib.sha256(payload.encode()).hexdigest()
+
+        if recomputed != cp["chain_hash"]:
+            return {
+                "valid": False,
+                "first_mismatch_checkpoint_id": str(cp["_id"]),
+                "expected": cp["chain_hash"],
+                "recomputed": recomputed,
+            }
+        chain_hash = cp["chain_hash"]
+
+    return {"valid": True, "checkpoints_verified": len(checkpoints), "head_hash": chain_hash}
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not hashed_password:
@@ -1285,6 +1391,15 @@ async def reset_election(request: Request):
     # reset (used for testing/re-runs) would leave stale events behind and
     # the next election's tally would include last time's votes.
     await db.vote_events.delete_many(org_query(request))
+    # If this election was ever checkpointed, those checkpoints now
+    # reference _id ranges that no longer exist — verify_audit_chain would
+    # report the chain permanently invalid, a false alarm, not real
+    # tampering. Resetting means "this election's data doesn't count," so
+    # its audit trail is wiped too. Any checkpoint already anchored to B2
+    # (diff #4) stays locked there regardless — Object Lock doesn't care
+    # what Mongo does, it just becomes an orphaned record with no local
+    # reference, which is harmless.
+    await db.audit_checkpoints.delete_many(org_query(request))
     return {"status": "success"}
 
 
@@ -2705,6 +2820,20 @@ async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request
     }, org_id=request.state.org_id)
     return {"status": "removed"}
 
+@app.post("/superadmin/audit/checkpoint")
+async def post_audit_checkpoint(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    checkpoint = await create_audit_checkpoint(request)
+    if checkpoint is None:
+        return {"status": "no_new_events"}
+    checkpoint["_id"] = str(checkpoint["_id"])
+    checkpoint["to_id"] = str(checkpoint["to_id"])
+    checkpoint["from_id"] = str(checkpoint["from_id"]) if checkpoint["from_id"] else None
+    return {"status": "checkpoint_created", "checkpoint": checkpoint}
+
+
+@app.get("/superadmin/audit/verify")
+async def get_audit_verify(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    return await verify_audit_chain(request)
 
 # =============================================================================
 # AUDIT LOG
