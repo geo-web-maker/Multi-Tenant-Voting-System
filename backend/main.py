@@ -21,12 +21,16 @@ import cloudinary
 import cloudinary.uploader
 import pyotp
 import hashlib
+import json
+import boto3
+from fastapi.concurrency import run_in_threadpool
 
 from auth import (
     create_access_token,
     decode_access_token,
     get_bearer_token,
     require_role,
+    require_admin,
     set_revocation_check,
     ADMIN_ROLES,
     JWT_EXPIRE_MINUTES,
@@ -166,6 +170,18 @@ client = motor.motor_asyncio.AsyncIOMotorClient(
 )
 db = client[os.getenv("MONGO_DB_NAME", "electiondbaccounting")]
 
+B2_ENDPOINT = os.getenv("B2_ENDPOINT")
+B2_KEY_ID = os.getenv("B2_KEY_ID")
+B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
+B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
+
+b2_client = boto3.client(
+    "s3",
+    endpoint_url=B2_ENDPOINT,
+    aws_access_key_id=B2_KEY_ID,
+    aws_secret_access_key=B2_APPLICATION_KEY,
+)
+
 # =============================================================================
 # MULTI-TENANCY: ORG CONTEXT MIDDLEWARE
 # =============================================================================
@@ -209,7 +225,7 @@ PUBLIC_PATHS = {
     "/", "/health", "/election-status",
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
-    "/verify-admin","/election-results"
+    "/verify-admin","/election-results","/election-results/voter-roll"
 }
 PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 
@@ -526,14 +542,47 @@ async def get_vote_counts(request: Request) -> dict[str, int]:
 
 async def _publish_checkpoint_externally(checkpoint: dict) -> None:
     """
-    Hook for anchoring a checkpoint's chain_hash outside this database — the
-    part that actually protects against someone holding the Mongo
-    connection string, since nothing written only to Mongo can do that.
-    Deliberately a no-op until diff #4 (Backblaze B2) fills it in;
-    create_audit_checkpoint() below still works and is still useful without
-    this, it just only has app-level write-once guarantees until then.
+    Uploads the checkpoint to Backblaze B2 with Object Lock in compliance
+    mode, retained for 10 years — nobody, including whoever holds these B2
+    credentials, can delete or modify this object before then. This is what
+    makes the audit chain resistant to tampering by someone with the Mongo
+    connection string, not just accidental overwrites.
+
+    boto3 is synchronous, so this runs in FastAPI's threadpool rather than
+    blocking the event loop. If the upload fails (B2 down, bad credentials),
+    the checkpoint still exists in Mongo — this failure is logged but never
+    raised, since a missed external anchor shouldn't break checkpoint
+    creation for callers.
     """
-    pass
+    key = f"{checkpoint['org_id']}/{checkpoint['to_id']}.json"
+    body = json.dumps({
+        "org_id": checkpoint["org_id"],
+        "from_id": str(checkpoint["from_id"]) if checkpoint["from_id"] else None,
+        "to_id": str(checkpoint["to_id"]),
+        "event_count": checkpoint["event_count"],
+        "prev_chain_hash": checkpoint["prev_chain_hash"],
+        "chain_hash": checkpoint["chain_hash"],
+        "created_at": checkpoint["created_at"].isoformat(),
+    }, indent=2)
+
+    retain_until = datetime.utcnow() + timedelta(days=3650)
+
+    try:
+        await run_in_threadpool(
+            b2_client.put_object,
+            Bucket=B2_BUCKET_NAME,
+            Key=key,
+            Body=body.encode("utf-8"),
+            ContentType="application/json",
+            ObjectLockMode="COMPLIANCE",
+            ObjectLockRetainUntilDate=retain_until,
+        )
+    except Exception as e:
+        logging.error(f"B2 checkpoint anchor failed for {key}: {e}")
+        await log_action("audit_checkpoint_anchor_failed", "system", {
+            "checkpoint_id": str(checkpoint.get("_id", "")),
+            "error": str(e),
+        }, org_id=checkpoint.get("org_id"))
 
 
 async def create_audit_checkpoint(request: Request) -> dict | None:
@@ -1350,7 +1399,7 @@ async def admin_logout(request: Request):
 
 
 @app.post("/admin/toggle-election")
-async def toggle_election(request: Request):
+async def toggle_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
     current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_open", True) if current else True)
     await db.settings.update_one(
@@ -1364,7 +1413,7 @@ async def toggle_election(request: Request):
 
 
 @app.post("/admin/schedule-election")
-async def schedule_election(data: ElectionSchedule, request: Request):
+async def schedule_election(data: ElectionSchedule, request: Request, admin: dict = Depends(require_role("superadmin"))):
     await db.settings.update_one(
         org_query(request, {"name": "election_config"}),
         {"$set": org_stamp(request, {"start_time": data.start, "end_time": data.end, "is_open": True, "name": "election_config"})},
@@ -1374,7 +1423,7 @@ async def schedule_election(data: ElectionSchedule, request: Request):
 
 
 @app.post("/admin/clear-schedule")
-async def clear_schedule(request: Request):
+async def clear_schedule(request: Request, admin: dict = Depends(require_role("superadmin"))):
     await db.settings.update_one(
         org_query(request, {"name": "election_config"}),
         {"$unset": {"start_time": "", "end_time": ""}}
@@ -1383,7 +1432,7 @@ async def clear_schedule(request: Request):
 
 
 @app.post("/admin/reset-election")
-async def reset_election(request: Request):
+async def reset_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
     await db.otps.delete_many(org_query(request))
     await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
     await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
@@ -1404,7 +1453,7 @@ async def reset_election(request: Request):
 
 
 @app.post("/admin/toggle-certification")
-async def toggle_certification(request: Request):
+async def toggle_certification(request: Request, admin: dict = Depends(require_role("superadmin"))):
     current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_certified", False) if current else False)
     await db.settings.update_one(
@@ -1509,7 +1558,7 @@ async def get_all_voters(request: Request, admin: dict = Depends(require_role("i
     return voters
 
 @app.post("/admin/set-password")
-async def set_new_password(data: SetNewPassword, request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def set_new_password(data: SetNewPassword, request: Request, admin: dict = Depends(require_admin)):
     # Try IT admin first
     it_admin = await db.voters.find_one(org_query(request, {
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
@@ -1647,7 +1696,7 @@ async def list_applications(request: Request, status: str = None):
 # =============================================================================
 
 @app.post("/admin/applications/{app_id}/vote")
-async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request):
+async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
     """A commissioner casts their approve/deny vote on a pending application."""
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' or 'deny'.")
@@ -1681,7 +1730,7 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
 
 
 @app.post("/admin/applications/{app_id}/vote-remove")
-async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request: Request):
+async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
     """A commissioner votes to remove an already-approved candidate."""
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' (remove) or 'deny' (keep).")
@@ -1712,7 +1761,7 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
 
 
 @app.post("/admin/applications/{app_id}/finance-clear")
-async def finance_clear_application(app_id: str, data: FinanceClear, request: Request):
+async def finance_clear_application(app_id: str, data: FinanceClear, request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
     """
     The Finance Commissioner verifies the candidate's payment status and clears
     the application for voting. No commissioner (including her) can cast a vote
@@ -1948,7 +1997,20 @@ async def list_commissioners(request: Request):
     ):
         result.append(v)
     return result
-    
+
+@app.get("/admin/commissioners")
+async def list_commissioners_for_commission(request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
+    """Read-only duplicate of /superadmin/commissioners for the commission
+    role's own dashboard — that role can't cross the /superadmin/* middleware
+    boundary, so it needs an /admin-namespaced copy of the same query."""
+    result = []
+    async for v in db.voters.find(
+        org_query(request, {"is_commissioner": True}),
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
+    ):
+        result.append(v)
+    return result
+
 @app.post("/superadmin/commissioners/{student_id:path}/set-chief")
 async def set_chief_commissioner(student_id: str, request: Request):
     voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
@@ -2196,6 +2258,19 @@ async def get_election_results(request: Request):
         })
     return {"voter_turnout": voter_turnout, "results": results}
 
+@app.get("/election-results/voter-roll")
+async def get_public_voter_roll(request: Request):
+    """Public, name-only list of voters who have voted — powers the
+    Voter Participation Roll on the public Results page. Deliberately
+    exposes far less than /admin/voters (no student_id, phone, status)."""
+    names = []
+    async for v in db.voters.find(
+        org_query(request, {"has_voted": True}),
+        {"_id": 0, "full_name": 1}
+    ):
+        names.append(v)
+    return names
+
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
 # =============================================================================
@@ -2435,7 +2510,7 @@ async def list_student_changes(request: Request, status: str = None):
 
 
 @app.post("/admin/student-changes/{change_id}/decide")
-async def financial_controller_decide_student_change(change_id: str, data: FinancialControllerDecision, request: Request):
+async def financial_controller_decide_student_change(change_id: str, data: FinancialControllerDecision, request: Request, admin: dict = Depends(require_role("financial_controller", "superadmin"))):
     """
     The Financial Controller verifies payment status and makes the final call on
     an IT Admin's student-register change. Single-approver decision — this is

@@ -40,12 +40,12 @@ const fetchData = async () => {
     const [resultsRes, statusRes, votersRes, brandingRes, commissionersRes] = await Promise.all([
       api.get('/election-results'),
       api.get('/election-status'),
-      api.get('/admin/voters'),
+      api.get('/election-results/voter-roll').catch(() => ({ data: [] })),
       api.get('/superadmin/branding').catch(() => ({ data: {} })),
       api.get('/superadmin/commissioners').catch(() => ({ data: [] }))
     ]);
 
-    const votedList = (votersRes.data || []).filter(v => v.has_voted);
+    const votedList = votersRes.data || [];
 
     setElectionData({
       ...resultsRes.data,
@@ -251,13 +251,13 @@ const fetchData = async () => {
           })}
         
         <div style={voterRollSectionStyle}>
-          <h3 style={{ fontSize: '18px', color: '#fff', marginBottom: '15px' }}>👥 Voter Participation Roll</h3>
+          <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}>👥 Voter Participation Roll</h3>
           {electionData.voter_turnout >= PRIVACY_THRESHOLD ? (
            <div style={scrollableListStyle}>
               {displayedVoters.map((voter) => (
-                <div key={voter.student_id} style={voterRowStyle}>
-                  <span style={{ color: '#cbd5e1' }}>{voter.full_name}</span>
-                  <span style={{ color: '#10b981', fontSize: '12px', fontWeight: 'bold' }}>
+                <div key={voter.full_name + Math.random()} style={voterRowStyle}>
+                  <span style={{ color: 'var(--text-color)' }}>{voter.full_name}</span>
+                  <span style={{ color: 'var(--success)', fontSize: '12px', fontWeight: 'bold' }}>
                     Verified ✓
                   </span>
                 </div>
@@ -276,7 +276,7 @@ const fetchData = async () => {
                 <div style={{ 
                   width: `${(electionData.voter_turnout / PRIVACY_THRESHOLD) * 100}%`, 
                   height: '100%', 
-                  backgroundColor: '#3b82f6',
+                  backgroundColor: 'var(--info)',
                   transition: 'width 1s ease-in-out'
                 }} />
               </div>
@@ -361,12 +361,11 @@ const tieWarningBanner = {
   fontWeight: '600'
 };
 
-const voterRollSectionStyle = { marginTop: '40px', padding: '25px', backgroundColor: '#0f172a', borderRadius: '15px', border: '1px solid #1e293b' };
+const voterRollSectionStyle = { marginTop: '40px', padding: '25px', backgroundColor: 'var(--card-bg)', borderRadius: '15px', border: '1px solid var(--border-color)' };
 const scrollableListStyle = { maxHeight: '300px', overflowY: 'auto', paddingRight: '10px' };
-const voterRowStyle = { display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #1e293b' };
-const privacyLockStyle = { padding: '20px', textAlign: 'center', color: '#94a3b8' };
-const thresholdBarStyle = { width: '100%', height: '8px', background: '#334155', borderRadius: '4px', overflow: 'hidden' };
-
+const voterRowStyle = { display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-color)' };
+const privacyLockStyle = { padding: '20px', textAlign: 'center', color: 'var(--text-muted)' };
+const thresholdBarStyle = { width: '100%', height: '8px', background: 'var(--border-color)', borderRadius: '4px', overflow: 'hidden' };
 const printBtnStyle = {
   padding: '12px 24px', backgroundColor: '#1e293b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
 };

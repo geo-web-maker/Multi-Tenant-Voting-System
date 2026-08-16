@@ -27,6 +27,10 @@ MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 ALWAYS_WIPE = [
     "voters", "candidates", "positions", "applications",
     "student_changes", "audit_log", "otps", "admin_otps",
+    # Added alongside the vote_events migration — without these, old vote
+    # events (and, once diff #3 lands, their checkpoints) survive a wipe
+    # and would bleed into whatever org reuses this deployment next.
+    "vote_events", "audit_checkpoints",
 ]
 # Only wiped with --keep-nothing (branding, election open/closed/certified state).
 SETTINGS_COLLECTION = "settings"

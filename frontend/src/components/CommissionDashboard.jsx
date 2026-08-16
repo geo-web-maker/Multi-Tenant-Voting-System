@@ -28,9 +28,10 @@ export default function CommissionDashboard({ onLogout }) {
     setLoading(true);
     try {
       const [appsRes, commRes, scRes, resultsRes] = await Promise.all([
-          api.get('/admin/applications'),
-          api.get('/superadmin/commissioners'),
-          api.get('/admin/student-changes'),
+          api.get('/admin/applications').catch(() => ({ data: [] })),
+          api.get('/admin/commissioners').catch(() => ({ data: [] })),
+          api.get('/admin/student-changes').catch(() => ({ data: [] })),
+          api.get('/commission/results/detailed').catch(() => ({ data: null })),
         ]);
         setApplications(appsRes.data);
         setCommissioners(commRes.data);
@@ -549,6 +550,9 @@ export default function CommissionDashboard({ onLogout }) {
                   <span style={{ opacity: 0.6, fontSize: '13px' }}>
                     ({liveResults.voter_turnout.turnout_pct}%)
                   </span>
+                  <span style={{ opacity: 0.5, fontSize: '12px' }}>
+                    · {liveResults.voter_turnout.total_voters - liveResults.voter_turnout.voted_count} remaining
+                  </span>
                   <span style={{ opacity: 0.4, fontSize: '11px', marginLeft: 'auto' }}>
                     Updated {new Date(liveResults.generated_at).toLocaleTimeString('en-UG', { hour: '2-digit', minute: '2-digit' })}
                   </span>
@@ -565,8 +569,16 @@ export default function CommissionDashboard({ onLogout }) {
                   <div key={pos.position} style={appCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{pos.position}</b>
-                      <small style={{ opacity: 0.5 }}>{pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast</small>
-                    </div>
+                      <small style={{ opacity: 0.5 }}>
+                        {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
+                        {pos.candidates.length > 1 && (
+                          <span style={{ marginLeft: '8px', color: '#2ecc71', fontWeight: '600' }}>
+                            +{pos.candidates[0].votes - pos.candidates[1].votes} lead
+                            {' '}({(pos.candidates[0].pct_of_position - pos.candidates[1].pct_of_position).toFixed(1)}%)
+                          </span>
+                        )}
+                      </small>
+                     </div>                     
                     <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {pos.candidates.map((c, idx) => (
                         <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>

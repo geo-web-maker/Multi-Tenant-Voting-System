@@ -6,6 +6,7 @@ export default function OverseerDashboard({ onLogout }) {
   const overseerName = sessionStorage.getItem('overseer_name') || '';
 
   const [data, setData]       = useState(null);
+  const [liveResults, setLiveResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab]         = useState('applications');
 
@@ -18,8 +19,12 @@ export default function OverseerDashboard({ onLogout }) {
   const fetchDashboard = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/overseer/dashboard');
-      setData(res.data);
+      const [dashRes, resultsRes] = await Promise.all([
+        api.get('/overseer/dashboard'),
+        api.get('/commission/results/detailed').catch(() => ({ data: null })),
+      ]);
+      setData(dashRes.data);
+      setLiveResults(resultsRes.data);
     } catch (e) {
       console.error('Failed to fetch overseer dashboard:', e);
     } finally {
@@ -146,17 +151,64 @@ export default function OverseerDashboard({ onLogout }) {
             {/* ── Candidate results (read-only) ── */}
             {tab === 'results' && (
               <div>
-                {data.candidate_results.length === 0 && <div style={emptyState}><p style={{ opacity: 0.5 }}>No results yet.</p></div>}
-                {data.candidate_results.map((c, i) => (
-                  <div key={i} style={appCard}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-color)', fontSize: '14px' }}>
-                        <b>{c.name}</b> — <span style={{ opacity: 0.6 }}>{c.position}</span>
+                {!liveResults ? (
+                  <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading live results…</p></div>
+                ) : (
+                  <>
+                    <div style={{ ...summaryCard, flexDirection: 'row', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                      <span style={{ opacity: 0.6, fontSize: '12px' }}>Voter turnout:</span>
+                      <span style={{ color: '#2ecc71', fontWeight: '700', fontSize: '15px' }}>
+                        {liveResults.voter_turnout.voted_count} / {liveResults.voter_turnout.total_voters}
                       </span>
-                      <b style={{ color: '#3498db' }}>{c.votes} votes</b>
+                      <span style={{ opacity: 0.6, fontSize: '13px' }}>({liveResults.voter_turnout.turnout_pct}%)</span>
+                      <span style={{ opacity: 0.5, fontSize: '12px' }}>
+                        · {liveResults.voter_turnout.total_voters - liveResults.voter_turnout.voted_count} remaining
+                      </span>
                     </div>
-                  </div>
-                ))}
+
+                    {liveResults.positions.length === 0 && (
+                      <div style={emptyState}><p style={{ opacity: 0.5 }}>No candidates on the ballot yet.</p></div>
+                    )}
+
+                    {liveResults.positions.map(pos => (
+                      <div key={pos.position} style={appCard}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{pos.position}</b>
+                          <small style={{ opacity: 0.5 }}>
+                            {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
+                            {pos.candidates.length > 1 && (
+                              <span style={{ marginLeft: '8px', color: '#2ecc71', fontWeight: '600' }}>
+                                +{pos.candidates[0].votes - pos.candidates[1].votes} lead
+                                {' '}({(pos.candidates[0].pct_of_position - pos.candidates[1].pct_of_position).toFixed(1)}%)
+                              </span>
+                            )}
+                          </small>
+                        </div>
+                        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {pos.candidates.map((c, idx) => (
+                            <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <span style={{ fontSize: '12px', opacity: 0.5, width: '18px' }}>{idx + 1}.</span>
+                              <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
+                                {c.name}
+                              </span>
+                              {c.unopposed && <span style={{ fontSize: '10px', opacity: 0.5 }}>unopposed</span>}
+                              <div style={{ width: '120px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                                <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
+                              </div>
+                              <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', width: '70px', textAlign: 'right' }}>
+                                {c.votes} ({c.pct_of_position}%)
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+
+                    <p style={{ fontSize: '11px', opacity: 0.4, marginTop: '4px' }}>
+                      Figures are anonymous aggregate tallies — no voter's individual choice is ever linked to their identity here.
+                    </p>
+                  </>
+                )}
               </div>
             )}
           </>

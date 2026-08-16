@@ -4,6 +4,11 @@ vote-bulk. Each task iteration claims a fresh, never-repeated seeded voter,
 so the test generates continuous real vote traffic for the whole run instead
 of every simulated user voting once and then idly re-hitting "Already voted".
 
+Each simulated user is pinned to one org for its whole session (picked
+randomly in on_start), so a single run generates real concurrent
+cross-tenant traffic — the actual condition worth testing for a multi-tenant
+system, not just sequential single-org checks.
+
 Reads the OTP directly from local Mongo (bypassing SMS entirely) rather than
 adding any DEBUG_MODE response field to main.py — keeps the tested app code
 byte-for-byte identical to what runs in production.
@@ -21,6 +26,11 @@ Usage:
 
 Then open http://localhost:8089 in a browser to set user count / spawn rate
 and start the test, or run headless (see notes at the bottom of this file).
+
+If you seeded a smaller pool for fast local iteration
+(SEED_VOTERS_PER_ORG=50 python seed_test_data.py), set the same env var
+here so the two scripts stay in sync:
+    SEED_VOTERS_PER_ORG=50 locust -f locustfile.py --host http://127.0.0.1:8000
 """
 import random
 import os
@@ -32,25 +42,33 @@ from locust import HttpUser, task, between, events
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.getenv("MONGO_DB_NAME", "electiondbaccounting")
 
-# Which seeded dataset to hit. Change ORG_SLUG to "ask", "umosan", or "" (for
-# the legacy/no-org dataset) to test a different institution.
-ORG_SLUG = "kyuccu"
-VOTER_PREFIX = ORG_SLUG if ORG_SLUG else "legacy"
-VOTERS_PER_ORG = 5000  # must match seed_test_data.py
+# Which seeded datasets to spread load across. Each simulated user picks one
+# at random in on_start() — this generates real concurrent cross-tenant
+# traffic in a single run, which is the actual thing worth load-testing for
+# a multi-tenant system (does org isolation hold under concurrent load, not
+# just sequential manual checks). "" = the legacy/no-org dataset.
+ORGS_TO_TEST = ["kyuccu", "ask", "umosan", ""]
+
+# Reads the same SEED_VOTERS_PER_ORG env var seed_test_data.py uses, so the
+# two scripts can't silently drift — set it once, both pick it up. Falls
+# back to 5000 (the stress-test number) if unset, matching the seed
+# script's own default.
+VOTERS_PER_ORG = int(os.getenv("SEED_VOTERS_PER_ORG", "5000"))
 
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client[DB_NAME]
 
-# Hands out a fresh, never-repeated voter index to each task iteration, so
-# the test generates continuous real vote traffic for the whole run instead
-# of every user voting once and then idly re-hitting "Already voted".
-_voter_counter = itertools.count()
-_counter_lock = Lock()
+# One counter per org, not one shared counter — otherwise whichever org a
+# user happens to draw first would burn through the shared index space and
+# other orgs would be under-represented relative to how random.choice
+# actually split the users. Each org's voter pool is consumed independently.
+_voter_counters = {org: itertools.count() for org in ORGS_TO_TEST}
+_counter_locks = {org: Lock() for org in ORGS_TO_TEST}
 
 
-def claim_next_voter_index() -> int:
-    with _counter_lock:
-        idx = next(_voter_counter)
+def claim_next_voter_index(org_slug: str) -> int:
+    with _counter_locks[org_slug]:
+        idx = next(_voter_counters[org_slug])
     return idx % VOTERS_PER_ORG  # wrap around if the run outlasts the pool
 
 
@@ -61,17 +79,18 @@ def get_org_id(slug: str):
     return str(org["_id"]) if org else None
 
 
-ORG_ID = get_org_id(ORG_SLUG)
+# Resolved once at startup for every org in the list, not per-request.
+ORG_IDS = {slug: get_org_id(slug) for slug in ORGS_TO_TEST}
 
 
-def read_otp_from_db(student_id: str) -> str | None:
+def read_otp_from_db(student_id: str, org_id) -> str | None:
     """Reads the OTP the real /verify-identity call just wrote to db.otps —
     same collection, same document shape the app itself uses. No app code
     touched; this only reads, mirroring what a person checking their own
     phone would receive."""
     query = {"student_id": student_id}
-    if ORG_ID:
-        query["org_id"] = ORG_ID
+    if org_id:
+        query["org_id"] = org_id
     record = db.otps.find_one(query)
     return record["code"] if record else None
 
@@ -81,16 +100,25 @@ class VoterUser(HttpUser):
     casts one vote as them — simulating continuous new voters arriving
     throughout the test, not one voter per simulated user for the whole run.
     wait_time mimics a real person reading the ballot rather than every
-    user hammering instantly."""
+    user hammering instantly.
+
+    Each simulated user is pinned to one org for its whole lifetime (picked
+    once in on_start) — a real voter never switches institutions mid-session
+    either, and pinning per-user rather than per-task keeps the counters in
+    claim_next_voter_index() meaningful (each org's index space advances
+    independently of how often that org gets drawn)."""
     wait_time = between(1, 3)
 
     def on_start(self):
-        self.headers = {"X-Org-Slug": ORG_SLUG} if ORG_SLUG else {}
+        self.org_slug = random.choice(ORGS_TO_TEST)
+        self.org_id = ORG_IDS[self.org_slug]
+        self.voter_prefix = self.org_slug if self.org_slug else "legacy"
+        self.headers = {"X-Org-Slug": self.org_slug} if self.org_slug else {}
 
     @task
     def full_voting_flow(self):
-        idx = claim_next_voter_index()
-        student_id = f"{VOTER_PREFIX}-voter-{idx:05d}"
+        idx = claim_next_voter_index(self.org_slug)
+        student_id = f"{self.voter_prefix}-voter-{idx:05d}"
         full_name = f"Test Voter {idx}"
 
         # Step 1: verify identity -> triggers OTP "send" (mocked, DEBUG_MODE)
@@ -113,7 +141,7 @@ class VoterUser(HttpUser):
 
         # Step 2: read the OTP straight from Mongo (stands in for "checking
         # your phone") and verify it through the real endpoint
-        otp = read_otp_from_db(student_id)
+        otp = read_otp_from_db(student_id, self.org_id)
         if not otp:
             return  # OTP not written yet / race — skip this iteration
 
