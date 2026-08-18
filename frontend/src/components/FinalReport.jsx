@@ -87,6 +87,13 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
         position: relative;
         z-index: 2;
       }
+     .report-watermark h1:not(.print-color-keep),
+     .report-watermark h2:not(.print-color-keep),
+     .report-watermark h3:not(.print-color-keep),
+     .report-watermark h4:not(.print-color-keep),
+     .report-watermark p:not(.print-color-keep) {
+       color: #000 !important;
+     }
     }
   `}</style>
 );
@@ -180,7 +187,7 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
         <div>
           <p style={{ margin: '2px 0', fontSize: '12px' }}><strong>Status:</strong> <span style={{color: config.color}}>{config.label}</span></p>
           <p style={{ margin: '2px 0', fontSize: '12px' }}><strong>Voter Participation:</strong> {totalVotes} Students</p>
-          <p style={{ margin: '2px 0', fontSize: '10px', color: '#666' }}><strong>Fingerprint:</strong> {reportFingerprint}</p>
+          <p className="print-color-keep" style={{ margin: '2px 0', fontSize: '10px', color: '#666' }}><strong>Fingerprint:</strong> {reportFingerprint}</p>
         </div>
         <div style={{ textAlign: 'right', fontSize: '12px' }}>
           <p style={{ margin: '2px 0' }}><strong>Date Generated:</strong> {new Date().toLocaleDateString()}</p>
@@ -220,7 +227,7 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
       {/* EXECUTIVE SUMMARY */}
       {!isElectionOpen && (
         <div style={{ marginBottom: '30px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
-          <h3 style={{ borderBottom: `2px solid ${config.color}`, color: config.color, paddingBottom: '5px', fontSize: '16px' }}>
+          <h3 className="print-color-keep" style={{ borderBottom: `2px solid ${config.color}`, color: config.color, paddingBottom: '5px', fontSize: '16px' }}>
             Executive Summary: Elected Officials
           </h3>
           <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '10px' }}>
@@ -371,10 +378,10 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
 
       {/* FOOTER STAMP */}
       <div style={{ textAlign: 'center', marginTop: '60px', borderTop: `1px dashed ${config.color}`, paddingTop: '20px', position: 'relative', zIndex: 1 }}>
-        <p style={{ letterSpacing: '8px', fontWeight: '900', color: config.color, fontSize: '12px' }}>
+        <p className="print-color-keep" style={{ letterSpacing: '8px', fontWeight: '900', color: config.color, fontSize: '12px' }}>
           *** END OF {activeStage.toUpperCase()} REPORT ***
         </p>
-        <p style={{ fontSize: '9px', color: '#aaa' }}>Verified Secure | ID: {reportFingerprint} | Mode: {activeStage.toUpperCase()}</p>
+        <p className="print-color-keep" style={{ fontSize: '9px', color: '#aaa' }}>Verified Secure | ID: {reportFingerprint} | Mode: {activeStage.toUpperCase()}</p>
       </div>
     </div>
   </>
