@@ -10,6 +10,7 @@ import ApplicantPortal from './components/ApplicantPortal';
 import ITAdminDashboard from './components/ITAdminDashboard';
 import FinancialControllerDashboard from './components/FinancialControllerDashboard';
 import OverseerDashboard from './components/OverseerDashboard';
+import FloatingHelpMenu from './components/FloatingHelpMenu';
 
 function App() {
   const [supportPdfUrl, setSupportPdfUrl] = useState("");
@@ -415,6 +416,13 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
   return (
     <div style={containerStyle}>
+      {view === "voter" && (
+        <FloatingHelpMenu
+          supportPdfUrl={supportPdfUrl}
+          supportPhone={supportPhone}
+          onShowGuide={() => setShowGuide(true)}
+        />
+      )}
       <div style={{ 
           width: '100%', 
           maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '1200px' : '500px',
@@ -552,53 +560,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <button onClick={() => { setIsAdminPath(!isAdminPath); setNeedsTotp(false); setTotpCode(""); }} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an Admin? Login here"}
               </button>
-                <div style={{ marginTop: '20px', borderTop: '1px solid var(--border-color)', paddingTop: '15px' }}>
-                    <button 
-                      onClick={() => setShowGuide(true)} 
-                      style={{ ...linkBtnStyle, color: 'var(--success)', fontWeight: 'bold' }}
-                    >
-                      📖 View Sample Ballot Paper
-                    </button>
-                   
-                    {supportPdfUrl && (
-                      <a 
-                        href={supportPdfUrl}
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        style={{ 
-                          ...linkBtnStyle, 
-                          color: 'var(--info)', 
-                          fontWeight: 'bold',
-                          textDecoration: 'none',
-                          display: 'block',
-                          textAlign: 'center',
-                          marginTop: '10px'
-                        }}
-                      >
-                        Download Official Register (PDF)
-                      </a>
-                    )}
-                    <a 
-                      href={supportPhone ? `https://wa.me/${supportPhone}?text=Hello%20Admin,%20I%20am%20having%20issues%20with%20the%20Election%20Portal.` : "#"}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ 
-                        ...linkBtnStyle, // Spreads your existing button styles
-                        color: '#25D366', // WhatsApp Green
-                        fontWeight: 'bold',
-                        textDecoration: 'none',
-                        display: 'block', 
-                        textAlign: 'center',
-                        marginTop: '15px',
-                        padding: '10px',
-                        border: '1px solid rgba(37, 211, 102, 0.2)', // Subtle green border
-                        borderRadius: '8px',
-                        fontSize: '13px'
-                      }}
-                    >
-                      Login issues? Click here to contact Support for help
-                    </a>
-                </div>
               </div>
             )}
 

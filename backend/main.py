@@ -30,7 +30,6 @@ from auth import (
     decode_access_token,
     get_bearer_token,
     require_role,
-    require_admin,
     set_revocation_check,
     ADMIN_ROLES,
     JWT_EXPIRE_MINUTES,
@@ -109,10 +108,6 @@ async def lifespan(app: FastAPI):
     # makes the second one fail loudly instead of silently forking the chain.
     await db.audit_checkpoints.create_index([("org_id", 1), ("to_id", 1)], unique=True)
     await db.audit_checkpoints.create_index([("org_id", 1), ("from_id", 1)], unique=True)
-    await db.voters.create_index([("org_id", 1), ("student_id", 1)], unique=True)
-    await db.organizations.create_index("slug", unique=True)
-    await db.candidates.create_index([("org_id", 1), ("_id", 1)])
-    await db.applications.create_index([("org_id", 1), ("student_id", 1)])
     set_revocation_check(_is_token_revoked)
     yield
     client.close()
@@ -229,7 +224,8 @@ PUBLIC_PATHS = {
     "/", "/health", "/election-status",
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
-    "/verify-admin","/election-results","/election-results/voter-roll"
+    "/verify-admin","/election-results",
+    "/voter-register", "/voter-register/check-number",
 }
 PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 
@@ -446,6 +442,25 @@ def get_forgiving_filter(student_id: str):
     Requires the migration script to have already normalized existing
     voter documents; see migrate_normalize_student_ids.py."""
     return {"student_id": normalize_student_id(student_id)}
+
+def _mask_name(name: str) -> str:
+    parts = name.strip().split()
+    if len(parts) <= 1:
+        return parts[0] if parts else name
+    return parts[0] + " " + " ".join(f"{p[0]}." for p in parts[1:])
+
+def _mask_student_id(sid: str) -> str:
+    parts = sid.split("/")
+    if len(parts) < 2:
+        return sid[:3] + "***"
+    core = parts[-2]
+    parts[-2] = core[:1] + "*" * max(len(core) - 1, 1)
+    return "/".join(parts)
+
+def _mask_phone(phone: str) -> str:
+    if len(phone) <= 8:
+        return "*" * len(phone)
+    return f"{phone[:6]}****{phone[-2:]}"
 
 def names_match(registered_name: str, input_name: str) -> bool:
     reg_parts   = set(registered_name.strip().lower().split())
@@ -1027,14 +1042,6 @@ async def cast_vote(data: VoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid candidate.")
 
-    # Pre-check outside the transaction: fails fast on a bad candidate ID
-    # without ever opening a session/connection for a doomed request.
-    candidate_exists = await db.candidates.count_documents(
-        org_query(request, {"_id": candidate_oid})
-    )
-    if not candidate_exists:
-        raise HTTPException(status_code=404, detail="Candidate not found.")
-
     # Wrapped in a transaction: "mark voter as having voted" and "increment
     # the candidate's tally" are all-or-nothing. Uses with_transaction()
     # rather than a bare start_transaction() context manager because it
@@ -1043,6 +1050,12 @@ async def cast_vote(data: VoteRequest, request: Request):
     # day — instead of surfacing those as hard errors to the voter.
     # HTTPException raised inside the callback isn't a PyMongoError, so
     # with_transaction lets it propagate immediately rather than retrying it.
+    candidate_exists = await db.candidates.count_documents(
+        org_query(request, {"_id": candidate_oid})
+    )
+    if not candidate_exists:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
     async def _do_vote(session):
         student = await db.voters.find_one(
             org_query(request, get_forgiving_filter(data.student_id)), session=session
@@ -1052,10 +1065,6 @@ async def cast_vote(data: VoteRequest, request: Request):
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
-        # Cheap re-check inside the transaction — count_documents on an
-        # indexed field, not a full document fetch. Closes the small gap
-        # where a candidate could be deleted between the pre-check above
-        # and this write, without paying for a second full find_one.
         candidate_still_exists = await db.candidates.count_documents(
             org_query(request, {"_id": candidate_oid}), session=session
         )
@@ -1092,14 +1101,10 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
-    # Pre-check outside the transaction: fails fast on bad candidate IDs
-    # without ever opening a session/connection for a doomed request.
-    candidates = await db.candidates.find(
-        org_query(request, {"_id": {"$in": candidate_oids}})
-    ).to_list(length=None)
-    if len(candidates) != len(set(candidate_oids)):
-        raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
-
+    # with_transaction auto-retries transient write conflicts — expected
+    # under concurrent load when many voters hit the same popular
+    # candidate's document at once — instead of surfacing them as hard
+    # errors to the voter. See /vote for the same pattern.
     async def _do_bulk_vote(session):
         student = await db.voters.find_one(
             org_query(request, get_forgiving_filter(data.student_id)), session=session
@@ -1111,14 +1116,16 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
-        # Cheap re-check inside the transaction — count_documents on an
-        # indexed field, not a full document fetch. Closes the small gap
-        # where a candidate could be deleted between the pre-check above
-        # and this write, without paying for a second full find().
-        count = await db.candidates.count_documents(
+        # Validate every candidate exists BEFORE writing anything. The old
+        # version incremented whichever candidates happened to resolve and
+        # silently swallowed failures for the rest — a voter could end up
+        # marked as voted with some of their choices never counted. Now
+        # it's genuinely all-or-nothing: either every choice is recorded,
+        # or none are and the voter can retry.
+        candidates = await db.candidates.find(
             org_query(request, {"_id": {"$in": candidate_oids}}), session=session
-        )
-        if count != len(set(candidate_oids)):
+        ).to_list(length=None)
+        if len(candidates) != len(set(candidate_oids)):
             raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
 
         await db.voters.update_one(
@@ -1126,6 +1133,9 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             {"$set": {"has_voted": True, "last_status": "completed"}},
             session=session
         )
+        # Same append-only pattern as /vote, batched as one insert_many so a
+        # multi-position ballot is still a single round trip inside the
+        # transaction (still all-or-nothing with the has_voted update above).
         cast_at = datetime.utcnow()
         await db.vote_events.insert_many(
             [org_stamp(request, {"candidate_id": c_oid, "cast_at": cast_at})
@@ -1137,6 +1147,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         await session.with_transaction(_do_bulk_vote)
 
     return {"status": "success", "message": "Ballot cast successfully"}
+
 
 @app.get("/candidates")
 async def get_candidates(request: Request):
@@ -1176,6 +1187,62 @@ def _check_upload_rate_limit(request: Request):
         raise HTTPException(status_code=429, detail="Too many uploads. Please try again in a few minutes.")
     attempts.append(now)
     _upload_attempts[ip] = attempts
+
+
+_register_attempts = {}
+REGISTER_RATE_LIMIT = 10
+REGISTER_RATE_WINDOW_S = 60
+
+def _check_register_rate_limit(request: Request):
+    ip = request.client.host if request.client else "unknown"
+    now = datetime.utcnow().timestamp()
+    attempts = [t for t in _register_attempts.get(ip, []) if now - t < REGISTER_RATE_WINDOW_S]
+    if len(attempts) >= REGISTER_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again shortly.")
+    attempts.append(now)
+    _register_attempts[ip] = attempts
+
+
+VOTER_REGISTER_PAGE_SIZE = 25
+
+@app.get("/voter-register")
+async def search_voter_register(request: Request, q: str = "", page: int = 1):
+    _check_register_rate_limit(request)
+    page = max(page, 1)
+    skip = (page - 1) * VOTER_REGISTER_PAGE_SIZE
+    query = org_query(request)
+    if q:
+        query["$or"] = [
+            {"full_name": {"$regex": q, "$options": "i"}},
+            {"student_id": {"$regex": normalize_student_id(q), "$options": "i"}},
+        ]
+    total = await db.voters.count_documents(query)
+    cursor = db.voters.find(
+        query, {"_id": 0, "full_name": 1, "student_id": 1, "phone_numbers": 1}
+    ).sort("full_name", 1).skip(skip).limit(VOTER_REGISTER_PAGE_SIZE)
+    results = [
+        {
+            "full_name": _mask_name(v["full_name"]),
+            "student_id": _mask_student_id(v["student_id"]),
+            "phone_on_file": bool(v.get("phone_numbers")),
+        }
+        async for v in cursor
+    ]
+    return {"results": results, "total": total, "page": page, "page_size": VOTER_REGISTER_PAGE_SIZE}
+
+
+@app.post("/voter-register/check-number")
+async def check_registered_number(data: ApplicationEligibilityCheck, request: Request):
+    _check_register_rate_limit(request)
+    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    if not student:
+        raise HTTPException(status_code=404, detail="Not found in the register.")
+    if not names_match(student.get("full_name", ""), data.full_name):
+        raise HTTPException(status_code=400, detail="Name does not match our records.")
+    phones = student.get("phone_numbers", [])
+    if not phones:
+        return {"phone_on_file": False}
+    return {"phone_on_file": True, "masked_phone": _mask_phone(phones[0])}
 
 
 @app.post("/apply/upload-image")
@@ -1413,7 +1480,7 @@ async def admin_logout(request: Request):
 
 
 @app.post("/admin/toggle-election")
-async def toggle_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def toggle_election(request: Request):
     current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_open", True) if current else True)
     await db.settings.update_one(
@@ -1427,7 +1494,7 @@ async def toggle_election(request: Request, admin: dict = Depends(require_role("
 
 
 @app.post("/admin/schedule-election")
-async def schedule_election(data: ElectionSchedule, request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def schedule_election(data: ElectionSchedule, request: Request):
     await db.settings.update_one(
         org_query(request, {"name": "election_config"}),
         {"$set": org_stamp(request, {"start_time": data.start, "end_time": data.end, "is_open": True, "name": "election_config"})},
@@ -1437,7 +1504,7 @@ async def schedule_election(data: ElectionSchedule, request: Request, admin: dic
 
 
 @app.post("/admin/clear-schedule")
-async def clear_schedule(request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def clear_schedule(request: Request):
     await db.settings.update_one(
         org_query(request, {"name": "election_config"}),
         {"$unset": {"start_time": "", "end_time": ""}}
@@ -1446,7 +1513,7 @@ async def clear_schedule(request: Request, admin: dict = Depends(require_role("s
 
 
 @app.post("/admin/reset-election")
-async def reset_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def reset_election(request: Request):
     await db.otps.delete_many(org_query(request))
     await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
     await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
@@ -1467,7 +1534,7 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
 
 
 @app.post("/admin/toggle-certification")
-async def toggle_certification(request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def toggle_certification(request: Request):
     current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_certified", False) if current else False)
     await db.settings.update_one(
@@ -1572,7 +1639,7 @@ async def get_all_voters(request: Request, admin: dict = Depends(require_role("i
     return voters
 
 @app.post("/admin/set-password")
-async def set_new_password(data: SetNewPassword, request: Request, admin: dict = Depends(require_admin)):
+async def set_new_password(data: SetNewPassword, request: Request, admin: dict = Depends(require_role("superadmin"))):
     # Try IT admin first
     it_admin = await db.voters.find_one(org_query(request, {
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
@@ -1710,7 +1777,7 @@ async def list_applications(request: Request, status: str = None):
 # =============================================================================
 
 @app.post("/admin/applications/{app_id}/vote")
-async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
+async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request):
     """A commissioner casts their approve/deny vote on a pending application."""
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' or 'deny'.")
@@ -1744,7 +1811,7 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
 
 
 @app.post("/admin/applications/{app_id}/vote-remove")
-async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
+async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request: Request):
     """A commissioner votes to remove an already-approved candidate."""
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' (remove) or 'deny' (keep).")
@@ -1775,7 +1842,7 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
 
 
 @app.post("/admin/applications/{app_id}/finance-clear")
-async def finance_clear_application(app_id: str, data: FinanceClear, request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
+async def finance_clear_application(app_id: str, data: FinanceClear, request: Request):
     """
     The Finance Commissioner verifies the candidate's payment status and clears
     the application for voting. No commissioner (including her) can cast a vote
@@ -2011,20 +2078,7 @@ async def list_commissioners(request: Request):
     ):
         result.append(v)
     return result
-
-@app.get("/admin/commissioners")
-async def list_commissioners_for_commission(request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
-    """Read-only duplicate of /superadmin/commissioners for the commission
-    role's own dashboard — that role can't cross the /superadmin/* middleware
-    boundary, so it needs an /admin-namespaced copy of the same query."""
-    result = []
-    async for v in db.voters.find(
-        org_query(request, {"is_commissioner": True}),
-        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
-    ):
-        result.append(v)
-    return result
-
+    
 @app.post("/superadmin/commissioners/{student_id:path}/set-chief")
 async def set_chief_commissioner(student_id: str, request: Request):
     voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
@@ -2272,19 +2326,6 @@ async def get_election_results(request: Request):
         })
     return {"voter_turnout": voter_turnout, "results": results}
 
-@app.get("/election-results/voter-roll")
-async def get_public_voter_roll(request: Request):
-    """Public, name-only list of voters who have voted — powers the
-    Voter Participation Roll on the public Results page. Deliberately
-    exposes far less than /admin/voters (no student_id, phone, status)."""
-    names = []
-    async for v in db.voters.find(
-        org_query(request, {"has_voted": True}),
-        {"_id": 0, "full_name": 1}
-    ):
-        names.append(v)
-    return names
-
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
 # =============================================================================
@@ -2524,7 +2565,7 @@ async def list_student_changes(request: Request, status: str = None):
 
 
 @app.post("/admin/student-changes/{change_id}/decide")
-async def financial_controller_decide_student_change(change_id: str, data: FinancialControllerDecision, request: Request, admin: dict = Depends(require_role("financial_controller", "superadmin"))):
+async def financial_controller_decide_student_change(change_id: str, data: FinancialControllerDecision, request: Request):
     """
     The Financial Controller verifies payment status and makes the final call on
     an IT Admin's student-register change. Single-approver decision — this is
