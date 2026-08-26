@@ -1027,6 +1027,14 @@ async def cast_vote(data: VoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid candidate.")
 
+    # Pre-check outside the transaction: fails fast on a bad candidate ID
+    # without ever opening a session/connection for a doomed request.
+    candidate_exists = await db.candidates.count_documents(
+        org_query(request, {"_id": candidate_oid})
+    )
+    if not candidate_exists:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
     # Wrapped in a transaction: "mark voter as having voted" and "increment
     # the candidate's tally" are all-or-nothing. Uses with_transaction()
     # rather than a bare start_transaction() context manager because it
@@ -1044,10 +1052,14 @@ async def cast_vote(data: VoteRequest, request: Request):
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
-        candidate = await db.candidates.find_one(
+        # Cheap re-check inside the transaction — count_documents on an
+        # indexed field, not a full document fetch. Closes the small gap
+        # where a candidate could be deleted between the pre-check above
+        # and this write, without paying for a second full find_one.
+        candidate_still_exists = await db.candidates.count_documents(
             org_query(request, {"_id": candidate_oid}), session=session
         )
-        if not candidate:
+        if not candidate_still_exists:
             raise HTTPException(status_code=404, detail="Candidate not found.")
 
         await db.voters.update_one(
@@ -1080,10 +1092,14 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
-    # with_transaction auto-retries transient write conflicts — expected
-    # under concurrent load when many voters hit the same popular
-    # candidate's document at once — instead of surfacing them as hard
-    # errors to the voter. See /vote for the same pattern.
+    # Pre-check outside the transaction: fails fast on bad candidate IDs
+    # without ever opening a session/connection for a doomed request.
+    candidates = await db.candidates.find(
+        org_query(request, {"_id": {"$in": candidate_oids}})
+    ).to_list(length=None)
+    if len(candidates) != len(set(candidate_oids)):
+        raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
+
     async def _do_bulk_vote(session):
         student = await db.voters.find_one(
             org_query(request, get_forgiving_filter(data.student_id)), session=session
@@ -1095,16 +1111,14 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
 
-        # Validate every candidate exists BEFORE writing anything. The old
-        # version incremented whichever candidates happened to resolve and
-        # silently swallowed failures for the rest — a voter could end up
-        # marked as voted with some of their choices never counted. Now
-        # it's genuinely all-or-nothing: either every choice is recorded,
-        # or none are and the voter can retry.
-        candidates = await db.candidates.find(
+        # Cheap re-check inside the transaction — count_documents on an
+        # indexed field, not a full document fetch. Closes the small gap
+        # where a candidate could be deleted between the pre-check above
+        # and this write, without paying for a second full find().
+        count = await db.candidates.count_documents(
             org_query(request, {"_id": {"$in": candidate_oids}}), session=session
-        ).to_list(length=None)
-        if len(candidates) != len(set(candidate_oids)):
+        )
+        if count != len(set(candidate_oids)):
             raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
 
         await db.voters.update_one(
@@ -1112,9 +1126,6 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             {"$set": {"has_voted": True, "last_status": "completed"}},
             session=session
         )
-        # Same append-only pattern as /vote, batched as one insert_many so a
-        # multi-position ballot is still a single round trip inside the
-        # transaction (still all-or-nothing with the has_voted update above).
         cast_at = datetime.utcnow()
         await db.vote_events.insert_many(
             [org_stamp(request, {"candidate_id": c_oid, "cast_at": cast_at})
@@ -1126,7 +1137,6 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         await session.with_transaction(_do_bulk_vote)
 
     return {"status": "success", "message": "Ballot cast successfully"}
-
 
 @app.get("/candidates")
 async def get_candidates(request: Request):
