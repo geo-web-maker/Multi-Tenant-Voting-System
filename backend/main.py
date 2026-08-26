@@ -109,6 +109,10 @@ async def lifespan(app: FastAPI):
     # makes the second one fail loudly instead of silently forking the chain.
     await db.audit_checkpoints.create_index([("org_id", 1), ("to_id", 1)], unique=True)
     await db.audit_checkpoints.create_index([("org_id", 1), ("from_id", 1)], unique=True)
+    await db.voters.create_index([("org_id", 1), ("student_id", 1)], unique=True)
+    await db.organizations.create_index("slug", unique=True)
+    await db.candidates.create_index([("org_id", 1), ("_id", 1)])
+    await db.applications.create_index([("org_id", 1), ("student_id", 1)])
     set_revocation_check(_is_token_revoked)
     yield
     client.close()
