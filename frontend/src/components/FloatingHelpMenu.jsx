@@ -59,6 +59,7 @@ const fabStyle = (open, bottomOffset = 24) => ({
   display: 'flex', alignItems: 'center', gap: '8px',
   padding: '14px 20px', borderRadius: '30px',
   backgroundColor: 'var(--brand-primary, #003366)',
+  color: '#ffffff',
   border: '2px solid var(--brand-accent, #f1c40f)',
   fontSize: '16px', fontWeight: 'bold', cursor: 'pointer',
   boxShadow: '0 8px 20px rgba(0,0,0,0.35)', transition: 'bottom 0.2s ease, transform 0.15s',
