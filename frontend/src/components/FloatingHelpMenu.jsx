@@ -57,12 +57,16 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
 const fabStyle = (open, bottomOffset = 24) => ({
   position: 'fixed', bottom: `${bottomOffset}px`, right: '24px', zIndex: 2600,
   display: 'flex', alignItems: 'center', gap: '8px',
-  padding: '14px 20px', borderRadius: '30px',
+  padding: '10px 24px',
   backgroundColor: 'var(--brand-primary, #003366)',
   color: '#ffffff',
   border: '2px solid var(--brand-accent, #f1c40f)',
-  fontSize: '16px', fontWeight: 'bold', cursor: 'pointer',
-  boxShadow: '0 8px 20px rgba(0,0,0,0.35)', transition: 'bottom 0.2s ease, transform 0.15s',
+  borderRadius: '30px',
+  cursor: 'pointer',
+  fontWeight: '600',
+  fontSize: '14px',
+  boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+  transition: 'all 0.3s ease',
 });
 
 // Explicit color object, spread last so nothing else in the cascade can
