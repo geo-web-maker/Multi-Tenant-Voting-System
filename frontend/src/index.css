@@ -3,6 +3,12 @@
   line-height: 1.5;
   font-weight: 400;
 
+  /* Fixed-bottom UI elements (like the Help FAB) read this to stay clear
+     of whichever sticky bottom bar is currently on screen. Individual
+     pages publish their real measured height here via useReportedHeight;
+     0 is the safe default when no bottom bar is present. */
+  --bottom-bar-height: 0px;
+
   /* --- LIGHT MODE (Default) --- */
   --bg-color: #fafafa;
   --card-bg: #ffffff;
