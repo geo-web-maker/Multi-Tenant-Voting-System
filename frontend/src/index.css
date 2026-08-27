@@ -204,6 +204,7 @@ button:hover {
   font-size: 14px !important;
   letter-spacing: 1px !important; /* Added for that pro look */
 }
+} /* closes @media screen opened above */
 
 /* Mobile adjustments for the navigation bar */
 @media (max-width: 600px) {
