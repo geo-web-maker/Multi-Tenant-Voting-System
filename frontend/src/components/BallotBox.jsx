@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import useReportedHeight from '../hooks/useReportedHeight';
+import { InlineHelpButton } from './HelpTriggers';
 
 export default function BallotBox({ studentId, onVoteSuccess, propCandidates, isPreview = false, orgName = "" }) {
+  const footerBarRef = useReportedHeight('--bottom-bar-height');
   const [candidates, setCandidates] = useState(propCandidates || []);
   const [loading, setLoading] = useState(!propCandidates); // Don't show loading if we already have data
   const [isVoting, setIsVoting] = useState(false);
@@ -188,8 +191,10 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
 
       {/* FOOTER BAR */}
       {!isPreview && (
-      <div style={footerBarStyle}>
+      <div ref={footerBarRef} style={footerBarStyle}>
         <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', maxWidth: '600px', margin: '0 auto' }}>
+          <InlineHelpButton />
+
           <button 
             onClick={() => setShowClearConfirm(true)} 
             style={clearAllBtnStyle}
