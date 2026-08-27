@@ -2916,8 +2916,9 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
     elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
         clean = '256' + clean
     await db.voters.update_one(
-        org_query(request, {"student_id": data.student_id}),
+        org_query(request, {"student_id": normalize_student_id(data.student_id)}),
         {"$set": org_stamp(request, {
+            "student_id":      normalize_student_id(data.student_id),
             "full_name":       data.full_name,
             "phone_numbers":   [clean],
             "is_commissioner": False,
