@@ -39,7 +39,7 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
       )}
 
       <button onClick={() => setOpen(o => !o)} style={fabStyle(open, bottomOffset)} aria-label="Help">
-        <span style={fabLabelStyle}>{open ? '✕' : '?'}</span> <span style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
+        <span className="help-fab-label" style={fabLabelStyle}>{open ? '✕' : '?'}</span> <span className="help-fab-label" style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
       </button>
 
       {showRegister && (
@@ -72,7 +72,7 @@ const fabStyle = (open, bottomOffset = 24) => ({
 // Explicit color object, spread last so nothing else in the cascade can
 // override it — the FAB background is always dark navy regardless of
 // light/dark theme, so its text must always stay white.
-const fabLabelStyle = { fontSize: '14px', color: '#ffffff' };
+const fabLabelStyle = { fontSize: '14px' };
 
 const menuPanelStyle = (bottomOffset = 24) => ({
   position: 'fixed', bottom: `${bottomOffset + 60}px`, right: '24px', zIndex: 2600,
