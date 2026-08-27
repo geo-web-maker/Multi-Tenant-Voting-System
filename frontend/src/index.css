@@ -175,10 +175,16 @@ button:hover {
     opacity: 1 !important;
   }
 
+  /* Floating Help button always sits on a dark navy background regardless
+     of theme, so its label must stay white — overrides the broad `span`
+     rule above (same !important weight, comes later in the cascade). */
+  .help-fab-label {
+    color: #ffffff !important;
+  }
+
   /* Explicitly define the White Box text color so it never changes */
   /* Explicitly define the Header Box so it's ALWAYS visible */
-  .position-header {
-  all: unset; 
+  .position-header {  all: unset; 
   display: block !important;
   background-color: #f1c40f !important; /* <--- CHANGED TO GOLD */
   color: #1e293b !important;            /* <--- CHANGED TO DARK NAVY */
