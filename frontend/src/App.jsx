@@ -421,6 +421,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           supportPdfUrl={supportPdfUrl}
           supportPhone={supportPhone}
           onShowGuide={() => setShowGuide(true)}
+          bottomOffset={step === 3 ? 100 : 24}
         />
       )}
       <div style={{ 
