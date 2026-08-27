@@ -8,7 +8,7 @@ const modalContentStyle = {
   boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', border: '1px solid var(--border-color)'
 };
 
-export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGuide }) {
+export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGuide, bottomOffset = 24 }) {
   const [open, setOpen] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
 
@@ -25,7 +25,7 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
   return (
     <>
       {open && (
-        <div style={menuPanelStyle}>
+        <div style={menuPanelStyle(bottomOffset)}>
           {items.map((it, i) => it.href ? (
             <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
               <span>{it.icon}</span> {it.label}
@@ -38,8 +38,8 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
         </div>
       )}
 
-      <button onClick={() => setOpen(o => !o)} style={fabStyle(open)} aria-label="Help">
-        {open ? '✕' : '?'} <span style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
+      <button onClick={() => setOpen(o => !o)} style={fabStyle(open, bottomOffset)} aria-label="Help">
+        <span style={fabLabelStyle}>{open ? '✕' : '?'}</span> <span style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
       </button>
 
       {showRegister && (
@@ -54,25 +54,28 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
   );
 }
 
-const fabStyle = (open) => ({
-  position: 'fixed', bottom: '24px', right: '24px', zIndex: 2600,
+const fabStyle = (open, bottomOffset = 24) => ({
+  position: 'fixed', bottom: `${bottomOffset}px`, right: '24px', zIndex: 2600,
   display: 'flex', alignItems: 'center', gap: '8px',
   padding: '14px 20px', borderRadius: '30px',
-  backgroundColor: 'var(--brand-primary, #003366)', color: 'white',
+  backgroundColor: 'var(--brand-primary, #003366)',
   border: '2px solid var(--brand-accent, #f1c40f)',
   fontSize: '16px', fontWeight: 'bold', cursor: 'pointer',
-  boxShadow: '0 8px 20px rgba(0,0,0,0.35)', transition: 'transform 0.15s',
+  boxShadow: '0 8px 20px rgba(0,0,0,0.35)', transition: 'bottom 0.2s ease, transform 0.15s',
 });
 
-const fabLabelStyle = { fontSize: '14px' };
+// Explicit color object, spread last so nothing else in the cascade can
+// override it — the FAB background is always dark navy regardless of
+// light/dark theme, so its text must always stay white.
+const fabLabelStyle = { fontSize: '14px', color: '#ffffff' };
 
-const menuPanelStyle = {
-  position: 'fixed', bottom: '84px', right: '24px', zIndex: 2600,
+const menuPanelStyle = (bottomOffset = 24) => ({
+  position: 'fixed', bottom: `${bottomOffset + 60}px`, right: '24px', zIndex: 2600,
   backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', borderRadius: '16px',
   padding: '10px', boxShadow: '0 15px 35px rgba(0,0,0,0.4)',
   border: '1px solid var(--border-color)',
   display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '240px'
-};
+});
 
 const menuItemStyle = {
   display: 'flex', alignItems: 'center', gap: '10px',
