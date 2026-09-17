@@ -14,9 +14,6 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
   
   // Timer/Scheduling & Preview States
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
-  const [timerActive, setTimerActive] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
   // Form & Upload States
@@ -47,17 +44,6 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       // SYNC STATUS & CERTIFICATION
       setIsElectionOpen(statusRes.data.is_open);
       setIsCertified(statusRes.data.is_certified || false); // Sync certification from DB
-      
-      const savedStart = statusRes.data.start || statusRes.data.start_time;
-      const savedEnd = statusRes.data.end || statusRes.data.end_time;
-
-      if (savedStart && savedEnd) {
-        setStartTime(savedStart);
-        setEndTime(savedEnd);
-        setTimerActive(true);
-      } else {
-        setTimerActive(false);
-      }
     } catch (err) { 
       console.error("Sync Error:", err); 
     } finally { 
@@ -101,29 +87,6 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       alert(`Election is now ${res.data.is_open ? "STARTED" : "STOPPED"}`);
     } catch (err) { 
       alert("Toggle failed. Ensure the route /admin/toggle-election exists on the backend."); 
-    }
-  };
-
-  const handleScheduleTimer = async () => {
-    if (!startTime || !endTime) return alert("Please set both start and end times.");
-    try {
-      await api.post(`/admin/schedule-election`, { start: startTime, end: endTime });
-      setTimerActive(true);
-      alert("Election schedule has been set!");
-      fetchData();
-    } catch (err) { alert("Error scheduling election."); }
-  };
-
-  const handleClearSchedule = async () => {
-    if (window.confirm("Remove the timer? The election will rely on the Manual Toggle only.")) {
-      try {
-        await api.post(`/admin/clear-schedule`);
-        setStartTime("");
-        setEndTime("");
-        setTimerActive(false);
-        alert("Schedule cleared.");
-        fetchData();
-      } catch (err) { alert("Failed to clear schedule."); }
     }
   };
 
@@ -263,34 +226,30 @@ useEffect(() => {
           </div>
         </div>
 
-        {/* SCHEDULER SECTION */}
+        {/* ELECTION STATUS */}
         <div style={timerBoxStyle}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <h4 style={{ margin: 0, fontSize: '14px' }}>⏰ Schedule Election Period</h4>
-            {timerActive && (
-              <button onClick={handleClearSchedule} style={deleteLinkStyle}>🗑️ Reset Timer</button>
-            )}
+          <h4 style={{ margin: '0 0 10px', fontSize: '14px' }}>Election Status</h4>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+            <span style={{
+              fontSize: '12px', fontWeight: 'bold', padding: '4px 10px', borderRadius: '999px',
+              backgroundColor: isElectionOpen ? '#e67e2220' : '#2ecc7120',
+              color: isElectionOpen ? '#e67e22' : '#2ecc71',
+            }}>
+              {isElectionOpen ? 'ELECTION OPEN' : 'ELECTION CLOSED'}
+            </span>
+            <span style={{
+              fontSize: '12px', fontWeight: 'bold', padding: '4px 10px', borderRadius: '999px',
+              backgroundColor: isCertified ? '#2ecc7120' : '#f59e0b20',
+              color: isCertified ? '#2ecc71' : '#f59e0b',
+            }}>
+              {isCertified ? 'RESULTS CERTIFIED' : 'NOT CERTIFIED'}
+            </span>
           </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>Start Time</label>
-              <input type="datetime-local" value={startTime} onChange={e => setStartTime(e.target.value)} style={adminInputStyle} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>End Time</label>
-              <input type="datetime-local" value={endTime} onChange={e => setEndTime(e.target.value)} style={adminInputStyle} />
-            </div>
-            <button onClick={handleScheduleTimer} style={refreshBtnStyle}>
-              {timerActive ? "🔄 Update Schedule" : "Set Schedule"}
-            </button>
-          </div>
-          {timerActive && (
-            <div style={{ marginTop: '10px', padding: '8px', backgroundColor: '#2ecc7115', borderRadius: '6px', border: '1px solid #2ecc7140' }}>
-              <small style={{ color: '#2ecc71', fontWeight: 'bold' }}>
-                Active Schedule: {new Date(startTime).toLocaleString()} — {new Date(endTime).toLocaleString()}
-              </small>
-            </div>
-          )}
+          <p style={{ fontSize: '11px', opacity: 0.6, margin: '10px 0 0' }}>
+            Open/close and certify are the buttons above — they take effect immediately for
+            every voter. Phase timing (when applications, campaign, voting and results each
+            open or close) is configured in the Superadmin Panel's Timeline tab.
+          </p>
         </div>
 
         {/* TABS */}

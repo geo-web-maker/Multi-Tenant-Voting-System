@@ -75,9 +75,6 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [electionVoters, setElectionVoters] = useState([]);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified]       = useState(false);
-  const [startTime, setStartTime]           = useState('');
-  const [endTime, setEndTime]               = useState('');
-  const [timerActive, setTimerActive]       = useState(false);
   const [importing, setImporting]           = useState(false);
   const [voterSearch2, setVoterSearch2]     = useState('');
   const [loading, setLoading]               = useState(false);
@@ -188,10 +185,6 @@ export default function SuperAdminDashboard({ onLogout }) {
       setElectionVoters(voterRes.data);
       setIsElectionOpen(statusRes.data.is_open);
       setIsCertified(statusRes.data.is_certified || false);
-      const s = statusRes.data.start || statusRes.data.start_time;
-      const e = statusRes.data.end   || statusRes.data.end_time;
-      if (s && e) { setStartTime(s); setEndTime(e); setTimerActive(true); }
-      else { setTimerActive(false); }
       setLastRefreshed(new Date());
     } catch (e) {}
     finally { setLoading(false); }
@@ -519,23 +512,6 @@ const handleCreateOrg = async (e) => {
       setIsCertified(res.data.is_certified);
       alert(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
     } catch (e) { alert('Failed.'); }
-  };
-
-  const handleScheduleTimer = async () => {
-    if (!startTime || !endTime) { alert('Set both start and end times.'); return; }
-    try {
-      await api.post(`/admin/schedule-election`, { start: startTime, end: endTime });
-      setTimerActive(true);
-      alert('Schedule saved!');
-    } catch (e) { alert('Scheduling failed.'); }
-  };
-
-  const handleClearSchedule = async () => {
-    if (!window.confirm('Clear the schedule?')) return;
-    try {
-      await api.post(`/admin/clear-schedule`);
-      setStartTime(''); setEndTime(''); setTimerActive(false);
-    } catch (e) { alert('Failed to clear schedule.'); }
   };
 
   const handleResetElection = async () => {
@@ -1470,28 +1446,46 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'election' && (
           <div style={{ maxWidth: '600px' }}>
             <div style={card}>
-              <h4 style={cardTitle}>Schedule Election Period</h4>
-              <div style={formCol}>
-                <label style={{ fontSize: '12px', opacity: 0.7 }}>Start time</label>
-                <input type="datetime-local" style={inp} value={startTime}
-                  onChange={e => setStartTime(e.target.value)} />
-                <label style={{ fontSize: '12px', opacity: 0.7 }}>End time</label>
-                <input type="datetime-local" style={inp} value={endTime}
-                  onChange={e => setEndTime(e.target.value)} />
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button style={greenBtn} onClick={handleScheduleTimer}>
-                    {timerActive ? '🔄 Update Schedule' : 'Set Schedule'}
-                  </button>
-                  {timerActive && (
-                    <button style={ghostBtn} onClick={handleClearSchedule}>Clear Schedule</button>
-                  )}
+              <h4 style={cardTitle}>Election Status</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '13px', opacity: 0.8 }}>Election</span>
+                  <span style={{
+                    fontSize: '12px', fontWeight: 700, padding: '3px 10px', borderRadius: '999px',
+                    backgroundColor: isElectionOpen ? 'rgba(230, 126, 34, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                    color: isElectionOpen ? '#e67e22' : 'var(--success)',
+                  }}>
+                    {isElectionOpen ? 'OPEN' : 'CLOSED'}
+                  </span>
                 </div>
-                {timerActive && (
-                  <p style={{ color: 'var(--success)', fontSize: '12px', margin: '4px 0 0' }}>
-                    Active: {new Date(startTime).toLocaleString()} — {new Date(endTime).toLocaleString()}
-                  </p>
-                )}
+                <p style={{ fontSize: '12px', opacity: 0.6, margin: 0 }}>
+                  {isElectionOpen
+                    ? 'Voters can authenticate and cast ballots, subject to the phase schedule below.'
+                    : 'No voter can start the login flow while the election is closed, regardless of phase schedule — this is the master switch.'}
+                </p>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                  <span style={{ fontSize: '13px', opacity: 0.8 }}>Results</span>
+                  <span style={{
+                    fontSize: '12px', fontWeight: 700, padding: '3px 10px', borderRadius: '999px',
+                    backgroundColor: isCertified ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                    color: isCertified ? 'var(--success)' : '#f59e0b',
+                  }}>
+                    {isCertified ? 'CERTIFIED' : 'NOT CERTIFIED'}
+                  </span>
+                </div>
+                <p style={{ fontSize: '12px', opacity: 0.6, margin: 0 }}>
+                  {isCertified
+                    ? 'Results are locked in as official. A certified election cannot be reset.'
+                    : 'Once you certify, results are marked official and the election can no longer be reset. Certifying requires the election to be closed first.'}
+                </p>
               </div>
+
+              <p style={{ fontSize: '11px', opacity: 0.5, margin: '16px 0 0', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+                Open/close and certify are the two buttons at the top of this page — they act
+                immediately across every voter. Timing (when each phase opens or closes on its
+                own schedule) is configured separately, in the <strong>Timeline</strong> tab.
+              </p>
             </div>
 
             <div style={{ ...card, marginTop: '16px', borderColor: '#e74c3c' }}>
