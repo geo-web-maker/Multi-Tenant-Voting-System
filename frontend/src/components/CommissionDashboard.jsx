@@ -201,7 +201,7 @@ export default function CommissionDashboard({ onLogout }) {
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex}>
+        <div style={headerFlex} className="no-print">
           <div>
             <h2 style={{ margin: 0, color: 'var(--text-color)' }}>🏛️ Election Commission</h2>
             <span style={{ fontSize: '12px', opacity: 0.5 }}>
@@ -250,7 +250,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll">
+        <div style={tabBar} className="tab-scroll no-print">
           {tabs.map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)}
               style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
@@ -638,8 +638,8 @@ function myVoteRow(vote) {
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const headerFlex = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
-const tabBar     = { display: 'flex', gap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap' };
-const tab        = { background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' };
+const tabBar     = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
+const tab        = { background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
 const countPill  = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const avatar     = { width: '64px', height: '64px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0 };

@@ -883,11 +883,21 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
     approve_removals = sum(1 for v in removal_votes.values() if v == "approve")
 
     if approve_removals >= required:
+        cand = await db.candidates.find_one({"application_id": app_id})
         await db.candidates.delete_one({"application_id": app_id})
         await db.applications.update_one(
             {"_id": ObjectId(app_id)},
             {"$set": {"status": "removed", "removal_votes": {}}}
         )
+        # Was only logger.info'd — a candidate removed by commission majority
+        # never showed up in the Activity Log at all, unlike a superadmin's
+        # forced removal (candidate_removed, logged in
+        # superadmin_remove_candidate). Same action, same log entry, whoever
+        # did it.
+        await log_action("candidate_removed", "commission", {
+            "name": (cand or {}).get("name"), "position": (cand or {}).get("position"),
+            "approve_removals": approve_removals, "total_commissioners": total,
+        }, org_id=org_id)
         logger.info(f"🗑️ Candidate from application {app_id} removed by commission majority ({approve_removals}/{total}).")
 
 #--IT Administration Helpers---
@@ -1108,6 +1118,39 @@ async def current_round_id(request: Request) -> str:
     schedule = await get_phase_schedule(request)
     return schedule.get("round_id") or DEFAULT_ROUND_ID
 
+
+def parse_oid(raw_id: str, label: str = "id") -> ObjectId:
+    """
+    Path-param IDs come straight from the URL, so a malformed value (wrong
+    length, non-hex, stray characters) used to hit ObjectId() unguarded and
+    raise bson.errors.InvalidId — an unhandled exception that surfaces to the
+    caller as a raw 500 instead of a clean 4xx. /vote, /vote-bulk, and
+    /positions/{id} already did this defensively; this makes that the norm
+    for every route that takes an id from the path.
+    """
+    try:
+        return ObjectId(raw_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid {label}.")
+
+
+async def assert_voting_allowed(request: Request, student_id: str):
+    """
+    /verify-identity checks is_open/schedule once, before the OTP is even
+    sent — but nothing re-checked either that or the "voting" phase window
+    at the moment a ballot is actually cast. A voter who authenticated while
+    the election was open could still POST /vote after a superadmin closed
+    it, certified results, or after a scheduled/enforced voting window
+    ended, since /vote only ever checked has_voted + last_status. Re-check
+    both gates here, at the point of casting, not just at OTP-send time.
+    """
+    config = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    if config and not config.get("is_open", True):
+        raise HTTPException(status_code=403, detail="Election is closed.")
+    if config and config.get("is_certified"):
+        raise HTTPException(status_code=403, detail="Results have been certified; voting is closed.")
+    await assert_phase_open(request, "voting", student_id)
+
 # =============================================================================
 # ADMIN LOGIN RATE LIMITING
 # =============================================================================
@@ -1326,6 +1369,11 @@ async def verify_otp(data: OTPCheck, request: Request):
             await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
             await db.otps.delete_one(search)
             await _clear_otp_attempts(request, data.student_id)
+            # Failure (otp_verify_locked) was already logged; success never
+            # was, so the log couldn't show a complete authentication
+            # lifecycle for a voter — only that they'd been locked out, never
+            # that they got in.
+            await log_action("otp_verified", normalize_student_id(data.student_id), {}, org_id=request.state.org_id)
             return {"status": "success"}
 
     await _record_otp_failure(request, data.student_id)
@@ -1352,6 +1400,8 @@ async def cast_vote(data: VoteRequest, request: Request):
     )
     if not candidate_exists:
         raise HTTPException(status_code=404, detail="Candidate not found.")
+
+    await assert_voting_allowed(request, data.student_id)
 
     async def _do_vote(session):
         student = await db.voters.find_one(
@@ -1388,6 +1438,12 @@ async def cast_vote(data: VoteRequest, request: Request):
     async with await client.start_session() as session:
         await session.with_transaction(_do_vote)
 
+    # Logged under the voter's own id, with no candidate/choice attached —
+    # same secrecy boundary vote_events already keeps (see comment above).
+    # This only records THAT a ballot was cast, so the activity log has a
+    # complete picture of every state change, not just the admin-side ones.
+    await log_action("vote_cast", normalize_student_id(data.student_id), {}, org_id=request.state.org_id)
+
     return {"status": "success"}
 
 
@@ -1397,6 +1453,17 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         candidate_oids = [ObjectId(c_id) for c_id in data.candidate_ids]
     except Exception:
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
+
+    # Same id submitted twice used to slip through: the existence check only
+    # compared distinct ids, but insert_many below looped over the raw list
+    # — so a repeated id got inserted as two separate vote_events, double
+    # counting that one candidate. Reject outright instead of silently
+    # de-duping, since a client sending duplicates is either buggy or
+    # tampering with the ballot.
+    if len(candidate_oids) != len(set(candidate_oids)):
+        raise HTTPException(status_code=400, detail="Duplicate candidate selected.")
+
+    await assert_voting_allowed(request, data.student_id)
 
     # with_transaction auto-retries transient write conflicts — expected
     # under concurrent load when many voters hit the same popular
@@ -1425,6 +1492,14 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         if len(candidates) != len(set(candidate_oids)):
             raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
 
+        # Nothing previously stopped two candidates for the SAME position
+        # both being submitted — a voter (or a crafted request bypassing the
+        # UI) could cast two ballots for President in one go. One candidate
+        # per position, same as a real ballot.
+        positions = [c.get("position") for c in candidates]
+        if len(positions) != len(set(positions)):
+            raise HTTPException(status_code=400, detail="Only one candidate can be selected per position.")
+
         await db.voters.update_one(
             {"_id": student["_id"]},
             {"$set": {"has_voted": True, "last_status": "completed"}},
@@ -1442,6 +1517,8 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
 
     async with await client.start_session() as session:
         await session.with_transaction(_do_bulk_vote)
+
+    await log_action("vote_cast", normalize_student_id(data.student_id), {"positions": len(candidate_oids)}, org_id=request.state.org_id)
 
     return {"status": "success", "message": "Ballot cast successfully"}
 
@@ -1950,17 +2027,39 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
                 if clean not in formatted_numbers:
                     formatted_numbers.append(clean)
 
+            # This used to $set has_voted/last_status/is_commissioner to
+            # their defaults on EVERY row, including voters who already
+            # existed. Re-importing the roster mid-election (to fix a typo,
+            # add a few late names, etc.) silently un-voted every existing
+            # voter, wiped every commissioner's role, and reset otp_count —
+            # while vote_events (the actual tally) is untouched by import
+            # and only ever cleared by /admin/reset-election. That's how
+            # "votes cast" (from vote_events, cumulative across re-imports)
+            # and "completed voters" (from voters.has_voted, reset by the
+            # next import) drift apart — the Undervote/Funnel panels were
+            # comparing two counters that could silently fall out of sync.
+            # It was also a real double-vote path: a re-imported voter's
+            # has_voted flips back to False, so they can authenticate and
+            # vote again, adding a second vote_events row for the same
+            # person. $setOnInsert confines the reset-to-defaults to voters
+            # that don't exist yet; an existing voter's status is untouched
+            # by a re-import, only their name/phone are refreshed.
             await db.voters.update_one(
                 org_query(request, {"student_id": sid}),
-                {"$set": org_stamp(request, {
-                    "full_name":       name,
-                    "phone_numbers":   formatted_numbers,
-                    "is_commissioner": False,
-                    "has_voted":       False,
-                    "last_active":     None,
-                    "last_status":     "idle",
-                    "updated_at":      now
-                })},
+                {
+                    "$set": org_stamp(request, {
+                        "full_name":     name,
+                        "phone_numbers": formatted_numbers,
+                        "updated_at":    now,
+                    }),
+                    "$setOnInsert": {
+                        "is_commissioner": False,
+                        "has_voted":       False,
+                        "last_active":     None,
+                        "last_status":     "idle",
+                        "otp_count":       0,
+                    },
+                },
                 upsert=True
             )
             count += 1
@@ -2114,6 +2213,7 @@ async def add_candidate(candidate: CandidateCreate, request: Request, admin: dic
 
 @app.put("/candidates/{candidate_id}")
 async def update_candidate(candidate_id: str, data: dict, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    oid = parse_oid(candidate_id, "candidate id")
     upd = {
         "name":     data.get("name"),
         "position": data.get("position"),
@@ -2121,7 +2221,7 @@ async def update_candidate(candidate_id: str, data: dict, request: Request, admi
     }
     if data.get("image_url"):
         upd["image_url"] = data["image_url"]
-    await db.candidates.update_one(org_query(request, {"_id": ObjectId(candidate_id)}), {"$set": upd})
+    await db.candidates.update_one(org_query(request, {"_id": oid}), {"$set": upd})
     await log_action("candidate_updated", current_actor(request), {
         "candidate_id": candidate_id, "name": upd.get("name"), "position": upd.get("position")
     }, org_id=request.state.org_id)
@@ -2130,8 +2230,9 @@ async def update_candidate(candidate_id: str, data: dict, request: Request, admi
 
 @app.delete("/candidates/{candidate_id}")
 async def delete_candidate(candidate_id: str, request: Request, admin: dict = Depends(require_role("superadmin"))):
-    doomed = await db.candidates.find_one(org_query(request, {"_id": ObjectId(candidate_id)}))
-    await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
+    oid = parse_oid(candidate_id, "candidate id")
+    doomed = await db.candidates.find_one(org_query(request, {"_id": oid}))
+    await db.candidates.delete_one(org_query(request, {"_id": oid}))
     await log_action("candidate_deleted", current_actor(request), {
         "candidate_id": candidate_id,
         "name": (doomed or {}).get("name", ""),
@@ -2170,7 +2271,8 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' or 'deny'.")
 
-    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("approved", "denied", "removed"):
@@ -2198,11 +2300,11 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
 
     # Record vote (keyed by commissioner_id so they can only vote once per application)
     await db.applications.update_one(
-        org_query(request, {"_id": ObjectId(app_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {f"votes.{data.commissioner_id.replace('.', '_').replace('/', '_')}": data.vote}}
     )
 
-    updated = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    updated = await db.applications.find_one(org_query(request, {"_id": oid}))
     await _resolve_application(app_id, updated, request.state.org_id)
 
     return {"status": "vote_recorded"}
@@ -2214,7 +2316,8 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' (remove) or 'deny' (keep).")
 
-    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") != "approved":
@@ -2235,11 +2338,11 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
 
     safe_key = data.commissioner_id.replace('.', '_').replace('/', '_')
     await db.applications.update_one(
-        org_query(request, {"_id": ObjectId(app_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {f"removal_votes.{safe_key}": data.vote}}
     )
 
-    updated = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    updated = await db.applications.find_one(org_query(request, {"_id": oid}))
     await _resolve_removal(app_id, updated, request.state.org_id)
 
     return {"status": "removal_vote_recorded"}
@@ -2252,7 +2355,8 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     the application for voting. No commissioner (including her) can cast a vote
     on this application until this is done.
     """
-    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("approved", "denied", "removed"):
@@ -2271,7 +2375,7 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
         raise HTTPException(403, "Only the designated Finance Commissioner can clear applications.")
 
     await db.applications.update_one(
-        org_query(request, {"_id": ObjectId(app_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": data.commissioner_id,
@@ -2669,7 +2773,8 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
 @app.post("/superadmin/applications/{app_id}/force-approve")
 async def superadmin_force_approve(app_id: str, request: Request):
     """Approve an application instantly, bypassing commission voting."""
-    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") == "approved":
@@ -2677,7 +2782,7 @@ async def superadmin_force_approve(app_id: str, request: Request):
 
     await _create_candidate_from_application(app_doc, request.state.org_id)
     await db.applications.update_one(
-        org_query(request, {"_id": ObjectId(app_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "status": "approved",
             "superadmin_override": True,
@@ -2692,14 +2797,15 @@ async def superadmin_force_approve(app_id: str, request: Request):
 @app.post("/superadmin/applications/{app_id}/force-deny")
 async def superadmin_force_deny(app_id: str, request: Request):
     """Deny an application instantly, bypassing commission voting."""
-    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("denied", "removed"):
         raise HTTPException(400, "Application is already denied or removed.")
 
     await db.applications.update_one(
-        org_query(request, {"_id": ObjectId(app_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "status": "denied",
             "superadmin_override": True,
@@ -2715,14 +2821,15 @@ async def superadmin_force_deny(app_id: str, request: Request):
 async def superadmin_force_finance_clear(app_id: str, request: Request):
     """Bypass the Finance Commissioner gate — for cases where no Finance
     Commissioner is currently assigned. Voting can proceed after this."""
-    app_doc = await db.applications.find_one(org_query(request, {"_id": ObjectId(app_id)}))
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
     await db.applications.update_one(
-        org_query(request, {"_id": ObjectId(app_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": "superadmin_override",
@@ -2737,11 +2844,12 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
 @app.post("/superadmin/candidates/{candidate_id}/remove")
 async def superadmin_remove_candidate(candidate_id: str, request: Request):
     """Remove an approved candidate from the ballot instantly."""
-    cand = await db.candidates.find_one(org_query(request, {"_id": ObjectId(candidate_id)}))
+    oid = parse_oid(candidate_id, "candidate id")
+    cand = await db.candidates.find_one(org_query(request, {"_id": oid}))
     if not cand:
         raise HTTPException(404, "Candidate not found.")
 
-    await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
+    await db.candidates.delete_one(org_query(request, {"_id": oid}))
     await log_action("candidate_removed", current_actor(request), {
     "name": cand.get("name"), "position": cand.get("position")
     }, org_id=request.state.org_id)
@@ -2749,7 +2857,7 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
     # If the candidate came from an application, mark it removed
     if cand.get("application_id"):
         await db.applications.update_one(
-            org_query(request, {"_id": ObjectId(cand["application_id"])}),
+            org_query(request, {"_id": parse_oid(cand["application_id"], "application id")}),
             {"$set": {
                 "status": "removed",
                 "superadmin_override": True,
@@ -2966,7 +3074,8 @@ async def request_remove_student(data: ITAdminStudentRemove, request: Request, a
 
 @app.post("/it-admin/students/requests/{change_id}/cancel")
 async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
-    change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
+    oid = parse_oid(change_id, "change id")
+    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
     if not change:
         raise HTTPException(404, "Request not found.")
     bind_identity(request, data.requested_by, "IT Admin account")
@@ -2976,7 +3085,7 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
         raise HTTPException(400, f"Cannot cancel a request that is already {change.get('status')}.")
 
     await db.student_changes.update_one(
-        org_query(request, {"_id": ObjectId(change_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "status":            "cancelled",
             "cancelled_at":      datetime.utcnow(),
@@ -3034,7 +3143,8 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "decision must be 'approve' or 'deny'.")
 
-    change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
+    oid = parse_oid(change_id, "change id")
+    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") != "pending":
@@ -3052,7 +3162,7 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     if data.decision == "approve":
         await _execute_student_change(change, request.state.org_id)
         await db.student_changes.update_one(
-            org_query(request, {"_id": ObjectId(change_id)}),
+            org_query(request, {"_id": oid}),
             {"$set": {
                 "status":                "approved",
                 "decided_by":            data.financial_controller_id,
@@ -3067,7 +3177,7 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
         }, org_id=request.state.org_id)
     else:
         await db.student_changes.update_one(
-            org_query(request, {"_id": ObjectId(change_id)}),
+            org_query(request, {"_id": oid}),
             {"$set": {
                 "status":                "denied",
                 "decided_by":            data.financial_controller_id,
@@ -3320,7 +3430,8 @@ async def superadmin_list_student_changes(request: Request, status: str = None):
 
 @app.post("/superadmin/student-changes/{change_id}/force-approve")
 async def superadmin_force_student_change_approve(change_id: str, request: Request):
-    change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
+    oid = parse_oid(change_id, "change id")
+    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") in ("approved", "force_approved"):
@@ -3330,7 +3441,7 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
 
     await _execute_student_change(change, request.state.org_id)
     await db.student_changes.update_one(
-        org_query(request, {"_id": ObjectId(change_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "status":               "force_approved",
             "superadmin_override":  True,
@@ -3347,14 +3458,15 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
 
 @app.post("/superadmin/student-changes/{change_id}/force-deny")
 async def superadmin_force_student_change_deny(change_id: str, request: Request):
-    change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
+    oid = parse_oid(change_id, "change id")
+    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") in ("denied", "force_denied", "cancelled"):
         raise HTTPException(400, f"Request is already {change.get('status')}.")
 
     await db.student_changes.update_one(
-        org_query(request, {"_id": ObjectId(change_id)}),
+        org_query(request, {"_id": oid}),
         {"$set": {
             "status":               "force_denied",
             "superadmin_override":  True,
@@ -3739,6 +3851,16 @@ async def analytics_undervote(request: Request):
             "eligible_completed_voters": completed,
             "undervotes": skipped,
             "undervote_rate_pct": round((skipped / completed) * 100, 1) if completed else 0.0,
+            # votes_cast should never exceed completed voters — each
+            # completed voter casts at most one vote_events row per
+            # position. If it does, has_voted (reset by re-import — see the
+            # comment in /admin/import-voters) and vote_events (only ever
+            # cleared by /admin/reset-election) have fallen out of sync,
+            # most likely stale tallies from a prior round that was never
+            # reset. max(...) above would otherwise silently clamp this to
+            # 0% skipped, which reads as "everyone voted" when the real
+            # story is "these two counters disagree."
+            "overcounted": max(votes - completed, 0),
         })
     rows.sort(key=lambda r: r["undervote_rate_pct"], reverse=True)
     return {"completed_voters": completed, "positions": rows}
@@ -3825,6 +3947,24 @@ async def get_official_report(request: Request):
     )
     org_name = branding.get("org_name", "the Organisation")
     is_certified = config.get("is_certified", False)
+    is_open = config.get("is_open", True)
+
+    # Same tally source the public /election-results endpoint uses, so the
+    # signed document and the public report can never show different numbers
+    # for the same election. Duplicated here rather than calling the other
+    # route internally because this one runs behind auth and needs to stay a
+    # single round trip for the frontend.
+    voter_turnout = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    vote_counts = await get_vote_counts(request)
+    results = []
+    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+        results.append({
+            "id": str(cand["_id"]),
+            "name": cand["name"],
+            "position": cand["position"],
+            "votes": vote_counts.get(str(cand["_id"]), 0),
+            "order": cand.get("order", 0),
+        })
 
     # The report fingerprint is now the REAL head hash of the verified audit
     # chain, not a client-side rolling hash of whatever JSON happened to be on
@@ -3852,6 +3992,11 @@ async def get_official_report(request: Request):
         "is_certified": is_certified,
         "org_name": org_name,
         "university_name": branding.get("university_name", ""),
+        "logo_url": branding.get("logo_url", ""),
+        "university_logo_url": branding.get("university_logo_url", ""),
+        "is_open": is_open,
+        "voter_turnout": voter_turnout,
+        "results": results,
         "commissioner_name": commissioner_name,
         "declaration": declaration,
         "signatories": [

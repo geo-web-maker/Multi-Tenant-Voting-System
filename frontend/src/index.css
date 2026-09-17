@@ -227,6 +227,15 @@ button:hover {
 
 
 /* --- Horizontally-scrolling tab bars (dashboards) --- */
+/* Above 768px the tab bar wraps onto multiple lines instead of scrolling
+   (there's room to). Each row needs real vertical breathing space — the
+   inline style objects set rowGap for this, but this is the CSS-level
+   backstop so a wrapped tab bar never renders with rows closer than 8px,
+   regardless of which dashboard's inline styles are in play. */
+.tab-scroll {
+  row-gap: 10px;
+}
+
 /* Prevents tabs from wrapping into a tall vertical stack on narrow screens.
    Scoped to mobile widths only — on desktop there's enough room to just
    wrap onto a second line, and forcing nowrap+hidden-scrollbar there was

@@ -705,7 +705,7 @@ const handleSuperAdminRemoveStudent = async () => {
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex}>
+        <div style={headerFlex} className="no-print">
           <div>
             <h2 style={{ margin: 0, color: 'var(--text-color)' }}>⚡ Superadmin Panel</h2>
             <span style={{ fontSize: '11px', opacity: 0.5 }}>
@@ -736,7 +736,7 @@ const handleSuperAdminRemoveStudent = async () => {
         </div>
 
         {/* ── Org switcher ── */}
-        <div style={orgSwitcherBar}>
+        <div style={orgSwitcherBar} className="no-print">
           <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
             🏢 Managing:
           </span>
@@ -763,7 +763,7 @@ const handleSuperAdminRemoveStudent = async () => {
         </div>
 
         {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll">
+        <div style={tabBar} className="tab-scroll no-print">
           {tabs.map(t => (
             <button
               key={t.id}
@@ -1976,8 +1976,8 @@ const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justif
 const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const headerFlex  = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' };
 const orgSwitcherBar = { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px', padding: '10px 14px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '10px' };
-const tabBar      = { display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap' };
-const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', whiteSpace: 'nowrap' };
+const tabBar      = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '24px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
+const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', whiteSpace: 'nowrap' };
 const twoCol      = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' };
 const card        = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--bg-color)' };
 const cardTitle   = { margin: '0 0 14px', color: 'var(--text-color)', fontSize: '15px', fontWeight: '600' };

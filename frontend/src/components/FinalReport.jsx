@@ -62,7 +62,15 @@ const PrintStyles = () => (
  * They now live only in OfficialCertificationBlock, which is fed by the
  * authenticated /admin/official-report endpoint.
  */
-export default function FinalReport({ data, totalVotes, isElectionOpen, isCertified, logoUrl, orgName = "the Organisation", universityName = "", universityLogoUrl = "" }) {
+export default function FinalReport({
+  data, totalVotes, isElectionOpen, isCertified, logoUrl,
+  orgName = "the Organisation", universityName = "", universityLogoUrl = "",
+  // Present only for the authenticated Official Document. Their presence, not
+  // a separate "mode" flag, is what switches the footer from the public
+  // disclaimer to the signed instrument — so a caller can never show
+  // signatures without also having fetched the declaration they attach to.
+  declaration = null, signatories = null, ccList = [],
+}) {
   // Pick the active config
   const activeStage = isElectionOpen ? 'open' : (isCertified ? 'certified' : 'provisional');
   const config = securityConfig[activeStage];
@@ -206,6 +214,20 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
                 : 'Voting is closed. Results are provisional, pending certification.')}
         </div>
 
+        {/* Signed declaration — only ever passed in by the authenticated
+            OfficialCertificationBlock. Sits ahead of the tallies, same as
+            the printed copy in the reference PDF. */}
+        {declaration && (
+          <div style={declarationBoxStyle} className="declaration-block">
+            <h4 style={{ textAlign: 'center', textDecoration: 'underline', fontSize: '14px', position: 'relative', zIndex: 1 }}>
+              OFFICIAL DECLARATION OF {String(orgName).toUpperCase()} ELECTION RESULTS
+            </h4>
+            <p style={{ fontSize: '13px', textAlign: 'justify', lineHeight: 1.6, position: 'relative', zIndex: 1 }}>
+              {declaration}
+            </p>
+          </div>
+        )}
+
       {/* EXECUTIVE SUMMARY */}
       {!isElectionOpen && (
         <div style={{ marginBottom: '30px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
@@ -329,16 +351,34 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
       </div>
 
      
-      {/* The signature grid and cc distribution list are part of the signed
-          instrument, not the public record, and are issued through the
-          Commission's Official Document instead. */}
-      <div style={{ marginTop: '30px', fontSize: '10px', borderTop: '1px solid #000', paddingTop: '10px', position: 'relative', zIndex: 1 }}>
-        <p style={{ margin: 0 }}>
-          This is the public results record for {orgName}. The signed declaration and
-          signature page are issued separately by the Electoral Commission and are not
-          part of this document.
-        </p>
-      </div>
+      {signatories ? (
+        <>
+          <div style={signatureGridStyle} className="signature-grid">
+            {signatories.map((s, i) => (
+              <div key={`${s.full_name}-${i}`}>
+                <p style={{ fontWeight: 'bold', margin: 0, fontSize: '13px' }}>{s.full_name || '\u00a0'}</p>
+                <p style={{ fontSize: '11px', margin: 0, fontStyle: 'italic', opacity: 0.8 }}>{s.role}</p>
+                <div style={{ borderTop: '1px solid currentColor', marginTop: '26px' }} />
+              </div>
+            ))}
+          </div>
+          {ccList?.length > 0 && (
+            <div style={{ marginTop: '22px', fontSize: '11px', borderTop: '1px solid currentColor', paddingTop: '10px', position: 'relative', zIndex: 1 }}>
+              {ccList.map((c, i) => <div key={i}>Cc: {c}</div>)}
+            </div>
+          )}
+        </>
+      ) : (
+        /* Public copy only: the signed declaration and signature page are
+           issued separately by the Electoral Commission. */
+        <div style={{ marginTop: '30px', fontSize: '10px', borderTop: '1px solid #000', paddingTop: '10px', position: 'relative', zIndex: 1 }}>
+          <p style={{ margin: 0 }}>
+            This is the public results record for {orgName}. The signed declaration and
+            signature page are issued separately by the Electoral Commission and are not
+            part of this document.
+          </p>
+        </div>
+      )}
 
       {/* FOOTER STAMP */}
       <div style={{ textAlign: 'center', marginTop: '60px', borderTop: `1px dashed ${config.color}`, paddingTop: '20px', position: 'relative', zIndex: 1 }}>
@@ -353,6 +393,8 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
 }
 
 // Styles
+const declarationBoxStyle = { border: '2px solid currentColor', padding: '20px', marginBottom: '20px', fontFamily: '"Times New Roman", Times, serif', position: 'relative', zIndex: 1 };
+const signatureGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '26px', marginTop: '30px', position: 'relative', zIndex: 1 };
 const certStatusStyle = {
   border: '1px solid #000',
   padding: '12px',
