@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 
 export default function CommissionDashboard({ onLogout }) {
 
@@ -16,11 +17,17 @@ export default function CommissionDashboard({ onLogout }) {
   const [financeClearing, setFinanceClearing] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   const [liveResults, setLiveResults] = useState(null);
+  // Chief-Commissioner-only controls (exception grants, certification) render
+  // off this flag. It is a UI affordance, not the access boundary — the
+  // backend re-checks is_chief_commissioner on every one of those endpoints.
+  const [isChief, setIsChief] = useState(false);
 
-  // On mount — figure out who this commissioner is from sessionStorage
+  // Identity comes from the login response, which the server issued against
+  // the verified credentials. It is no longer typed in by hand: the backend
+  // now rejects any request whose body claims a different commissioner than
+  // the session token, so a hand-entered value would simply 403.
   useEffect(() => {
-    const stored = sessionStorage.getItem('commissioner_id') || '';
-    setCommissionerId(stored);
+    setCommissionerId(sessionStorage.getItem('commissioner_id') || '');
     fetchAll();
   }, []);
 
@@ -36,6 +43,11 @@ export default function CommissionDashboard({ onLogout }) {
         setApplications(appsRes.data);
         setCommissioners(commRes.data);
         setTotalCommissioners(commRes.data.length);
+        const me = (commRes.data || []).find(
+          c => String(c.student_id || '').toLowerCase()
+            === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
+        );
+        setIsChief(Boolean(me?.is_chief_commissioner));
         setStudentChanges(scRes.data);
         setLiveResults(resultsRes.data);
     } catch (e) {
@@ -178,6 +190,8 @@ export default function CommissionDashboard({ onLogout }) {
     { id: 'removed',         label: 'Removed',         count: removed.length },
     { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
     { id: 'results',         label: 'Live Results',    count: null },
+    ...SHARED_TAB_DEFS,
+    { id: 'official_doc',    label: '📄 Official Document', count: null },
   ];
 
   const currentList = listFor(activeTab);
@@ -203,45 +217,23 @@ export default function CommissionDashboard({ onLogout }) {
           </div>
         </div>
 
-        {/* Commissioner ID prompt — shown if not stored yet */}
-        {!commissionerId && (
+        {/* Identity is taken from the session the server issued at login —
+            it is deliberately not editable here. A free-text field let the
+            browser assert any commissioner's identity; the backend now binds
+            every vote to the token subject, so this is display only. */}
+        {!commissionerId ? (
           <div style={promptBox}>
-            <p style={{ margin: '0 0 10px', fontWeight: '600', color: 'var(--text-color)' }}>
-              Enter your Student ID to record your votes correctly:
+            <p style={{ margin: 0, fontWeight: '600', color: 'var(--text-color)' }}>
+              Your commissioner identity could not be read from this session.
             </p>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <input
-                style={{ ...inp, flex: 1 }}
-                placeholder="e.g. 22/U/IED/1086/GV"
-                onBlur={e => {
-                  const val = e.target.value.trim();
-                  if (val) {
-                    setCommissionerId(val);
-                    sessionStorage.setItem('commissioner_id', val);
-                  }
-                }}
-              />
-              <button style={greenBtn} onClick={() => {
-                const el = document.querySelector('[data-cid-input]');
-                if (el && el.value.trim()) {
-                  setCommissionerId(el.value.trim());
-                  sessionStorage.setItem('commissioner_id', el.value.trim());
-                }
-              }}>Confirm</button>
-            </div>
-            <p style={{ margin: '8px 0 0', fontSize: '12px', opacity: 0.5 }}>
-              This is stored only for this browser session and used to tag your votes.
+            <p style={{ margin: '8px 0 0', fontSize: '12px', opacity: 0.6 }}>
+              Please log out and sign in again so your votes are attributed correctly.
             </p>
           </div>
-        )}
-
-        {commissionerId && (
+        ) : (
           <div style={infoPill}>
-            Voting as: <strong>{commissionerId}</strong>
-            <button style={{ ...ghostBtn, padding: '3px 10px', marginLeft: '10px', fontSize: '12px' }}
-              onClick={() => { setCommissionerId(''); sessionStorage.removeItem('commissioner_id'); }}>
-              Change
-            </button>
+            Signed in as: <strong>{commissionerId}</strong>
+            {isChief && <span style={chiefPill}>Chief Commissioner</span>}
           </div>
         )}
 
@@ -609,6 +601,8 @@ export default function CommissionDashboard({ onLogout }) {
           </div>
         )}
 
+        <SharedTabPanels activeTab={activeTab} isChief={isChief} />
+        {activeTab === 'official_doc' && <OfficialCertificationBlock />}
       </div>
     </div>
   );
@@ -656,6 +650,7 @@ const greenBtn   = { ...btn, backgroundColor: '#2ecc71' };
 const redBtn     = { ...btn, backgroundColor: '#e74c3c' };
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const promptBox  = { border: '1px dashed var(--border-color)', borderRadius: '12px', padding: '20px', marginBottom: '20px', backgroundColor: 'var(--bg-color)' };
+const chiefPill = { marginLeft: '10px', fontSize: '10px', fontWeight: 800, padding: '3px 9px', borderRadius: '10px', background: 'color-mix(in srgb, var(--warning) 22%, transparent)', color: 'var(--warning)' };
 const infoPill   = { fontSize: '13px', opacity: 0.7, marginBottom: '18px', padding: '8px 14px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center' };
 const overrideNote = { marginTop: '12px', fontSize: '12px', opacity: 0.55, fontStyle: 'italic' };
 const lockedNote = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)', fontSize: '12px', fontWeight: '600' };

@@ -108,6 +108,16 @@ async def lifespan(app: FastAPI):
     # makes the second one fail loudly instead of silently forking the chain.
     await db.audit_checkpoints.create_index([("org_id", 1), ("to_id", 1)], unique=True)
     await db.audit_checkpoints.create_index([("org_id", 1), ("from_id", 1)], unique=True)
+    # OTP verify-attempt lockouts (brute-force guard on /verify-otp).
+    await db.otp_attempts.create_index("key", unique=True)
+    await db.otp_attempts.create_index("last_attempt", expireAfterSeconds=24 * 3600)
+    # Phase exception grants — looked up on every gated action.
+    await db.exception_grants.create_index([("org_id", 1), ("student_id", 1), ("phase", 1)])
+    # The activity log is read by every admin role now, filtered and sorted.
+    await db.audit_log.create_index([("org_id", 1), ("timestamp", -1)])
+    await db.audit_log.create_index([("org_id", 1), ("action", 1), ("timestamp", -1)])
+    # Turnout-velocity aggregation scans cast_at.
+    await db.vote_events.create_index([("org_id", 1), ("cast_at", 1)])
     set_revocation_check(_is_token_revoked)
     yield
     client.close()
@@ -224,7 +234,7 @@ PUBLIC_PATHS = {
     "/", "/health", "/election-status",
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
-    "/verify-admin","/election-results",
+    "/verify-admin", "/election-results", "/election-results/voter-roll",
     "/voter-register", "/voter-register/check-number",
 }
 PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
@@ -287,12 +297,54 @@ async def auth_guard_middleware(request: Request, call_next):
 # CORS headers attached, and the browser blocked the request entirely
 # before the real GET/POST was ever sent.
 
+# SECURITY: allow_origins=["*"] previously let ANY website on the internet
+# script requests against this API from a visitor's browser. Now driven by
+# ALLOWED_ORIGINS (comma-separated) so only the real frontend deployments can
+# talk to it. Unset in local dev falls back to localhost origins, never "*".
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS = (
+    [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
+    if _raw_origins
+    else ["http://localhost:5173", "http://127.0.0.1:5173"]
+)
+# Optional regex for preview deployments (e.g. Vercel branch URLs):
+#   ALLOWED_ORIGIN_REGEX=https://.*\.vercel\.app
+ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX") or None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Org-Slug"],
+    max_age=600,
 )
+
+
+# =============================================================================
+# SECURITY HEADERS
+# =============================================================================
+# Registered after CORS so it becomes the outermost layer and stamps these
+# onto every response, including 401/403s from the guards above.
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    response.headers.setdefault(
+        "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+    )
+    # This is a JSON API — nothing here should ever be rendered as a document.
+    response.headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+    # Admin/audit payloads must never sit in a shared cache or browser bfcache.
+    if request.url.path.startswith(("/admin", "/superadmin", "/it-admin", "/overseer", "/commission")):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 # =============================================================================
 # MODELS
@@ -507,7 +559,34 @@ def generate_temp_password() -> str:
     return ''.join(secrets.choice(string.digits) for _ in range(6))
 
 def hash_password(plain_password: str) -> str:
-    return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
+    # bcrypt silently truncates at 72 bytes; reject rather than truncate so a
+    # long passphrase can never be shortened into a weaker one without notice.
+    encoded = plain_password.encode()
+    if len(encoded) > 72:
+        raise HTTPException(400, "Password must be 72 bytes or fewer.")
+    return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode()
+
+
+MIN_PASSWORD_LENGTH = 10
+
+
+def _assert_password_strength(password: str):
+    """These accounts control an election. A 6-character minimum was well
+    inside offline-cracking range for anyone who ever got a dump of the
+    hashes."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(400, f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+    classes = sum([
+        any(c.islower() for c in password),
+        any(c.isupper() for c in password),
+        any(c.isdigit() for c in password),
+        any(not c.isalnum() for c in password),
+    ])
+    if classes < 3:
+        raise HTTPException(
+            400,
+            "Password must combine at least three of: lowercase, uppercase, numbers, symbols.",
+        )
 
 # =============================================================================
 # MULTI-TENANCY HELPERS
@@ -649,7 +728,7 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
         return None
 
     await _publish_checkpoint_externally(checkpoint)
-    await log_action("audit_checkpoint_created", "superadmin", {
+    await log_action("audit_checkpoint_created", current_actor(request), {
         "event_count": len(events),
         "chain_hash": chain_hash,
     }, org_id=org_id)
@@ -846,14 +925,188 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             q["org_id"] = org_id
         await db.voters.delete_one(q)
 
-async def log_action(action: str, actor: str, details: dict = {}, org_id: str = None):
+async def log_action(action: str, actor: str, details: dict | None = None, org_id: str = None):
+    # details defaults to None, not {} — a mutable default argument is shared
+    # across every call site in the process, so one accidental mutation would
+    # leak into unrelated log entries.
     await db.audit_log.insert_one({
         "action":    action,
         "actor":     actor,
-        "details":   details,
+        "details":   details or {},
         "org_id":    org_id,
         "timestamp": datetime.utcnow()
     })
+
+
+# =============================================================================
+# ACTOR ATTRIBUTION
+# =============================================================================
+# Every log_action call on an authenticated route must record WHO actually
+# made the request, taken from the verified JWT — never a hardcoded string and
+# never a value the client supplied in the body.
+
+def current_actor(request: Request) -> str:
+    admin = getattr(request.state, "admin", None)
+    if not admin:
+        return "unknown"
+    return admin.get("sub") or "unknown"
+
+
+def current_role(request: Request) -> str:
+    admin = getattr(request.state, "admin", None)
+    return (admin or {}).get("role", "")
+
+
+def bind_identity(request: Request, claimed_id: str, label: str = "account") -> str:
+    """
+    Reject a request whose body claims to act as a different person than the
+    token says it is.
+
+    Several endpoints take a `commissioner_id` / `financial_controller_id` /
+    `requested_by` straight from the request body and used to trust it. Any
+    valid admin token — including a read-only Overseer's — could therefore
+    cast a Commission vote, finance-clear an application, or decide a student
+    change *in someone else's name*. The token subject is the only identity
+    the server actually verified, so it is the one that has to match.
+
+    Superadmin is exempt: it legitimately acts on behalf of any role through
+    the documented override endpoints.
+    """
+    admin = getattr(request.state, "admin", None) or {}
+    if admin.get("role") == "superadmin":
+        return claimed_id
+    subject = admin.get("sub") or ""
+    if normalize_student_id(claimed_id) != normalize_student_id(subject):
+        raise HTTPException(
+            status_code=403,
+            detail=f"You can only act as your own {label}.",
+        )
+    return claimed_id
+
+
+async def require_chief_commissioner(request: Request) -> dict:
+    """Superadmin, or the single commissioner flagged is_chief_commissioner."""
+    admin = getattr(request.state, "admin", None) or {}
+    if admin.get("role") == "superadmin":
+        return admin
+    if admin.get("role") != "commission":
+        raise HTTPException(403, "Chief Commissioner access required.")
+    voter = await db.voters.find_one(org_query(request, {
+        **get_forgiving_filter(admin.get("sub", "")),
+        "is_commissioner": True,
+        "is_chief_commissioner": True,
+    }))
+    if not voter:
+        raise HTTPException(403, "Chief Commissioner access required.")
+    return admin
+
+
+async def require_superadmin_state(request: Request) -> dict:
+    admin = getattr(request.state, "admin", None) or {}
+    if admin.get("role") != "superadmin":
+        raise HTTPException(403, "Superadmin access required.")
+    return admin
+
+
+# =============================================================================
+# ELECTION PHASES  (applications / campaign / voting / results)
+# =============================================================================
+# Previously only ONE window existed (voting), and /apply had no time gate at
+# all — a candidacy application could be submitted at any moment, including
+# after voting closed. Phases are stored on a single settings document per org
+# so a phase read is one query, and each carries its own enforced flag.
+
+PHASE_NAMES = ("applications", "campaign", "voting", "results")
+DEFAULT_ROUND_ID = "round-1"
+
+
+class PhaseWindow(BaseModel):
+    start: datetime | None = None
+    end: datetime | None = None
+    enforced: bool = True
+
+
+class PhaseScheduleUpdate(BaseModel):
+    phases: dict[str, PhaseWindow]
+    round_id: str = DEFAULT_ROUND_ID
+
+
+class ExceptionGrantCreate(BaseModel):
+    student_id: str
+    phase: str
+    reason: str
+    expires_at: datetime | None = None
+
+
+async def get_phase_schedule(request: Request) -> dict:
+    doc = await db.settings.find_one(org_query(request, {"name": "election_phases"}))
+    phases = (doc or {}).get("phases", {})
+    return {
+        "round_id": (doc or {}).get("round_id", DEFAULT_ROUND_ID),
+        "phases": {
+            name: {
+                "start": (phases.get(name) or {}).get("start"),
+                "end": (phases.get(name) or {}).get("end"),
+                # Unconfigured phases are NOT enforced — an org that never sets
+                # a phase schedule keeps today's behaviour exactly.
+                "enforced": (phases.get(name) or {}).get("enforced", False),
+            }
+            for name in PHASE_NAMES
+        },
+    }
+
+
+def _phase_is_open(window: dict, now: datetime) -> bool:
+    if not window.get("enforced"):
+        return True
+    start, end = window.get("start"), window.get("end")
+    if not start and not end:
+        return True
+    if start and now < start:
+        return False
+    if end and now > end:
+        return False
+    return True
+
+
+async def has_exception_grant(request: Request, student_id: str, phase: str) -> dict | None:
+    now = datetime.utcnow()
+    return await db.exception_grants.find_one(org_query(request, {
+        "student_id": normalize_student_id(student_id),
+        "phase": phase,
+        "revoked": {"$ne": True},
+        "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}],
+    }))
+
+
+async def assert_phase_open(request: Request, phase: str, student_id: str | None = None):
+    """
+    Auto-block by default: a closed, enforced phase rejects the action
+    outright. The only way through is a named, logged, time-bound exception
+    grant issued by the Chief Commissioner for one specific student — never a
+    blanket reopen, so the decision record survives in the audit log.
+    """
+    schedule = await get_phase_schedule(request)
+    window = schedule["phases"].get(phase, {})
+    if _phase_is_open(window, datetime.utcnow()):
+        return
+    if student_id:
+        grant = await has_exception_grant(request, student_id, phase)
+        if grant:
+            await log_action("phase_exception_used", normalize_student_id(student_id), {
+                "phase": phase, "grant_id": str(grant["_id"]),
+            }, org_id=request.state.org_id)
+            return
+    label = phase.replace("_", " ")
+    raise HTTPException(
+        status_code=403,
+        detail=f"The {label} period is closed. Contact the Electoral Commission if you believe this is an error.",
+    )
+
+
+async def current_round_id(request: Request) -> str:
+    schedule = await get_phase_schedule(request)
+    return schedule.get("round_id") or DEFAULT_ROUND_ID
 
 # =============================================================================
 # ADMIN LOGIN RATE LIMITING
@@ -1008,8 +1261,48 @@ async def verify_identity(data: IdentityCheck, request: Request):
 OTP_EXPIRY_MINUTES = 10
 
 
+OTP_MAX_VERIFY_ATTEMPTS = 5
+OTP_VERIFY_LOCKOUT_MINUTES = 15
+
+
+async def _enforce_otp_attempt_limit(request: Request, student_id: str):
+    """
+    A 6-digit OTP is only 1,000,000 possibilities — with unlimited guesses it
+    falls in minutes to a script. There was NO attempt cap on this endpoint at
+    all: /verify-identity capped how many codes could be SENT, but nothing
+    capped how many could be TRIED. Mongo-backed so it survives a restart and
+    works across multiple instances.
+    """
+    key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    record = await db.otp_attempts.find_one({"key": key})
+    locked_until = (record or {}).get("locked_until")
+    if locked_until and locked_until > datetime.utcnow():
+        raise HTTPException(429, "Too many incorrect codes. Please wait before trying again.")
+
+
+async def _record_otp_failure(request: Request, student_id: str):
+    key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    record = await db.otp_attempts.find_one({"key": key})
+    attempts = ((record or {}).get("attempts", 0)) + 1
+    update = {"key": key, "attempts": attempts, "last_attempt": datetime.utcnow()}
+    if attempts >= OTP_MAX_VERIFY_ATTEMPTS:
+        update["locked_until"] = datetime.utcnow() + timedelta(minutes=OTP_VERIFY_LOCKOUT_MINUTES)
+        update["attempts"] = 0
+        await log_action("otp_verify_locked", normalize_student_id(student_id), {
+            "attempts": OTP_MAX_VERIFY_ATTEMPTS
+        }, org_id=request.state.org_id)
+    await db.otp_attempts.update_one({"key": key}, {"$set": update}, upsert=True)
+
+
+async def _clear_otp_attempts(request: Request, student_id: str):
+    key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    await db.otp_attempts.delete_one({"key": key})
+
+
 @app.post("/verify-otp")
 async def verify_otp(data: OTPCheck, request: Request):
+    await _enforce_otp_attempt_limit(request, data.student_id)
+
     search = org_query(request, get_forgiving_filter(data.student_id))
     voter  = await db.voters.find_one(search)
     if not voter:
@@ -1027,11 +1320,15 @@ async def verify_otp(data: OTPCheck, request: Request):
             await db.otps.delete_one(search)
             raise HTTPException(status_code=400, detail="This code has expired. Please request a new one.")
 
-        if record["code"] == data.code:
+        # Constant-time compare so response timing can't leak how many
+        # leading digits of a guess were correct.
+        if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
             await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
             await db.otps.delete_one(search)
+            await _clear_otp_attempts(request, data.student_id)
             return {"status": "success"}
 
+    await _record_otp_failure(request, data.student_id)
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
 
 
@@ -1208,13 +1505,18 @@ VOTER_REGISTER_PAGE_SIZE = 25
 @app.get("/voter-register")
 async def search_voter_register(request: Request, q: str = "", page: int = 1):
     _check_register_rate_limit(request)
-    page = max(page, 1)
+    page = min(max(page, 1), 2000)  # cap: an unbounded skip is a cheap DoS
     skip = (page - 1) * VOTER_REGISTER_PAGE_SIZE
     query = org_query(request)
     if q:
+        # The raw query string used to be interpolated straight into a Mongo
+        # $regex. On an unauthenticated endpoint that is both a regex
+        # injection and a ReDoS lever — a crafted pattern can pin the database
+        # CPU. Escape it, and cap the length.
+        safe_q = re.escape(q.strip()[:80])
         query["$or"] = [
-            {"full_name": {"$regex": q, "$options": "i"}},
-            {"student_id": {"$regex": normalize_student_id(q), "$options": "i"}},
+            {"full_name": {"$regex": safe_q, "$options": "i"}},
+            {"student_id": {"$regex": re.escape(normalize_student_id(q)[:80]), "$options": "i"}},
         ]
     total = await db.voters.count_documents(query)
     cursor = db.voters.find(
@@ -1245,6 +1547,28 @@ async def check_registered_number(data: ApplicationEligibilityCheck, request: Re
     return {"phone_on_file": True, "masked_phone": _mask_phone(phones[0])}
 
 
+# Content-Type is attacker-controlled — a client can label anything
+# "image/png". Sniff the real signature so only actual images reach
+# Cloudinary (and, via the returned URL, every visitor's browser).
+_IMAGE_MAGIC = (
+    b"\xff\xd8\xff",          # JPEG
+    b"\x89PNG\r\n\x1a\n",     # PNG
+    b"GIF87a", b"GIF89a",      # GIF
+)
+
+
+def _assert_real_image(content: bytes):
+    if content[:3] in (m[:3] for m in (_IMAGE_MAGIC[0],)) and content.startswith(_IMAGE_MAGIC[0]):
+        return
+    if content.startswith(_IMAGE_MAGIC[1]):
+        return
+    if content.startswith(_IMAGE_MAGIC[2]) or content.startswith(_IMAGE_MAGIC[3]):
+        return
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return
+    raise HTTPException(status_code=400, detail="That file is not a valid JPEG, PNG, WEBP or GIF image.")
+
+
 @app.post("/apply/upload-image")
 async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     """Public upload used for candidate photos and payment proof during
@@ -1254,6 +1578,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     unsigned-preset upload did.
     """
     _check_upload_rate_limit(request)
+    await assert_phase_open(request, "applications")
 
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP, or GIF images are allowed.")
@@ -1261,9 +1586,10 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="Image must be under 5MB.")
+    _assert_real_image(content)
 
     try:
-        result = cloudinary.uploader.upload(content, folder="ballotbox/applicants")
+        result = cloudinary.uploader.upload(content, folder="ballotbox/applicants", resource_type="image")
     except Exception as e:
         logger.error(f"Cloudinary applicant upload failed: {e}")
         raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
@@ -1273,6 +1599,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
 
 @app.post("/apply/check-eligibility")
 async def check_application_eligibility(data: ApplicationEligibilityCheck, request: Request):
+    await assert_phase_open(request, "applications", data.student_id)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(
@@ -1288,6 +1615,9 @@ async def check_application_eligibility(data: ApplicationEligibilityCheck, reque
 
 @app.post("/apply")
 async def submit_application(data: ApplicationSubmit, request: Request):
+    # Applications had NO time gating anywhere — a candidacy could be filed
+    # after voting had already closed.
+    await assert_phase_open(request, "applications", data.student_id)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(
@@ -1309,6 +1639,9 @@ async def submit_application(data: ApplicationSubmit, request: Request):
 
     await db.applications.insert_one(org_stamp(request, {
         **data.dict(),
+        # round_id is written now so multi-round support later is a feature
+        # addition, not a breaking data migration.
+        "round_id": await current_round_id(request),
         "status": "pending",
         "votes": {},          # { commissioner_student_id: "approve" | "deny" }
         "removal_votes": {},  # same structure, used after approval
@@ -1347,7 +1680,10 @@ async def verify_admin(data: AdminLoginCheck, request: Request):
 
 async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     # ── Superadmin ── (env var based, no hashing needed — this is you)
-    if data.email == SUPER_ADMIN_ID and data.password == SUPER_ADMIN_PASSWORD:
+    # compare_digest instead of == so a wrong password can't be narrowed down
+    # character-by-character from response timing.
+    if (secrets.compare_digest(data.email, SUPER_ADMIN_ID)
+            and secrets.compare_digest(data.password, SUPER_ADMIN_PASSWORD)):
         if SUPERADMIN_TOTP_SECRET:
             if not data.totp_code:
                 # Distinct status code from "wrong code" on purpose: this is
@@ -1480,7 +1816,7 @@ async def admin_logout(request: Request):
 
 
 @app.post("/admin/toggle-election")
-async def toggle_election(request: Request):
+async def toggle_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
     current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_open", True) if current else True)
     await db.settings.update_one(
@@ -1488,32 +1824,48 @@ async def toggle_election(request: Request):
         {"$set": org_stamp(request, {"is_open": new_status, "name": "election_config"})},
         upsert=True
     )
-    await log_action("election_toggled", "superadmin", {"is_open": new_status}, org_id=request.state.org_id)
+    # Was hardcoded actor="superadmin" — this route sits under /admin/*, so
+    # ANY admin role could trigger it and the log would still name superadmin.
+    await log_action("election_toggled", current_actor(request), {
+        "is_open": new_status, "role": current_role(request)
+    }, org_id=request.state.org_id)
     logger.info(f" Election toggled to: {'OPEN' if new_status else 'CLOSED'}")
     return {"is_open": new_status}
 
 
 @app.post("/admin/schedule-election")
-async def schedule_election(data: ElectionSchedule, request: Request):
+async def schedule_election(data: ElectionSchedule, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    if data.end <= data.start:
+        raise HTTPException(400, "End time must be after the start time.")
     await db.settings.update_one(
         org_query(request, {"name": "election_config"}),
         {"$set": org_stamp(request, {"start_time": data.start, "end_time": data.end, "is_open": True, "name": "election_config"})},
         upsert=True
     )
+    await log_action("election_scheduled", current_actor(request), {
+        "start": data.start.isoformat(), "end": data.end.isoformat()
+    }, org_id=request.state.org_id)
     return {"status": "scheduled"}
 
 
 @app.post("/admin/clear-schedule")
-async def clear_schedule(request: Request):
+async def clear_schedule(request: Request, admin: dict = Depends(require_role("superadmin"))):
     await db.settings.update_one(
         org_query(request, {"name": "election_config"}),
         {"$unset": {"start_time": "", "end_time": ""}}
     )
+    await log_action("election_schedule_cleared", current_actor(request), {}, org_id=request.state.org_id)
     return {"status": "cleared"}
 
 
 @app.post("/admin/reset-election")
-async def reset_election(request: Request):
+async def reset_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    # Refuse to wipe a certified election. The UI already disables the button
+    # when is_certified is true, but a disabled button is not an access
+    # control — the endpoint has to enforce it too.
+    config = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    if (config or {}).get("is_certified"):
+        raise HTTPException(400, "Certified results cannot be reset. Revoke certification first.")
     await db.otps.delete_many(org_query(request))
     await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
     await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
@@ -1530,11 +1882,14 @@ async def reset_election(request: Request):
     # what Mongo does, it just becomes an orphaned record with no local
     # reference, which is harmless.
     await db.audit_checkpoints.delete_many(org_query(request))
+    await log_action("election_reset", current_actor(request), {
+        "role": current_role(request)
+    }, org_id=request.state.org_id)
     return {"status": "success"}
 
 
 @app.post("/admin/toggle-certification")
-async def toggle_certification(request: Request):
+async def toggle_certification(request: Request, admin: dict = Depends(require_chief_commissioner)):
     current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     new_status = not (current.get("is_certified", False) if current else False)
     await db.settings.update_one(
@@ -1542,7 +1897,11 @@ async def toggle_certification(request: Request):
         {"$set": {"is_certified": new_status}},
         upsert=True
     )
-    await log_action("results_certified", "superadmin", {"is_certified": new_status}, org_id=request.state.org_id)
+    # Was hardcoded actor="superadmin". Certification is the single most
+    # consequential action in the system; it has to name the real signer.
+    await log_action("results_certified", current_actor(request), {
+        "is_certified": new_status, "role": current_role(request)
+    }, org_id=request.state.org_id)
     return {"is_certified": new_status}
 
 
@@ -1552,7 +1911,11 @@ async def get_sms_balance():
 
 
 @app.post("/admin/test-connection")
-async def test_egosms_connection(data: AdminTestSMS):
+async def test_egosms_connection(data: AdminTestSMS, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    # Restricted to superadmin: this sends a real, billable SMS to an
+    # arbitrary number supplied in the body. Under "any admin token" it was a
+    # free SMS relay for every provisioned role.
+    await log_action("sms_test_sent", current_actor(request), {"phone": _mask_phone(data.phone)}, org_id=request.state.org_id)
     success = await send_sms_via_egosms(data.phone, "EgoSMS Connection Verified for BallotBox!")
     if success:
         return {"status": "success", "message": f"Test message delivered to {data.phone}"}
@@ -1601,7 +1964,7 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
                 upsert=True
             )
             count += 1
-    await log_action("voters_imported", "admin", {"count": count}, org_id=request.state.org_id)
+    await log_action("voters_imported", current_actor(request), {"count": count}, org_id=request.state.org_id)
     return {"status": "success", "imported_count": count}
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -1621,13 +1984,17 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="Image must be under 5MB.")
+    _assert_real_image(content)
 
     try:
-        result = cloudinary.uploader.upload(content, folder="ballotbox/admin")
+        result = cloudinary.uploader.upload(content, folder="ballotbox/admin", resource_type="image")
     except Exception as e:
         logger.error(f"Cloudinary admin upload failed: {e}")
         raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
 
+    await log_action("admin_image_uploaded", current_actor(request), {
+        "url": result["secure_url"], "bytes": len(content)
+    }, org_id=request.state.org_id)
     return {"secure_url": result["secure_url"]}
 
 
@@ -1639,17 +2006,29 @@ async def get_all_voters(request: Request, admin: dict = Depends(require_role("i
     return voters
 
 @app.post("/admin/set-password")
-async def set_new_password(data: SetNewPassword, request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def set_new_password(data: SetNewPassword, request: Request):
+    # Was gated to superadmin only, which made the forced first-login password
+    # change impossible for every role that needs it. The endpoint verifies
+    # old_password against the stored hash before changing anything, so it is
+    # safe as self-service — but an admin may only change their OWN password.
+    admin = getattr(request.state, "admin", None) or {}
+
+    def _assert_self(account: dict):
+        if admin.get("role") == "superadmin":
+            return
+        if normalize_student_id(account.get("student_id", "")) != normalize_student_id(admin.get("sub", "")):
+            raise HTTPException(403, "You can only change your own password.")
+
     # Try IT admin first
     it_admin = await db.voters.find_one(org_query(request, {
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_it_admin": True
     }))
     if it_admin:
+        _assert_self(it_admin)
         if not verify_password(data.old_password, it_admin.get("it_admin_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
-        if len(data.new_password) < 6:
-            raise HTTPException(400, "New password must be at least 6 characters.")
+        _assert_password_strength(data.new_password)
         await db.voters.update_one(
             {"_id": it_admin["_id"]},
             {"$set": {
@@ -1666,10 +2045,10 @@ async def set_new_password(data: SetNewPassword, request: Request, admin: dict =
         "is_financial_controller": True
     }))
     if financial_controller:
+        _assert_self(financial_controller)
         if not verify_password(data.old_password, financial_controller.get("financial_controller_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
-        if len(data.new_password) < 6:
-            raise HTTPException(400, "New password must be at least 6 characters.")
+        _assert_password_strength(data.new_password)
         await db.voters.update_one(
             {"_id": financial_controller["_id"]},
             {"$set": {
@@ -1686,10 +2065,10 @@ async def set_new_password(data: SetNewPassword, request: Request, admin: dict =
         "is_overseer": True
     }))
     if overseer:
+        _assert_self(overseer)
         if not verify_password(data.old_password, overseer.get("overseer_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
-        if len(data.new_password) < 6:
-            raise HTTPException(400, "New password must be at least 6 characters.")
+        _assert_password_strength(data.new_password)
         await db.voters.update_one(
             {"_id": overseer["_id"]},
             {"$set": {
@@ -1706,10 +2085,10 @@ async def set_new_password(data: SetNewPassword, request: Request, admin: dict =
         "is_commissioner": True
     }))
     if commissioner:
+        _assert_self(commissioner)
         if not verify_password(data.old_password, commissioner.get("commissioner_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
-        if len(data.new_password) < 6:
-            raise HTTPException(400, "New password must be at least 6 characters.")
+        _assert_password_strength(data.new_password)
         await db.voters.update_one(
             {"_id": commissioner["_id"]},
             {"$set": {
@@ -1727,7 +2106,7 @@ async def set_new_password(data: SetNewPassword, request: Request, admin: dict =
 @app.post("/candidates")
 async def add_candidate(candidate: CandidateCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
     result = await db.candidates.insert_one(org_stamp(request, candidate.dict()))
-    await log_action("candidate_added", "superadmin", {
+    await log_action("candidate_added", current_actor(request), {
         "name": candidate.name, "position": candidate.position
     }, org_id=request.state.org_id)
     return {"id": str(result.inserted_id)}
@@ -1743,12 +2122,21 @@ async def update_candidate(candidate_id: str, data: dict, request: Request, admi
     if data.get("image_url"):
         upd["image_url"] = data["image_url"]
     await db.candidates.update_one(org_query(request, {"_id": ObjectId(candidate_id)}), {"$set": upd})
+    await log_action("candidate_updated", current_actor(request), {
+        "candidate_id": candidate_id, "name": upd.get("name"), "position": upd.get("position")
+    }, org_id=request.state.org_id)
     return {"status": "success"}
 
 
 @app.delete("/candidates/{candidate_id}")
 async def delete_candidate(candidate_id: str, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    doomed = await db.candidates.find_one(org_query(request, {"_id": ObjectId(candidate_id)}))
     await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
+    await log_action("candidate_deleted", current_actor(request), {
+        "candidate_id": candidate_id,
+        "name": (doomed or {}).get("name", ""),
+        "position": (doomed or {}).get("position", ""),
+    }, org_id=request.state.org_id)
     return {"status": "deleted"}
 
 
@@ -1790,6 +2178,12 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     if not app_doc.get("finance_cleared"):
         raise HTTPException(400, "Awaiting Finance Commissioner clearance before voting can open.")
 
+    # SECURITY: the body-supplied commissioner_id used to be trusted on its
+    # own, so any valid admin token (an Overseer's, an IT Admin's) could cast
+    # a Commission vote under another commissioner's name. Bind it to the
+    # authenticated token subject first.
+    bind_identity(request, data.commissioner_id, "commissioner account")
+
     # Verify the voter exists and is actually a commissioner
     commissioner = await db.voters.find_one(org_query(request, {
         **get_forgiving_filter(data.commissioner_id),
@@ -1797,6 +2191,10 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     }))
     if not commissioner:
         raise HTTPException(403, "Not a registered commissioner.")
+
+    await log_action("application_vote_cast", current_actor(request), {
+        "app_id": app_id, "vote": data.vote, "reason": data.reason
+    }, org_id=request.state.org_id)
 
     # Record vote (keyed by commissioner_id so they can only vote once per application)
     await db.applications.update_one(
@@ -1822,12 +2220,18 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
     if app_doc.get("status") != "approved":
         raise HTTPException(400, "Can only vote to remove an approved candidate.")
 
+    bind_identity(request, data.commissioner_id, "commissioner account")
+
     commissioner = await db.voters.find_one(org_query(request, {
         **get_forgiving_filter(data.commissioner_id),
         "is_commissioner": True
     }))
     if not commissioner:
         raise HTTPException(403, "Not a registered commissioner.")
+
+    await log_action("candidate_removal_vote", current_actor(request), {
+        "app_id": app_id, "vote": data.vote
+    }, org_id=request.state.org_id)
 
     safe_key = data.commissioner_id.replace('.', '_').replace('/', '_')
     await db.applications.update_one(
@@ -1856,6 +2260,8 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
+    bind_identity(request, data.commissioner_id, "commissioner account")
+
     finance_commissioner = await db.voters.find_one(org_query(request, {
         **get_forgiving_filter(data.commissioner_id),
         "is_commissioner": True,
@@ -1875,6 +2281,27 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"💰 Application {app_id} finance-cleared by {data.commissioner_id}.")
     return {"status": "finance_cleared"}
+
+
+@app.get("/admin/commissioners")
+async def list_commissioners_for_admins(request: Request):
+    """
+    Commission roster, readable by any admin role.
+
+    CommissionDashboard has always called this path; only the superadmin-only
+    /superadmin/commissioners existed, so the call 403'd, was swallowed by
+    .catch(), and the dashboard could never tell who the Chief Commissioner
+    was. Deliberately narrower than the superadmin version: no email
+    addresses, since the roster is being widened to every admin role.
+    """
+    result = []
+    async for v in db.voters.find(
+        org_query(request, {"is_commissioner": True}),
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1,
+         "is_finance_commissioner": 1, "commissioner_role": 1},
+    ):
+        result.append(v)
+    return result
 
 
 @app.get("/commission/results/detailed")
@@ -1970,6 +2397,9 @@ async def generate_superadmin_mfa_secret(request: Request):
         )
     secret = pyotp.random_base32()
     uri = pyotp.TOTP(secret).provisioning_uri(name=SUPER_ADMIN_ID, issuer_name="BallotBox Superadmin")
+    # The secret itself is deliberately NOT logged — only the fact that a
+    # bootstrap happened, and when.
+    await log_action("superadmin_mfa_secret_generated", current_actor(request), {}, org_id=request.state.org_id)
     return {"secret": secret, "provisioning_uri": uri}
 
 
@@ -1996,7 +2426,7 @@ async def create_organization(data: OrganizationCreate):
         }
     }
     result = await db.organizations.insert_one(org_doc)
-    await log_action("organization_created", "superadmin", {
+    await log_action("organization_created", current_actor(request), {
         "org_id": str(result.inserted_id), "name": data.name, "slug": slug
     })
     logger.info(f"🏢 Organization '{data.name}' provisioned with slug '{slug}'.")
@@ -2050,20 +2480,36 @@ async def save_branding(data: BrandingUpdate, request: Request):
         {"$set": org_stamp(request, {**data.dict(), "name": "branding"})},
         upsert=True
     )
+    # Branding drives the org name, the commissioner name printed on the
+    # official declaration, and the cc list — all of which appear on the
+    # certified report. Changes to it belong in the audit trail.
+    await log_action("branding_updated", current_actor(request), {
+        "org_name": data.org_name,
+        "commissioner_name": data.commissioner_name,
+        "cc_count": len(data.cc_list),
+    }, org_id=request.state.org_id)
     return {"status": "saved"}
 
 
 # --- Positions ---
 
 @app.post("/positions")
-async def add_position(data: PositionCreate, request: Request):
+async def add_position(data: PositionCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    # Was reachable by ANY admin token (the path doesn't start with
+    # /superadmin) — an Overseer could create or delete ballot positions.
     result = await db.positions.insert_one(org_stamp(request, data.dict()))
+    await log_action("position_added", current_actor(request), {"title": data.title}, org_id=request.state.org_id)
     return {"id": str(result.inserted_id)}
 
 
 @app.delete("/positions/{position_id}")
-async def delete_position(position_id: str, request: Request):
-    await db.positions.delete_one(org_query(request, {"_id": ObjectId(position_id)}))
+async def delete_position(position_id: str, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    try:
+        oid = ObjectId(position_id)
+    except Exception:
+        raise HTTPException(400, "Invalid position id.")
+    await db.positions.delete_one(org_query(request, {"_id": oid}))
+    await log_action("position_deleted", current_actor(request), {"position_id": position_id}, org_id=request.state.org_id)
     return {"status": "deleted"}
 
 
@@ -2091,6 +2537,11 @@ async def set_chief_commissioner(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_chief_commissioner": True}}
     )
+    # Arguably the most sensitive action in the system — this is who can
+    # certify results and grant phase exceptions. It was logging nothing.
+    await log_action("chief_commissioner_set", current_actor(request), {
+        "student_id": voter["student_id"], "full_name": voter.get("full_name", "")
+    }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_chief_commissioner": True}
 
 
@@ -2100,6 +2551,9 @@ async def clear_chief_commissioner(student_id: str, request: Request):
         org_query(request, get_forgiving_filter(student_id)),
         {"$set": {"is_chief_commissioner": False}}
     )
+    await log_action("chief_commissioner_cleared", current_actor(request), {
+        "student_id": normalize_student_id(student_id)
+    }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_chief_commissioner": False}
 
 
@@ -2127,7 +2581,7 @@ async def set_finance_commissioner(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_finance_commissioner": True}}
     )
-    await log_action("finance_commissioner_set", "superadmin", {"student_id": student_id}, org_id=request.state.org_id)
+    await log_action("finance_commissioner_set", current_actor(request), {"student_id": student_id}, org_id=request.state.org_id)
     return {"student_id": student_id, "is_finance_commissioner": True}
 
 
@@ -2137,7 +2591,7 @@ async def clear_finance_commissioner(student_id: str, request: Request):
         org_query(request, get_forgiving_filter(student_id)),
         {"$set": {"is_finance_commissioner": False}}
     )
-    await log_action("finance_commissioner_cleared", "superadmin", {"student_id": student_id}, org_id=request.state.org_id)
+    await log_action("finance_commissioner_cleared", current_actor(request), {"student_id": student_id}, org_id=request.state.org_id)
     return {"student_id": student_id, "is_finance_commissioner": False}
 
 
@@ -2164,7 +2618,7 @@ async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate, r
         {"_id": voter["_id"]},
         {"$set": {"commissioner_role": data.role_label}}
     )
-    await log_action("commissioner_role_set", "superadmin", {
+    await log_action("commissioner_role_set", current_actor(request), {
         "student_id": student_id, "role_label": data.role_label
     }, org_id=request.state.org_id)
     return {"student_id": student_id, "commissioner_role": data.role_label}
@@ -2180,7 +2634,7 @@ async def toggle_commissioner(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_commissioner": new_val}}
     )
-    await log_action("commissioner_toggled", "superadmin", {
+    await log_action("commissioner_toggled", current_actor(request), {
     "student_id": student_id, "is_commissioner": new_val
     }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_commissioner": new_val}
@@ -2205,7 +2659,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "IT Admin", temp_password)
-    await log_action("it_admin_credentials_set", "superadmin", {
+    await log_action("it_admin_credentials_set", current_actor(request), {
         "student_id": student_id, "email": data.email, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "credentials_set", "sms_notified": sms_sent}
@@ -2230,7 +2684,7 @@ async def superadmin_force_approve(app_id: str, request: Request):
             "decided_at": datetime.utcnow()
         }}
     )
-    await log_action("application_force_approved", "superadmin", {"app_id": app_id}, org_id=request.state.org_id)
+    await log_action("application_force_approved", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-approved application {app_id}.")
     return {"status": "force_approved"}
 
@@ -2252,7 +2706,7 @@ async def superadmin_force_deny(app_id: str, request: Request):
             "decided_at": datetime.utcnow()
         }}
     )
-    await log_action("application_force_denied", "superadmin", {"app_id": app_id}, org_id=request.state.org_id)
+    await log_action("application_force_denied", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-denied application {app_id}.")
     return {"status": "force_denied"}
 
@@ -2275,7 +2729,7 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
             "finance_cleared_at": datetime.utcnow()
         }}
     )
-    await log_action("application_force_finance_cleared", "superadmin", {"app_id": app_id}, org_id=request.state.org_id)
+    await log_action("application_force_finance_cleared", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"💰 Superadmin force-cleared finance gate for application {app_id}.")
     return {"status": "force_finance_cleared"}
 
@@ -2288,7 +2742,7 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
         raise HTTPException(404, "Candidate not found.")
 
     await db.candidates.delete_one(org_query(request, {"_id": ObjectId(candidate_id)}))
-    await log_action("candidate_removed", "superadmin", {
+    await log_action("candidate_removed", current_actor(request), {
     "name": cand.get("name"), "position": cand.get("position")
     }, org_id=request.state.org_id)
     
@@ -2410,6 +2864,9 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
 
 @app.post("/it-admin/students/request-add")
 async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    # A request attributed to someone else would make the audit trail lie
+    # about who asked for a voter to be added to the register.
+    bind_identity(request, data.requested_by, "IT Admin account")
     # Prevent duplicate pending requests for same student
     existing = await db.student_changes.find_one(org_query(request, {
         "student_id":  data.student_id,
@@ -2449,7 +2906,7 @@ async def reset_it_admin_password(student_id: str, request: Request):
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "IT Admin", temp_password)
-    await log_action("it_admin_password_reset", "superadmin", {
+    await log_action("it_admin_password_reset", current_actor(request), {
         "student_id": student_id, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "password_reset", "sms_notified": sms_sent}
@@ -2472,13 +2929,14 @@ async def reset_commissioner_password(student_id: str, request: Request):
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Commissioner", temp_password)
-    await log_action("commissioner_password_reset", "superadmin", {
+    await log_action("commissioner_password_reset", current_actor(request), {
         "student_id": student_id, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "password_reset", "sms_notified": sms_sent}
 
 @app.post("/it-admin/students/request-remove")
 async def request_remove_student(data: ITAdminStudentRemove, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    bind_identity(request, data.requested_by, "IT Admin account")
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(404, "Student not found in voter register.")
@@ -2511,6 +2969,7 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
     change = await db.student_changes.find_one(org_query(request, {"_id": ObjectId(change_id)}))
     if not change:
         raise HTTPException(404, "Request not found.")
+    bind_identity(request, data.requested_by, "IT Admin account")
     if change.get("requested_by") != data.requested_by:
         raise HTTPException(403, "You can only cancel your own requests.")
     if change.get("status") != "pending":
@@ -2536,6 +2995,7 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
 
 @app.get("/it-admin/students/my-requests/{it_admin_id}")
 async def get_my_requests(it_admin_id: str, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    bind_identity(request, it_admin_id, "IT Admin account")
     changes = []
     async for c in db.student_changes.find(
         org_query(request, {"requested_by": it_admin_id})
@@ -2579,6 +3039,8 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
         raise HTTPException(404, "Change request not found.")
     if change.get("status") != "pending":
         raise HTTPException(400, f"This request is already {change.get('status')}.")
+
+    bind_identity(request, data.financial_controller_id, "Financial Controller account")
 
     financial_controller = await db.voters.find_one(org_query(request, {
         **get_forgiving_filter(data.financial_controller_id),
@@ -2647,7 +3109,7 @@ async def toggle_it_admin(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_it_admin": new_val}}
     )
-    await log_action("it_admin_toggled", "superadmin", {
+    await log_action("it_admin_toggled", current_actor(request), {
         "student_id": student_id, "is_it_admin": new_val
     }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_it_admin": new_val}
@@ -2673,7 +3135,7 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Commissioner", temp_password)
-    await log_action("commissioner_credentials_set", "superadmin", {
+    await log_action("commissioner_credentials_set", current_actor(request), {
         "student_id": student_id, "email": data.email, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "credentials_set", "sms_notified": sms_sent}
@@ -2706,7 +3168,7 @@ async def toggle_financial_controller(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_financial_controller": new_val}}
     )
-    await log_action("financial_controller_toggled", "superadmin", {
+    await log_action("financial_controller_toggled", current_actor(request), {
         "student_id": student_id, "is_financial_controller": new_val
     }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_financial_controller": new_val}
@@ -2732,7 +3194,7 @@ async def set_financial_controller_credentials(student_id: str, data: SetEmailOn
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
-    await log_action("financial_controller_credentials_set", "superadmin", {
+    await log_action("financial_controller_credentials_set", current_actor(request), {
         "student_id": student_id, "email": data.email, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "credentials_set", "sms_notified": sms_sent}
@@ -2755,7 +3217,7 @@ async def reset_financial_controller_password(student_id: str, request: Request)
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
-    await log_action("financial_controller_password_reset", "superadmin", {
+    await log_action("financial_controller_password_reset", current_actor(request), {
         "student_id": student_id, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "password_reset", "sms_notified": sms_sent}
@@ -2788,7 +3250,7 @@ async def toggle_overseer(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {"is_overseer": new_val}}
     )
-    await log_action("overseer_toggled", "superadmin", {
+    await log_action("overseer_toggled", current_actor(request), {
         "student_id": student_id, "is_overseer": new_val
     }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_overseer": new_val}
@@ -2814,7 +3276,7 @@ async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request:
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
-    await log_action("overseer_credentials_set", "superadmin", {
+    await log_action("overseer_credentials_set", current_actor(request), {
         "student_id": student_id, "email": data.email, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "credentials_set", "sms_notified": sms_sent}
@@ -2837,7 +3299,7 @@ async def reset_overseer_password(student_id: str, request: Request):
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
-    await log_action("overseer_password_reset", "superadmin", {
+    await log_action("overseer_password_reset", current_actor(request), {
         "student_id": student_id, "sms_notified": sms_sent
     }, org_id=request.state.org_id)
     return {"status": "password_reset", "sms_notified": sms_sent}
@@ -2875,7 +3337,7 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
             "resolved_at":          datetime.utcnow()
         }}
     )
-    await log_action("student_change_force_approved", "superadmin", {
+    await log_action("student_change_force_approved", current_actor(request), {
         "change_type":  change["change_type"],
         "student_id":   change["student_id"],
         "requested_by": change.get("requested_by", "")
@@ -2899,7 +3361,7 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
             "resolved_at":          datetime.utcnow()
         }}
     )
-    await log_action("student_change_force_denied", "superadmin", {
+    await log_action("student_change_force_denied", current_actor(request), {
         "change_type":  change["change_type"],
         "student_id":   change["student_id"],
         "requested_by": change.get("requested_by", "")
@@ -2930,7 +3392,7 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
         })},
         upsert=True
     )
-    await log_action("student_added_by_superadmin", "superadmin", {
+    await log_action("student_added_by_superadmin", current_actor(request), {
         "student_id": data.student_id,
         "full_name":  data.full_name,
         "reason":     data.reason
@@ -2944,7 +3406,7 @@ async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request
     if not student:
         raise HTTPException(404, "Student not found.")
     await db.voters.delete_one(org_query(request, get_forgiving_filter(data.student_id)))
-    await log_action("student_removed_by_superadmin", "superadmin", {
+    await log_action("student_removed_by_superadmin", current_actor(request), {
         "student_id": data.student_id,
         "full_name":  student.get("full_name", ""),
         "reason":     data.reason
@@ -2980,3 +3442,463 @@ async def get_audit_log(request: Request, limit: int = 200, action: str = None):
         entry["_id"] = str(entry["_id"])
         logs.append(entry)
     return logs
+
+
+# =============================================================================
+# ELECTION PHASES — schedule read/write
+# =============================================================================
+# Read is open to every admin role (full transparency was the explicit
+# decision); only SuperAdmin can edit the base schedule.
+
+@app.get("/admin/schedule")
+async def get_admin_schedule(request: Request):
+    """Read-only phase schedule + legacy voting window, for the countdown
+    widget mounted in all five dashboards."""
+    schedule = await get_phase_schedule(request)
+    config = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    now = datetime.utcnow()
+
+    phases = []
+    for name in PHASE_NAMES:
+        window = schedule["phases"][name]
+        start, end = window.get("start"), window.get("end")
+        if start and now < start:
+            state = "upcoming"
+        elif end and now > end:
+            state = "closed"
+        elif start or end:
+            state = "active"
+        else:
+            state = "unscheduled"
+        phases.append({
+            "name": name,
+            "start": start,
+            "end": end,
+            "enforced": window.get("enforced", False),
+            "state": state,
+            "seconds_until_start": int((start - now).total_seconds()) if start and now < start else None,
+            "seconds_until_end": int((end - now).total_seconds()) if end and now < end else None,
+        })
+
+    return {
+        "round_id": schedule["round_id"],
+        "phases": phases,
+        "server_time": now,
+        "election": {
+            "is_open": config.get("is_open", True),
+            "is_certified": config.get("is_certified", False),
+            "start": config.get("start_time"),
+            "end": config.get("end_time"),
+        },
+    }
+
+
+@app.post("/admin/schedule/phases")
+async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
+                             admin: dict = Depends(require_role("superadmin"))):
+    unknown = set(data.phases) - set(PHASE_NAMES)
+    if unknown:
+        raise HTTPException(400, f"Unknown phase(s): {', '.join(sorted(unknown))}.")
+
+    stored = {}
+    for name, window in data.phases.items():
+        if window.start and window.end and window.end <= window.start:
+            raise HTTPException(400, f"'{name}' end time must be after its start time.")
+        stored[name] = {"start": window.start, "end": window.end, "enforced": window.enforced}
+
+    await db.settings.update_one(
+        org_query(request, {"name": "election_phases"}),
+        {"$set": org_stamp(request, {
+            "name": "election_phases",
+            "phases": stored,
+            "round_id": data.round_id or DEFAULT_ROUND_ID,
+            "updated_at": datetime.utcnow(),
+        })},
+        upsert=True,
+    )
+    await log_action("phases_scheduled", current_actor(request), {
+        "round_id": data.round_id,
+        "phases": {k: {"enforced": v["enforced"]} for k, v in stored.items()},
+    }, org_id=request.state.org_id)
+    return {"status": "saved", "round_id": data.round_id or DEFAULT_ROUND_ID}
+
+
+# =============================================================================
+# EXCEPTION GRANTS  (Chief Commissioner only)
+# =============================================================================
+# A blanket "reopen nominations" toggle would let everyone back in and leave
+# no reviewable record of who used the reopened window. A scoped, named,
+# time-bound, logged grant solves the real problem — one late applicant —
+# without the blast radius.
+
+@app.get("/admin/exception-grants")
+async def list_exception_grants(request: Request):
+    grants = []
+    async for g in db.exception_grants.find(org_query(request)).sort("granted_at", -1).limit(200):
+        g["_id"] = str(g["_id"])
+        grants.append(g)
+    return grants
+
+
+@app.post("/admin/exception-grants")
+async def create_exception_grant(data: ExceptionGrantCreate, request: Request,
+                                 admin: dict = Depends(require_chief_commissioner)):
+    if data.phase not in PHASE_NAMES:
+        raise HTTPException(400, f"phase must be one of: {', '.join(PHASE_NAMES)}.")
+    if not data.reason.strip():
+        raise HTTPException(400, "A written reason is required — this grant is the decision record.")
+    if data.expires_at and data.expires_at <= datetime.utcnow():
+        raise HTTPException(400, "Expiry must be in the future.")
+
+    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    if not student:
+        raise HTTPException(404, "That student is not on the voter register.")
+
+    doc = org_stamp(request, {
+        "student_id": normalize_student_id(data.student_id),
+        "full_name": student.get("full_name", ""),
+        "phase": data.phase,
+        "reason": data.reason.strip(),
+        "granted_by": current_actor(request),
+        "granted_at": datetime.utcnow(),
+        "expires_at": data.expires_at,
+        "round_id": await current_round_id(request),
+        "revoked": False,
+    })
+    result = await db.exception_grants.insert_one(doc)
+    await log_action("phase_exception_granted", current_actor(request), {
+        "student_id": doc["student_id"],
+        "full_name": doc["full_name"],
+        "phase": data.phase,
+        "reason": doc["reason"],
+        "expires_at": data.expires_at.isoformat() if data.expires_at else None,
+    }, org_id=request.state.org_id)
+    return {"status": "granted", "id": str(result.inserted_id)}
+
+
+@app.post("/admin/exception-grants/{grant_id}/revoke")
+async def revoke_exception_grant(grant_id: str, request: Request,
+                                 admin: dict = Depends(require_chief_commissioner)):
+    try:
+        oid = ObjectId(grant_id)
+    except Exception:
+        raise HTTPException(400, "Invalid grant id.")
+    grant = await db.exception_grants.find_one(org_query(request, {"_id": oid}))
+    if not grant:
+        raise HTTPException(404, "Grant not found.")
+    await db.exception_grants.update_one(
+        {"_id": oid},
+        {"$set": {"revoked": True, "revoked_at": datetime.utcnow(), "revoked_by": current_actor(request)}},
+    )
+    await log_action("phase_exception_revoked", current_actor(request), {
+        "grant_id": grant_id, "student_id": grant.get("student_id"), "phase": grant.get("phase")
+    }, org_id=request.state.org_id)
+    return {"status": "revoked"}
+
+
+# =============================================================================
+# AUDIT TRANSPARENCY  (readable by every admin role)
+# =============================================================================
+# The activity log and integrity chain were superadmin-only. Moving the READS
+# to /admin/* makes them visible to every role under the existing "any valid
+# admin token" gate. Writes (creating a checkpoint) stay superadmin-only.
+
+@app.get("/admin/audit-log")
+async def get_admin_audit_log(request: Request, limit: int = 200, action: str = None,
+                              actor: str = None, skip: int = 0):
+    query = org_query(request)
+    if action:
+        query["action"] = {"$regex": re.escape(action.strip()[:60]), "$options": "i"}
+    if actor:
+        query["actor"] = {"$regex": re.escape(actor.strip()[:60]), "$options": "i"}
+    limit = min(max(limit, 1), 500)
+    skip = max(skip, 0)
+    total = await db.audit_log.count_documents(query)
+    logs = []
+    async for entry in db.audit_log.find(query).sort("timestamp", -1).skip(skip).limit(limit):
+        entry["_id"] = str(entry["_id"])
+        logs.append(entry)
+    return {"total": total, "limit": limit, "skip": skip, "entries": logs}
+
+
+@app.get("/admin/audit/verify")
+async def get_admin_audit_verify(request: Request):
+    """Independently re-derives the whole hash chain from raw vote_events."""
+    result = await verify_audit_chain(request)
+    await log_action("audit_chain_verified", current_actor(request), {
+        "valid": result.get("valid"),
+        "checkpoints": result.get("checkpoints_verified"),
+    }, org_id=request.state.org_id)
+    return result
+
+
+@app.get("/admin/audit/checkpoints")
+async def list_audit_checkpoints(request: Request, limit: int = 100):
+    limit = min(max(limit, 1), 500)
+    rows = []
+    async for cp in db.audit_checkpoints.find(org_query(request)).sort("to_id", -1).limit(limit):
+        rows.append({
+            "id": str(cp["_id"]),
+            "from_id": str(cp["from_id"]) if cp.get("from_id") else None,
+            "to_id": str(cp["to_id"]),
+            "event_count": cp.get("event_count", 0),
+            "prev_chain_hash": cp.get("prev_chain_hash"),
+            "chain_hash": cp.get("chain_hash"),
+            "created_at": cp.get("created_at"),
+        })
+    anchor_failures = await db.audit_log.count_documents(
+        org_query(request, {"action": "audit_checkpoint_anchor_failed"})
+    )
+    return {"checkpoints": rows, "anchor_failures": anchor_failures}
+
+
+# =============================================================================
+# ANALYTICS  (read-only aggregations, shared across all admin roles)
+# =============================================================================
+
+@app.get("/admin/analytics/turnout-velocity")
+async def analytics_turnout_velocity(request: Request, bucket: str = "hour"):
+    """Votes cast per hour or day, built from vote_events.cast_at — collected
+    since day one and never surfaced anywhere until now."""
+    if bucket not in ("hour", "day"):
+        raise HTTPException(400, "bucket must be 'hour' or 'day'.")
+    fmt = "%Y-%m-%dT%H:00" if bucket == "hour" else "%Y-%m-%d"
+    series = []
+    async for row in db.vote_events.aggregate([
+        {"$match": org_query(request)},
+        {"$group": {"_id": {"$dateToString": {"format": fmt, "date": "$cast_at"}}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]):
+        series.append({"bucket": row["_id"], "votes": row["count"]})
+
+    running = 0
+    for point in series:
+        running += point["votes"]
+        point["cumulative"] = running
+
+    peak = max(series, key=lambda p: p["votes"]) if series else None
+    return {
+        "bucket": bucket,
+        "series": series,
+        "total_votes": running,
+        "peak": peak,
+    }
+
+
+@app.get("/admin/analytics/funnel")
+async def analytics_funnel(request: Request):
+    """Conversion between voters.last_status stages, not just a snapshot count
+    of each. idle -> otp_sent -> authenticated -> completed."""
+    stages = ["idle", "otp_sent", "authenticated", "completed"]
+    counts = {stage: 0 for stage in stages}
+    async for row in db.voters.aggregate([
+        {"$match": org_query(request)},
+        {"$group": {"_id": {"$ifNull": ["$last_status", "idle"]}, "count": {"$sum": 1}}},
+    ]):
+        counts[row["_id"]] = counts.get(row["_id"], 0) + row["count"]
+
+    total = sum(counts.values())
+    # Each stage is cumulative: anyone who completed necessarily passed
+    # through every earlier stage, so "reached" counts everyone at or beyond.
+    reached, running = {}, 0
+    for stage in reversed(stages):
+        running += counts.get(stage, 0)
+        reached[stage] = running
+
+    steps = []
+    for i, stage in enumerate(stages):
+        prev = reached[stages[i - 1]] if i else total
+        steps.append({
+            "stage": stage,
+            "at_stage": counts.get(stage, 0),
+            "reached": reached[stage],
+            "conversion_from_previous_pct": round((reached[stage] / prev) * 100, 1) if prev else 0.0,
+            "dropped_off": max(prev - reached[stage], 0) if i else 0,
+        })
+    return {"total_registered": total, "steps": steps}
+
+
+@app.get("/admin/analytics/undervote")
+async def analytics_undervote(request: Request):
+    """Positions where fewer votes were cast than there were completed voters
+    — i.e. voters skipped that race. Nothing in the system checked this."""
+    completed = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    vote_counts = await get_vote_counts(request)
+
+    by_position: dict[str, int] = {}
+    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+        title = cand.get("position", "Unknown Position")
+        by_position[title] = by_position.get(title, 0) + vote_counts.get(str(cand["_id"]), 0)
+
+    rows = []
+    for title, votes in by_position.items():
+        skipped = max(completed - votes, 0)
+        rows.append({
+            "position": title,
+            "votes_cast": votes,
+            "eligible_completed_voters": completed,
+            "undervotes": skipped,
+            "undervote_rate_pct": round((skipped / completed) * 100, 1) if completed else 0.0,
+        })
+    rows.sort(key=lambda r: r["undervote_rate_pct"], reverse=True)
+    return {"completed_voters": completed, "positions": rows}
+
+
+@app.get("/admin/analytics/anomalies")
+async def analytics_anomalies(request: Request, limit: int = 100):
+    """Pulls the security-relevant entries out of the general activity log
+    into one feed, instead of requiring someone to spot them buried in it."""
+    limit = min(max(limit, 1), 300)
+    watched = [
+        "admin_guard_403", "admin_guard_401", "admin_login_locked",
+        "otp_verify_locked", "audit_checkpoint_anchor_failed",
+        "phase_exception_granted", "phase_exception_used", "phase_exception_revoked",
+        "election_reset", "results_certified", "election_toggled",
+        "chief_commissioner_set", "chief_commissioner_cleared",
+    ]
+    query = org_query(request, {"action": {"$in": watched}})
+    events = []
+    async for entry in db.audit_log.find(query).sort("timestamp", -1).limit(limit):
+        entry["_id"] = str(entry["_id"])
+        events.append(entry)
+
+    since = datetime.utcnow() - timedelta(hours=24)
+    summary = []
+    async for row in db.audit_log.aggregate([
+        {"$match": org_query(request, {"action": {"$in": watched}, "timestamp": {"$gte": since}})},
+        {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]):
+        summary.append({"action": row["_id"], "count_24h": row["count"]})
+
+    return {"summary_24h": summary, "events": events}
+
+
+@app.get("/admin/analytics/overview")
+async def analytics_overview(request: Request):
+    """Compact roster/turnout snapshot — the landing view for IT Admin, which
+    previously had no visibility into election state at all."""
+    total = await db.voters.count_documents(org_query(request))
+    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    config = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    return {
+        "total_registered": total,
+        "voted": voted,
+        "turnout_pct": round((voted / total) * 100, 1) if total else 0.0,
+        "candidates": await db.candidates.count_documents(org_query(request)),
+        "positions": await db.positions.count_documents(org_query(request)),
+        "applications_pending": await db.applications.count_documents(org_query(request, {"status": "pending"})),
+        "student_changes_pending": await db.student_changes.count_documents(org_query(request, {"status": "pending"})),
+        "with_phone_on_file": await db.voters.count_documents(org_query(request, {"phone_numbers": {"$ne": []}})),
+        "is_open": config.get("is_open", True),
+        "is_certified": config.get("is_certified", False),
+    }
+
+
+# =============================================================================
+# OFFICIAL REPORT  (admin-only — declaration, signatures, cc list)
+# =============================================================================
+# The sworn declaration, signature grid and cc_list used to render on the
+# PUBLIC results page, hidden only by a client-side `isCertified &&` check —
+# which is not an access boundary, since the code ships in the public bundle
+# either way. They now only exist behind this authenticated endpoint; the
+# public page never fetches them.
+
+@app.get("/admin/official-report")
+async def get_official_report(request: Request):
+    config = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    branding = await db.settings.find_one(org_query(request, {"name": "branding"})) or {}
+
+    commissioners = []
+    async for c in db.voters.find(
+        org_query(request, {"is_commissioner": True}),
+        {"_id": 0, "full_name": 1, "commissioner_role": 1, "is_chief_commissioner": 1},
+    ):
+        commissioners.append(c)
+    commissioners.sort(key=lambda c: (not c.get("is_chief_commissioner"), c.get("full_name", "")))
+
+    chief = next((c for c in commissioners if c.get("is_chief_commissioner")), None)
+    commissioner_name = (
+        (chief or {}).get("full_name")
+        or branding.get("commissioner_name")
+        or "The Electoral Commissioner"
+    )
+    org_name = branding.get("org_name", "the Organisation")
+    is_certified = config.get("is_certified", False)
+
+    # The report fingerprint is now the REAL head hash of the verified audit
+    # chain, not a client-side rolling hash of whatever JSON happened to be on
+    # screen. "Verified Secure" previously verified nothing.
+    chain = await verify_audit_chain(request)
+    fingerprint = (chain.get("head_hash") or "")[:32].upper() or "NO-CHECKPOINTS"
+
+    declaration = None
+    if is_certified:
+        declaration = (
+            f"I, {commissioner_name}, the duly appointed Electoral Commissioner, hereby declare that "
+            f"the {org_name} elections conducted through the official online voting portal were carried "
+            f"out in accordance with the {org_name} electoral guidelines and procedures. After the close "
+            f"of voting and the tallying of all valid votes cast, I hereby officially declare the "
+            f"successful candidates listed in the summary as the duly elected leaders of {org_name}. "
+            f"I congratulate the successful candidates and extend appreciation to all aspirants, members, "
+            f"and voters for participating and upholding the principles of a free, fair, and transparent election."
+        )
+
+    await log_action("official_report_generated", current_actor(request), {
+        "is_certified": is_certified, "chain_valid": chain.get("valid")
+    }, org_id=request.state.org_id)
+
+    return {
+        "is_certified": is_certified,
+        "org_name": org_name,
+        "university_name": branding.get("university_name", ""),
+        "commissioner_name": commissioner_name,
+        "declaration": declaration,
+        "signatories": [
+            {"full_name": c.get("full_name", ""), "role": c.get("commissioner_role") or "Commissioner"}
+            for c in commissioners
+        ] or [
+            {"full_name": "", "role": r}
+            for r in ("Chairperson EC", "Secretary EC", "Commissioner", "Commissioner")
+        ],
+        "cc_list": branding.get("cc_list", []),
+        "chain": {
+            "valid": chain.get("valid"),
+            "checkpoints_verified": chain.get("checkpoints_verified", 0),
+            "head_hash": chain.get("head_hash"),
+        },
+        "fingerprint": fingerprint,
+        "generated_at": datetime.utcnow(),
+        "generated_by": current_actor(request),
+    }
+
+
+# =============================================================================
+# PUBLIC VOTER PARTICIPATION ROLL
+# =============================================================================
+# Results.jsx has always called /election-results/voter-roll; the route never
+# existed, so the call 403'd, was swallowed by .catch(), and the roll silently
+# rendered empty forever. Implemented here with the privacy threshold enforced
+# SERVER-SIDE (it was previously only a client-side conditional) and names
+# masked the same way the public register already masks them.
+
+PUBLIC_ROLL_THRESHOLD = 50
+PUBLIC_ROLL_MAX = 500
+
+
+@app.get("/election-results/voter-roll")
+async def get_public_voter_roll(request: Request):
+    _check_register_rate_limit(request)
+    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    if voted < PUBLIC_ROLL_THRESHOLD:
+        # Below the threshold the server returns nothing at all, so a small
+        # turnout can't be de-anonymised by reading the network response.
+        return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": False, "roll": []}
+
+    roll = []
+    cursor = db.voters.find(
+        org_query(request, {"has_voted": True}), {"_id": 0, "full_name": 1}
+    ).limit(PUBLIC_ROLL_MAX)
+    async for v in cursor:
+        roll.append({"full_name": _mask_name(v.get("full_name", ""))})
+    return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": True, "roll": roll}

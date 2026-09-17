@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+
 
 export default function OverseerDashboard({ onLogout }) {
   const overseerId   = sessionStorage.getItem('overseer_id')   || '';
@@ -36,6 +38,8 @@ export default function OverseerDashboard({ onLogout }) {
     { id: 'applications', label: '🗳️ Applications', count: data?.applications?.length },
     { id: 'changes',      label: '📋 Student Changes', count: data?.student_changes?.length },
     { id: 'results',      label: '📊 Candidate Results' },
+    // Observer role: read-only visibility only — no write actions are added.
+    ...SHARED_TAB_DEFS,
   ];
 
   return (
@@ -214,6 +218,7 @@ export default function OverseerDashboard({ onLogout }) {
           </>
         )}
 
+        <SharedTabPanels activeTab={tab} />
       </div>
     </div>
   );

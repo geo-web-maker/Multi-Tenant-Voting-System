@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
+import {
+  SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock,
+} from './SharedAdminPanels';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -85,9 +88,6 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [itAdminSearch, setItAdminSearch]   = useState('');
   const [studentChanges, setStudentChanges] = useState([]);
   const [scFilter, setScFilter]             = useState('all');
-  const [auditLog, setAuditLog]             = useState([]);
-  const [auditFilter, setAuditFilter]       = useState('');
-  const [auditLoading, setAuditLoading]     = useState(false);
   const [itCredEmail, setItCredEmail]   = useState({});   // { student_id: email }
   const [commCredEmail, setCommCredEmail] = useState({}); // { student_id: email }
   const [resetting, setResetting]       = useState({});   // { student_id: bool }
@@ -580,18 +580,6 @@ const fetchStudentChanges = async () => {
     } catch (e) {}
   };
 
-const fetchAuditLog = async () => {
-  setAuditLoading(true);
-  try {
-      const url = auditFilter
-        ? `/superadmin/audit-log?action=${auditFilter}`
-        : `/superadmin/audit-log`;
-      const res = await api.get(url);
-      setAuditLog(res.data);
-    } catch (e) {}
-    finally { setAuditLoading(false); }
-  };
-
   const handleToggleItAdmin = async (studentId) => {
   try {
       const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
@@ -706,7 +694,10 @@ const handleSuperAdminRemoveStudent = async () => {
     { id: 'financial_controllers', label: '💰 Financial Controllers' },
     { id: 'overseers',  label: '👁️ Overseers' },
     { id: 'organizations', label: '🏢 Organizations' },
-    { id: 'audit_log',  label: '📋 Audit Log' },
+    // The old inline 'audit_log' tab is superseded by the shared Activity Log
+    // panel, which every dashboard now mounts from one implementation.
+    ...SHARED_TAB_DEFS,
+    { id: 'official_doc', label: '📄 Official Document' },
   ];
 
   return (
@@ -1953,58 +1944,12 @@ const handleSuperAdminRemoveStudent = async () => {
           </div>
         )}
 
-        {/* ══════════════ AUDIT LOG TAB ══════════════ */}
-        {activeTab === 'audit_log' && (
-          <div>
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
-              <input
-                style={{ ...inp, maxWidth: '300px' }}
-                placeholder="Filter by action e.g. 'application'"
-                value={auditFilter}
-                onChange={e => setAuditFilter(e.target.value)}
-              />
-              <button style={ghostBtn} onClick={fetchAuditLog}>🔍 Filter</button>
-              {auditFilter && (
-                <button style={ghostBtn} onClick={() => { setAuditFilter(''); fetchAuditLog(); }}>Clear</button>
-              )}
-            </div>
-
-            {auditLoading && <p style={{ opacity: 0.5 }}>Loading…</p>}
-
-            <div style={{ maxHeight: '600px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead style={{ position: 'sticky', top: 0, backgroundColor: '#1e293b' }}>
-                  <tr>
-                    {['Timestamp', 'Action', 'Actor', 'Details'].map(h => (
-                      <th key={h} style={th}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditLog.map(entry => (
-                    <tr key={entry._id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={{ ...td, whiteSpace: 'nowrap', fontSize: '11px', opacity: 0.7 }}>
-                        {new Date(entry.timestamp).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
-                      </td>
-                      <td style={{ ...td, fontWeight: '600' }}>{entry.action.replace(/_/g, ' ')}</td>
-                      <td style={{ ...td, fontSize: '12px' }}>{entry.actor}</td>
-                      <td style={{ ...td, fontSize: '11px', opacity: 0.7 }}>
-                        {Object.entries(entry.details || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-                      </td>
-                    </tr>
-                  ))}
-                  {auditLog.length === 0 && !auditLoading && (
-                    <tr>
-                      <td colSpan={4} style={{ ...td, textAlign: 'center', opacity: 0.4, padding: '30px' }}>
-                        No log entries found.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+        {/* The audit table that used to live inline here is now the shared
+            ActivityLog panel — one implementation, mounted in all five
+            dashboards, reading /admin/audit-log instead of the
+            superadmin-only route. */}
+        <SharedTabPanels activeTab={activeTab} canEditSchedule isChief />
+        {activeTab === 'official_doc' && <OfficialCertificationBlock />}
       </div>
     </div>
   );

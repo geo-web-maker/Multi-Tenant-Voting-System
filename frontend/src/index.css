@@ -203,6 +203,7 @@ button:hover {
   font-family: system-ui, sans-serif !important;
   font-size: 14px !important;
   letter-spacing: 1px !important; /* Added for that pro look */
+  }
 }
 } /* closes @media screen opened above */
 
@@ -284,4 +285,137 @@ button:hover {
 .modal-content .muted-text,
 .modal-content p {
   color: var(--text-muted) !important;
+}
+
+/* =========================================================================
+   MOBILE OPTIMISATION
+   ========================================================================= */
+
+/* Nothing should ever be able to push the page sideways. Individual wide
+   elements (tables, code, hash strings) scroll inside their own container
+   instead — see .table-scroll / .hash-cell below. */
+html, body {
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+#root {
+  max-width: 100vw;
+}
+
+/* Any element can opt into horizontal scrolling for wide content. */
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-scroll > table {
+  min-width: 560px;
+}
+
+/* Chain hashes and long IDs are unbreakable strings — without this they
+   force the whole layout wider than the viewport on a phone. */
+.hash-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* Images and media never overflow their column. */
+img, video, canvas, svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Long names / emails in dashboard rows wrap instead of stretching the row. */
+td, th {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  /* iOS Safari zooms the whole page whenever a focused input has a font-size
+     below 16px. Every dashboard input was 13px, so tapping any field
+     silently zoomed and left the user scrolled sideways. */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  /* Tap targets: 44px is the accessibility floor for a finger. */
+  button, .tab-scroll > button, select {
+    min-height: 44px;
+  }
+
+  /* Two-column dashboard grids collapse to one column. The inline
+     `repeat(auto-fit, minmax(300px, 1fr))` already does this, but nested
+     flex rows inside the cards do not. */
+  .stack-mobile {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .stack-mobile > * {
+    width: 100% !important;
+  }
+
+  /* Dashboard header: logout/certify buttons wrap under the title rather
+     than squeezing it to a few characters. */
+  .dash-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+  }
+  .dash-header > div:last-child {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Every dashboard table becomes horizontally scrollable. */
+  table {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 600px) {
+  /* Modals were fixed at maxWidth 400–700px with 90% width, which on a
+     360px phone leaves a cramped box with 30px padding. */
+  .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 92vh !important;
+    overflow-y: auto;
+    padding: 18px !important;
+    border-radius: 16px 16px 0 0 !important;
+  }
+
+  /* Cards: reclaim the 20px inner padding that the 16px shell padding
+     already provides. */
+  .dashboard-shell .card-pad {
+    padding: 14px !important;
+  }
+}
+
+/* Respect users who ask for reduced motion — several progress bars animate
+   width over 1.5s, which is uncomfortable for motion-sensitive users. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visible keyboard focus. The global `button { border-color }` hover style
+   gave mouse users feedback but keyboard users nothing. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+/* Print: the official report's signature grid must not split across pages. */
+@media print {
+  .signature-grid, .declaration-block {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
 }

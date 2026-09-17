@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+
 
 export default function FinancialControllerDashboard({ onLogout }) {
 
@@ -70,6 +72,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
     { id: 'pending',  label: 'Pending',  count: pending.length },
     { id: 'approved', label: 'Approved', count: approved.length },
     { id: 'denied',   label: 'Denied',   count: denied.length },
+    ...SHARED_TAB_DEFS,
   ];
 
   const currentList = listFor(activeTab);
@@ -253,6 +256,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
           );
         })}
 
+        <SharedTabPanels activeTab={activeTab} />
       </div>
     </div>
   );

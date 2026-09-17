@@ -28,24 +28,35 @@ export default function Results() {
   const [orgName, setOrgName] = useState("");
   const [universityName, setUniversityName] = useState("");
   const [universityLogoUrl, setUniversityLogoUrl] = useState("");
-  const [commissionerName, setCommissionerName] = useState("");
-  const [commissioners, setCommissioners] = useState([]);
-  const [ccList, setCcList] = useState([]);
+  // commissionerName / commissioners / ccList are deliberately NOT held here
+  // any more. The declaration, signature grid and distribution list are
+  // institutional/legal content and now live only behind the authenticated
+  // /admin/official-report endpoint. Hiding them with a client-side
+  // `isCertified &&` was never a boundary — the code shipped in the public
+  // bundle either way.
+  const [rollUnlocked, setRollUnlocked] = useState(false);
   
 const PRIVACY_THRESHOLD = 50;
   const BATCH_SIZE = 10; 
 
 const fetchData = async () => {
   try {
-    const [resultsRes, statusRes, votersRes, brandingRes, commissionersRes] = await Promise.all([
+    // The dead call to /superadmin/commissioners is gone: it could only ever
+    // 403 for this page's actual audience (unauthenticated visitors), and the
+    // failure was silently swallowed by .catch().
+    const [resultsRes, statusRes, votersRes, brandingRes] = await Promise.all([
       api.get('/election-results'),
       api.get('/election-status'),
-      api.get('/election-results/voter-roll').catch(() => ({ data: [] })),
-      api.get('/superadmin/branding').catch(() => ({ data: {} })),
-      api.get('/superadmin/commissioners').catch(() => ({ data: [] }))
+      api.get('/election-results/voter-roll').catch(() => ({ data: { roll: [], unlocked: false } })),
+      api.get('/superadmin/branding').catch(() => ({ data: {} }))
     ]);
 
-    const votedList = votersRes.data || [];
+    // The privacy threshold is now enforced server-side — below it the
+    // backend returns an empty roll, so the names are not merely hidden in
+    // the UI, they are never sent.
+    const rollPayload = votersRes.data || {};
+    const votedList = Array.isArray(rollPayload) ? rollPayload : (rollPayload.roll || []);
+    setRollUnlocked(Boolean(rollPayload.unlocked));
 
     setElectionData({
       ...resultsRes.data,
@@ -67,17 +78,6 @@ const fetchData = async () => {
       setUniversityName(brandingRes.data.university_name);
     if (brandingRes.data.university_logo_url)
       setUniversityLogoUrl(brandingRes.data.university_logo_url);
-    if (brandingRes.data.cc_list?.length)
-      setCcList(brandingRes.data.cc_list);
-    
-    const commList = commissionersRes.data || [];
-    setCommissioners(commList);
-    const chief = commList.find(c => c.is_chief_commissioner);
-    if (chief) setCommissionerName(chief.full_name);
-    
-    if (brandingRes.data.cc_list?.length)
-      setCcList(brandingRes.data.cc_list);
-
   } catch (err) {
     console.error("Error fetching data:", err);
     setLoading(false);
@@ -145,7 +145,7 @@ const fetchData = async () => {
   if (loading) return <div style={{textAlign: 'center', padding: '50px'}}>Loading Live Tally...</div>;
 
   return (
-    <div style={{ padding: '20px', maxWidth: '700px', margin: '0 auto', fontFamily: 'system-ui, sans-serif' }}>
+    <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
       
       <div className="no-print">
         <h2 style={{ textAlign: 'center', color: '#2c3e50', marginBottom: '20px' }}>📊 Election Results</h2>
@@ -252,7 +252,7 @@ const fetchData = async () => {
         
         <div style={voterRollSectionStyle}>
           <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}>👥 Voter Participation Roll</h3>
-          {electionData.voter_turnout >= PRIVACY_THRESHOLD ? (
+          {rollUnlocked && displayedVoters.length > 0 ? (
            <div style={scrollableListStyle}>
               {displayedVoters.map((voter) => (
                 <div key={voter.full_name + Math.random()} style={voterRowStyle}>
@@ -289,10 +289,15 @@ const fetchData = async () => {
 
         <div style={{ marginTop: '40px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
           <button onClick={handlePrint} style={printBtnStyle} className="print-btn">
-            🖨️ Download Official PDF Report
+            🖨️ Download Public Results Report
           </button>
           <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '10px' }}>
             Syncing live from Server... Last update: {lastSynced.toLocaleTimeString()}
+          </p>
+          <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '4px', maxWidth: '520px', margin: '4px auto 0' }}>
+            This is the public record: tallies, turnout, the per-position breakdown,
+            certification status and the participation roll. The signed declaration and
+            signature page are issued separately by the Electoral Commission.
           </p>
         </div>
       </div>
@@ -307,9 +312,6 @@ const fetchData = async () => {
         orgName={orgName}
         universityName={universityName}
         universityLogoUrl={universityLogoUrl}
-        commissionerName={commissionerName}
-        commissioners={commissioners}
-        ccList={ccList}
       />
       </div>
     </div>

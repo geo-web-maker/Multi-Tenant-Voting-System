@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import { RosterStats } from './SharedAdminPanels';
+
 
 export default function ITAdminDashboard({ onLogout }) {
 
   const itAdminId   = sessionStorage.getItem('it_admin_id')   || '';
   const itAdminName = sessionStorage.getItem('it_admin_name') || '';
 
-  const [activeTab, setActiveTab] = useState('add');
+  const [activeTab, setActiveTab] = useState('overview');
   const [myRequests, setMyRequests] = useState([]);
   const [loading, setLoading]       = useState(false);
   
@@ -169,9 +172,13 @@ export default function ITAdminDashboard({ onLogout }) {
   const pendingCount = myRequests.filter(r => r.status === 'pending').length;
 
   const tabs = [
+    // IT Admin previously had no visibility into election state at all —
+    // only the three roster-change tabs. Overview is now the landing tab.
+    { id: 'overview', label: '📊 Overview' },
     { id: 'add',      label: '➕ Add Student' },
     { id: 'remove',   label: '➖ Remove Student' },
     { id: 'requests', label: `📋 My Requests`, count: myRequests.length },
+    ...SHARED_TAB_DEFS,
   ];
 
   return (
@@ -455,6 +462,8 @@ export default function ITAdminDashboard({ onLogout }) {
           </div>
         )}
 
+        {activeTab === 'overview' && <RosterStats />}
+        <SharedTabPanels activeTab={activeTab} />
       </div>
     </div>
   );

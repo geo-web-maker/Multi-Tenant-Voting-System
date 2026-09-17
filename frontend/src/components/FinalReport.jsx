@@ -22,35 +22,64 @@ const securityConfig = {
   }
 };
 
-const shuffleArray = (array) => {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-};
+const PrintStyles = () => (
+  <style>{`
+    @media print {
+      .report-watermark {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        background-color: white !important;
+      }
+      /* Ensure text remains high-contrast black */
+      .report-content {
+        position: relative;
+        z-index: 2;
+      }
+     .report-watermark h1:not(.print-color-keep),
+     .report-watermark h2:not(.print-color-keep),
+     .report-watermark h3:not(.print-color-keep),
+     .report-watermark h4:not(.print-color-keep),
+     .report-watermark p:not(.print-color-keep) {
+       color: #000 !important;
+     }
+    }
+  `}</style>
+);
 
-export default function FinalReport({ data, totalVotes, isElectionOpen, isCertified, logoUrl, orgName = "the Organisation", universityName = "", universityLogoUrl = "", commissionerName = "The Electoral Commissioner", commissioners = [], ccList = [] }) {
-  if (!data || !data.results) {
-    return null; 
-  }
 
+/*
+ * PUBLIC results report.
+ *
+ * This component renders on the unauthenticated /results page, so it contains
+ * only content that is public at every stage of the election: tallies,
+ * turnout, the per-position breakdown, the certification status badge and the
+ * participation roll.
+ *
+ * The sworn declaration, the signature grid and the cc distribution list used
+ * to render here too, gated by a client-side `isCertified &&`. That was never
+ * an access boundary — the text and layout shipped in the public JS bundle
+ * regardless, so anyone with dev tools could reconstruct the signed document.
+ * They now live only in OfficialCertificationBlock, which is fed by the
+ * authenticated /admin/official-report endpoint.
+ */
+export default function FinalReport({ data, totalVotes, isElectionOpen, isCertified, logoUrl, orgName = "the Organisation", universityName = "", universityLogoUrl = "" }) {
   // Pick the active config
   const activeStage = isElectionOpen ? 'open' : (isCertified ? 'certified' : 'provisional');
   const config = securityConfig[activeStage];
 
-  const PRIVACY_THRESHOLD = 50; 
-  const results = data.results || [];
-  
-  const shuffledVoterRoll = useMemo(() => {
-    return shuffleArray(data.voter_roll || []);
-  }, [data.voter_roll]);
+  // Memoised so it isn't a fresh array identity on every render, which would
+  // invalidate every downstream useMemo that depends on it.
+  const results = useMemo(() => data?.results || [], [data]);
 
   const stripeColor = `${config.color}08`;
 
+  // A rolling hash of whatever JSON happened to be on screen. It is a
+  // copy-checksum for spotting two printouts that differ — nothing more. It
+  // is NOT the cryptographic audit chain, so it is no longer labelled
+  // "Verified Secure": the real chain hash is only available to authenticated
+  // admins via /admin/official-report, because verifying it requires the
+  // server to re-derive it from the raw ballot events.
   const reportFingerprint = useMemo(() => {
-    // Added isCertified to seed to ensure ID changes upon certification
     const seed = JSON.stringify(results) + totalVotes + isElectionOpen + isCertified;
     let hash = 0;
     for (let i = 0; i < seed.length; i++) {
@@ -74,29 +103,9 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
     return groups;
   }, [results]);
 
- const PrintStyles = () => (
-  <style>{`
-    @media print {
-      .report-watermark {
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-        background-color: white !important;
-      }
-      /* Ensure text remains high-contrast black */
-      .report-content {
-        position: relative;
-        z-index: 2;
-      }
-     .report-watermark h1:not(.print-color-keep),
-     .report-watermark h2:not(.print-color-keep),
-     .report-watermark h3:not(.print-color-keep),
-     .report-watermark h4:not(.print-color-keep),
-     .report-watermark p:not(.print-color-keep) {
-       color: #000 !important;
-     }
-    }
-  `}</style>
-);
+  if (!data || !data.results) {
+    return null;
+  }
 
   return (
   <>
@@ -126,68 +135,57 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
         </div>
       )}
       
-               {/* HEADER WITH DUAL LOGOS & QR VERIFICATION */}
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center', // Changed to center for better logo alignment
-            marginBottom: '30px', 
-            position: 'relative', 
-            zIndex: 1 
-          }}>
-            
-            {/* Left: Kyambogo University Logo */}
-            <div style={{ width: '100px', textAlign: 'left' }}>
-            {universityLogoUrl && (
-              <img 
-                src={universityLogoUrl}
-                alt="University Logo" 
-                style={{ width: '80px', height: 'auto' }} 
-              />
-            )}
-            </div>
-          
-            {/* Center: Title Text */}
-            <div style={{ textAlign: 'center', flex: 1, padding: '0 20px' }}>
-              <h1 style={{ margin: '0', fontSize: '22px', textTransform: 'uppercase', fontWeight: '900' }}>
-                {universityName}
-              </h1>
-              <h2 style={{ margin: '2px 0', fontSize: '18px', color: '#1e293b', fontWeight: 'bold' }}>
-                {orgName}
-              </h2>
-              <h3 style={{ margin: '5px 0', fontSize: '16px', fontWeight: '500' }}>
-                Official Election Report
-              </h3>
-            </div>
-          
-            {/* Right: Union Logo + QR Code */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100px', gap: '10px' }}>
-              {logoUrl && (
-                <img 
-                  src={logoUrl}
-                  alt="Union Logo" 
-                  style={{ width: '70px', height: 'auto' }} 
-                />
-              )}
-              <div style={{ textAlign: 'center' }}>
-                <img 
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(window.location.href)}`} 
-                  alt="Verify" 
-                  style={{ width: '50px', border: '1px solid #eee' }} 
-                />
-                <p style={{ fontSize: '7px', marginTop: '2px', fontWeight: 'bold', lineHeight: '1' }}>
-                  SCAN TO<br/>VERIFY
-                </p>
-              </div>
-            </div>
-          </div>
+      {/* HEADER WITH DUAL LOGOS.
+
+          The QR code that used to sit here encoded window.location.href and
+          was rendered by fetching an image from a third-party QR service —
+          which both leaked the viewer's exact URL to that service and made
+          the printed report depend on a network call at print time. It said
+          "SCAN TO VERIFY" while verifying nothing. */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '30px',
+        position: 'relative',
+        zIndex: 1,
+        gap: '12px',
+      }}>
+
+        {/* Left: University logo */}
+        <div style={{ width: '100px', textAlign: 'left', flexShrink: 0 }}>
+          {universityLogoUrl && (
+            <img src={universityLogoUrl} alt="University logo" style={{ width: '80px', height: 'auto' }} />
+          )}
+        </div>
+
+        {/* Center: Title */}
+        <div style={{ textAlign: 'center', flex: 1, padding: '0 10px', minWidth: 0 }}>
+          <h1 style={{ margin: '0', fontSize: '22px', textTransform: 'uppercase', fontWeight: '900' }}>
+            {universityName}
+          </h1>
+          <h2 style={{ margin: '2px 0', fontSize: '18px', color: '#1e293b', fontWeight: 'bold' }}>
+            {orgName}
+          </h2>
+          <h3 style={{ margin: '5px 0', fontSize: '16px', fontWeight: '500' }}>
+            Public Election Results Report
+          </h3>
+        </div>
+
+        {/* Right: Organisation logo */}
+        <div style={{ width: '100px', textAlign: 'right', flexShrink: 0 }}>
+          {logoUrl && (
+            <img src={logoUrl} alt="Organisation logo" style={{ width: '70px', height: 'auto' }} />
+          )}
+        </div>
+      </div>
 
       {/* METADATA */}
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', borderBottom: `2px solid ${config.color}`, paddingBottom: '10px', position: 'relative', zIndex: 1 }}>
         <div>
           <p style={{ margin: '2px 0', fontSize: '12px' }}><strong>Status:</strong> <span style={{color: config.color}}>{config.label}</span></p>
           <p style={{ margin: '2px 0', fontSize: '12px' }}><strong>Voter Participation:</strong> {totalVotes} Students</p>
-          <p className="print-color-keep" style={{ margin: '2px 0', fontSize: '10px', color: '#666' }}><strong>Fingerprint:</strong> {reportFingerprint}</p>
+          <p className="print-color-keep" style={{ margin: '2px 0', fontSize: '10px', color: '#666' }}><strong>Copy checksum:</strong> {reportFingerprint}</p>
         </div>
         <div style={{ textAlign: 'right', fontSize: '12px' }}>
           <p style={{ margin: '2px 0' }}><strong>Date Generated:</strong> {new Date().toLocaleDateString()}</p>
@@ -195,35 +193,19 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
         </div>
       </div>
 
-        {/* --- NEW: OFFICIAL DECLARATION SECTION (Only shows when Certified) --- */}
-        {isCertified && (
-          <div style={declarationContainerStyle}>
-            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-              <h3 style={{ fontSize: '18px', fontWeight: 'bold', textDecoration: 'underline', margin: '0' }}>
-                OFFICIAL DECLARATION OF {orgName.toUpperCase()} ELECTION RESULTS
-              </h3>
-            </div>
-        
-            <div style={declarationBodyStyle}>
-              <p>
-                I, <strong>{commissionerName}</strong>, the duly appointed Electoral Commissioner, 
-                hereby declare that the {orgName} elections conducted through 
-                the official online voting portal were carried out in accordance with the {orgName} electoral guidelines and procedures.
-              </p>
-              <p style={{ marginTop: '10px' }}>
-                After the close of voting and the tallying of all valid votes cast, 
-                I hereby officially declare the successful candidates listed in the summary as the 
-                duly elected leaders of {orgName}.
-              </p>
-              <p style={{ marginTop: '10px' }}>
-                I congratulate the successful candidates and extend appreciation to all aspirants, 
-                members, and voters for participating and upholding the principles of a free, 
-                fair, and transparent election.
-              </p>
-           </div>
-          </div>
-        )}            
-        
+        {/* The sworn Official Declaration that used to render here has moved
+            to the admin-only OfficialCertificationBlock. A public visitor sees
+            the certification STATUS (a fact) but not the signed legal
+            instrument. */}
+        <div style={certStatusStyle}>
+          <strong>Certification status:</strong>{' '}
+          {isElectionOpen
+            ? 'Voting is still open — these figures are a live tally.'
+            : (isCertified
+                ? 'Results have been certified by the Electoral Commission.'
+                : 'Voting is closed. Results are provisional, pending certification.')}
+        </div>
+
       {/* EXECUTIVE SUMMARY */}
       {!isElectionOpen && (
         <div style={{ marginBottom: '30px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
@@ -347,41 +329,23 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
       </div>
 
      
-        {/* --- SIGNATURE GRID --- */}
-        <div style={signatureGrid}>
-            {commissioners.length > 0 ? (
-              commissioners.map((c, i) => (
-                <div key={c.student_id} style={i >= 2 ? { marginTop: '30px' } : {}}>
-                  <p style={signName}>{c.full_name}</p>
-                  <p style={signTitle}>{c.commissioner_role || 'Commissioner'}</p>
-                  <div style={signLine}></div>
-                </div>
-              ))
-            ) : (
-              ['Chairperson EC', 'Secretary EC', 'Commissioner', 'Commissioner'].map((role, i) => (
-                <div key={i} style={i >= 2 ? { marginTop: '30px' } : {}}>
-                  <p style={signName}>&nbsp;</p>
-                  <p style={signTitle}>{role}</p>
-                  <div style={signLine}></div>
-                </div>
-              ))
-            )}
-          </div>
-
-        {ccList.length > 0 && (
-          <div style={{ marginTop: '30px', fontSize: '10px', borderTop: '1px solid #000', paddingTop: '10px' }}>
-            {ccList.map((entry, i) => (
-              <div key={i}>Cc: {entry}</div>
-            ))}
-          </div>
-          )}
+      {/* The signature grid and cc distribution list are part of the signed
+          instrument, not the public record, and are issued through the
+          Commission's Official Document instead. */}
+      <div style={{ marginTop: '30px', fontSize: '10px', borderTop: '1px solid #000', paddingTop: '10px', position: 'relative', zIndex: 1 }}>
+        <p style={{ margin: 0 }}>
+          This is the public results record for {orgName}. The signed declaration and
+          signature page are issued separately by the Electoral Commission and are not
+          part of this document.
+        </p>
+      </div>
 
       {/* FOOTER STAMP */}
       <div style={{ textAlign: 'center', marginTop: '60px', borderTop: `1px dashed ${config.color}`, paddingTop: '20px', position: 'relative', zIndex: 1 }}>
         <p className="print-color-keep" style={{ letterSpacing: '8px', fontWeight: '900', color: config.color, fontSize: '12px' }}>
           *** END OF {activeStage.toUpperCase()} REPORT ***
         </p>
-        <p className="print-color-keep" style={{ fontSize: '9px', color: '#aaa' }}>Verified Secure | ID: {reportFingerprint} | Mode: {activeStage.toUpperCase()}</p>
+        <p className="print-color-keep" style={{ fontSize: '9px', color: '#aaa' }}>Copy checksum: {reportFingerprint} | Mode: {activeStage.toUpperCase()}</p>
       </div>
     </div>
   </>
@@ -389,41 +353,21 @@ export default function FinalReport({ data, totalVotes, isElectionOpen, isCertif
 }
 
 // Styles
-const declarationContainerStyle = {
-  background: '#fff',
-  border: '2px solid #000',
-  padding: '30px',
-  marginBottom: '40px',
-  fontFamily: '"Times New Roman", Times, serif',
+const certStatusStyle = {
+  border: '1px solid #000',
+  padding: '12px',
+  marginBottom: '24px',
+  fontSize: '12px',
   position: 'relative',
   zIndex: 1,
-  breakInside: 'avoid'
+  breakInside: 'avoid',
 };
 
-const declarationBodyStyle = {
-  fontSize: '14px',
-  textAlign: 'justify',
-  lineHeight: '1.5',
-  color: '#000'
-};
 
-const signatureGrid = {
-  display: 'grid',
-  gridTemplateColumns: '1fr 1fr',
-  gap: '30px',
-  marginTop: '40px'
-};
 
-const signName = { fontWeight: 'bold', margin: '0', fontSize: '13px', color: '#000' };
-const signTitle = { fontSize: '11px', margin: '0', fontStyle: 'italic', color: '#333' };
-const signLine = { borderTop: '1px solid #000', width: '100%', marginTop: '25px' };
+
 const summaryHeaderStyle = { padding: '8px', border: '1px solid #3b82f6', textAlign: 'left', fontSize: '11px' };
 const summaryCellStyle = { padding: '8px', border: '1px solid #ddd', fontSize: '11px' };
 const tableHeaderStyle = { padding: '8px', border: '1px solid #000', textAlign: 'left', fontSize: '10px', textTransform: 'uppercase' };
 const tableCellStyle = { padding: '8px', border: '1px solid #000', fontSize: '11px' };
 const posHeaderStyle = { backgroundColor: '#f2f2f2', padding: '6px', fontSize: '12px', border: '1px solid #000', margin: '0', fontWeight: 'bold' };
-const sigBoxStyle = { textAlign: 'center', width: '220px' };
-const voterAuditRowStyle = { borderBottom: '1px solid #eee', padding: '4px 0', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' };
-const verifiedCheckStyle = { marginLeft: 'auto', color: '#27ae60', fontWeight: 'bold', fontSize: '10px' };
-const voterGridStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginTop: '10px' };
-const privacyLockReportStyle = { padding: '40px', border: '1px dashed #000', textAlign: 'center', marginTop: '20px' };
