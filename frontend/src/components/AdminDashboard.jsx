@@ -226,7 +226,7 @@ useEffect(() => {
   );
 
   return (
-    <div style={adminOuterWrapper} className="no-print">
+    <div style={adminOuterWrapper} className="no-print outer-wrap">
       <div style={adminContainer} className="dashboard-shell">
         {/* HEADER */}
         <div style={headerFlexStyle}>

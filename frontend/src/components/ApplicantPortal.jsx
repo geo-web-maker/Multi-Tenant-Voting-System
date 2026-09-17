@@ -117,7 +117,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
   // ── Success screen ──
   if (submitted) {
     return (
-      <div style={outerWrap}>
+      <div style={outerWrap} className="outer-wrap">
         <div style={{ ...card, textAlign: 'center', maxWidth: '480px', margin: '0 auto' }}>
           <div style={{ fontSize: '54px', marginBottom: '16px' }}>🎉</div>
           <h2 style={{ color: 'var(--text-color)', margin: '0 0 10px' }}>Application Submitted!</h2>
@@ -147,7 +147,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
   }
 
   return (
-    <div style={outerWrap}>
+    <div style={outerWrap} className="outer-wrap">
       <div style={{ maxWidth: '620px', margin: '0 auto', width: '100%' }}>
 
         {/* ── Header ── */}

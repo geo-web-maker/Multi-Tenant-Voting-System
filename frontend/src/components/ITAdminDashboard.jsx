@@ -182,7 +182,7 @@ export default function ITAdminDashboard({ onLogout }) {
   ];
 
   return (
-    <div style={outerWrap}>
+    <div style={outerWrap} className="outer-wrap">
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}

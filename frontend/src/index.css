@@ -3,12 +3,6 @@
   line-height: 1.5;
   font-weight: 400;
 
-  /* Fixed-bottom UI elements (like the Help FAB) read this to stay clear
-     of whichever sticky bottom bar is currently on screen. Individual
-     pages publish their real measured height here via useReportedHeight;
-     0 is the safe default when no bottom bar is present. */
-  --bottom-bar-height: 0px;
-
   /* --- LIGHT MODE (Default) --- */
   --bg-color: #fafafa;
   --card-bg: #ffffff;
@@ -181,16 +175,10 @@ button:hover {
     opacity: 1 !important;
   }
 
-  /* Floating Help button always sits on a dark navy background regardless
-     of theme, so its label must stay white — overrides the broad `span`
-     rule above (same !important weight, comes later in the cascade). */
-  .help-fab-label {
-    color: #ffffff !important;
-  }
-
   /* Explicitly define the White Box text color so it never changes */
   /* Explicitly define the Header Box so it's ALWAYS visible */
-  .position-header {  all: unset; 
+  .position-header {
+  all: unset; 
   display: block !important;
   background-color: #f1c40f !important; /* <--- CHANGED TO GOLD */
   color: #1e293b !important;            /* <--- CHANGED TO DARK NAVY */
@@ -205,7 +193,6 @@ button:hover {
   letter-spacing: 1px !important; /* Added for that pro look */
   }
 }
-} /* closes @media screen opened above */
 
 /* Mobile adjustments for the navigation bar */
 @media (max-width: 600px) {
@@ -265,6 +252,16 @@ button:hover {
     border-radius: 0 !important;
     border-left: none !important;
     border-right: none !important;
+  }
+
+  /* Every dashboard/portal wraps its shell in an .outer-wrap with its own
+     20-24px inline padding — set in JS, so no media query could reach it
+     before this class existed. Stacked with .dashboard-shell's own padding
+     that was ~70px of a ~380px phone screen eaten before any content
+     rendered, which is what made every dashboard look squeezed into the
+     middle third of the screen with big empty margins either side. */
+  .outer-wrap {
+    padding: 8px !important;
   }
 }
 

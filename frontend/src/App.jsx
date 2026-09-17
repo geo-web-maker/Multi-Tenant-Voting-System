@@ -10,9 +10,7 @@ import ApplicantPortal from './components/ApplicantPortal';
 import ITAdminDashboard from './components/ITAdminDashboard';
 import FinancialControllerDashboard from './components/FinancialControllerDashboard';
 import OverseerDashboard from './components/OverseerDashboard';
-import { HelpMenuProvider } from './context/HelpMenuContext';
-import HelpPanel from './components/HelpPanel';
-import { FabTrigger } from './components/HelpTriggers';
+import FloatingHelpMenu from './components/FloatingHelpMenu';
 
 function App() {
   const [supportPdfUrl, setSupportPdfUrl] = useState("");
@@ -417,20 +415,13 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   };
 
   return (
-    <HelpMenuProvider>
     <div style={containerStyle}>
       {view === "voter" && (
-        <>
-          <HelpPanel
-            supportPdfUrl={supportPdfUrl}
-            supportPhone={supportPhone}
-            onShowGuide={() => setShowGuide(true)}
-          />
-          {/* Ballot page (step 3) puts Help inside its own footer bar via
-              <InlineHelpButton /> — see BallotBox.jsx — so the floating
-              trigger only renders when nothing else owns that space. */}
-          {step !== 3 && <FabTrigger />}
-        </>
+        <FloatingHelpMenu
+          supportPdfUrl={supportPdfUrl}
+          supportPhone={supportPhone}
+          onShowGuide={() => setShowGuide(true)}
+        />
       )}
       <div style={{ 
           width: '100%', 
@@ -747,7 +738,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         </div>
       )}
     </div>
-    </HelpMenuProvider>
   );
 }
 

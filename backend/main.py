@@ -184,12 +184,23 @@ B2_KEY_ID = os.getenv("B2_KEY_ID")
 B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
 B2_BUCKET_NAME = os.getenv("B2_BUCKET_NAME")
 
-b2_client = boto3.client(
-    "s3",
-    endpoint_url=B2_ENDPOINT,
-    aws_access_key_id=B2_KEY_ID,
-    aws_secret_access_key=B2_APPLICATION_KEY,
-)
+# A bad or missing B2_* value (e.g. an endpoint without the https:// scheme)
+# used to raise here at import time and take the ENTIRE app down before
+# uvicorn could even start — voting, auth, everything — just because the
+# audit-checkpoint external anchor was misconfigured. That feature already
+# degrades gracefully at the point of use (_publish_checkpoint_externally
+# logs audit_checkpoint_anchor_failed and continues instead of raising), so
+# a boot-time misconfiguration should degrade the same way, not crash boot.
+try:
+    b2_client = boto3.client(
+        "s3",
+        endpoint_url=B2_ENDPOINT,
+        aws_access_key_id=B2_KEY_ID,
+        aws_secret_access_key=B2_APPLICATION_KEY,
+    )
+except Exception as e:
+    logging.error(f"B2 client init failed — audit checkpoint anchoring disabled: {e}")
+    b2_client = None
 
 # =============================================================================
 # MULTI-TENANCY: ORG CONTEXT MIDDLEWARE
@@ -653,6 +664,15 @@ async def _publish_checkpoint_externally(checkpoint: dict) -> None:
     creation for callers.
     """
     key = f"{checkpoint['org_id']}/{checkpoint['to_id']}.json"
+
+    if b2_client is None:
+        logging.error(f"B2 checkpoint anchor skipped for {key}: B2 client not configured")
+        await log_action("audit_checkpoint_anchor_failed", "system", {
+            "checkpoint_id": str(checkpoint.get("_id", "")),
+            "error": "B2 client not configured (see startup logs)",
+        }, org_id=checkpoint.get("org_id"))
+        return
+
     body = json.dumps({
         "org_id": checkpoint["org_id"],
         "from_id": str(checkpoint["from_id"]) if checkpoint["from_id"] else None,
@@ -3490,9 +3510,8 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
     elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
         clean = '256' + clean
     await db.voters.update_one(
-        org_query(request, {"student_id": normalize_student_id(data.student_id)}),
+        org_query(request, {"student_id": data.student_id}),
         {"$set": org_stamp(request, {
-            "student_id":      normalize_student_id(data.student_id),
             "full_name":       data.full_name,
             "phone_numbers":   [clean],
             "is_commissioner": False,
