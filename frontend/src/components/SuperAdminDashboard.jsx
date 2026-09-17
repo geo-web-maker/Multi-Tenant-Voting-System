@@ -736,7 +736,7 @@ const handleSuperAdminRemoveStudent = async () => {
         </div>
 
         {/* ── Org switcher ── */}
-        <div style={orgSwitcherBar} className="no-print">
+        <div style={orgSwitcherBar} className="no-print org-switcher-bar">
           <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
             🏢 Managing:
           </span>

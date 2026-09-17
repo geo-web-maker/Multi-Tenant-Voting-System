@@ -234,6 +234,14 @@ button:hover {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    /* The row itself scrolls fine, but with no scrollbar and a tab cut off
+       mid-word at the edge, it reads as clipped/broken rather than
+       scrollable — nothing told the user more tabs existed off-screen.
+       This fades the last visible tab out instead of hard-cutting it,
+       which is a much stronger "there's more this way" signal than a
+       clean edge, without needing extra markup or JS scroll listeners. */
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+    mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
   }
   .tab-scroll::-webkit-scrollbar {
     display: none;
@@ -241,6 +249,19 @@ button:hover {
   .tab-scroll > button {
     flex-shrink: 0;
     white-space: nowrap;
+  }
+}
+
+/* Org switcher (Superadmin): "Managing:" label + dropdown + status text.
+   On desktop these sit in one row. On phones the dropdown (min-width 220px)
+   doesn't fit next to the label, so the row wraps — but with no explicit
+   ordering, the wrap could leave the label sharing a line with only part of
+   the dropdown, reading as skewed/squeezed to one side. Force the label
+   onto its own full-width line on narrow screens so wrapping is always
+   label-then-dropdown-then-status, never a lopsided partial wrap. */
+@media (max-width: 560px) {
+  .org-switcher-bar > span:first-child {
+    width: 100%;
   }
 }
 
