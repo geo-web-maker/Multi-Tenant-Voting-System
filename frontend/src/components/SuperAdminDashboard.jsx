@@ -1095,7 +1095,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <div style={statCard}><small>Voted</small><h3 style={{ color: 'var(--success)' }}>{electionVoters.filter(v => v.has_voted).length}</h3></div>
                 <div style={statCard}><small>Turnout</small><h3>{turnout}%</h3></div>
                 <div style={statCard}><small>Pending</small><h3 style={{ color: 'var(--warning)' }}>{electionVoters.filter(v => !v.has_voted).length}</h3></div>
-                <div style={statCard}><small>SMS Balance</small><h3>{smsBalance.balance} {smsBalance.currency}</h3></div>
+                <div style={statCard}><small>SMS Balance</small><h3>{smsBalance.error ? '—' : `${smsBalance.balance} ${smsBalance.currency}`}</h3>{smsBalance.error && <small style={{ opacity: 0.6 }}>{smsBalance.error}</small>}</div>
               </div>
             </div>
 

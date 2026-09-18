@@ -275,15 +275,16 @@ useEffect(() => {
               <div style={statCardStyle}><small>Turnout</small><h3>{turnout}%</h3></div>
               
               {/* SMS BALANCE CARD */}
-              <div style={{ 
-                ...statCardStyle, 
-                border: (smsBalance.balance < 1000) ? '1px solid #e74c3c' : '1px solid var(--border-color)',
-                backgroundColor: (smsBalance.balance < 1000) ? '#e74c3c08' : 'transparent'
+              <div style={{
+                ...statCardStyle,
+                border: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '1px solid #e74c3c' : '1px solid var(--border-color)',
+                backgroundColor: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '#e74c3c08' : 'transparent'
               }}>
-                <small style={{ color: smsBalance.balance < 1000 ? '#e74c3c' : 'inherit' }}>SMS Credits</small>
-                <h3 style={{ color: smsBalance.balance < 1000 ? '#e74c3c' : 'inherit' }}>
-                  {smsBalance.balance} <small style={{fontSize: '10px'}}>{smsBalance.currency}</small>
+                <small style={{ color: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '#e74c3c' : 'inherit' }}>SMS Credits</small>
+                <h3 style={{ color: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '#e74c3c' : 'inherit' }}>
+                  {smsBalance.error ? '—' : <>{smsBalance.balance} <small style={{fontSize: '10px'}}>{smsBalance.currency}</small></>}
                 </h3>
+                {smsBalance.error && <small style={{ opacity: 0.6 }}>{smsBalance.error}</small>}
               </div>
             </div>
 
