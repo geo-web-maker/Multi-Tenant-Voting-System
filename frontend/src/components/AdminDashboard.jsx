@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import api from '../api';
+import api, { getErrorMessage } from '../api';
 
 export default function AdminDashboard({ apiBase, onLogout }) {
   // --- STATE MANAGEMENT ---
@@ -73,7 +73,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       alert(`Results ${res.data.is_certified ? 'certified successfully' : 'de-certified'}!`);
     } catch (err) {
       console.error("Cert Error:", err);
-      alert("Failed to update certification status.");
+      alert(getErrorMessage(err, "Failed to update certification status."));
     }
   }
 };
@@ -86,7 +86,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       setIsElectionOpen(res.data.is_open);
       alert(`Election is now ${res.data.is_open ? "STARTED" : "STOPPED"}`);
     } catch (err) { 
-      alert("Toggle failed. Ensure the route /admin/toggle-election exists on the backend."); 
+      alert(getErrorMessage(err, "Toggle failed. Ensure the route /admin/toggle-election exists on the backend.")); 
     }
   };
 
@@ -97,7 +97,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
           await api.post(`/admin/reset-election`);
           alert("Database cleared.");
           fetchData();
-        } catch (err) { alert("Reset failed."); }
+        } catch (err) { alert(getErrorMessage(err, "Reset failed.")); }
       }
     }
   };
@@ -112,9 +112,13 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       const res = await api.post(`/admin/import-voters`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      alert(`Import Successful! ${res.data.imported_count} records processed.`);
+      const { imported_count, skipped_rows, warning_count } = res.data;
+      let msg = `Import Successful! ${imported_count} records processed.`;
+      if (skipped_rows) msg += ` ${skipped_rows} row(s) skipped (missing/invalid data).`;
+      if (warning_count) msg += ` ${warning_count} row(s) flagged for review (see server log / activity log for details, e.g. unusual phone numbers).`;
+      alert(msg);
       fetchData();
-    } catch (err) { alert("Import failed."); }
+    } catch (err) { alert(getErrorMessage(err, "Import failed.")); }
     finally { setImporting(false); e.target.value = null; }
   };
 
@@ -137,7 +141,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       });
       setNewCandidate({ name: '', position: '', image: null, order: 0 });
       fetchData();
-    } catch (err) { alert("Error adding candidate."); }
+    } catch (err) { alert(getErrorMessage(err, "Error adding candidate.")); }
     finally { setUploading(false); }
   };
 
@@ -159,7 +163,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       });
       setEditingId(null);
       fetchData();
-    } catch (err) { alert("Update failed."); }
+    } catch (err) { alert(getErrorMessage(err, "Update failed.")); }
     finally { setUploading(false); }
   };
 

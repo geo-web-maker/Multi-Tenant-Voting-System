@@ -274,7 +274,7 @@ const refetchAll = () => {
       document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
       document.documentElement.style.setProperty('--brand-accent',  branding.accent_color);
       alert('Branding saved!');
-    } catch (e) { alert('Failed to save branding.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Failed to save branding.')); }
     finally { setBrandSaving(false); }
   };
 
@@ -287,7 +287,7 @@ const refetchAll = () => {
       await api.post(`/positions`, newPosition);
       setNewPosition({ title: '', description: '', order: 0 });
       fetchPositions();
-    } catch (e) { alert('Failed to add position.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Failed to add position.')); }
     finally { setPosLoading(false); }
   };
 
@@ -296,7 +296,7 @@ const refetchAll = () => {
     try {
       await api.delete(`/positions/${id}`);
       fetchPositions();
-    } catch (e) { alert('Failed to delete position.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Failed to delete position.')); }
   };
 
   // ── Candidates ──
@@ -315,7 +315,7 @@ const refetchAll = () => {
       });
       setNewCandidate({ name: '', position: '', image: null, order: 0 });
       fetchCandidates();
-    } catch (e) { alert('Error adding candidate.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Error adding candidate.')); }
     finally { setUploading(false); }
   };
 
@@ -332,7 +332,7 @@ const refetchAll = () => {
       });
       setEditingId(null);
       fetchCandidates();
-    } catch (e) { alert('Update failed.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Update failed.')); }
     finally { setUploading(false); }
   };
 
@@ -342,7 +342,7 @@ const refetchAll = () => {
       await api.post(`/superadmin/candidates/${candidateId}/remove`);
       fetchCandidates();
       fetchApplications();
-    } catch (e) { alert('Failed to remove candidate.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Failed to remove candidate.')); }
   };
 
   // ── Applications ──
@@ -498,7 +498,7 @@ const handleCreateOrg = async (e) => {
       const res = await api.post(`/admin/toggle-election`);
       setIsElectionOpen(res.data.is_open);
       alert(`Election is now ${res.data.is_open ? 'OPEN' : 'CLOSED'}.`);
-    } catch (e) { alert('Toggle failed.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Toggle failed.')); }
   };
 
   const handleToggleCertification = async () => {
@@ -511,7 +511,7 @@ const handleCreateOrg = async (e) => {
       const res = await api.post(`/admin/toggle-certification`);
       setIsCertified(res.data.is_certified);
       alert(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
-    } catch (e) { alert('Failed.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Failed.')); }
   };
 
   const handleResetElection = async () => {
@@ -521,7 +521,7 @@ const handleCreateOrg = async (e) => {
       await api.post(`/admin/reset-election`);
       alert('Election reset.');
       fetchElectionData();
-    } catch (e) { alert('Reset failed.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Reset failed.')); }
   };
 
   const handleImportVoters = async (e) => {
@@ -537,7 +537,7 @@ const handleCreateOrg = async (e) => {
       alert(`Imported ${res.data.imported_count} voters.`);
       fetchElectionData();
       fetchVotersList();
-    } catch (e) { alert('Import failed.'); }
+    } catch (e) { alert(getErrorMessage(e, 'Import failed.')); }
     finally { setImporting(false); e.target.value = null; }
   };
   

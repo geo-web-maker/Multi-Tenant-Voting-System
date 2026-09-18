@@ -68,5 +68,18 @@ api.interceptors.response.use(
   }
 );
 
+// Shared helper so every catch block surfaces the backend's actual error
+// detail (e.g. "This code has expired. Please request a new one.") instead
+// of a generic fallback string. The backend is disciplined about sending
+// specific, actionable `detail` messages — several call sites here used to
+// throw that away in favor of a flat "X failed." string, which meant the
+// admin never found out *why* something failed (validation error? already
+// resolved by someone else? a 409 from the new concurrency guards?) without
+// opening devtools. Always prefer err.response.data.detail; fall back only
+// when the backend genuinely didn't send one (network error, 5xx with no body).
+export function getErrorMessage(err, fallback) {
+  return err?.response?.data?.detail || fallback;
+}
+
 export default api;
 
