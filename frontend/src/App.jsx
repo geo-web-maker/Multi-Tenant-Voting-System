@@ -30,6 +30,7 @@ function App() {
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
+  const [isVotingPhaseOpen, setIsVotingPhaseOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(0);
@@ -145,6 +146,7 @@ useEffect(() => {
       try {
         const res = await api.get('/election-status');
         setIsElectionOpen(res.data.is_open);
+        setIsVotingPhaseOpen(res.data.voting_phase_open ?? true);
       } catch (err) {
         console.error("Could not fetch election status");
       }
@@ -421,6 +423,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           supportPdfUrl={supportPdfUrl}
           supportPhone={supportPhone}
           onShowGuide={() => setShowGuide(true)}
+          showSampleBallot={isElectionOpen && isVotingPhaseOpen}
         />
       )}
       <div style={{ 

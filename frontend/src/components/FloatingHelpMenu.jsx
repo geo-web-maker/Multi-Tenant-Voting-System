@@ -8,12 +8,16 @@ const modalContentStyle = {
   boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', border: '1px solid var(--border-color)'
 };
 
-export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGuide }) {
+export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGuide, showSampleBallot = true }) {
   const [open, setOpen] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
 
   const items = [
-    { icon: '📖', label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } },
+    // Once voting is no longer live (phase closed or election closed), the
+    // ballot preview stops being offered — it's a "here's what you'll see
+    // when you vote" guide, and showing it after voting has ended just
+    // advertises something that's no longer possible.
+    ...(showSampleBallot ? [{ icon: '📖', label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } }] : []),
     { icon: '🔍', label: 'Check Voter Register', onClick: () => { setShowRegister(true); setOpen(false); } },
     ...(supportPdfUrl ? [{ icon: '📄', label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
