@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import secrets
 import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
+from pymongo import UpdateOne
 import os
 import csv
 import io
@@ -24,11 +25,13 @@ import hashlib
 import json
 import boto3
 from fastapi.concurrency import run_in_threadpool
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from auth import (
     create_access_token,
     decode_access_token,
     get_bearer_token,
+    require_admin,
     require_role,
     set_revocation_check,
     ADMIN_ROLES,
@@ -45,6 +48,18 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 EGOSMS_USER = os.getenv("EGOSMS_USERNAME")
 EGOSMS_PASS = os.getenv("EGOSMS_PASSWORD")
 EGOSMS_SENDER_ID = os.getenv("ESMS_SENDER_ID", "SMS").strip()
+
+# EgoSMS above is the primary OTP provider; Mambo SMS is the automatic
+# fallback if Ego's send fails (bad response, non-2xx, timeout, exception).
+# See send_sms() below for the actual primary/fallback dispatch — the two
+# provider-specific functions never call each other directly.
+MAMBOSMS_API_KEY = os.getenv("MAMBOSMS_API_KEY")
+MAMBOSMS_SENDER_ID = os.getenv("MAMBOSMS_SENDER_ID", "MamboSMS").strip()
+# "non_customised" (random number), "info" (INFO-prefixed), or "customised"
+# (a real registered sender ID on MTN/Airtel/UTL) — see Mambo's docs. Defaults
+# to non_customised since that's the only category that works without your
+# sender_id being pre-approved by the networks.
+MAMBOSMS_MESSAGE_CATEGORY = os.getenv("MAMBOSMS_MESSAGE_CATEGORY", "non_customised").strip()
 
 SUPER_ADMIN_ID       = os.getenv("SUPER_ADMIN_ID")
 SUPER_ADMIN_PASSWORD = os.getenv("SUPER_ADMIN_PASSWORD")
@@ -92,6 +107,12 @@ async def lifespan(app: FastAPI):
     # replayed anyway, so there's no need to keep the revocation record.
     
     await db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=JWT_EXPIRE_MINUTES * 60)    
+    # Per-IP rate-limit buckets (upload, voter-register search) — Mongo-backed
+    # replacement for the old in-memory dicts (see _check_rate_limit). TTL'd
+    # well past the longest window used (UPLOAD_RATE_WINDOW_S) so a bucket
+    # cleans itself up instead of growing for the life of the process.
+    await db.ip_rate_limits.create_index("key", unique=True)
+    await db.ip_rate_limits.create_index("last_hit", expireAfterSeconds=3600)
     
     # student_id lookups happen on every OTP send, OTP verify, and vote cast
     # — the single highest-traffic query pattern on election day. Requires
@@ -331,6 +352,31 @@ app.add_middleware(
     max_age=600,
 )
 
+# =============================================================================
+# TRUSTED PROXY / REAL CLIENT IP
+# =============================================================================
+# Render, Railway, etc. terminate TLS and forward every request through a
+# reverse proxy — without this, request.client.host (used by the per-IP
+# rate limiters above) is the PROXY's address for every single visitor, not
+# the real caller. That silently turns a "per-IP" limit into one shared
+# bucket for all traffic combined. ProxyHeadersMiddleware rewrites
+# request.client from the X-Forwarded-For header, but ONLY when the
+# immediate connecting peer is in trusted_hosts — otherwise a client could
+# forge X-Forwarded-For to inject an arbitrary "IP" and bypass rate limits
+# entirely.
+#
+# TRUSTED_PROXY_HOSTS defaults to "*" because on a single-hop PaaS
+# (Render/Railway) every inbound connection genuinely does come from the
+# platform's own edge, whose address isn't published/stable enough to pin
+# down — but if this is ever deployed behind your own reverse proxy at a
+# known address, set TRUSTED_PROXY_HOSTS to that address (or a comma
+# separated list) instead of leaving it wildcarded.
+TRUSTED_PROXY_HOSTS = os.getenv("TRUSTED_PROXY_HOSTS", "*")
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts=[h.strip() for h in TRUSTED_PROXY_HOSTS.split(",")] if TRUSTED_PROXY_HOSTS != "*" else "*",
+)
+
 
 # =============================================================================
 # SECURITY HEADERS
@@ -399,10 +445,6 @@ class CandidateCreate(BaseModel):
     position: str
     image_url: str
     order: int = 0
-
-class ElectionSchedule(BaseModel):
-    start: datetime
-    end: datetime
 
 class AdminTestSMS(BaseModel):
     phone: str
@@ -532,13 +574,38 @@ def names_match(registered_name: str, input_name: str) -> bool:
     match_threshold = 2 if len(reg_parts) >= 2 else 1
     return len(common_parts) >= match_threshold
 
-async def send_sms_via_egosms(to_number: str, message_text: str):
-    if DEBUG_MODE:
-        # Local/load-testing only: never hit the real EgoSMS API. Log the
-        # message (which contains the OTP) so Locust or a manual tester can
-        # read it back, and report success so the normal OTP flow proceeds.
-        logger.info(f"🧪 [DEBUG_MODE] SMS to {to_number}: {message_text}")
-        return True
+async def send_sms_via_mambosms(to_number: str, message_text: str) -> bool:
+    """Fallback OTP provider, used only when EgoSMS fails. Returns True only on a genuine send success —
+    Mambo's API returns HTTP 200 even for some failures (e.g. a suspended
+    account), so success is read from the `success` field in the body, not
+    just the status code. See https://mambosms.com/api for the full contract.
+    """
+    try:
+        clean_number = to_number.replace("+", "").strip()
+        payload = {
+            "message": message_text,
+            "recipients": clean_number,
+            "message_category": MAMBOSMS_MESSAGE_CATEGORY,
+            "sender_id": MAMBOSMS_SENDER_ID,
+        }
+        headers = {"Authorization": MAMBOSMS_API_KEY or "", "Content-Type": "application/json"}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api-mongolia.mambosms.com/v1/send-sms",
+                json=payload,
+                headers=headers,
+                timeout=15.0,
+            )
+            body = response.json()
+            logger.info(f"📡 MamboSMS Result: {body}")
+            return bool(body.get("success"))
+    except Exception as e:
+        logger.error(f"❌ MamboSMS Connection Error: {e}")
+        return False
+
+
+async def send_sms_via_egosms(to_number: str, message_text: str) -> bool:
+    """Primary OTP provider. See send_sms()."""
     try:
         clean_number = to_number.replace("+", "").strip()
         params = {
@@ -556,10 +623,36 @@ async def send_sms_via_egosms(to_number: str, message_text: str):
             )
             resp_text = response.text.strip()
             logger.info(f"📡 EgoSMS Result: {resp_text}")
-            return "OK" in resp_text.upper()
+            return resp_text.upper().startswith("OK")
     except Exception as e:
-        logger.error(f"❌ Connection Error: {e}")
+        logger.error(f"❌ EgoSMS Connection Error: {e}")
         return False
+
+
+async def send_sms(to_number: str, message_text: str, request: Request | None = None) -> bool:
+    """Single entrypoint every route should call to send an SMS. Tries
+    EgoSMS (primary) first; if that fails for any reason, automatically
+    falls back to MamboSMS (secondary) before giving up. Logs which provider
+    actually delivered, so a pattern of fallback (or total failure) is
+    visible in the Activity Log rather than silently invisible.
+    """
+    if DEBUG_MODE:
+        # Local/load-testing only: never hit either real API. Log the
+        # message (which contains the OTP) so Locust or a manual tester can
+        # read it back, and report success so the normal OTP flow proceeds.
+        logger.info(f"🧪 [DEBUG_MODE] SMS to {to_number}: {message_text}")
+        return True
+
+    if await send_sms_via_egosms(to_number, message_text):
+        return True
+
+    logger.warning(f"⚠️ EgoSMS failed for {to_number}, falling back to MamboSMS.")
+    if request is not None:
+        await log_action("sms_provider_fallback", "system", {
+            "primary": "egosms", "fallback": "mambosms",
+        }, org_id=request.state.org_id)
+
+    return await send_sms_via_mambosms(to_number, message_text)
 
 # =============================================================================
 # PASSWORD HELPERS
@@ -799,12 +892,29 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
+
+# Fixed bcrypt hash of an arbitrary, unused password — used only to burn a
+# realistic amount of CPU time on the "no matching account" path in
+# /verify-admin, so that path can't be distinguished from a real
+# wrong-password check by response timing. See the SECURITY comment at its
+# call site.
+_DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode().encode()
+
 async def send_temp_password_sms(voter: dict, role_label: str, temp_password: str) -> bool:
     phone_list = voter.get("phone_numbers", [])
     if not phone_list:
         return False
 
-    branding_doc = await db.settings.find_one({"name": "branding"})
+    # Was unscoped ({"name": "branding"} with no org filter) — in a
+    # multi-tenant deployment this could read a DIFFERENT org's branding
+    # doc and quote the wrong organization's name in this voter's SMS.
+    # voter["org_id"] is the source of truth for which org this voter
+    # belongs to (set at import time), not the caller's request context,
+    # since some callers here run outside a request (e.g. scripts).
+    branding_query = {"name": "branding"}
+    if voter.get("org_id"):
+        branding_query["org_id"] = voter["org_id"]
+    branding_doc = await db.settings.find_one(branding_query)
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
 
     message = (
@@ -813,7 +923,7 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
         f"You will be asked to set a new password on first login. "
         f"Do not share this code with anyone."
     )
-    return await send_sms_via_egosms(phone_list[0], message)
+    return await send_sms(phone_list[0], message)
 
 # --- Application consensus helpers ---
 
@@ -866,22 +976,37 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
     deny_count    = sum(1 for v in votes.values() if v == "deny")
 
     if approve_count >= required:
-        # Majority reached — create candidate and mark approved
-        await _create_candidate_from_application(app_doc, org_id)
-        await db.applications.update_one(
-            {"_id": ObjectId(app_id)},
+        # Majority reached — create candidate and mark approved.
+        #
+        # SECURITY/CONCURRENCY: two commissioners casting the deciding vote
+        # within milliseconds of each other could both reach this branch for
+        # the same application before either had written "approved" yet,
+        # which used to create two candidate documents for one application.
+        # The status flip is now the atomic guard: only the caller whose
+        # update_one actually matches an unresolved document is allowed to
+        # create the candidate. The loser's matched_count is 0 and it does
+        # nothing further — the winner's own vote is already recorded either
+        # way, so no vote is lost, only the duplicate side effect.
+        result = await db.applications.update_one(
+            {"_id": ObjectId(app_id), "status": {"$nin": ["approved", "denied", "removed"]}},
             {"$set": {"status": "approved"}}
         )
+        if result.matched_count == 0:
+            return
+        await _create_candidate_from_application(app_doc, org_id)
         await log_action("application_approved", "commission", {
             "app_id": app_id, "approve_count": approve_count, "total_commissioners": total
         }, org_id=org_id)
         logger.info(f"✅ Application {app_id} approved by commission majority ({approve_count}/{total}).")
     elif deny_count >= required:
-        # Majority reached against — application denied
-        await db.applications.update_one(
-            {"_id": ObjectId(app_id)},
+        # Majority reached against — application denied. Same atomic guard:
+        # only the winning caller logs/proceeds.
+        result = await db.applications.update_one(
+            {"_id": ObjectId(app_id), "status": {"$nin": ["approved", "denied", "removed"]}},
             {"$set": {"status": "denied"}}
         )
+        if result.matched_count == 0:
+            return
         await log_action("application_denied", "commission", {
             "app_id": app_id, "deny_count": deny_count, "total_commissioners": total
         }, org_id=org_id)
@@ -903,12 +1028,18 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
     approve_removals = sum(1 for v in removal_votes.values() if v == "approve")
 
     if approve_removals >= required:
-        cand = await db.candidates.find_one({"application_id": app_id})
-        await db.candidates.delete_one({"application_id": app_id})
-        await db.applications.update_one(
-            {"_id": ObjectId(app_id)},
+        # Same atomic-guard pattern as _resolve_application: only the caller
+        # whose update actually flips status to "removed" proceeds to delete
+        # the candidate and log it, so two commissioners racing to cast the
+        # deciding removal vote can't both fire the delete/log side effects.
+        result = await db.applications.update_one(
+            {"_id": ObjectId(app_id), "status": "approved"},
             {"$set": {"status": "removed", "removal_votes": {}}}
         )
+        if result.matched_count == 0:
+            return
+        cand = await db.candidates.find_one({"application_id": app_id})
+        await db.candidates.delete_one({"application_id": app_id})
         # Was only logger.info'd — a candidate removed by commission majority
         # never showed up in the Activity Log at all, unlike a superadmin's
         # forced removal (candidate_removed, logged in
@@ -1206,15 +1337,25 @@ async def enforce_login_rate_limit(email: str, org_id: str | None):
 
 async def record_failed_login(email: str, org_id: str | None):
     key = _login_attempt_key(email, org_id)
-    record = await db.login_attempts.find_one({"key": key})
-    attempts = (record.get("attempts", 0) if record else 0) + 1
-
-    update = {"key": key, "attempts": attempts, "last_attempt": datetime.utcnow()}
+    # CONCURRENCY: was find_one() then a separate update_one() — two failed
+    # logins arriving at nearly the same instant (a script hammering one
+    # account from parallel connections) could both read the same "attempts"
+    # count before either write landed, undercounting by a request or more
+    # and pushing the real lockout threshold a little past LOGIN_MAX_ATTEMPTS.
+    # $inc via find_one_and_update is atomic — every failure is counted
+    # exactly once no matter how many arrive concurrently.
+    doc = await db.login_attempts.find_one_and_update(
+        {"key": key},
+        {"$inc": {"attempts": 1}, "$set": {"last_attempt": datetime.utcnow()}},
+        upsert=True,
+        return_document=True,
+    )
+    attempts = doc.get("attempts", 1)
     if attempts >= LOGIN_MAX_ATTEMPTS:
-        update["locked_until"] = datetime.utcnow() + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+        await db.login_attempts.update_one(
+            {"key": key}, {"$set": {"locked_until": datetime.utcnow() + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)}}
+        )
         await log_action("admin_login_locked", email, {"attempts": attempts}, org_id=org_id)
-
-    await db.login_attempts.update_one({"key": key}, {"$set": update}, upsert=True)
 
 
 async def clear_login_attempts(email: str, org_id: str | None):
@@ -1240,13 +1381,22 @@ async def health_check():
 @app.get("/election-status")
 async def get_status(request: Request):
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    schedule = await get_phase_schedule(request)
+    voting_phase_open = _phase_is_open(schedule["phases"]["voting"], datetime.utcnow())
+
     if not status_doc:
-        return {"is_open": True, "is_certified": False, "start": None, "end": None}
+        return {"is_open": True, "is_certified": False, "start": None, "end": None, "voting_phase_open": voting_phase_open}
     return {
         "is_open": status_doc.get("is_open", True),
         "is_certified": status_doc.get("is_certified", False),
         "start": status_doc.get("start_time"),
-        "end": status_doc.get("end_time")
+        "end": status_doc.get("end_time"),
+        # Whether the "voting" phase (Timeline tab) currently allows casting a
+        # ballot, independent of the is_open master switch. Public/unauthenticated
+        # so pre-login screens (the Sample Ballot preview) can hide themselves once
+        # voting is no longer live, instead of indefinitely advertising a guide for
+        # something that's no longer happening.
+        "voting_phase_open": voting_phase_open,
     }
 
 # =============================================================================
@@ -1258,12 +1408,16 @@ async def verify_identity(data: IdentityCheck, request: Request):
     now = datetime.utcnow()
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
 
-    if status_doc:
-        if not status_doc.get("is_open", True):
-            raise HTTPException(status_code=403, detail="Election is closed.")
-        start, end = status_doc.get("start_time"), status_doc.get("end_time")
-        if start and end and not (start <= now <= end):
-            raise HTTPException(status_code=403, detail="Not within scheduled time.")
+    if status_doc and not status_doc.get("is_open", True):
+        raise HTTPException(status_code=403, detail="Election is closed.")
+
+    # Timing is governed entirely by the "applications" phase schedule (see
+    # PHASE_NAMES / assert_phase_open) — the standalone start_time/end_time
+    # window on election_config was a second, disconnected timer that only
+    # this one route ever checked. It's retired: this is now the single
+    # place voting-window timing is configured (Timeline tab), matching what
+    # /vote and /vote-bulk already enforce for the "voting" phase itself.
+    await assert_phase_open(request, "voting", data.student_id)
 
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
@@ -1306,7 +1460,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
         f"Your vote is secret. Do not share this code with anyone. Your voice, your power!"
     )
 
-    if await send_sms_via_egosms(raw_phone, message):
+    if await send_sms(raw_phone, message, request):
         await db.voters.update_one(
             org_query(request, {"student_id": student["student_id"]}),
             {"$set": {"last_status": "otp_sent"}, "$inc": {"otp_count": 1}}
@@ -1345,16 +1499,27 @@ async def _enforce_otp_attempt_limit(request: Request, student_id: str):
 
 async def _record_otp_failure(request: Request, student_id: str):
     key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
-    record = await db.otp_attempts.find_one({"key": key})
-    attempts = ((record or {}).get("attempts", 0)) + 1
-    update = {"key": key, "attempts": attempts, "last_attempt": datetime.utcnow()}
+    # CONCURRENCY: same fix as record_failed_login above — atomic $inc
+    # instead of read-then-write, so concurrent guesses against one
+    # student_id can't undercount past the real attempt cap.
+    doc = await db.otp_attempts.find_one_and_update(
+        {"key": key},
+        {"$inc": {"attempts": 1}, "$set": {"last_attempt": datetime.utcnow()}},
+        upsert=True,
+        return_document=True,
+    )
+    attempts = doc.get("attempts", 1)
     if attempts >= OTP_MAX_VERIFY_ATTEMPTS:
-        update["locked_until"] = datetime.utcnow() + timedelta(minutes=OTP_VERIFY_LOCKOUT_MINUTES)
-        update["attempts"] = 0
+        await db.otp_attempts.update_one(
+            {"key": key},
+            {"$set": {
+                "locked_until": datetime.utcnow() + timedelta(minutes=OTP_VERIFY_LOCKOUT_MINUTES),
+                "attempts": 0,
+            }}
+        )
         await log_action("otp_verify_locked", normalize_student_id(student_id), {
             "attempts": OTP_MAX_VERIFY_ATTEMPTS
         }, org_id=request.state.org_id)
-    await db.otp_attempts.update_one({"key": key}, {"$set": update}, upsert=True)
 
 
 async def _clear_otp_attempts(request: Request, student_id: str):
@@ -1545,6 +1710,30 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
 
 @app.get("/candidates")
 async def get_candidates(request: Request):
+    # Public candidate list — feeds both the real ballot (BallotBox) and the
+    # unauthenticated Sample Ballot preview, AND every admin dashboard's own
+    # candidate-management screen (Superadmin, plain Admin) reuses this same
+    # route rather than a separate authenticated one. So the voting-closed
+    # block below only applies to unauthenticated (voter-facing) callers —
+    # an authenticated admin of any role must always be able to see/manage
+    # candidates, including right after voting closes, to prep for
+    # certification or the next cycle. The Sample Ballot link already hides
+    # itself client-side (App.jsx's showSampleBallot); this closes the same
+    # gap server-side for anyone hitting the route directly, without
+    # touching admin access.
+    is_admin_caller = False
+    try:
+        await require_admin(request)
+        is_admin_caller = True
+    except HTTPException:
+        pass
+
+    if not is_admin_caller:
+        schedule = await get_phase_schedule(request)
+        voting_window = schedule["phases"]["voting"]
+        if voting_window.get("enforced") and voting_window.get("end") and datetime.utcnow() > voting_window["end"]:
+            raise HTTPException(status_code=403, detail="Voting has closed. The candidate list is no longer available.")
+
     candidates = []
     async for cand in db.candidates.find(org_query(request)).sort("order", 1):
         cand["_id"] = str(cand["_id"])
@@ -1564,44 +1753,63 @@ async def get_positions(request: Request):
     return positions
 
 # Simple in-memory per-IP rate limit for the one unauthenticated upload
-# endpoint. Good enough for a single-instance deployment; if this ever runs
-# on multiple Render/Railway instances behind a load balancer, swap for a
-# Redis-backed limiter (e.g. slowapi) since in-memory state won't be shared
-# across instances.
-_upload_attempts: dict[str, list[float]] = {}
+# Mongo-backed (not in-memory) so it (a) survives a restart, (b) works
+# correctly across multiple instances behind a load balancer — the same
+# reasoning that already applies to the admin login limiter above — and
+# (c) increments atomically via a single find_one_and_update, so a burst of
+# concurrent requests from one IP can't all read the same "under the limit"
+# count before any of them write (the in-memory read-then-write version this
+# replaced had exactly that race). Client IP is resolved via
+# ProxyHeadersMiddleware (see near the bottom of this file) so this counts
+# the real visitor, not the platform's reverse proxy, as long as
+# TRUSTED_PROXY_HOSTS is configured correctly for your deployment.
+async def _check_rate_limit(request: Request, *, bucket: str, limit: int, window_s: int, message: str):
+    ip = request.client.host if request.client else "unknown"
+    key = f"{bucket}:{ip}"
+    now = datetime.utcnow()
+    window_start = now - timedelta(seconds=window_s)
+
+    doc = await db.ip_rate_limits.find_one_and_update(
+        {"key": key},
+        {
+            "$push": {"hits": {"$each": [now], "$slice": -(limit + 1)}},
+            "$set": {"last_hit": now},
+        },
+        upsert=True,
+        return_document=True,
+    )
+    recent_hits = [h for h in doc.get("hits", []) if h > window_start]
+    if len(recent_hits) > limit:
+        raise HTTPException(status_code=429, detail=message)
+
+
 UPLOAD_RATE_LIMIT = 8       # max uploads
 UPLOAD_RATE_WINDOW_S = 600  # per 10 minutes, per IP
 
 
-def _check_upload_rate_limit(request: Request):
-    ip = request.client.host if request.client else "unknown"
-    now = datetime.utcnow().timestamp()
-    attempts = [t for t in _upload_attempts.get(ip, []) if now - t < UPLOAD_RATE_WINDOW_S]
-    if len(attempts) >= UPLOAD_RATE_LIMIT:
-        raise HTTPException(status_code=429, detail="Too many uploads. Please try again in a few minutes.")
-    attempts.append(now)
-    _upload_attempts[ip] = attempts
+async def _check_upload_rate_limit(request: Request):
+    await _check_rate_limit(
+        request, bucket="upload", limit=UPLOAD_RATE_LIMIT, window_s=UPLOAD_RATE_WINDOW_S,
+        message="Too many uploads. Please try again in a few minutes.",
+    )
 
 
-_register_attempts = {}
 REGISTER_RATE_LIMIT = 10
 REGISTER_RATE_WINDOW_S = 60
 
-def _check_register_rate_limit(request: Request):
-    ip = request.client.host if request.client else "unknown"
-    now = datetime.utcnow().timestamp()
-    attempts = [t for t in _register_attempts.get(ip, []) if now - t < REGISTER_RATE_WINDOW_S]
-    if len(attempts) >= REGISTER_RATE_LIMIT:
-        raise HTTPException(status_code=429, detail="Too many requests. Please try again shortly.")
-    attempts.append(now)
-    _register_attempts[ip] = attempts
+
+async def _check_register_rate_limit(request: Request):
+    await _check_rate_limit(
+        request, bucket="register", limit=REGISTER_RATE_LIMIT, window_s=REGISTER_RATE_WINDOW_S,
+        message="Too many requests. Please try again shortly.",
+    )
 
 
 VOTER_REGISTER_PAGE_SIZE = 25
 
 @app.get("/voter-register")
 async def search_voter_register(request: Request, q: str = "", page: int = 1):
-    _check_register_rate_limit(request)
+    await _check_register_rate_limit(request)
     page = min(max(page, 1), 2000)  # cap: an unbounded skip is a cheap DoS
     skip = (page - 1) * VOTER_REGISTER_PAGE_SIZE
     query = org_query(request)
@@ -1632,7 +1840,7 @@ async def search_voter_register(request: Request, q: str = "", page: int = 1):
 
 @app.post("/voter-register/check-number")
 async def check_registered_number(data: ApplicationEligibilityCheck, request: Request):
-    _check_register_rate_limit(request)
+    await _check_register_rate_limit(request)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(status_code=404, detail="Not found in the register.")
@@ -1674,7 +1882,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     validates file type/size, and rate-limits per IP, none of which the old
     unsigned-preset upload did.
     """
-    _check_upload_rate_limit(request)
+    await _check_upload_rate_limit(request)
     await assert_phase_open(request, "applications")
 
     if file.content_type not in ALLOWED_IMAGE_TYPES:
@@ -1877,7 +2085,19 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         "is_commissioner": True
     }))
     if not commissioner:
-        raise HTTPException(status_code=404, detail="Invalid email or password.")
+        # SECURITY: this used to be a 404 while every other "wrong
+        # credentials" branch above returns 401 — a status-code oracle that
+        # let an attacker learn "this email belongs to *some* admin
+        # account" without a password, just from which code came back.
+        # Also run a dummy bcrypt comparison so a no-account-found request
+        # takes roughly the same time as one that found an account and
+        # checked its password — bcrypt is the only slow step in this
+        # function, so skipping it entirely on the "not found" path is a
+        # timing oracle for the same information. _DUMMY_BCRYPT_HASH is a
+        # fixed, valid bcrypt hash of no real password; its value doesn't
+        # matter, only that checkpw does real work against it.
+        bcrypt.checkpw(data.password.encode()[:72], _DUMMY_BCRYPT_HASH)
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     stored_hash = commissioner.get("commissioner_password_hash", "")
     if not verify_password(data.password, stored_hash):
@@ -1930,29 +2150,14 @@ async def toggle_election(request: Request, admin: dict = Depends(require_role("
     return {"is_open": new_status}
 
 
-@app.post("/admin/schedule-election")
-async def schedule_election(data: ElectionSchedule, request: Request, admin: dict = Depends(require_role("superadmin"))):
-    if data.end <= data.start:
-        raise HTTPException(400, "End time must be after the start time.")
-    await db.settings.update_one(
-        org_query(request, {"name": "election_config"}),
-        {"$set": org_stamp(request, {"start_time": data.start, "end_time": data.end, "is_open": True, "name": "election_config"})},
-        upsert=True
-    )
-    await log_action("election_scheduled", current_actor(request), {
-        "start": data.start.isoformat(), "end": data.end.isoformat()
-    }, org_id=request.state.org_id)
-    return {"status": "scheduled"}
-
-
-@app.post("/admin/clear-schedule")
-async def clear_schedule(request: Request, admin: dict = Depends(require_role("superadmin"))):
-    await db.settings.update_one(
-        org_query(request, {"name": "election_config"}),
-        {"$unset": {"start_time": "", "end_time": ""}}
-    )
-    await log_action("election_schedule_cleared", current_actor(request), {}, org_id=request.state.org_id)
-    return {"status": "cleared"}
+# NOTE: /admin/schedule-election and /admin/clear-schedule (a standalone
+# start_time/end_time window on election_config) were retired in favor of
+# the phase schedule (PHASE_NAMES / assert_phase_open / POST
+# /admin/schedule/phases) — see the "voting" phase, which /verify-identity,
+# /vote and /vote-bulk all now check consistently instead of two disconnected
+# timers. The historical election_scheduled / election_schedule_cleared
+# action labels stay in the frontend's Activity Log formatter so old log
+# entries still render human-readably.
 
 
 @app.post("/admin/reset-election")
@@ -2003,88 +2208,172 @@ async def toggle_certification(request: Request, admin: dict = Depends(require_c
 
 
 @app.get("/admin/sms-balance")
-async def get_sms_balance():
-    return {"balance": "Check EgoSMS Portal", "currency": "UGX"}
+async def get_sms_balance(admin: dict = Depends(require_role("superadmin"))):
+    """Live MamboSMS balance — restricted to superadmin since it calls out
+    to a billable third-party account. EgoSMS has no equivalent balance API
+    exposed in its docs, so this only ever reflects the fallback provider;
+    the primary's (EgoSMS) balance needs checking on EgoSMS's own portal.
+    """
+    if not MAMBOSMS_API_KEY:
+        return {"balance": None, "currency": "UGX", "error": "MAMBOSMS_API_KEY not configured."}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api-mongolia.mambosms.com/v1/accounts/balance",
+                headers={"Authorization": MAMBOSMS_API_KEY},
+                timeout=15.0,
+            )
+            body = response.json()
+            if body.get("success"):
+                return {"balance": body["data"]["balance"], "currency": "UGX", "provider": "mambosms"}
+            return {"balance": None, "currency": "UGX", "error": (body.get("messages") or ["Unknown error"])[0]}
+    except Exception as e:
+        logger.error(f"❌ MamboSMS balance check failed: {e}")
+        return {"balance": None, "currency": "UGX", "error": "Could not reach MamboSMS."}
 
 
 @app.post("/admin/test-connection")
-async def test_egosms_connection(data: AdminTestSMS, request: Request, admin: dict = Depends(require_role("superadmin"))):
+async def test_sms_connection(data: AdminTestSMS, request: Request, admin: dict = Depends(require_role("superadmin"))):
     # Restricted to superadmin: this sends a real, billable SMS to an
     # arbitrary number supplied in the body. Under "any admin token" it was a
-    # free SMS relay for every provisioned role.
+    # free SMS relay for every provisioned role. Goes through the same
+    # send_sms() dispatch as real OTPs (EgoSMS primary, MamboSMS fallback),
+    # so this test reflects what a voter would actually experience.
     await log_action("sms_test_sent", current_actor(request), {"phone": _mask_phone(data.phone)}, org_id=request.state.org_id)
-    success = await send_sms_via_egosms(data.phone, "EgoSMS Connection Verified for BallotBox!")
+    success = await send_sms(data.phone, "SMS Connection Verified for BallotBox!", request)
     if success:
         return {"status": "success", "message": f"Test message delivered to {data.phone}"}
-    raise HTTPException(status_code=400, detail="EgoSMS rejected the request. Check Railway logs for the reason.")
+    raise HTTPException(status_code=400, detail="Both MamboSMS and EgoSMS rejected the request. Check server logs for the reason.")
+
+
+# Applied to student_id and full_name from an imported CSV. Generous enough
+# for any real name/ID, but a hard ceiling against an accidentally (or
+# deliberately) malformed file stuffing an unbounded string into a field
+# that later gets re-rendered in the voter register, official report, and
+# analytics screens.
+IMPORT_FIELD_MAX_LEN = 200
+
+# A normalized Ugandan MSISDN is "256" + 9 digits = 12 digits total. This
+# isn't a hard validity check (real numbers can vary) — it's a heuristic so
+# an obviously mistyped phone number (a stray extra/missing digit) can be
+# flagged back to the importing admin instead of silently being saved as a
+# different, still-plausible-looking number and only discovered when that
+# voter never receives an OTP.
+_UGANDA_MSISDN_RE = re.compile(r"^256\d{9}$")
 
 
 @app.post("/admin/import-voters")
 async def import_voters(request: Request, file: UploadFile = File(...), admin: dict = Depends(require_role("it_admin", "superadmin"))):
     content = await file.read()
     reader  = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
-    count   = 0
     now     = datetime.utcnow()
 
+    ops: list[UpdateOne] = []
+    warnings: list[str] = []
+    skipped = 0
+    row_num = 1  # header is row 1; first data row is 2, matching what a spreadsheet shows
+
     for row in reader:
+        row_num += 1
         # Handle both hyphen (student-id) and underscore (student_id) column names
         sid             = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
         name            = (row.get('full_name')  or row.get('full-name')  or '').strip()
         raw_phone_field = (row.get('phone') or '').strip()
 
-        if sid and name:
-            raw_numbers       = raw_phone_field.split('/')
-            formatted_numbers = []
+        if not (sid and name):
+            skipped += 1
+            continue
 
-            for num in raw_numbers:
-                clean = re.sub(r'\D', '', num.strip())
-                if not clean:
-                    continue
-                if clean.startswith('0'):
-                    clean = '256' + clean[1:]
-                elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
-                    clean = '256' + clean
-                if clean not in formatted_numbers:
-                    formatted_numbers.append(clean)
+        if len(sid) > IMPORT_FIELD_MAX_LEN or len(name) > IMPORT_FIELD_MAX_LEN:
+            skipped += 1
+            warnings.append(f"Row {row_num}: student_id or full_name exceeds {IMPORT_FIELD_MAX_LEN} characters — skipped.")
+            continue
 
-            # This used to $set has_voted/last_status/is_commissioner to
-            # their defaults on EVERY row, including voters who already
-            # existed. Re-importing the roster mid-election (to fix a typo,
-            # add a few late names, etc.) silently un-voted every existing
-            # voter, wiped every commissioner's role, and reset otp_count —
-            # while vote_events (the actual tally) is untouched by import
-            # and only ever cleared by /admin/reset-election. That's how
-            # "votes cast" (from vote_events, cumulative across re-imports)
-            # and "completed voters" (from voters.has_voted, reset by the
-            # next import) drift apart — the Undervote/Funnel panels were
-            # comparing two counters that could silently fall out of sync.
-            # It was also a real double-vote path: a re-imported voter's
-            # has_voted flips back to False, so they can authenticate and
-            # vote again, adding a second vote_events row for the same
-            # person. $setOnInsert confines the reset-to-defaults to voters
-            # that don't exist yet; an existing voter's status is untouched
-            # by a re-import, only their name/phone are refreshed.
-            await db.voters.update_one(
-                org_query(request, {"student_id": sid}),
-                {
-                    "$set": org_stamp(request, {
-                        "full_name":     name,
-                        "phone_numbers": formatted_numbers,
-                        "updated_at":    now,
-                    }),
-                    "$setOnInsert": {
-                        "is_commissioner": False,
-                        "has_voted":       False,
-                        "last_active":     None,
-                        "last_status":     "idle",
-                        "otp_count":       0,
-                    },
+        raw_numbers       = raw_phone_field.split('/')
+        formatted_numbers = []
+
+        for num in raw_numbers:
+            clean = re.sub(r'\D', '', num.strip())
+            if not clean:
+                continue
+            if clean.startswith('0'):
+                clean = '256' + clean[1:]
+            elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
+                clean = '256' + clean
+            if not _UGANDA_MSISDN_RE.match(clean):
+                # Not rejected outright — some legitimate numbers (a foreign
+                # number for a diaspora student, say) won't match this
+                # pattern, and the importing admin is in a better position
+                # than this endpoint to judge one flagged row. It's kept,
+                # just surfaced.
+                warnings.append(
+                    f"Row {row_num} ({sid}): phone \"{num.strip()}\" normalized to \"{clean}\", "
+                    f"which doesn't look like a standard Ugandan number — please double-check it."
+                )
+            if clean not in formatted_numbers:
+                formatted_numbers.append(clean)
+
+        # This used to $set has_voted/last_status/is_commissioner to
+        # their defaults on EVERY row, including voters who already
+        # existed. Re-importing the roster mid-election (to fix a typo,
+        # add a few late names, etc.) silently un-voted every existing
+        # voter, wiped every commissioner's role, and reset otp_count —
+        # while vote_events (the actual tally) is untouched by import
+        # and only ever cleared by /admin/reset-election. That's how
+        # "votes cast" (from vote_events, cumulative across re-imports)
+        # and "completed voters" (from voters.has_voted, reset by the
+        # next import) drift apart — the Undervote/Funnel panels were
+        # comparing two counters that could silently fall out of sync.
+        # It was also a real double-vote path: a re-imported voter's
+        # has_voted flips back to False, so they can authenticate and
+        # vote again, adding a second vote_events row for the same
+        # person. $setOnInsert confines the reset-to-defaults to voters
+        # that don't exist yet; an existing voter's status is untouched
+        # by a re-import, only their name/phone are refreshed.
+        ops.append(UpdateOne(
+            org_query(request, {"student_id": sid}),
+            {
+                "$set": org_stamp(request, {
+                    "full_name":     name,
+                    "phone_numbers": formatted_numbers,
+                    "updated_at":    now,
+                }),
+                "$setOnInsert": {
+                    "is_commissioner": False,
+                    "has_voted":       False,
+                    "last_active":     None,
+                    "last_status":     "idle",
+                    "otp_count":       0,
                 },
-                upsert=True
-            )
-            count += 1
-    await log_action("voters_imported", current_actor(request), {"count": count}, org_id=request.state.org_id)
-    return {"status": "success", "imported_count": count}
+            },
+            upsert=True
+        ))
+
+    if ops:
+        # PERFORMANCE: previously one update_one round trip per CSV row in a
+        # plain Python loop — fine for a few hundred students, but a roster
+        # in the low thousands could take long enough to risk hitting the
+        # platform's request timeout, leaving the import silently partial
+        # with no clear signal of where it stopped. bulk_write sends every
+        # row's update in one (or a few, batched by the driver) round trip.
+        # unordered=True so one bad row doesn't abort the rows after it.
+        await db.voters.bulk_write(ops, ordered=False)
+    count = len(ops)  # rows that passed validation and were sent to Mongo
+
+    # Cap how many individual warnings ride along in the response — a badly
+    # formatted file could otherwise generate thousands of lines. The admin
+    # still gets the total count and a representative sample.
+    MAX_WARNINGS_RETURNED = 50
+    await log_action("voters_imported", current_actor(request), {
+        "count": count, "skipped": skipped, "warning_count": len(warnings)
+    }, org_id=request.state.org_id)
+    return {
+        "status": "success",
+        "imported_count": count,
+        "skipped_rows": skipped,
+        "warnings": warnings[:MAX_WARNINGS_RETURNED],
+        "warning_count": len(warnings),
+    }
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
@@ -2394,14 +2683,28 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     if not finance_commissioner:
         raise HTTPException(403, "Only the designated Finance Commissioner can clear applications.")
 
-    await db.applications.update_one(
-        org_query(request, {"_id": oid}),
+    # Atomic guard: fold the "not already cleared / not already resolved"
+    # check into the update filter itself instead of trusting the read
+    # above. Two near-simultaneous clear requests (a double-click, or a
+    # retry) would otherwise both pass the earlier read-based check and
+    # both write — this keeps finance_cleared_by/at accurate to whoever's
+    # write actually won, and matches the guard pattern used everywhere
+    # else in this file (see _resolve_application, _resolve_removal, and
+    # financial_controller_decide_student_change).
+    result = await db.applications.update_one(
+        org_query(request, {
+            "_id": oid,
+            "finance_cleared": {"$ne": True},
+            "status": {"$nin": ["approved", "denied", "removed"]},
+        }),
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": data.commissioner_id,
             "finance_cleared_at": datetime.utcnow()
         }}
     )
+    if result.matched_count == 0:
+        raise HTTPException(400, "This application was already resolved or finance-cleared by someone else.")
     await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"💰 Application {app_id} finance-cleared by {data.commissioner_id}.")
     return {"status": "finance_cleared"}
@@ -2800,15 +3103,21 @@ async def superadmin_force_approve(app_id: str, request: Request):
     if app_doc.get("status") == "approved":
         raise HTTPException(400, "Already approved.")
 
-    await _create_candidate_from_application(app_doc, request.state.org_id)
-    await db.applications.update_one(
-        org_query(request, {"_id": oid}),
+    # Atomic guard, same pattern as _resolve_application: claim the
+    # not-yet-approved document via the update filter so this can't race a
+    # commission majority vote (or a concurrent duplicate click) into
+    # creating two candidates for the same application.
+    result = await db.applications.update_one(
+        org_query(request, {"_id": oid, "status": {"$ne": "approved"}}),
         {"$set": {
             "status": "approved",
             "superadmin_override": True,
             "decided_at": datetime.utcnow()
         }}
     )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just approved by someone else. Please refresh.")
+    await _create_candidate_from_application(app_doc, request.state.org_id)
     await log_action("application_force_approved", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-approved application {app_id}.")
     return {"status": "force_approved"}
@@ -2824,14 +3133,16 @@ async def superadmin_force_deny(app_id: str, request: Request):
     if app_doc.get("status") in ("denied", "removed"):
         raise HTTPException(400, "Application is already denied or removed.")
 
-    await db.applications.update_one(
-        org_query(request, {"_id": oid}),
+    result = await db.applications.update_one(
+        org_query(request, {"_id": oid, "status": {"$nin": ["denied", "removed"]}}),
         {"$set": {
             "status": "denied",
             "superadmin_override": True,
             "decided_at": datetime.utcnow()
         }}
     )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just resolved by someone else. Please refresh.")
     await log_action("application_force_denied", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-denied application {app_id}.")
     return {"status": "force_denied"}
@@ -2848,14 +3159,16 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
-    await db.applications.update_one(
-        org_query(request, {"_id": oid}),
+    result = await db.applications.update_one(
+        org_query(request, {"_id": oid, "finance_cleared": {"$ne": True}}),
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": "superadmin_override",
             "finance_cleared_at": datetime.utcnow()
         }}
     )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just finance-cleared by someone else. Please refresh.")
     await log_action("application_force_finance_cleared", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"💰 Superadmin force-cleared finance gate for application {app_id}.")
     return {"status": "force_finance_cleared"}
@@ -3179,32 +3492,35 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     if not financial_controller:
         raise HTTPException(403, "Not a registered Financial Controller.")
 
+    # Atomic guard: claim the "pending" document via the update filter
+    # itself, not the read above. Two near-simultaneous decide calls (a
+    # double-click, or a decide racing a superadmin force-approve/deny on
+    # the same change) would otherwise both pass the read-based check and
+    # both execute _execute_student_change / log a decision. Whoever's
+    # update actually matches a still-pending document is the one who goes
+    # on to execute the change; the other gets a clean 409, not a silent
+    # double-apply.
+    status_value = "approved" if data.decision == "approve" else "denied"
+    claim = await db.student_changes.update_one(
+        org_query(request, {"_id": oid, "status": "pending"}),
+        {"$set": {
+            "status":          status_value,
+            "decided_by":      data.financial_controller_id,
+            "decision_reason": data.reason,
+            "resolved_at":     datetime.utcnow()
+        }}
+    )
+    if claim.matched_count == 0:
+        raise HTTPException(409, "This request was just decided by someone else. Please refresh.")
+
     if data.decision == "approve":
         await _execute_student_change(change, request.state.org_id)
-        await db.student_changes.update_one(
-            org_query(request, {"_id": oid}),
-            {"$set": {
-                "status":                "approved",
-                "decided_by":            data.financial_controller_id,
-                "decision_reason":       data.reason,
-                "resolved_at":           datetime.utcnow()
-            }}
-        )
         await log_action("student_change_approved", data.financial_controller_id, {
             "change_type": change["change_type"],
             "student_id":  change["student_id"],
             "requested_by": change.get("requested_by", "")
         }, org_id=request.state.org_id)
     else:
-        await db.student_changes.update_one(
-            org_query(request, {"_id": oid}),
-            {"$set": {
-                "status":                "denied",
-                "decided_by":            data.financial_controller_id,
-                "decision_reason":       data.reason,
-                "resolved_at":           datetime.utcnow()
-            }}
-        )
         await log_action("student_change_denied", data.financial_controller_id, {
             "change_type": change["change_type"],
             "student_id":  change["student_id"],
@@ -3459,15 +3775,24 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
     if change.get("status") == "cancelled":
         raise HTTPException(400, "Cannot approve a cancelled request.")
 
-    await _execute_student_change(change, request.state.org_id)
-    await db.student_changes.update_one(
-        org_query(request, {"_id": oid}),
+    # Atomic guard: only proceed if this call is the one that actually
+    # claims the request out of every non-final status — prevents a
+    # superadmin force-approve from racing a Financial Controller decision
+    # (or a duplicate click) into executing the change twice.
+    result = await db.student_changes.update_one(
+        org_query(request, {
+            "_id": oid,
+            "status": {"$nin": ["approved", "force_approved", "denied", "force_denied", "cancelled"]},
+        }),
         {"$set": {
             "status":               "force_approved",
             "superadmin_override":  True,
             "resolved_at":          datetime.utcnow()
         }}
     )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This request was just resolved by someone else. Please refresh.")
+    await _execute_student_change(change, request.state.org_id)
     await log_action("student_change_force_approved", current_actor(request), {
         "change_type":  change["change_type"],
         "student_id":   change["student_id"],
@@ -3485,14 +3810,19 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
     if change.get("status") in ("denied", "force_denied", "cancelled"):
         raise HTTPException(400, f"Request is already {change.get('status')}.")
 
-    await db.student_changes.update_one(
-        org_query(request, {"_id": oid}),
+    result = await db.student_changes.update_one(
+        org_query(request, {
+            "_id": oid,
+            "status": {"$nin": ["approved", "force_approved", "denied", "force_denied", "cancelled"]},
+        }),
         {"$set": {
             "status":               "force_denied",
             "superadmin_override":  True,
             "resolved_at":          datetime.utcnow()
         }}
     )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This request was just resolved by someone else. Please refresh.")
     await log_action("student_change_force_denied", current_actor(request), {
         "change_type":  change["change_type"],
         "student_id":   change["student_id"],
@@ -4052,7 +4382,7 @@ PUBLIC_ROLL_MAX = 500
 
 @app.get("/election-results/voter-roll")
 async def get_public_voter_roll(request: Request):
-    _check_register_rate_limit(request)
+    await _check_register_rate_limit(request)
     voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
     if voted < PUBLIC_ROLL_THRESHOLD:
         # Below the threshold the server returns nothing at all, so a small
