@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
+import { useToast, useConfirm } from './UIFeedback';
 import {
   SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock,
 } from './SharedAdminPanels';
@@ -32,6 +33,8 @@ function getErrorMessage(e, fallback = 'Failed.') {
 }
 
 export default function SuperAdminDashboard({ onLogout }) {
+  const toast = useToast();
+  const confirm = useConfirm();
 
   const [activeTab, setActiveTab] = useState('candidates');
 
@@ -111,30 +114,30 @@ export default function SuperAdminDashboard({ onLogout }) {
   const handleSetCommissionerCredentials = async (studentId) => {
     const email = commCredEmail[studentId];
     if (!email) {
-      alert('Email is required.');
+      toast('Email is required.');
       return;
     }
     try {
       const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
         email
       });
-      alert(res.data.sms_notified
+      toast(res.data.sms_notified
         ? 'Email saved. A temporary password was sent via SMS.'
-        : 'Email saved, but SMS notification failed to send.');
+        : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
       setCommCredEmail(prev => ({ ...prev, [studentId]: '' }));
       fetchCommissioners();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
   const handleResetCommissionerPassword = async (studentId) => {
-    if (!window.confirm('Send a new temporary password to this commissioner via SMS?')) return;
+    if (!(await confirm('Send a new temporary password to this commissioner via SMS?'))) return;
     setResetting(prev => ({ ...prev, [studentId]: true }));
     try {
       const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
-      alert(res.data.sms_notified
+      toast(res.data.sms_notified
         ? 'New temporary password sent via SMS.'
         : 'Password reset, but SMS failed to send.');
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
     finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
   };
   
@@ -273,30 +276,30 @@ const refetchAll = () => {
       // Apply immediately without reload
       document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
       document.documentElement.style.setProperty('--brand-accent',  branding.accent_color);
-      alert('Branding saved!');
-    } catch (e) { alert(getErrorMessage(e, 'Failed to save branding.')); }
+      toast('Branding saved!', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to save branding.'), { kind: 'error' }); }
     finally { setBrandSaving(false); }
   };
 
   // ── Positions ──
 
   const handleAddPosition = async () => {
-    if (!newPosition.title.trim()) return alert('Position title required.');
+    if (!newPosition.title.trim()) return toast('Position title required.');
     setPosLoading(true);
     try {
       await api.post(`/positions`, newPosition);
       setNewPosition({ title: '', description: '', order: 0 });
       fetchPositions();
-    } catch (e) { alert(getErrorMessage(e, 'Failed to add position.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Failed to add position.'), { kind: 'error' }); }
     finally { setPosLoading(false); }
   };
 
   const handleDeletePosition = async (id) => {
-    if (!window.confirm('Delete this position? Existing candidates under this position are unaffected.')) return;
+    if (!(await confirm('Delete this position? Existing candidates under this position are unaffected.'))) return;
     try {
       await api.delete(`/positions/${id}`);
       fetchPositions();
-    } catch (e) { alert(getErrorMessage(e, 'Failed to delete position.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Failed to delete position.'), { kind: 'error' }); }
   };
 
   // ── Candidates ──
@@ -315,7 +318,7 @@ const refetchAll = () => {
       });
       setNewCandidate({ name: '', position: '', image: null, order: 0 });
       fetchCandidates();
-    } catch (e) { alert(getErrorMessage(e, 'Error adding candidate.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Error adding candidate.'), { kind: 'error' }); }
     finally { setUploading(false); }
   };
 
@@ -332,36 +335,36 @@ const refetchAll = () => {
       });
       setEditingId(null);
       fetchCandidates();
-    } catch (e) { alert(getErrorMessage(e, 'Update failed.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Update failed.'), { kind: 'error' }); }
     finally { setUploading(false); }
   };
 
   const handleRemoveCandidateOverride = async (candidateId) => {
-    if (!window.confirm('Remove this candidate instantly from the ballot?')) return;
+    if (!(await confirm('Remove this candidate instantly from the ballot?'))) return;
     try {
       await api.post(`/superadmin/candidates/${candidateId}/remove`);
       fetchCandidates();
       fetchApplications();
-    } catch (e) { alert(getErrorMessage(e, 'Failed to remove candidate.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Failed to remove candidate.'), { kind: 'error' }); }
   };
 
   // ── Applications ──
 
   const handleForceApprove = async (appId) => {
-    if (!window.confirm('Force-approve this application instantly? The candidate will appear on the ballot immediately.')) return;
+    if (!(await confirm('Force-approve this application instantly? The candidate will appear on the ballot immediately.'))) return;
     try {
       await api.post(`/superadmin/applications/${appId}/force-approve`);
       fetchApplications();
       fetchCandidates();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
   const handleForceDeny = async (appId) => {
-    if (!window.confirm('Force-deny this application?')) return;
+    if (!(await confirm('Force-deny this application?'))) return;
     try {
       await api.post(`/superadmin/applications/${appId}/force-deny`);
       fetchApplications();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
   // ── Commissioners ──
@@ -369,10 +372,10 @@ const refetchAll = () => {
   const handleToggleCommissioner = async (studentId) => {
     try {
       const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
-      alert(`${studentId} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`);
+      toast(`${studentId} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`, { kind: 'success' });
       fetchCommissioners();
       fetchVotersList();
-    } catch (e) { alert(getErrorMessage(e, 'Failed to toggle commissioner.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Failed to toggle commissioner.'), { kind: 'error' }); }
   };
 
   const handleSetChief = async (studentId) => {
@@ -389,14 +392,14 @@ const handleSetRole = async (studentId, role) => {
   try {
     await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role_label: role });
     fetchCommissioners();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleSetFinanceCommissioner = async (studentId) => {
   try {
     await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-finance-commissioner`);
     fetchCommissioners();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleClearFinanceCommissioner = async (studentId) => {
@@ -409,34 +412,34 @@ const handleClearFinanceCommissioner = async (studentId) => {
 const handleToggleFinancialController = async (studentId) => {
   try {
     const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/toggle`);
-    alert(`${studentId} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`);
+    toast(`${studentId} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`, { kind: 'success' });
     fetchFinancialControllers();
     fetchVotersList();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleSetFinancialControllerCredentials = async (studentId) => {
   const email = fcCredEmail[studentId];
-  if (!email) { alert('Email is required.'); return; }
+  if (!email) { toast('Email is required.'); return; }
   try {
     const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/set-credentials`, { email });
-    alert(res.data.sms_notified
+    toast(res.data.sms_notified
       ? 'Email saved. A temporary password was sent via SMS.'
-      : 'Email saved, but SMS notification failed to send.');
+      : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
     setFcCredEmail(prev => ({ ...prev, [studentId]: '' }));
     fetchFinancialControllers();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleResetFinancialControllerPassword = async (studentId) => {
-  if (!window.confirm('Send a new temporary password to this Financial Controller via SMS?')) return;
+  if (!(await confirm('Send a new temporary password to this Financial Controller via SMS?'))) return;
   setResetting(prev => ({ ...prev, [studentId]: true }));
   try {
     const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/reset-password`);
-    alert(res.data.sms_notified
+    toast(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
 
@@ -445,34 +448,34 @@ const handleResetFinancialControllerPassword = async (studentId) => {
 const handleToggleOverseer = async (studentId) => {
   try {
     const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/toggle`);
-    alert(`${studentId} is now ${res.data.is_overseer ? 'an Overseer' : 'no longer an Overseer'}.`);
+    toast(`${studentId} is now ${res.data.is_overseer ? 'an Overseer' : 'no longer an Overseer'}.`, { kind: 'success' });
     fetchOverseers();
     fetchVotersList();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleSetOverseerCredentials = async (studentId) => {
   const email = ovCredEmail[studentId];
-  if (!email) { alert('Email is required.'); return; }
+  if (!email) { toast('Email is required.'); return; }
   try {
     const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/set-credentials`, { email });
-    alert(res.data.sms_notified
+    toast(res.data.sms_notified
       ? 'Email saved. A temporary password was sent via SMS.'
-      : 'Email saved, but SMS notification failed to send.');
+      : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
     setOvCredEmail(prev => ({ ...prev, [studentId]: '' }));
     fetchOverseers();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleResetOverseerPassword = async (studentId) => {
-  if (!window.confirm('Send a new temporary password to this Overseer via SMS?')) return;
+  if (!(await confirm('Send a new temporary password to this Overseer via SMS?'))) return;
   setResetting(prev => ({ ...prev, [studentId]: true }));
   try {
     const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/reset-password`);
-    alert(res.data.sms_notified
+    toast(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
 
@@ -480,14 +483,14 @@ const handleResetOverseerPassword = async (studentId) => {
 
 const handleCreateOrg = async (e) => {
   e.preventDefault();
-  if (!orgForm.name.trim()) { alert('Organization name is required.'); return; }
+  if (!orgForm.name.trim()) { toast('Organization name is required.'); return; }
   setOrgCreating(true);
   try {
     const res = await api.post('/superadmin/orgs', { name: orgForm.name.trim(), slug: orgForm.slug.trim() });
-    alert(`Organization "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`);
+    toast(`Organization "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`, { kind: 'success' });
     setOrgForm({ name: '', slug: '' });
     fetchOrganizations();
-  } catch (e) { alert(getErrorMessage(e, 'Failed to create organization.')); }
+  } catch (e) { toast(getErrorMessage(e, 'Failed to create organization.'), { kind: 'error' }); }
   finally { setOrgCreating(false); }
 };
 
@@ -497,31 +500,34 @@ const handleCreateOrg = async (e) => {
     try {
       const res = await api.post(`/admin/toggle-election`);
       setIsElectionOpen(res.data.is_open);
-      alert(`Election is now ${res.data.is_open ? 'OPEN' : 'CLOSED'}.`);
-    } catch (e) { alert(getErrorMessage(e, 'Toggle failed.')); }
+      toast(`Election is now ${res.data.is_open ? 'OPEN' : 'CLOSED'}.`);
+    } catch (e) { toast(getErrorMessage(e, 'Toggle failed.'), { kind: 'error' }); }
   };
 
   const handleToggleCertification = async () => {
-    if (isElectionOpen) { alert('Stop the election before certifying results.'); return; }
+    if (isElectionOpen) { toast('Stop the election before certifying results.'); return; }
     const msg = isCertified
       ? "Remove the 'Official' stamp from results?"
       : 'Mark results as FINAL and BINDING?';
-    if (!window.confirm(msg)) return;
+    if (!(await confirm(msg))) return;
     try {
       const res = await api.post(`/admin/toggle-certification`);
       setIsCertified(res.data.is_certified);
-      alert(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
-    } catch (e) { alert(getErrorMessage(e, 'Failed.')); }
+      toast(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
+    } catch (e) { toast(getErrorMessage(e, 'Failed.'), { kind: 'error' }); }
   };
 
   const handleResetElection = async () => {
-    if (!window.confirm('⚠️ DANGER: Delete ALL votes and reset?')) return;
-    if (window.prompt("Type 'RESET' to confirm:") !== 'RESET') return;
+    const proceed = await confirm(
+      '⚠️ DANGER: This will permanently delete ALL votes and reset the election. This cannot be undone.',
+      { danger: true, confirmText: 'Delete everything', requireText: 'RESET' }
+    );
+    if (!proceed) return;
     try {
       await api.post(`/admin/reset-election`);
-      alert('Election reset.');
+      toast('Election reset.', { kind: 'success' });
       fetchElectionData();
-    } catch (e) { alert(getErrorMessage(e, 'Reset failed.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Reset failed.'), { kind: 'error' }); }
   };
 
   const handleImportVoters = async (e) => {
@@ -534,10 +540,10 @@ const handleCreateOrg = async (e) => {
       const res = await api.post(`/admin/import-voters`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      alert(`Imported ${res.data.imported_count} voters.`);
+      toast(`Imported ${res.data.imported_count} voters.`, { kind: 'success' });
       fetchElectionData();
       fetchVotersList();
-    } catch (e) { alert(getErrorMessage(e, 'Import failed.')); }
+    } catch (e) { toast(getErrorMessage(e, 'Import failed.'), { kind: 'error' }); }
     finally { setImporting(false); e.target.value = null; }
   };
   
@@ -559,39 +565,39 @@ const fetchStudentChanges = async () => {
   const handleToggleItAdmin = async (studentId) => {
   try {
       const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
-      alert(`${studentId} is now ${res.data.is_it_admin ? 'an IT admin' : 'no longer an IT admin'}.`);
+      toast(`${studentId} is now ${res.data.is_it_admin ? 'an IT admin' : 'no longer an IT admin'}.`, { kind: 'success' });
       fetchItAdmins();
       fetchVotersList();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
 const handleSetItAdminCredentials = async (studentId) => {
   const email = itCredEmail[studentId];
   if (!email) {
-    alert('Email is required.');
+    toast('Email is required.');
     return;
   }
   try {
     const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
       email
     });
-    alert(res.data.sms_notified
+    toast(res.data.sms_notified
       ? 'Email saved. A temporary password was sent via SMS.'
-      : 'Email saved, but SMS notification failed to send.');
+      : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
     setItCredEmail(prev => ({ ...prev, [studentId]: '' }));
     fetchItAdmins();
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
 const handleResetItAdminPassword = async (studentId) => {
-  if (!window.confirm('Send a new temporary password to this IT admin via SMS?')) return;
+  if (!(await confirm('Send a new temporary password to this IT admin via SMS?'))) return;
   setResetting(prev => ({ ...prev, [studentId]: true }));
   try {
     const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
-    alert(res.data.sms_notified
+    toast(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
-  } catch (e) { alert(getErrorMessage(e)); }
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
 
@@ -599,35 +605,35 @@ const handleForceStudentChange = async (changeId, action) => {
   const endpoint = action === 'approve'
       ? `/superadmin/student-changes/${changeId}/force-approve`
       : `/superadmin/student-changes/${changeId}/force-deny`;
-    if (!window.confirm(`Force ${action} this request?`)) return;
+    if (!(await confirm(`Force ${action} this request?`))) return;
     try {
       await api.post(endpoint);
       fetchStudentChanges();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
 const handleSuperAdminAddStudent = async (e) => {
   e.preventDefault();
   try {
       await api.post('/superadmin/students/add', saDirectAdd);
-      alert('Student added.');
+      toast('Student added.', { kind: 'success' });
       setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
       fetchElectionData();
       fetchVotersList();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
 const handleSuperAdminRemoveStudent = async () => {
-  if (!saDirectRemove.student_id) { alert('Please search and select a student from the list first.'); return; }
-  if (!window.confirm('Remove this student from the voter register?')) return;
+  if (!saDirectRemove.student_id) { toast('Please search and select a student from the list first.'); return; }
+  if (!(await confirm('Remove this student from the voter register?'))) return;
   try {
       await api.post('/superadmin/students/remove', saDirectRemove);
-      alert('Student removed.');
+      toast('Student removed.', { kind: 'success' });
       setSaDirectRemove({ student_id: '', reason: '' });
       setRemoveSearch('');
       fetchElectionData();
       fetchVotersList();
-    } catch (e) { alert(getErrorMessage(e)); }
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
   // ── Derived ──
@@ -931,12 +937,12 @@ const handleSuperAdminRemoveStudent = async () => {
                     </button>
                   )}
                   {app.status === 'approved' && (
-                    <button style={{ ...redBtn, flex: 1 }} onClick={() => {
-                      if (window.confirm('Remove this approved candidate from the ballot?')) {
+                    <button style={{ ...redBtn, flex: 1 }} onClick={async () => {
+                      if (await confirm('Remove this approved candidate from the ballot?', { danger: true, confirmText: 'Remove' })) {
                         // Find matching candidate by application_id and remove
                         const cand = candidates.find(c => c.application_id === app._id);
                         if (cand) handleRemoveCandidateOverride(cand._id);
-                        else alert('Candidate not found in ballot — may have been removed already.');
+                        else toast('Candidate not found in ballot — may have been removed already.', { kind: 'error' });
                       }
                     }}>
                       🗑️ Remove from Ballot
@@ -1228,7 +1234,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         const url = await uploadToCloudinary(file);
                         setBranding({ ...branding, logo_url: url });
                       } catch {
-                        alert('Logo upload failed. Check Cloudinary env vars.');
+                        toast('Logo upload failed. Check Cloudinary env vars.', { kind: 'error' });
                       } finally {
                         setBrandSaving(false);
                       }
@@ -1333,7 +1339,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         const url = await uploadToCloudinary(file);
                         setBranding({ ...branding, university_logo_url: url });
                       } catch {
-                        alert('University logo upload failed. Check Cloudinary env vars.');
+                        toast('University logo upload failed. Check Cloudinary env vars.', { kind: 'error' });
                       } finally {
                         setBrandSaving(false);
                       }

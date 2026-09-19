@@ -2,9 +2,13 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { RosterStats } from './SharedAdminPanels';
+import { useToast, useConfirm, usePrompt } from './UIFeedback';
 
 
 export default function ITAdminDashboard({ onLogout }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const prompt = usePrompt();
 
   const itAdminId   = sessionStorage.getItem('it_admin_id')   || '';
   const itAdminName = sessionStorage.getItem('it_admin_name') || '';
@@ -150,8 +154,8 @@ export default function ITAdminDashboard({ onLogout }) {
   // ── Cancel request ──
 
   const handleCancel = async (changeId) => {
-    const reason = window.prompt('Optional: why are you withdrawing this request?') || '';
-    if (!window.confirm('Withdraw this request? This cannot be undone.')) return;
+    const reason = (await prompt('Optional: why are you withdrawing this request?', { placeholder: 'Reason (optional)' })) || '';
+    if (!(await confirm('Withdraw this request? This cannot be undone.', { danger: true, confirmText: 'Withdraw' }))) return;
 
     setCancelling(prev => ({ ...prev, [changeId]: true }));
     try {
@@ -161,7 +165,7 @@ export default function ITAdminDashboard({ onLogout }) {
       });
       fetchMyRequests();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Failed to cancel request.');
+      toast(e.response?.data?.detail || 'Failed to cancel request.', { kind: 'error' });
     } finally {
       setCancelling(prev => ({ ...prev, [changeId]: false }));
     }

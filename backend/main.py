@@ -49,8 +49,8 @@ EGOSMS_USER = os.getenv("EGOSMS_USERNAME")
 EGOSMS_PASS = os.getenv("EGOSMS_PASSWORD")
 EGOSMS_SENDER_ID = os.getenv("ESMS_SENDER_ID", "SMS").strip()
 
-# EgoSMS above is the primary OTP provider; Mambo SMS is the automatic
-# fallback if Ego's send fails (bad response, non-2xx, timeout, exception).
+# EgoSMS above is the primary OTP provider; MamboSMS is the automatic
+# fallback if EgoSMS's send fails (bad response, non-2xx, timeout, exception).
 # See send_sms() below for the actual primary/fallback dispatch — the two
 # provider-specific functions never call each other directly.
 MAMBOSMS_API_KEY = os.getenv("MAMBOSMS_API_KEY")
@@ -623,7 +623,7 @@ async def send_sms_via_egosms(to_number: str, message_text: str) -> bool:
             )
             resp_text = response.text.strip()
             logger.info(f"📡 EgoSMS Result: {resp_text}")
-            return resp_text.upper().startswith("OK")
+            return "OK" in resp_text.upper()
     except Exception as e:
         logger.error(f"❌ EgoSMS Connection Error: {e}")
         return False

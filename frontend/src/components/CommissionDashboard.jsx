@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 
 export default function CommissionDashboard({ onLogout }) {
+  const toast = useToast();
 
   const [activeTab, setActiveTab]       = useState('pending');
   const [applications, setApplications] = useState([]);
@@ -61,7 +63,7 @@ export default function CommissionDashboard({ onLogout }) {
 
   const castVote = async (appId, vote) => {
     if (!commissionerId.trim()) {
-      alert('Your commissioner ID was not found in this session. Please log out and log in again.');
+      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
       return;
     }
     setVoting(prev => ({ ...prev, [appId]: true }));
@@ -75,7 +77,7 @@ export default function CommissionDashboard({ onLogout }) {
       setDenyReasons(prev => ({ ...prev, [appId]: '' }));
       await fetchAll();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Vote failed. You may have already voted on this application.');
+      toast(e.response?.data?.detail || 'Vote failed. You may have already voted on this application.', { kind: 'error' })
     } finally {
       setVoting(prev => ({ ...prev, [appId]: false }));
     }
@@ -83,7 +85,7 @@ export default function CommissionDashboard({ onLogout }) {
 
   const castRemovalVote = async (appId, vote) => {
     if (!commissionerId.trim()) {
-      alert('Your commissioner ID was not found in this session. Please log out and log in again.');
+      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
       return;
     }
     setVoting(prev => ({ ...prev, [`remove_${appId}`]: true }));
@@ -95,7 +97,7 @@ export default function CommissionDashboard({ onLogout }) {
       });
       await fetchAll();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Removal vote failed.');
+      toast(e.response?.data?.detail || 'Removal vote failed.', { kind: 'error' })
     } finally {
       setVoting(prev => ({ ...prev, [`remove_${appId}`]: false }));
     }
@@ -103,7 +105,7 @@ export default function CommissionDashboard({ onLogout }) {
 
   const castFinanceClear = async (appId) => {
     if (!commissionerId.trim()) {
-      alert('Your commissioner ID was not found in this session. Please log out and log in again.');
+      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
       return;
     }
     setFinanceClearing(prev => ({ ...prev, [appId]: true }));
@@ -113,7 +115,7 @@ export default function CommissionDashboard({ onLogout }) {
       });
       await fetchAll();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Finance clearance failed.');
+      toast(e.response?.data?.detail || 'Finance clearance failed.', { kind: 'error' })
     } finally {
       setFinanceClearing(prev => ({ ...prev, [appId]: false }));
     }

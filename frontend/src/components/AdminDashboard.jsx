@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api, { getErrorMessage } from '../api';
+import { useToast, useConfirm } from './UIFeedback';
 
 export default function AdminDashboard({ apiBase, onLogout }) {
+  const toast = useToast();
+  const confirm = useConfirm();
   // --- STATE MANAGEMENT ---
   const [voters, setVoters] = useState([]);
   const [candidates, setCandidates] = useState([]);
@@ -54,7 +57,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
   // --- NEW: TOGGLE CERTIFICATION ACTION ---
   const handleToggleCertification = async () => {
   if (isElectionOpen) {
-    alert("Stop the election before certifying results.");
+    toast("Stop the election before certifying results.", { kind: 'error' });
     return;
   }
 
@@ -62,7 +65,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
     ? "Warning: This will remove the 'Official' stamp from the reports. Continue?" 
     : "Confirm Certification: This marks results as FINAL and BINDING. Proceed?";
 
-  if (window.confirm(msg)) {
+  if (await confirm(msg, { danger: !isCertified })) {
     try {
       // Your backend doesn't need a body; it just toggles the current value
       const res = await api.post(`/admin/toggle-certification`);
@@ -70,10 +73,10 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       // We use the boolean returned by the backend to ensure UI matches DB exactly
       setIsCertified(res.data.is_certified);
       
-      alert(`Results ${res.data.is_certified ? 'certified successfully' : 'de-certified'}!`);
+      toast(`Results ${res.data.is_certified ? 'certified successfully' : 'de-certified'}!`, { kind: 'success' });
     } catch (err) {
       console.error("Cert Error:", err);
-      alert(getErrorMessage(err, "Failed to update certification status."));
+      toast(getErrorMessage(err, "Failed to update certification status."), { kind: 'error' });
     }
   }
 };
@@ -84,21 +87,23 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       // Change this line to remove the body and use the response from the server
       const res = await api.post(`/admin/toggle-election`);
       setIsElectionOpen(res.data.is_open);
-      alert(`Election is now ${res.data.is_open ? "STARTED" : "STOPPED"}`);
+      toast(`Election is now ${res.data.is_open ? "STARTED" : "STOPPED"}`, { kind: 'success' });
     } catch (err) { 
-      alert(getErrorMessage(err, "Toggle failed. Ensure the route /admin/toggle-election exists on the backend.")); 
+      toast(getErrorMessage(err, "Toggle failed. Ensure the route /admin/toggle-election exists on the backend."), { kind: 'error' }); 
     }
   };
 
   const handleResetElection = async () => {
-    if (window.confirm("⚠️ DANGER: This will delete ALL votes and reset the election. Proceed?")) {
-      if (window.prompt("Type 'RESET' to confirm permanent deletion:") === "RESET") {
-        try {
-          await api.post(`/admin/reset-election`);
-          alert("Database cleared.");
-          fetchData();
-        } catch (err) { alert(getErrorMessage(err, "Reset failed.")); }
-      }
+    const proceed = await confirm(
+      "⚠️ DANGER: This will permanently delete ALL votes and reset the election. This cannot be undone.",
+      { danger: true, confirmText: 'Delete everything', requireText: 'RESET' }
+    );
+    if (proceed) {
+      try {
+        await api.post(`/admin/reset-election`);
+        toast("Database cleared.", { kind: 'success' });
+        fetchData();
+      } catch (err) { toast(getErrorMessage(err, "Reset failed."), { kind: 'error' }); }
     }
   };
 
@@ -116,9 +121,9 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       let msg = `Import Successful! ${imported_count} records processed.`;
       if (skipped_rows) msg += ` ${skipped_rows} row(s) skipped (missing/invalid data).`;
       if (warning_count) msg += ` ${warning_count} row(s) flagged for review (see server log / activity log for details, e.g. unusual phone numbers).`;
-      alert(msg);
+      toast(msg, { kind: 'success', duration: warning_count ? 9000 : 5000 });
       fetchData();
-    } catch (err) { alert(getErrorMessage(err, "Import failed.")); }
+    } catch (err) { toast(getErrorMessage(err, "Import failed."), { kind: 'error' }); }
     finally { setImporting(false); e.target.value = null; }
   };
 
@@ -141,7 +146,7 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       });
       setNewCandidate({ name: '', position: '', image: null, order: 0 });
       fetchData();
-    } catch (err) { alert(getErrorMessage(err, "Error adding candidate.")); }
+    } catch (err) { toast(getErrorMessage(err, "Error adding candidate."), { kind: 'error' }); }
     finally { setUploading(false); }
   };
 
@@ -163,14 +168,16 @@ export default function AdminDashboard({ apiBase, onLogout }) {
       });
       setEditingId(null);
       fetchData();
-    } catch (err) { alert(getErrorMessage(err, "Update failed.")); }
+    } catch (err) { toast(getErrorMessage(err, "Update failed."), { kind: 'error' }); }
     finally { setUploading(false); }
   };
 
   const handleDeleteCandidate = async (id) => {
-    if (window.confirm("Delete this candidate?")) {
-      await api.delete(`/candidates/${id}`);
-      fetchData();
+    if (await confirm("Delete this candidate? This cannot be undone.", { danger: true, confirmText: 'Delete' })) {
+      try {
+        await api.delete(`/candidates/${id}`);
+        fetchData();
+      } catch (err) { toast(getErrorMessage(err, "Failed to delete candidate."), { kind: 'error' }); }
     }
   };
 

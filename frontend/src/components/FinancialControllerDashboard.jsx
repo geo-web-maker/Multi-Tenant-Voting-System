@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 
 
 export default function FinancialControllerDashboard({ onLogout }) {
+  const toast = useToast();
 
   const [activeTab, setActiveTab]     = useState('pending');
   const [changes, setChanges]         = useState([]);
@@ -36,7 +38,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
 
   const decide = async (changeId, decision) => {
     if (!fcId.trim()) {
-      alert('Your Financial Controller ID was not found in this session. Please log out and log in again.');
+      toast('Your Financial Controller ID was not found in this session. Please log out and log in again.', { kind: 'error' });
       return;
     }
     setDeciding(prev => ({ ...prev, [changeId]: true }));
@@ -49,7 +51,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
       setShowReasonBox(prev => ({ ...prev, [changeId]: false }));
       await fetchAll();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Failed to record decision.');
+      toast(e.response?.data?.detail || 'Failed to record decision.', { kind: 'error' });
     } finally {
       setDeciding(prev => ({ ...prev, [changeId]: false }));
     }

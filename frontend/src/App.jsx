@@ -239,6 +239,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
             setPendingAdminEmail(studentId);
+            // Carry the temp password they just logged in with straight into
+            // the "set new password" form instead of asking them to retype
+            // it — they typed it once, in the login form above, seconds ago.
+            setNewPasswordForm(prev => ({ ...prev, old_password: name }));
             setMustChangePassword(true);
             return;
           }
@@ -627,19 +631,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                <form onSubmit={handleSetNewPassword}>
                 <input
                   type="password"
-                  placeholder="Temporary password (from SMS)"
-                  style={inputStyle}
-                  value={newPasswordForm.old_password}
-                  onChange={e => setNewPasswordForm({ ...newPasswordForm, old_password: e.target.value })}
-                  disabled={passwordChangeSubmitting}
-                />
-                <input
-                  type="password"
                   placeholder="New password (min 6 characters)"
                   style={inputStyle}
                   value={newPasswordForm.new_password}
                   onChange={e => setNewPasswordForm({ ...newPasswordForm, new_password: e.target.value })}
                   disabled={passwordChangeSubmitting}
+                  autoFocus
                 />
                 <input
                   type="password"

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api';
 import FinalReport from './FinalReport';
+import { useToast, useConfirm } from './UIFeedback';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -285,6 +286,8 @@ function toLocalInput(value) {
 /* ══════════════════════════ TIMELINE ══════════════════════════ */
 
 export function Timeline({ canEdit = false, isChief = false }) {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -355,17 +358,17 @@ export function Timeline({ canEdit = false, isChief = false }) {
       setGrantForm({ student_id: '', phase: 'applications', reason: '', expires_at: '' });
       loadGrants();
     } catch (err) {
-      alert(errText(err, 'Could not create the grant.'));
+      toast(errText(err, 'Could not create the grant.'), { kind: 'error' });
     }
   };
 
   const revoke = async (id) => {
-    if (!window.confirm('Revoke this exception grant?')) return;
+    if (!(await confirm('Revoke this exception grant?', { danger: true, confirmText: 'Revoke' }))) return;
     try {
       await api.post(`/admin/exception-grants/${id}/revoke`);
       loadGrants();
     } catch (err) {
-      alert(errText(err, 'Could not revoke.'));
+      toast(errText(err, 'Could not revoke.'), { kind: 'error' });
     }
   };
 
