@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api';
 import FinalReport from './FinalReport';
 import { useToast, useConfirm } from './UIFeedback';
+import { Icon } from './icons.jsx';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -395,7 +396,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
               <p style={countdownStyle}>Closes in {countdown(p.seconds_until_end)}</p>
             )}
             <p style={{ ...phaseMeta, opacity: 0.6 }}>
-              {p.enforced ? '🔒 Enforced — closed means blocked' : '👁 Advisory only — not enforced'}
+              {p.enforced ? <><Icon name="lock" /> Enforced — closed means blocked</> : <><Icon name="eye" /> Advisory only — not enforced</>}
             </p>
           </div>
         ))}
@@ -631,14 +632,14 @@ export function ChainView() {
 
       <div style={filterRow} className="stack-mobile">
         <button style={primaryBtn} onClick={verify} disabled={verifying}>
-          {verifying ? 'Verifying…' : '🔐 Verify Chain'}
+          {verifying ? 'Verifying…' : <><Icon name="secure" /> Verify Chain</>}
         </button>
         <button style={ghostBtn} onClick={load}>Refresh</button>
       </div>
 
       {anchorFailures > 0 && (
         <p style={warnBanner}>
-          ⚠️ {anchorFailures} checkpoint(s) failed to anchor off-site. The local chain is
+          <Icon name="warning" /> {anchorFailures} checkpoint(s) failed to anchor off-site. The local chain is
           intact, but those checkpoints have no external witness.
         </p>
       )}
@@ -646,13 +647,13 @@ export function ChainView() {
       {verdict && (
         <div style={verdict.valid ? okBanner : badBanner}>
           {verdict.valid ? (
-            <>✅ Chain valid — {verdict.checkpoints_verified} checkpoint(s) re-derived and matched.
+            <><Icon name="success" /> Chain valid — {verdict.checkpoints_verified} checkpoint(s) re-derived and matched.
               <div className="hash-cell" style={{ fontSize: '11px', marginTop: '6px' }}>
                 Head: {verdict.head_hash || '—'}
               </div>
             </>
           ) : (
-            <>🚨 Chain MISMATCH at checkpoint {verdict.first_mismatch_checkpoint_id}.
+            <><Icon name="alarm" /> Chain MISMATCH at checkpoint {verdict.first_mismatch_checkpoint_id}.
               <div className="hash-cell" style={{ fontSize: '11px', marginTop: '6px' }}>
                 Expected {verdict.expected} · Recomputed {verdict.recomputed}
               </div>
@@ -800,6 +801,8 @@ export function Analytics() {
     }
   }, [bucket]);
 
+  // load() sets the loading flag before fetching; that is the intended pattern here.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); }, [load]);
 
 
@@ -902,7 +905,7 @@ export function Analytics() {
                     ...tdStyle, textAlign: 'center',
                     color: p.overcounted > 0 ? 'var(--warning)' : undefined,
                   }} title={p.overcounted > 0 ? `${p.overcounted} more than completed voters` : undefined}>
-                    {p.votes_cast}{p.overcounted > 0 ? ' ⚠' : ''}
+                    {p.votes_cast}{p.overcounted > 0 ? <> <Icon name="warning" /></> : ''}
                   </td>
                   <td style={{ ...tdStyle, textAlign: 'center' }}>{p.undervotes}</td>
                   <td style={{
@@ -1055,9 +1058,9 @@ export function OfficialCertificationBlock() {
 
       <div style={filterRow} className="stack-mobile no-print">
         <button style={primaryBtn} onClick={load} disabled={loading}>
-          {loading ? 'Building…' : '📄 Generate Official Document'}
+          {loading ? 'Building…' : <><Icon name="file" /> Generate Official Document</>}
         </button>
-        {report && <button style={ghostBtn} onClick={() => window.print()}>🖨️ Print</button>}
+        {report && <button style={ghostBtn} onClick={() => window.print()}><Icon name="print" /> Print</button>}
       </div>
 
       {error && <p style={errStyle} className="no-print">{error}</p>}
@@ -1116,11 +1119,12 @@ export function OfficialCertificationBlock() {
 
 // The four tabs every dashboard gets. Keeping the id/label pairs here means a
 // future tab is added once, not five times.
+// eslint-disable-next-line react-refresh/only-export-components
 export const SHARED_TAB_DEFS = [
-  { id: 'shared_timeline', label: '🗓 Timeline' },
-  { id: 'shared_analytics', label: '📈 Analytics' },
-  { id: 'shared_activity', label: '📜 Activity Log' },
-  { id: 'shared_chain', label: '🔐 Chain Verify' },
+  { id: 'shared_timeline', label: <><Icon name="calendar" /> Timeline</> },
+  { id: 'shared_analytics', label: <><Icon name="trend" /> Analytics</> },
+  { id: 'shared_activity', label: <><Icon name="log" /> Activity Log</> },
+  { id: 'shared_chain', label: <><Icon name="secure" /> Chain Verify</> },
 ];
 
 export function SharedTabPanels({ activeTab, canEditSchedule = false, isChief = false }) {

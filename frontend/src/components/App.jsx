@@ -13,6 +13,16 @@ import OverseerDashboard from './components/OverseerDashboard';
 import { HelpMenuProvider } from './context/HelpMenuContext';
 import HelpPanel from './components/HelpPanel';
 import { FabTrigger } from './components/HelpTriggers';
+import { Icon } from './icons.jsx';
+
+// Sample IDs/names cycled in the login placeholder animation.
+const examples = [
+  { id: "23/U/BCS/10245/GV", name: "Ayebale Elizabeth" },
+  { id: "22/U/ISD/08940/PD", name: "Namusoke Dorothy Nalwadda" },
+  { id: "23/U/AGE/11223/GV", name: "Kaggwa Paul" },
+  { id: "21/U/BSE/44556/PE", name: "Sserwadda Valentino" },
+  { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
+];
 
 function App() {
   const [supportPdfUrl, setSupportPdfUrl] = useState("");
@@ -43,13 +53,6 @@ function App() {
     message: '', 
     type: 'success' 
   });
-  const examples = [
-    { id: "23/U/BCS/10245/GV", name: "Ayebale Elizabeth" },
-    { id: "22/U/ISD/08940/PD", name: "Namusoke Dorothy Nalwadda" },
-    { id: "23/U/AGE/11223/GV", name: "Kaggwa Paul" },
-    { id: "21/U/BSE/44556/PE", name: "Sserwadda Valentino" },
-    { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
-  ];
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [pendingAdminEmail, setPendingAdminEmail]     = useState('');
   const [newPasswordForm, setNewPasswordForm]         = useState({ old_password: '', new_password: '', confirm_password: '' });
@@ -140,14 +143,14 @@ useEffect(() => {
     const timer = setTimeout(handleTyping, typingSpeed);
     return () => clearTimeout(timer);
 
-  }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name, examples]);
+  }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name]);
   
   useEffect(() => {
     const checkStatus = async () => {
       try {
         const res = await api.get('/election-status');
         setIsElectionOpen(res.data.is_open);
-      } catch (err) {
+      } catch {
         console.error("Could not fetch election status");
       }
     };
@@ -191,20 +194,6 @@ useEffect(() => {
     setStep(4);
   };
 
-  const checkDeviceLock = () => {
-    const hasVoted = document.cookie.split('; ').find(row => row.startsWith('voted_status='));
-    if (hasVoted) {
-      setStatusModal({
-        show: true,
-        title: "Device Locked",
-        message: "This device has already been used to cast a vote.",
-        type: "error"
-      });
-      return true;
-    }
-    return false;
-  };
-  
 const handleVerifyIdentity = async (selectedIdx = null) => {
       setIsVerifying(true);
       try {
@@ -292,7 +281,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
    const handleVerifyOtp = async () => {
     setIsVerifying(true);
     try {
-      const res = await api.post('/verify-otp', {
+      await api.post('/verify-otp', {
         student_id: studentId,
         code: otp
       });
@@ -451,7 +440,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 display: 'flex', alignItems: 'center', gap: '6px',
               }}
             >
-              {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+              {theme === 'dark' ? <><Icon name="sun" /> Light</> : <><Icon name="moon" /> Dark</>}
             </button>
           </div>
           <img src={logoUrl} alt="Logo" style={logoStyle} />
@@ -564,7 +553,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   cursor: isVerifying ? 'wait' : 'pointer',
                 }}
               >
-                {isVerifying ? '⏳ Verifying…' : (isAdminPath ? "Login" : "Verify & Send Code")}
+                {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Login" : "Verify & Send Code")}
               </button>
               <button onClick={() => { setIsAdminPath(!isAdminPath); setNeedsTotp(false); setTotpCode(""); }} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an Admin? Login here"}
@@ -625,7 +614,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {mustChangePassword && (
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={{ ...modalContentStyle, maxWidth: '420px' }}>
-              <div style={{ fontSize: '40px', textAlign: 'center', marginBottom: '10px' }}>🔒</div>
+              <div style={{ fontSize: '40px', textAlign: 'center', marginBottom: '10px' }}><Icon name="lock" /></div>
               <h2 style={{ textAlign: 'center', marginTop: 0, color: 'var(--text-color)' }}>Set a New Password</h2>
               <p style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
                 For your security, you must set a new password before continuing.
@@ -659,7 +648,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         
                 {passwordChangeError && (
                   <p style={{ color: 'var(--danger)', fontSize: '13px', textAlign: 'center', marginBottom: '10px' }}>
-                    ⚠️ {passwordChangeError}
+                    <Icon name="warning" /> {passwordChangeError}
                   </p>
                 )}
         
@@ -673,7 +662,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   }}
                   disabled={passwordChangeSubmitting}
                 >
-                  {passwordChangeSubmitting ? '⏳ Setting password…' : 'Set Password & Continue'}
+                  {passwordChangeSubmitting ? <><Icon name="loading" /> Setting password…</> : 'Set Password & Continue'}
                 </button>
               </form>
             </div>
@@ -684,7 +673,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={modalContentStyle}>
               <div style={{ fontSize: '50px', marginBottom: '10px', textAlign: 'center' }}>
-                {statusModal.type === 'success' ? '📩' : '⚠️'}
+                {statusModal.type === 'success' ? <Icon name="mail" /> : <Icon name="warning" />}
               </div>
               <h2 style={{ color: statusModal.type === 'success' ? 'var(--success)' : 'var(--danger)', textAlign: 'center', marginTop: 0 }}>
                 {statusModal.title}
@@ -729,7 +718,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 fontSize: '16px'
               }}
             >
-              ⬅ Back to Login
+              <Icon name="back" /> Back to Login
             </button>
       
             {/* Reusing BallotBox in Preview Mode */}

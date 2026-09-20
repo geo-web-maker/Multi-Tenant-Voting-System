@@ -1,6 +1,7 @@
 import React from 'react';
 import VoterRegisterSearch from './VoterRegisterSearch';
 import { useHelpMenu } from '../context/HelpMenuContext';
+import { Icon } from './icons.jsx';
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
 const modalContentStyle = {
@@ -21,11 +22,11 @@ export default function HelpPanel({ supportPdfUrl, supportPhone, onShowGuide }) 
   const { open, close, showRegister, openRegister, closeRegister } = useHelpMenu();
 
   const items = [
-    { icon: '📖', label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
-    { icon: '🔍', label: 'Check Voter Register', onClick: openRegister },
-    ...(supportPdfUrl ? [{ icon: '📄', label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
+    { icon: <Icon name="book" />, label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
+    { icon: <Icon name="search" />, label: 'Check Voter Register', onClick: openRegister },
+    ...(supportPdfUrl ? [{ icon: <Icon name="file" />, label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
-      icon: '💬', label: 'Contact Support', color: '#25D366',
+      icon: <Icon name="chat" />, label: 'Contact Support', color: '#25D366',
       href: supportPhone ? `https://wa.me/${supportPhone}?text=Hello%20Admin,%20I%20am%20having%20issues%20with%20the%20Election%20Portal.` : undefined
     },
   ];

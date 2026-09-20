@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Icon } from './icons.jsx';
 
 export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber, isSubmitting = false }) {
   const [isLocked, setIsLocked] = useState(false);
@@ -27,7 +28,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber, i
   if (isLocked) {
     return (
       <div style={{ textAlign: 'center', color: 'var(--text-color)', padding: '20px' }}>
-        <div style={{ fontSize: '50px', marginBottom: '20px' }}>🔒</div>
+        <div style={{ fontSize: '50px', marginBottom: '20px' }}><Icon name="lock" /></div>
         <h2 style={{ fontSize: '20px', color: 'var(--danger)', fontWeight: 'bold' }}>Access Restricted</h2>
         <p style={{ color: 'var(--text-muted)', marginTop: '10px', lineHeight: '1.5' }}>
           Too many OTP requests detected. <br />
@@ -46,7 +47,7 @@ export default function OtpInput({ otp, setOtp, onVerify, onBack, phoneNumber, i
             textDecoration: 'none' 
           }}
         >
-          💬 Contact Admin via WhatsApp
+          <Icon name="chat" /> Contact Admin via WhatsApp
         </a>
 
         <button onClick={onBack} style={{ ...secondaryBtnStyle, marginTop: '20px' }}>Return to Login</button>

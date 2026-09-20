@@ -4,6 +4,8 @@ import { useToast, useConfirm } from './UIFeedback';
 import {
   SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock,
 } from './SharedAdminPanels';
+import { Icon } from './icons.jsx';
+import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -145,21 +147,21 @@ export default function SuperAdminDashboard({ onLogout }) {
     try {
       const res = await api.get(`/superadmin/branding`);
       setBranding(res.data);
-    } catch (e) { /* use defaults */ }
+    } catch { /* use defaults */ }
   };
 
   const fetchPositions = async () => {
     try {
       const res = await api.get(`/positions`);
       setPositions(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchCandidates = async () => {
     try {
       const res = await api.get(`/candidates`);
       setCandidates(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchApplications = async () => {
@@ -167,7 +169,7 @@ export default function SuperAdminDashboard({ onLogout }) {
     try {
       const res = await api.get(`/admin/applications`);
       setApplications(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
     finally { setAppsLoading(false); }
   };
 
@@ -175,7 +177,7 @@ export default function SuperAdminDashboard({ onLogout }) {
     try {
       const res = await api.get(`/superadmin/commissioners`);
       setCommissioners(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchElectionData = async () => {
@@ -189,7 +191,7 @@ export default function SuperAdminDashboard({ onLogout }) {
       setIsElectionOpen(statusRes.data.is_open);
       setIsCertified(statusRes.data.is_certified || false);
       setLastRefreshed(new Date());
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
     finally { setLoading(false); }
   };
 
@@ -197,35 +199,35 @@ const fetchVotersList = async () => {
     try {
       const res = await api.get(`/admin/voters`);
       setVoters(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchFinancialControllers = async () => {
     try {
       const res = await api.get('/superadmin/financial-controllers');
       setFinancialControllers(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchOverseers = async () => {
     try {
       const res = await api.get('/superadmin/overseers');
       setOverseers(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchOrganizations = async () => {
     try {
       const res = await api.get('/superadmin/orgs');
       setOrganizations(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchSmsBalance = async () => {
     try {
       const res = await api.get('/admin/sms-balance');
       setSmsBalance(res.data);
-    } catch (e) { setSmsBalance({ balance: 'N/A', currency: '' }); }
+    } catch { setSmsBalance({ balance: 'N/A', currency: '' }); }
   };
 
 const refetchAll = () => {
@@ -265,6 +267,8 @@ const refetchAll = () => {
       fetchElectionData();
     }, 30000);
     return () => clearInterval(interval);
+  // Mount-only: fetchers are recreated each render and must not retrigger this effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   // ── Branding ──
@@ -519,7 +523,7 @@ const handleCreateOrg = async (e) => {
 
   const handleResetElection = async () => {
     const proceed = await confirm(
-      '⚠️ DANGER: This will permanently delete ALL votes and reset the election. This cannot be undone.',
+      <><Icon name="warning" /> DANGER: This will permanently delete ALL votes and reset the election. This cannot be undone.</>,
       { danger: true, confirmText: 'Delete everything', requireText: 'RESET' }
     );
     if (!proceed) return;
@@ -552,14 +556,14 @@ const handleCreateOrg = async (e) => {
   try {
       const res = await api.get(`/superadmin/it-admins`);
       setItAdmins(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
 const fetchStudentChanges = async () => {
   try {
       const res = await api.get(`/superadmin/student-changes`);
       setStudentChanges(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const handleToggleItAdmin = async (studentId) => {
@@ -664,22 +668,22 @@ const handleSuperAdminRemoveStudent = async () => {
     .filter((id, index, array) => array.indexOf(id) !== index);
 
   const tabs = [
-    { id: 'candidates',   label: '🏅 Candidates' },
-    { id: 'applications', label: '📋 Applications' },
-    { id: 'commissioners',label: '🏛️ Commission' },
-    { id: 'voters',       label: '🗳️ Voters' },
-    { id: 'positions',    label: '📌 Positions' },
-    { id: 'branding',     label: '🎨 Branding' },
-    { id: 'election',     label: '⚙️ Election' },
-    { id: 'it_admins',  label: '💻 IT Admins' },
-    { id: 'student_changes', label: '👥 Student Changes' },
-    { id: 'financial_controllers', label: '💰 Financial Controllers' },
-    { id: 'overseers',  label: '👁️ Overseers' },
-    { id: 'organizations', label: '🏢 Organizations' },
+    { id: 'candidates',   label: <><Icon name="award" /> Candidates</> },
+    { id: 'applications', label: <><Icon name="clipboard" /> Applications</> },
+    { id: 'commissioners',label: <><Icon name="institution" /> Commission</> },
+    { id: 'voters',       label: <><Icon name="vote" /> Voters</> },
+    { id: 'positions',    label: <><Icon name="pin" /> Positions</> },
+    { id: 'branding',     label: <><Icon name="palette" /> Branding</> },
+    { id: 'election',     label: <><Icon name="settings" /> Election</> },
+    { id: 'it_admins',  label: <><Icon name="monitor" /> IT Admins</> },
+    { id: 'student_changes', label: <><Icon name="users" /> Student Changes</> },
+    { id: 'financial_controllers', label: <><Icon name="wallet" /> Financial Controllers</> },
+    { id: 'overseers',  label: <><Icon name="eye" /> Overseers</> },
+    { id: 'organizations', label: <><Icon name="building" /> Organizations</> },
     // The old inline 'audit_log' tab is superseded by the shared Activity Log
     // panel, which every dashboard now mounts from one implementation.
     ...SHARED_TAB_DEFS,
-    { id: 'official_doc', label: '📄 Official Document' },
+    { id: 'official_doc', label: <><Icon name="file" /> Official Document</> },
   ];
 
   return (
@@ -689,7 +693,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {/* ── Header ── */}
         <div style={headerFlex} className="no-print">
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>⚡ Superadmin Panel</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="zap" /> Superadmin Panel</h2>
             <span style={{ fontSize: '11px', opacity: 0.5 }}>
               Sync: {lastRefreshed.toLocaleTimeString()}
             </span>
@@ -699,7 +703,7 @@ const handleSuperAdminRemoveStudent = async () => {
               onClick={handleToggleElection}
               style={{ ...btn, backgroundColor: isElectionOpen ? '#e67e22' : 'var(--success)' }}
             >
-              {isElectionOpen ? '⏸ Stop Election' : '▶️ Start Election'}
+              {isElectionOpen ? <><Icon name="pause" /> Stop Election</> : <><Icon name="play" /> Start Election</>}
             </button>
             <button
               onClick={handleToggleCertification}
@@ -711,7 +715,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 cursor: isElectionOpen ? 'not-allowed' : 'pointer',
               }}
             >
-              {isCertified ? '✅ Certified' : '⚠️ Certify Results'}
+              {isCertified ? <><Icon name="success" /> Certified</> : <><Icon name="warning" /> Certify Results</>}
             </button>
             <button onClick={onLogout} style={{ ...btn, backgroundColor: 'var(--danger)' }}>Logout</button>
           </div>
@@ -720,7 +724,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {/* ── Org switcher ── */}
         <div style={orgSwitcherBar} className="no-print org-switcher-bar">
           <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
-            🏢 Managing:
+            <Icon name="building" /> Managing:
           </span>
           <select
             style={{ ...inp, width: 'auto', minWidth: '220px', fontSize: '13px' }}
@@ -735,11 +739,11 @@ const handleSuperAdminRemoveStudent = async () => {
           </select>
           {activeOrgSlug ? (
             <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
-              ✓ Viewing only this organization's data
+              <Icon name="check" /> Viewing only this organization's data
             </span>
           ) : (
             <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
-              ⚠️ Unscoped — showing data across all organizations combined
+              <Icon name="warning" /> Unscoped — showing data across all organizations combined
             </span>
           )}
         </div>
@@ -790,7 +794,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <h4 style={{ ...cardTitle, marginBottom: '5px' }}>
                   Current Ballot ({candidates.length} candidates)
                 </h4>
-                <button style={ghostBtn} onClick={() => setIsPreviewOpen(true)}>👁️ Preview Ballot</button>
+                <button style={ghostBtn} onClick={() => setIsPreviewOpen(true)}><Icon name="eye" /> Preview Ballot</button>
               </div>
               {candidates.map(c => (
                 <div key={c._id} style={rowCard}>
@@ -928,12 +932,12 @@ const handleSuperAdminRemoveStudent = async () => {
                 <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
                   {app.status !== 'approved' && app.status !== 'removed' && (
                     <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceApprove(app._id)}>
-                      ⚡ Force Approve
+                      <Icon name="zap" /> Force Approve
                     </button>
                   )}
                   {app.status !== 'denied' && app.status !== 'removed' && (
                     <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceDeny(app._id)}>
-                      ✕ Force Deny
+                      <Icon name="close" /> Force Deny
                     </button>
                   )}
                   {app.status === 'approved' && (
@@ -945,7 +949,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         else toast('Candidate not found in ballot — may have been removed already.', { kind: 'error' });
                       }
                     }}>
-                      🗑️ Remove from Ballot
+                      <Icon name="trash" /> Remove from Ballot
                     </button>
                   )}
                 </div>
@@ -973,7 +977,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       )}
                       {c.is_finance_commissioner && (
                         <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                          💰 Finance
+                          <Icon name="wallet" /> Finance
                         </span>
                       )}
                     </div>
@@ -1008,7 +1012,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       <button
                         onClick={() => handleSetChief(c.student_id)}
                         style={{ ...ghostBtn, fontSize: '12px' }}>
-                        ⭐ Set Chief
+                        <Icon name="star" /> Set Chief
                       </button>
                     )}
                     {c.is_finance_commissioner ? (
@@ -1021,7 +1025,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       <button
                         onClick={() => handleSetFinanceCommissioner(c.student_id)}
                         style={{ ...ghostBtn, fontSize: '12px' }}>
-                        💰 Set Finance
+                        <Icon name="wallet" /> Set Finance
                       </button>
                     )}
                     <button style={redLink} onClick={() => handleToggleCommissioner(c.student_id)}>
@@ -1033,8 +1037,8 @@ const handleSuperAdminRemoveStudent = async () => {
                   <div style={{ width: '100%', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
                     <small style={{ opacity: 0.5, fontSize: '11px' }}>
                       {c.commissioner_email
-                        ? `📧 ${c.commissioner_email} — password set by commissioner ✓`
-                        : '⚠️ No login credentials set yet'}
+                        ? <><Icon name="mail" /> {c.commissioner_email} — password set by commissioner <Icon name="check" /></>
+                        : <><Icon name="warning" /> No login credentials set yet</>}
                     </small>
                     <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
                       <input
@@ -1056,7 +1060,7 @@ const handleSuperAdminRemoveStudent = async () => {
                           disabled={resetting[c.student_id]}
                           onClick={() => handleResetCommissionerPassword(c.student_id)}
                         >
-                          {resetting[c.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                          {resetting[c.student_id] ? 'Sending…' : <><Icon name="refresh" /> Reset Password</>}
                         </button>
                       )}
                     </div>
@@ -1114,7 +1118,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
             {duplicateIds.length > 0 && (
               <div style={{ padding: '12px 16px', border: '1px solid #e74c3c', borderRadius: '10px', marginBottom: '16px', color: '#e74c3c', fontSize: '13px' }}>
-                ⚠️ Duplicate student IDs detected: {[...new Set(duplicateIds)].join(', ')}
+                <Icon name="warning" /> Duplicate student IDs detected: {[...new Set(duplicateIds)].join(', ')}
               </div>
             )}
 
@@ -1124,7 +1128,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} />
               </div>
               <button style={ghostBtn} onClick={fetchElectionData} disabled={loading}>
-                {loading ? 'Syncing…' : '🔄 Refresh'}
+                {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
               </button>
             </div>
 
@@ -1259,7 +1263,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       opacity: brandSaving ? 0.5 : 1,
                     }}
                   >
-                    {brandSaving ? '⏳ Uploading…' : '📁 Choose logo image'}
+                    {brandSaving ? <><Icon name="loading" /> Uploading…</> : <><Icon name="folder" /> Choose logo image</>}
                   </label>
                           
                   {/* Preview or placeholder */}
@@ -1282,7 +1286,7 @@ const handleSuperAdminRemoveStudent = async () => {
                           color: '#ff6b6b',
                         }}
                       >
-                        ✕ Remove
+                        <Icon name="close" /> Remove
                       </button>
                     </div>
                   ) : (
@@ -1362,7 +1366,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       opacity: brandSaving ? 0.5 : 1,
                     }}
                   >
-                    {brandSaving ? '⏳ Uploading…' : '📁 Choose university logo'}
+                    {brandSaving ? <><Icon name="loading" /> Uploading…</> : <><Icon name="folder" /> Choose university logo</>}
                   </label>
 
                   {branding.university_logo_url ? (
@@ -1384,7 +1388,7 @@ const handleSuperAdminRemoveStudent = async () => {
                           color: '#ff6b6b',
                         }}
                       >
-                        ✕ Remove
+                        <Icon name="close" /> Remove
                       </button>
                     </div>
                   ) : (
@@ -1441,7 +1445,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 </div>
         
                 <button style={{ ...greenBtn, marginTop: '14px' }} onClick={handleSaveBranding} disabled={brandSaving}>
-                  {brandSaving ? 'Saving…' : '💾 Save Branding'}
+                  {brandSaving ? 'Saving…' : <><Icon name="save" /> Save Branding</>}
                 </button>
               </div>
             </div>
@@ -1495,7 +1499,7 @@ const handleSuperAdminRemoveStudent = async () => {
             </div>
 
             <div style={{ ...card, marginTop: '16px', borderColor: '#e74c3c' }}>
-              <h4 style={{ ...cardTitle, color: '#e74c3c' }}>🧨 Danger Zone</h4>
+              <h4 style={{ ...cardTitle, color: '#e74c3c' }}><Icon name="danger" /> Danger Zone</h4>
               <p style={{ fontSize: '13px', opacity: 0.7, margin: '0 0 12px' }}>
                 Full election reset — deletes ALL votes permanently. Certified elections cannot be reset.
               </p>
@@ -1556,7 +1560,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         disabled={resetting[a.student_id]}
                         onClick={() => handleResetItAdminPassword(a.student_id)}
                       >
-                        {resetting[a.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                        {resetting[a.student_id] ? 'Sending…' : <><Icon name="refresh" /> Reset Password</>}
                       </button>
                     )}
                   </div>
@@ -1597,6 +1601,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {/* ══════════════ STUDENT CHANGES TAB (superadmin view) ══════════════ */}
         {activeTab === 'student_changes' && (
           <div>
+            <SuperAdminStudentEdit />
             <div style={twoCol}>
               <div style={card}>
                 <h4 style={cardTitle}>Add Student Directly</h4>
@@ -1660,13 +1665,13 @@ const handleSuperAdminRemoveStudent = async () => {
                   </div>
                   {saDirectRemove.student_id && (
                     <p style={{ fontSize: '11px', color: 'var(--success)', margin: '2px 0 0' }}>
-                      ✓ Selected: {saDirectRemove.student_id}
+                      <Icon name="check" /> Selected: {saDirectRemove.student_id}
                     </p>
                   )}
                   <input style={inp} placeholder="Reason" value={saDirectRemove.reason}
                     onChange={e => setSaDirectRemove({ ...saDirectRemove, reason: e.target.value })} />
                   <button style={redBtn} onClick={handleSuperAdminRemoveStudent}>
-                    🗑️ Remove Student Instantly
+                    <Icon name="trash" /> Remove Student Instantly
                   </button>
                 </div>
               </div>
@@ -1687,7 +1692,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                   <div>
                     <b style={{ color: 'var(--text-color)' }}>
-                      {change.change_type === 'add' ? '➕ Add' : '➖ Remove'}
+                      {change.change_type === 'add' ? <><Icon name="plus" /> Add</> : <><Icon name="minus" /> Remove</>}
                     </b>
                     <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
                       {change.status.toUpperCase().replace('_', ' ')}
@@ -1715,7 +1720,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     {change.payment_proof_url && (
                       <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
                         style={{ fontSize: '12px', color: 'var(--info)', textDecoration: 'none' }}>
-                        🧾 View Receipt
+                        <Icon name="receipt" /> View Receipt
                       </a>
                     )}
                   </div>
@@ -1724,10 +1729,10 @@ const handleSuperAdminRemoveStudent = async () => {
                 {change.status === 'pending' && (
                   <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
                     <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'approve')}>
-                      ⚡ Force Approve
+                      <Icon name="zap" /> Force Approve
                     </button>
                     <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'deny')}>
-                      ✕ Force Deny
+                      <Icon name="close" /> Force Deny
                     </button>
                   </div>
                 )}
@@ -1778,7 +1783,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         disabled={resetting[a.student_id]}
                         onClick={() => handleResetFinancialControllerPassword(a.student_id)}
                       >
-                        {resetting[a.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                        {resetting[a.student_id] ? 'Sending…' : <><Icon name="refresh" /> Reset Password</>}
                       </button>
                     )}
                   </div>
@@ -1858,7 +1863,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         disabled={resetting[a.student_id]}
                         onClick={() => handleResetOverseerPassword(a.student_id)}
                       >
-                        {resetting[a.student_id] ? 'Sending…' : '🔄 Reset Password'}
+                        {resetting[a.student_id] ? 'Sending…' : <><Icon name="refresh" /> Reset Password</>}
                       </button>
                     )}
                   </div>

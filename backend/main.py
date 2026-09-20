@@ -26,6 +26,8 @@ import json
 import boto3
 from fastapi.concurrency import run_in_threadpool
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+import backup
+from backup_routes import build_router as build_backup_router
 
 from auth import (
     create_access_token,
@@ -135,6 +137,8 @@ async def lifespan(app: FastAPI):
     # Phase exception grants — looked up on every gated action.
     await db.exception_grants.create_index([("org_id", 1), ("student_id", 1), ("phase", 1)])
     # The activity log is read by every admin role now, filtered and sorted.
+    await db.student_edit_audit.create_index([("org_id", 1), ("student_key", 1), ("at", -1)])
+    await db.student_edit_audit.create_index([("org_id", 1), ("search_terms", 1)])
     await db.audit_log.create_index([("org_id", 1), ("timestamp", -1)])
     await db.audit_log.create_index([("org_id", 1), ("action", 1), ("timestamp", -1)])
     # Turnout-velocity aggregation scans cast_at.
@@ -268,6 +272,10 @@ PUBLIC_PATHS = {
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
     "/verify-admin", "/election-results", "/election-results/voter-roll",
     "/voter-register", "/voter-register/check-number",
+    # Backup triggers: called by an external scheduler with a shared secret
+    # (X-Backup-Token, checked in backup_routes.py), not by an admin session.
+    "/internal/backup/run", "/internal/backup/status", "/internal/backup/report",
+    "/internal/backup/approve-assets", "/internal/backup/selftest",
 }
 PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 
@@ -402,6 +410,8 @@ async def security_headers_middleware(request: Request, call_next):
     if request.url.path.startswith(("/admin", "/superadmin", "/it-admin", "/overseer", "/commission")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+app.include_router(build_backup_router(lambda: db))
 
 # =============================================================================
 # MODELS
@@ -597,10 +607,10 @@ async def send_sms_via_mambosms(to_number: str, message_text: str) -> bool:
                 timeout=15.0,
             )
             body = response.json()
-            logger.info(f"📡 MamboSMS Result: {body}")
+            logger.info(f"MamboSMS Result: {body}")
             return bool(body.get("success"))
     except Exception as e:
-        logger.error(f"❌ MamboSMS Connection Error: {e}")
+        logger.error(f"MamboSMS Connection Error: {e}")
         return False
 
 
@@ -622,10 +632,10 @@ async def send_sms_via_egosms(to_number: str, message_text: str) -> bool:
                 timeout=15.0
             )
             resp_text = response.text.strip()
-            logger.info(f"📡 EgoSMS Result: {resp_text}")
+            logger.info(f"EgoSMS Result: {resp_text}")
             return "OK" in resp_text.upper()
     except Exception as e:
-        logger.error(f"❌ EgoSMS Connection Error: {e}")
+        logger.error(f"EgoSMS Connection Error: {e}")
         return False
 
 
@@ -640,13 +650,13 @@ async def send_sms(to_number: str, message_text: str, request: Request | None = 
         # Local/load-testing only: never hit either real API. Log the
         # message (which contains the OTP) so Locust or a manual tester can
         # read it back, and report success so the normal OTP flow proceeds.
-        logger.info(f"🧪 [DEBUG_MODE] SMS to {to_number}: {message_text}")
+        logger.info(f"[DEBUG_MODE] SMS to {to_number}: {message_text}")
         return True
 
     if await send_sms_via_egosms(to_number, message_text):
         return True
 
-    logger.warning(f"⚠️ EgoSMS failed for {to_number}, falling back to MamboSMS.")
+    logger.warning(f"EgoSMS failed for {to_number}, falling back to MamboSMS.")
     if request is not None:
         await log_action("sms_provider_fallback", "system", {
             "primary": "egosms", "fallback": "mambosms",
@@ -997,7 +1007,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         await log_action("application_approved", "commission", {
             "app_id": app_id, "approve_count": approve_count, "total_commissioners": total
         }, org_id=org_id)
-        logger.info(f"✅ Application {app_id} approved by commission majority ({approve_count}/{total}).")
+        logger.info(f"Application {app_id} approved by commission majority ({approve_count}/{total}).")
     elif deny_count >= required:
         # Majority reached against — application denied. Same atomic guard:
         # only the winning caller logs/proceeds.
@@ -1010,7 +1020,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         await log_action("application_denied", "commission", {
             "app_id": app_id, "deny_count": deny_count, "total_commissioners": total
         }, org_id=org_id)
-        logger.info(f"❌ Application {app_id} denied by commission majority ({deny_count}/{total}).")
+        logger.info(f"Application {app_id} denied by commission majority ({deny_count}/{total}).")
 
 async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
     """
@@ -1049,7 +1059,7 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
             "name": (cand or {}).get("name"), "position": (cand or {}).get("position"),
             "approve_removals": approve_removals, "total_commissioners": total,
         }, org_id=org_id)
-        logger.info(f"🗑️ Candidate from application {app_id} removed by commission majority ({approve_removals}/{total}).")
+        logger.info(f"Candidate from application {app_id} removed by commission majority ({approve_removals}/{total}).")
 
 #--IT Administration Helpers---
 
@@ -2168,6 +2178,19 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
     config = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     if (config or {}).get("is_certified"):
         raise HTTPException(400, "Certified results cannot be reset. Revoke certification first.")
+    # Safety snapshot BEFORE anything is deleted. If it cannot be uploaded to B2 the
+    # reset aborts — it never continues without a backup. With no X-Org-Slug,
+    # org_query() is unscoped and this reset touches every tenant, so snapshot all.
+    try:
+        await backup.snapshot_before_destructive(
+            db, request.state.org_id, "reset-election", all_tenants=request.state.org_id is None)
+    except Exception as e:
+        logger.error(f"reset-election aborted: pre-reset snapshot failed: {e}")
+        await backup.send_alert(
+            "[BallotBox] Reset ABORTED: pre-reset backup failed",
+            f"An election reset was requested by {current_actor(request)} but the safety snapshot "
+            f"could not be uploaded, so nothing was deleted.\n\nError: {e}")
+        raise HTTPException(503, "Reset aborted: the safety backup could not be uploaded, so nothing was deleted.")
     await db.otps.delete_many(org_query(request))
     await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
     await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
@@ -2228,7 +2251,7 @@ async def get_sms_balance(admin: dict = Depends(require_role("superadmin"))):
                 return {"balance": body["data"]["balance"], "currency": "UGX", "provider": "mambosms"}
             return {"balance": None, "currency": "UGX", "error": (body.get("messages") or ["Unknown error"])[0]}
     except Exception as e:
-        logger.error(f"❌ MamboSMS balance check failed: {e}")
+        logger.error(f"MamboSMS balance check failed: {e}")
         return {"balance": None, "currency": "UGX", "error": "Could not reach MamboSMS."}
 
 
@@ -2706,7 +2729,7 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     if result.matched_count == 0:
         raise HTTPException(400, "This application was already resolved or finance-cleared by someone else.")
     await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id}, org_id=request.state.org_id)
-    logger.info(f"💰 Application {app_id} finance-cleared by {data.commissioner_id}.")
+    logger.info(f"Application {app_id} finance-cleared by {data.commissioner_id}.")
     return {"status": "finance_cleared"}
 
 
@@ -2856,7 +2879,7 @@ async def create_organization(data: OrganizationCreate):
     await log_action("organization_created", current_actor(request), {
         "org_id": str(result.inserted_id), "name": data.name, "slug": slug
     })
-    logger.info(f"🏢 Organization '{data.name}' provisioned with slug '{slug}'.")
+    logger.info(f"Organization '{data.name}' provisioned with slug '{slug}'.")
     return {
         "org_id": str(result.inserted_id),
         "name":   data.name,
@@ -3170,7 +3193,7 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just finance-cleared by someone else. Please refresh.")
     await log_action("application_force_finance_cleared", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
-    logger.info(f"💰 Superadmin force-cleared finance gate for application {app_id}.")
+    logger.info(f"Superadmin force-cleared finance gate for application {app_id}.")
     return {"status": "force_finance_cleared"}
 
 
@@ -3198,7 +3221,7 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
             }}
         )
 
-    logger.info(f"⚡ Superadmin removed candidate {candidate_id}.")
+    logger.info(f"Superadmin removed candidate {candidate_id}.")
     return {"status": "removed"}
 
 
@@ -3873,6 +3896,217 @@ async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request
         "reason":     data.reason
     }, org_id=request.state.org_id)
     return {"status": "removed"}
+
+# =============================================================================
+# STUDENT DETAIL EDITS  (Task 1 superadmin screen + Task 2 IT admin screen)
+# =============================================================================
+# ONE endpoint and ONE audit writer serve both UIs, so they cannot drift apart.
+# Editable fields: name, phone numbers (add / change / remove), registration
+# number. Nothing else on the voter document can be changed through here.
+# No approval step and no notifications by design: the audit trail is the control.
+# Audit rows live in `student_edit_audit` (append-only: this file has no route that
+# updates or deletes them). They hold full phone numbers, so they are readable only
+# by IT admin / superadmin; the general activity log gets a masked mirror entry.
+
+STUDENT_EDIT_ROLES = ("it_admin", "superadmin")
+STUDENT_ROLE_FLAGS = ("is_commissioner", "is_it_admin", "is_financial_controller", "is_overseer")
+
+
+class StudentPhoneOp(BaseModel):
+    op: str                        # "add" | "change" | "remove"
+    index: int | None = None       # position in phone_numbers (change / remove)
+    expected_old: str | None = None  # number the editor saw at that position
+    number: str | None = None      # new number (add / change)
+
+
+class StudentEditRequest(BaseModel):
+    student_id: str                # CURRENT registration number of the record
+    full_name: str | None = None
+    new_student_id: str | None = None
+    phone_ops: list[StudentPhoneOp] = []
+    reason: str
+
+
+def normalize_phone_number(raw: str) -> str:
+    """Same rules the roster-add flow uses (0-prefix and bare 9-digit -> 256...)."""
+    clean = re.sub(r"\D", "", raw or "")
+    if clean.startswith("0"):
+        clean = "256" + clean[1:]
+    elif len(clean) == 9 and (clean.startswith("7") or clean.startswith("4")):
+        clean = "256" + clean
+    if not 10 <= len(clean) <= 15:
+        raise HTTPException(400, f"'{raw}' is not a valid phone number.")
+    return clean
+
+
+def _mask_phone(p: str | None) -> str | None:
+    return None if p is None else ("*" * max(len(p) - 3, 0)) + p[-3:]
+
+
+def _student_edit_view(v: dict) -> dict:
+    return {
+        "student_id": v.get("student_id", ""),
+        "full_name": v.get("full_name", ""),
+        "phone_numbers": v.get("phone_numbers", []),
+        "has_voted": bool(v.get("has_voted")),
+        "holds_admin_role": any(v.get(f) for f in STUDENT_ROLE_FLAGS),
+    }
+
+
+@app.get("/admin/students/lookup")
+async def lookup_students_for_edit(q: str, request: Request,
+                                   admin: dict = Depends(require_role(*STUDENT_EDIT_ROLES))):
+    q = q.strip()
+    if len(q) < 2:
+        return []
+    rx = {"$regex": re.escape(q), "$options": "i"}
+    cur = db.voters.find({"org_id": request.state.org_id, "$or": [{"student_id": rx}, {"full_name": rx}]}).limit(10)
+    return [_student_edit_view(v) async for v in cur]
+
+
+@app.post("/admin/students/edit")
+async def edit_student(data: StudentEditRequest, request: Request,
+                       admin: dict = Depends(require_role(*STUDENT_EDIT_ROLES))):
+    org_id = request.state.org_id          # the tenant being acted on; exact match, never unscoped
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every change.")
+
+    old_sid = normalize_student_id(data.student_id)
+    voter = await db.voters.find_one({"org_id": org_id, "student_id": old_sid})
+    if not voter:
+        raise HTTPException(404, "Student not found in this organization.")
+
+    old_name = voter.get("full_name", "")
+    old_phones = list(voter.get("phone_numbers", []))
+    new_name, new_sid, phones = old_name, old_sid, list(old_phones)
+    events: list[dict] = []          # {event, field, old, new}
+
+    if data.full_name is not None:
+        candidate = " ".join(data.full_name.split())
+        if not candidate or len(candidate) > 120:
+            raise HTTPException(400, "Name must be 1-120 characters.")
+        if candidate != old_name:
+            new_name = candidate
+            events.append({"event": "student_name_changed", "field": "full_name", "old": old_name, "new": candidate})
+
+    if data.new_student_id is not None:
+        candidate_sid = normalize_student_id(data.new_student_id)
+        if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", candidate_sid):
+            raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
+        if candidate_sid != old_sid:
+            if any(voter.get(f) for f in STUDENT_ROLE_FLAGS):
+                raise HTTPException(409, "This student holds an admin/commission role, whose sessions and votes are "
+                                         "keyed to the registration number. Remove the role before changing it.")
+            if await db.voters.find_one({"org_id": org_id, "student_id": candidate_sid, "_id": {"$ne": voter["_id"]}}):
+                raise HTTPException(409, "Another student in this organization already has that registration number.")
+            new_sid = candidate_sid
+            events.append({"event": "student_registration_number_changed", "field": "student_id",
+                           "old": old_sid, "new": candidate_sid})
+
+    for op in data.phone_ops:
+        if op.op == "add":
+            num = normalize_phone_number(op.number or "")
+            if num in phones:
+                raise HTTPException(400, "That phone number is already on this student.")
+            phones.append(num)
+            events.append({"event": "phone_added", "field": "phone_numbers", "old": None, "new": num})
+        elif op.op in ("change", "remove"):
+            if op.index is None or not 0 <= op.index < len(phones):
+                raise HTTPException(400, "Phone position is out of range; reload the student and try again.")
+            current = phones[op.index]
+            if op.expected_old is not None and normalize_phone_number(op.expected_old) != current:
+                raise HTTPException(409, "The phone list changed since you loaded it; reload and try again.")
+            if op.op == "remove":
+                phones.pop(op.index)
+                events.append({"event": "phone_removed", "field": "phone_numbers", "old": current, "new": None})
+            else:
+                num = normalize_phone_number(op.number or "")
+                if num != current:
+                    if num in phones:
+                        raise HTTPException(400, "That phone number is already on this student.")
+                    phones[op.index] = num
+                    events.append({"event": "phone_changed", "field": "phone_numbers", "old": current, "new": num})
+        else:
+            raise HTTPException(400, f"Unknown phone operation '{op.op}'.")
+
+    if not events:
+        raise HTTPException(400, "No changes to save.")
+
+    # Optimistic concurrency: the update only applies if the student still looks the way the
+    # editor saw it, so two simultaneous edits cannot silently overwrite each other.
+    updated = await db.voters.update_one(
+        {"_id": voter["_id"], "org_id": org_id, "student_id": old_sid,
+         "full_name": old_name, "phone_numbers": old_phones},
+        {"$set": {"full_name": new_name, "student_id": new_sid, "phone_numbers": phones}},
+    )
+    if updated.matched_count != 1:
+        raise HTTPException(409, "This student was changed by someone else; reload and try again.")
+
+    if new_sid != old_sid:
+        # No unique index exists on (org_id, student_id), so re-check after writing and roll back
+        # if a concurrent edit/import produced a duplicate.
+        if await db.voters.count_documents({"org_id": org_id, "student_id": new_sid}) > 1:
+            await db.voters.update_one(
+                {"_id": voter["_id"]},
+                {"$set": {"full_name": old_name, "student_id": old_sid, "phone_numbers": old_phones}})
+            raise HTTPException(409, "Another student in this organization already has that registration number.")
+        # Keep the student's own records attached to the new number.
+        for coll in (db.applications, db.exception_grants):
+            await coll.update_many({"org_id": org_id, "student_id": old_sid}, {"$set": {"student_id": new_sid}})
+
+    actor, role, now, batch = current_actor(request), admin.get("role", ""), datetime.utcnow(), secrets.token_hex(8)
+    terms = sorted({old_sid, new_sid, old_name.lower(), new_name.lower()} - {""})
+    for ev in events:
+        await db.student_edit_audit.insert_one({
+            "org_id": org_id, "student_key": str(voter["_id"]), "batch": batch,
+            "event": ev["event"], "field": ev["field"], "old_value": ev["old"], "new_value": ev["new"],
+            "reason": reason, "actor": actor, "actor_role": role, "at": now,
+            "student_id_before": old_sid, "student_id_after": new_sid, "search_terms": terms,
+        })
+        # Masked mirror in the general activity log (that log is visible to every admin role).
+        await log_action(ev["event"], actor, {
+            "student_id": new_sid, "role": role, "reason": reason, "field": ev["field"],
+            "old": _mask_phone(ev["old"]) if ev["field"] == "phone_numbers" else ev["old"],
+            "new": _mask_phone(ev["new"]) if ev["field"] == "phone_numbers" else ev["new"],
+        }, org_id=org_id)
+
+    return {"status": "updated", "changes": [e["event"] for e in events],
+            "student": _student_edit_view({**voter, "full_name": new_name, "student_id": new_sid,
+                                           "phone_numbers": phones})}
+
+
+@app.get("/admin/students/edit-history")
+async def student_edit_history(request: Request, q: str = "", limit: int = 100,
+                               admin: dict = Depends(require_role(*STUDENT_EDIT_ROLES))):
+    """Read-only. Searching an OLD or NEW registration number (or a name) finds the student
+    and every change ever made to that student, because each row carries the student's
+    internal key and both numbers."""
+    org_id = request.state.org_id
+    limit = min(max(limit, 1), 500)
+    q = q.strip()
+    query: dict = {"org_id": org_id}
+    if q:
+        keys = set()
+        exact = {normalize_student_id(q), q.lower()}
+        rx = {"$regex": re.escape(q.lower())}
+        async for r in db.student_edit_audit.find(
+                {"org_id": org_id, "$or": [{"search_terms": {"$in": list(exact)}}, {"search_terms": rx}]},
+                {"student_key": 1}):
+            keys.add(r["student_key"])
+        async for v in db.voters.find({"org_id": org_id, "$or": [
+                {"student_id": normalize_student_id(q)},
+                {"full_name": {"$regex": re.escape(q), "$options": "i"}}]}, {"_id": 1}).limit(50):
+            keys.add(str(v["_id"]))
+        if not keys:
+            return {"entries": []}
+        query["student_key"] = {"$in": list(keys)}
+    entries = []
+    async for r in db.student_edit_audit.find(query).sort("at", -1).limit(limit):
+        r["_id"] = str(r["_id"])
+        entries.append(r)
+    return {"entries": entries}
+
 
 @app.post("/superadmin/audit/checkpoint")
 async def post_audit_checkpoint(request: Request, admin: dict = Depends(require_role("superadmin"))):

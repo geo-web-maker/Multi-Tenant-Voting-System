@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { Icon } from './icons.jsx';
 
 // 1. Define the security "Look" for each stage
 const securityConfig = {
@@ -319,7 +320,7 @@ export default function FinalReport({
                   return (
                     <tr key={i}>
                       <td style={tableCellStyle}>
-                        {isWinner ? (isSolo ? `✅ ${c.name}` : `🏆 ${c.name}`) : (isPartOfTie ? `⚖️ ${c.name}` : c.name)}
+                        {isWinner ? (isSolo ? <><Icon name="success" /> {c.name}</> : <><Icon name="trophy" /> {c.name}</>) : (isPartOfTie ? <><Icon name="scale" /> {c.name}</> : c.name)}
                       </td>
                       <td style={{ ...tableCellStyle, textAlign: 'center' }}>{c.votes}</td>
                       <td style={{ ...tableCellStyle, textAlign: 'center' }}>{share}%</td>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import api from '../api';
 import FinalReport from './FinalReport';
+import { Icon } from './icons.jsx';
 
 // 1. SHUFFLE UTILITY (Outside the component)
 const shuffleArray = (array) => {
@@ -85,6 +86,8 @@ const fetchData = async () => {
 };
  
   useEffect(() => {
+    // Initial load + polling; fetchData sets state as the response arrives.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
@@ -98,6 +101,8 @@ const fetchData = async () => {
       (publicCount === 0 && actualCount >= PRIVACY_THRESHOLD) || 
       (actualCount >= publicCount + BATCH_SIZE)
     ) {
+      // Reveal the roll in batches as new data arrives.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPublicRoll(electionData.voter_roll);
     }
   }, [electionData.voter_roll, publicRoll.length]);
@@ -148,7 +153,7 @@ const fetchData = async () => {
     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
       
       <div className="no-print">
-        <h2 style={{ textAlign: 'center', color: '#2c3e50', marginBottom: '20px' }}>📊 Election Results</h2>
+        <h2 style={{ textAlign: 'center', color: '#2c3e50', marginBottom: '20px' }}><Icon name="chart" /> Election Results</h2>
 
         {/* 2. THE TIE ALERT (Your new addition) */}
           {!isElectionOpen && orderedPositions.some(p => {
@@ -156,7 +161,7 @@ const fetchData = async () => {
               return p.candidates.filter(c => c.votes === max && max > 0).length > 1;
           }) && (
               <div style={tieWarningBanner}>
-                  🚨 <strong>Contested Outcome:</strong> A tie has been detected. 
+                  <Icon name="alarm" /> <strong>Contested Outcome:</strong> A tie has been detected. 
                   Official Certification is paused for affected positions.
               </div>
           )}
@@ -164,7 +169,7 @@ const fetchData = async () => {
         {/* Banner reflects Certification status */}
         <div style={bannerStyle(isElectionOpen, isCertified)}>
           <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#666', fontWeight: 'bold' }}>
-            {isElectionOpen ? "● Live Tallying" : (isCertified ? "✅ Official Certified Results" : "Provisional Standings")}
+            {isElectionOpen ? <><Icon name="dot" /> Live Tallying</> : (isCertified ? <><Icon name="success" /> Official Certified Results</> : "Provisional Standings")}
           </div>
           <div style={{ fontSize: '36px', fontWeight: '800', color: isCertified ? '#10b981' : '#3b82f6' }}>
             {electionData.voter_turnout}
@@ -212,22 +217,22 @@ const fetchData = async () => {
                             <span style={{ fontWeight: '600', color: '#1e293b' }}>{candidate.name}</span>
                             
                             {/* WINNER BADGE */}
-                            {winStatus === 'WINNER' && <span style={badgeStyle('var(--warning)')}>🏆 ELECTED</span>}
+                            {winStatus === 'WINNER' && <span style={badgeStyle('var(--warning)')}><Icon name="trophy" /> ELECTED</span>}
 
                             {/* 2. NEW: Mandate Gained Badge */}
                             {winStatus === 'MANDATE_GAINED' && (
-                                <span style={badgeStyle('#10b981', '#fff')}>✅ MANDATE GAINED</span>
+                                <span style={badgeStyle('#10b981', '#fff')}><Icon name="success" /> MANDATE GAINED</span>
                             )}
                             
                             {/* TIE BADGE */}
-                            {winStatus === 'TIE' && <span style={badgeStyle('#e67e22', '#fff')}>⚖️ TIE (RE-RUN)</span>}
+                            {winStatus === 'TIE' && <span style={badgeStyle('#e67e22', '#fff')}><Icon name="scale" /> TIE (RE-RUN)</span>}
                             
-                            {winStatus === 'UNDERMANDATED' && <span style={badgeStyle('#ef4444', '#fff')}>⚠️ UNDERMANDATED</span>}
+                            {winStatus === 'UNDERMANDATED' && <span style={badgeStyle('#ef4444', '#fff')}><Icon name="warning" /> UNDERMANDATED</span>}
                             
                             {/* LIVE STATUS */}
                             {isElectionOpen && isTopCandidate && (
                               <span style={{ color: isTie ? '#e67e22' : 'var(--success)', fontSize: '10px', fontWeight: 'bold' }}>
-                                {isTie ? "● DEADLOCK" : "● LEADING"}
+                                {isTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
                               </span>
                             )}
                           </div>
@@ -251,14 +256,14 @@ const fetchData = async () => {
           })}
         
         <div style={voterRollSectionStyle}>
-          <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}>👥 Voter Participation Roll</h3>
+          <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}><Icon name="users" /> Voter Participation Roll</h3>
           {rollUnlocked && displayedVoters.length > 0 ? (
            <div style={scrollableListStyle}>
-              {displayedVoters.map((voter) => (
-                <div key={voter.full_name + Math.random()} style={voterRowStyle}>
+              {displayedVoters.map((voter, idx) => (
+                <div key={`${voter.full_name}-${idx}`} style={voterRowStyle}>
                   <span style={{ color: 'var(--text-color)' }}>{voter.full_name}</span>
                   <span style={{ color: 'var(--success)', fontSize: '12px', fontWeight: 'bold' }}>
-                    Verified ✓
+                    Verified <Icon name="check" />
                   </span>
                 </div>
               ))} {/* This ) was the missing piece */}
@@ -268,7 +273,7 @@ const fetchData = async () => {
             </div>
           ) : (
             <div style={privacyLockStyle}>
-              <p style={{ margin: '0 0 10px 0', fontSize: '18px' }}>🔒 Privacy Lock Active</p>
+              <p style={{ margin: '0 0 10px 0', fontSize: '18px' }}><Icon name="lock" /> Privacy Lock Active</p>
               <p style={{ margin: '0 0 15px 0', fontSize: '13px' }}>
                 Voter names hidden until {PRIVACY_THRESHOLD} students vote.
               </p>
@@ -289,7 +294,7 @@ const fetchData = async () => {
 
         <div style={{ marginTop: '40px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
           <button onClick={handlePrint} style={printBtnStyle} className="print-btn">
-            🖨️ Download Public Results Report
+            <Icon name="print" /> Download Public Results Report
           </button>
           <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '10px' }}>
             Syncing live from Server... Last update: {lastSynced.toLocaleTimeString()}

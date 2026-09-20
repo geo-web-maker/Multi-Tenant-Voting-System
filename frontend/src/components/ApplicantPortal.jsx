@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { Icon } from './icons.jsx';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -119,7 +120,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
     return (
       <div style={outerWrap} className="outer-wrap">
         <div style={{ ...card, textAlign: 'center', maxWidth: '480px', margin: '0 auto' }}>
-          <div style={{ fontSize: '54px', marginBottom: '16px' }}>🎉</div>
+          <div style={{ fontSize: '54px', marginBottom: '16px' }}><Icon name="celebrate" /></div>
           <h2 style={{ color: 'var(--text-color)', margin: '0 0 10px' }}>Application Submitted!</h2>
           <p style={{ opacity: 0.7, lineHeight: '1.6', marginBottom: '24px' }}>
             Thank you, <strong>{submittedName}</strong>. Your application has been received and
@@ -127,7 +128,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
           </p>
           <div style={infoBox}>
             <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
-              📋 The commission reviews all applications before any candidate appears on the ballot.
+              <Icon name="clipboard" /> The commission reviews all applications before any candidate appears on the ballot.
               Full consensus from all commissioners is required for approval.
             </p>
           </div>
@@ -153,7 +154,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
         {/* ── Header ── */}
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
           <h2 style={{ color: 'var(--text-color)', margin: '0 0 6px' }}>
-            🏅 Apply for a Position
+            <Icon name="award" /> Apply for a Position
           </h2>
           <p style={{ opacity: 0.6, fontSize: '14px', margin: 0 }}>
             {orgName} Elections
@@ -311,7 +312,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
                   style={{ maxWidth: '100%', maxHeight: '200px', objectFit: 'contain', borderRadius: '8px' }} />
               ) : (
                 <div style={{ textAlign: 'center', opacity: 0.5 }}>
-                  <div style={{ fontSize: '32px', marginBottom: '6px' }}>🧾</div>
+                  <div style={{ fontSize: '32px', marginBottom: '6px' }}><Icon name="receipt" /></div>
                   <span style={{ fontSize: '13px' }}>Click to upload receipt or screenshot</span>
                   <br />
                   <span style={{ fontSize: '11px', opacity: 0.7 }}>JPG, PNG, PDF accepted</span>
@@ -347,7 +348,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
                 <img src={preview} alt="Preview" style={photoPreview} />
               ) : (
                 <div style={{ textAlign: 'center', opacity: 0.5 }}>
-                  <div style={{ fontSize: '32px', marginBottom: '6px' }}>📷</div>
+                  <div style={{ fontSize: '32px', marginBottom: '6px' }}><Icon name="camera" /></div>
                   <span style={{ fontSize: '13px' }}>Click to upload photo</span>
                 </div>
               )}
@@ -372,7 +373,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
           {/* ── Error ── */}
           {error && (
             <div style={errorBox}>
-              ⚠️ {error}
+              <Icon name="warning" /> {error}
             </div>
           )}
 
@@ -389,7 +390,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
               style={{ ...greenBtn, width: '100%', padding: '14px', fontSize: '15px' }}
               disabled={uploading || positions.length === 0}
             >
-              {uploadingProof ? '⏳ Uploading receipt…' : uploading ? '⏳ Submitting…' : '📨 Submit Application'}
+              {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : uploading ? <><Icon name="loading" /> Submitting…</> : <><Icon name="send" /> Submit Application</>}
             </button>
           </div>
 

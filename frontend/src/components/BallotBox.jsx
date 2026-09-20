@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { Icon } from './icons.jsx';
 
 export default function BallotBox({ studentId, onVoteSuccess, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
@@ -109,8 +110,6 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
     return groups;
   }, {});
 
-  const getCandidateName = (id) => candidates.find(c => (c._id || c.id) === id)?.name || "Unknown";
-
   return (
     <div style={{ textAlign: 'center', color: 'var(--text-color)', paddingBottom: '120px' }}>
       {isPreview && (
@@ -123,7 +122,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
         fontWeight: '800',
         border: '1px solid #fecaca' 
       }}>
-        ⚠️ SAMPLE BALLOT GUIDE — VOTING DISABLED
+        <Icon name="warning" /> SAMPLE BALLOT GUIDE — VOTING DISABLED
       </div>
     )}
       <h1 style={{ color: '#3b82f6', fontSize: '24px' }}>{orgName ? `${orgName} ELECTION`.toUpperCase() : "ELECTION"}</h1>
@@ -177,7 +176,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
                     backgroundColor: isSelected ? '#3b82f6' : 'transparent',
                     borderColor: isSelected ? '#3b82f6' : 'var(--border-color)'
                   }}>
-                    {isSelected && <span style={{ color: '#fff', fontSize: '14px', fontWeight: 'bold' }}>✔</span>}
+                    {isSelected && <span style={{ color: '#fff', fontSize: '14px', fontWeight: 'bold' }}><Icon name="check" /></span>}
                   </div>
                 </div>
               );
@@ -195,7 +194,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
             style={clearAllBtnStyle}
             disabled={Object.keys(ballot).length === 0}
           >
-            🗑️ Clear All
+            <Icon name="trash" /> Clear All
           </button>
       
           <button 
@@ -214,7 +213,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
         <div style={modalOverlayStyle}>
           <div className="modal-content" style={{...modalContentStyle, textAlign: 'center'}}>
            {/* Icon for visual emphasis */}
-            <div style={{ fontSize: '40px', marginBottom: '10px' }}>🗑️</div>
+            <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="trash" /></div>
             
             <h2 style={{ color: '#e11d48', marginTop: 0, fontWeight: '800' }}>
               Reset Entire Ballot?
@@ -306,7 +305,7 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
         {statusModal.show && statusModal.type === 'error' && (
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={{...modalContentStyle, textAlign: 'center'}}>
-              <div style={{ fontSize: '50px', marginBottom: '10px' }}>⚠️</div>
+              <div style={{ fontSize: '50px', marginBottom: '10px' }}><Icon name="warning" /></div>
               
               <h2 style={{ color: '#e11d48' }}>{statusModal.title}</h2>
               <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>{statusModal.message}</p>
@@ -347,23 +346,6 @@ const confirmBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border
 const footerBarStyle = { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'var(--card-bg)', padding: '24px', borderTop: '1px solid var(--border-color)', zIndex: 1000 };
 const submitBallotBtnStyle = { backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '16px 48px', borderRadius: '14px', fontWeight: 'bold', fontSize: '18px', cursor: 'pointer' };
 
-const positionHeaderStyle = { 
-  backgroundColor: '#1e293b', 
-  color: '#ffffff',             // Changed from #3b82f6 to pure white for visibility
-  padding: '12px 20px', 
-  borderRadius: '10px', 
-  textAlign: 'left', 
-  marginBottom: '24px', 
-  borderLeft: '6px solid #3b82f6',
-  fontSize: '14px',             // Added for better scaling
-  fontWeight: '700',            // Bold to match your sketch
-  textTransform: 'uppercase'    // Makes it stand out as a header
-};
-
-const gridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '24px' };
-const cardStyle = { background: '#fff', padding: '24px', borderRadius: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', transition: 'all 0.3s' };
-const imageStyle = { width: '110px', height: '110px', borderRadius: '50%', marginBottom: '16px', objectFit: 'cover', border: '4px solid #f8fafc' };
-const voteButtonStyle = { width: '100%', color: 'white', border: 'none', padding: '12px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer' };
 const horizontalCardStyle = {
   display: 'flex',
   alignItems: 'center',

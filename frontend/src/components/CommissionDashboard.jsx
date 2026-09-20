@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
+import { Icon } from './icons.jsx';
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
@@ -83,26 +84,6 @@ export default function CommissionDashboard({ onLogout }) {
     }
   };
 
-  const castRemovalVote = async (appId, vote) => {
-    if (!commissionerId.trim()) {
-      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
-      return;
-    }
-    setVoting(prev => ({ ...prev, [`remove_${appId}`]: true }));
-    try {
-      await api.post(`/admin/applications/${appId}/vote-remove`, {
-        commissioner_id: commissionerId,
-        vote,
-        reason: denyReasons[`remove_${appId}`] || '',
-      });
-      await fetchAll();
-    } catch (e) {
-      toast(e.response?.data?.detail || 'Removal vote failed.', { kind: 'error' })
-    } finally {
-      setVoting(prev => ({ ...prev, [`remove_${appId}`]: false }));
-    }
-  };
-
   const castFinanceClear = async (appId) => {
     if (!commissionerId.trim()) {
       toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
@@ -130,22 +111,8 @@ export default function CommissionDashboard({ onLogout }) {
     return app.votes[safeKey(commissionerId)] || null;
   };
 
-  const myRemovalVoteFor = (app) => {
-    if (!app.removal_votes) return null;
-    return app.removal_votes[safeKey(commissionerId)] || null;
-  };
-
   const voteCount = (app) => {
     const votes = app.votes || {};
-    return {
-      approve: Object.values(votes).filter(v => v === 'approve').length,
-      deny:    Object.values(votes).filter(v => v === 'deny').length,
-      total:   Object.keys(votes).length,
-    };
-  };
-
-  const removalVoteCount = (app) => {
-    const votes = app.removal_votes || {};
     return {
       approve: Object.values(votes).filter(v => v === 'approve').length,
       deny:    Object.values(votes).filter(v => v === 'deny').length,
@@ -193,7 +160,7 @@ export default function CommissionDashboard({ onLogout }) {
     { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
     { id: 'results',         label: 'Live Results',    count: null },
     ...SHARED_TAB_DEFS,
-    { id: 'official_doc',    label: '📄 Official Document', count: null },
+    { id: 'official_doc',    label: <><Icon name="file" /> Official Document</>, count: null },
   ];
 
   const currentList = listFor(activeTab);
@@ -205,7 +172,7 @@ export default function CommissionDashboard({ onLogout }) {
         {/* ── Header ── */}
         <div style={headerFlex} className="no-print">
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>🏛️ Election Commission</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="institution" /> Election Commission</h2>
             <span style={{ fontSize: '12px', opacity: 0.5 }}>
               {totalCommissioners} commissioner{totalCommissioners !== 1 ? 's' : ''} total ·
               Full consensus required for approval or removal
@@ -213,7 +180,7 @@ export default function CommissionDashboard({ onLogout }) {
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <button style={ghostBtn} onClick={fetchAll} disabled={loading}>
-              {loading ? 'Syncing…' : '🔄 Refresh'}
+              {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
             </button>
             <button style={redBtn} onClick={onLogout}>Logout</button>
           </div>
@@ -244,7 +211,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div style={{ marginBottom: '16px' }}>
             <input
               style={inp}
-              placeholder="🔍 Search by name, student ID, or position…"
+              placeholder="Search by name, student ID, or position…"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
             />
@@ -266,7 +233,7 @@ export default function CommissionDashboard({ onLogout }) {
         {activeTab !== 'student_changes' && activeTab !== 'results' && currentList.length === 0 && !loading && (
           <div style={emptyState}>
             <div style={{ fontSize: '40px', marginBottom: '10px' }}>
-              {activeTab === 'pending' ? '📭' : activeTab === 'approved' ? '✅' : '📂'}
+              {activeTab === 'pending' ? <Icon name="inbox" /> : activeTab === 'approved' ? <Icon name="success" /> : <Icon name="folderOpen" />}
             </div>
             <p style={{ opacity: 0.5 }}>
               No {activeTab} applications.
@@ -290,7 +257,7 @@ export default function CommissionDashboard({ onLogout }) {
                   <img src={app.image_url} alt="" style={avatar} />
                 ) : (
                   <div style={{ ...avatar, backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>
-                    👤
+                    <Icon name="user" />
                   </div>
                 )}
 
@@ -333,7 +300,7 @@ export default function CommissionDashboard({ onLogout }) {
                           rel="noopener noreferrer"
                           style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                         >
-                          🧾 View Receipt
+                          <Icon name="receipt" /> View Receipt
                         </a>
                       )}
                     </div>
@@ -369,18 +336,18 @@ export default function CommissionDashboard({ onLogout }) {
                         disabled={financeClearing[app._id]}
                         onClick={() => castFinanceClear(app._id)}
                       >
-                        {financeClearing[app._id] ? 'Clearing…' : '💰 Clear for Finance'}
+                        {financeClearing[app._id] ? 'Clearing…' : <><Icon name="wallet" /> Clear for Finance</>}
                       </button>
                     ) : (
                       <div style={lockedNote}>
-                        🔒 Awaiting Finance Commissioner clearance before voting can open.
+                        <Icon name="lock" /> Awaiting Finance Commissioner clearance before voting can open.
                       </div>
                     )
                   ) : myVote ? (
                     <div style={myVoteRow(myVote)}>
                       {myVote === 'approve'
-                        ? '✅ You voted to approve this application.'
-                        : '❌ You voted to deny this application.'}
+                        ? <><Icon name="success" /> You voted to approve this application.</>
+                        : <><Icon name="error" /> You voted to deny this application.</>}
                       <span style={{ opacity: 0.6, fontSize: '12px', marginLeft: '8px' }}>
                         Resolves once a majority is reached.
                       </span>
@@ -403,7 +370,7 @@ export default function CommissionDashboard({ onLogout }) {
                           disabled={isVotingNow}
                           onClick={() => castVote(app._id, 'approve')}
                         >
-                          {isVotingNow ? 'Submitting…' : '✅ Approve'}
+                          {isVotingNow ? 'Submitting…' : <><Icon name="success" /> Approve</>}
                         </button>
                         {showDenyBox[app._id] ? (
                           <button
@@ -411,14 +378,14 @@ export default function CommissionDashboard({ onLogout }) {
                             disabled={isVotingNow}
                             onClick={() => castVote(app._id, 'deny')}
                           >
-                            {isVotingNow ? 'Submitting…' : '❌ Confirm Deny'}
+                            {isVotingNow ? 'Submitting…' : <><Icon name="error" /> Confirm Deny</>}
                           </button>
                         ) : (
                           <button
                             style={{ ...ghostBtn, flex: 1, color: '#e74c3c', borderColor: '#e74c3c' }}
                             onClick={() => setShowDenyBox(prev => ({ ...prev, [app._id]: true }))}
                           >
-                            ❌ Deny
+                            <Icon name="error" /> Deny
                           </button>
                         )}
                         {showDenyBox[app._id] && (
@@ -439,7 +406,7 @@ export default function CommissionDashboard({ onLogout }) {
               {app.status === 'approved' && myVote && (
                 <div style={{ marginTop: '14px' }}>
                   <div style={myVoteRow(myVote)}>
-                    ✅ Your vote was counted — you voted <strong>{myVote}</strong> on this application.
+                    <Icon name="success" /> Your vote was counted — you voted <strong>{myVote}</strong> on this application.
                   </div>
                 </div>
               )}
@@ -460,7 +427,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div>
             {studentChanges.length === 0 && (
               <div style={emptyState}>
-                <div style={{ fontSize: '40px', marginBottom: '10px' }}>👥</div>
+                <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="users" /></div>
                 <p style={{ opacity: 0.5 }}>No student change requests.</p>
               </div>
             )}
@@ -470,7 +437,7 @@ export default function CommissionDashboard({ onLogout }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                     <div>
                       <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
-                        {change.change_type === 'add' ? '➕ Add Student' : '➖ Remove Student'}
+                        {change.change_type === 'add' ? <><Icon name="plus" /> Add Student</> : <><Icon name="minus" /> Remove Student</>}
                       </b>
                       <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
                         {change.status.toUpperCase()}
@@ -504,7 +471,7 @@ export default function CommissionDashboard({ onLogout }) {
                       {change.payment_proof_url && (
                         <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
                           style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
-                          🧾 View Receipt
+                          <Icon name="receipt" /> View Receipt
                         </a>
                       )}
                     </div>
@@ -512,7 +479,7 @@ export default function CommissionDashboard({ onLogout }) {
 
                    {change.status === 'pending' ? (
                     <div style={lockedNote}>
-                      🔒 Awaiting the Financial Controller's decision on this request.
+                      <Icon name="lock" /> Awaiting the Financial Controller's decision on this request.
                     </div>
                   ) : (
                     <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.6 }}>
@@ -531,7 +498,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div>
             {!liveResults ? (
               <div style={emptyState}>
-                <div style={{ fontSize: '40px', marginBottom: '10px' }}>📊</div>
+                <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="chart" /></div>
                 <p style={{ opacity: 0.5 }}>Loading live results…</p>
               </div>
             ) : (
@@ -554,7 +521,7 @@ export default function CommissionDashboard({ onLogout }) {
 
                 {liveResults.positions.length === 0 && (
                   <div style={emptyState}>
-                    <div style={{ fontSize: '40px', marginBottom: '10px' }}>🗳️</div>
+                    <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="vote" /></div>
                     <p style={{ opacity: 0.5 }}>No candidates on the ballot yet.</p>
                   </div>
                 )}

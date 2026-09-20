@@ -3,6 +3,10 @@ import api from '../api';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { RosterStats } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
+import { Icon } from './icons.jsx';
+import ITAdminStudentEdit from './ITAdminStudentEdit';
+import { previewPhone } from '../studentEdit';
+import './ITAdminDashboard.css';
 
 
 export default function ITAdminDashboard({ onLogout }) {
@@ -58,13 +62,15 @@ export default function ITAdminDashboard({ onLogout }) {
     fetchVoters();
     const interval = setInterval(fetchMyRequests, 20000);
     return () => clearInterval(interval);
+  // Mount-only: the polling interval must not be recreated on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   const fetchVoters = async () => {
     try {
       const res = await api.get('/admin/voters');
       setVoters(res.data);
-    } catch (e) {}
+    } catch { /* non-critical: ignore */ }
   };
 
   const fetchMyRequests = async () => {
@@ -178,21 +184,22 @@ export default function ITAdminDashboard({ onLogout }) {
   const tabs = [
     // IT Admin previously had no visibility into election state at all —
     // only the three roster-change tabs. Overview is now the landing tab.
-    { id: 'overview', label: '📊 Overview' },
-    { id: 'add',      label: '➕ Add Student' },
-    { id: 'remove',   label: '➖ Remove Student' },
-    { id: 'requests', label: `📋 My Requests`, count: myRequests.length },
+    { id: 'overview', label: <><Icon name="chart" /> Overview</> },
+    { id: 'add',      label: <><Icon name="plus" /> Add Student</> },
+    { id: 'edit',     label: <><Icon name="user" /> Edit Student</> },
+    { id: 'remove',   label: <><Icon name="minus" /> Remove Student</> },
+    { id: 'requests', label: <><Icon name="clipboard" /> My Requests</>, count: myRequests.length },
     ...SHARED_TAB_DEFS,
   ];
 
   return (
-    <div style={outerWrap} className="outer-wrap">
+    <div style={outerWrap} className="outer-wrap itadmin-root">
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
         <div style={headerFlex}>
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>💻 IT Admin Panel</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="monitor" /> IT Admin Panel</h2>
             <span style={{ fontSize: '12px', opacity: 0.6 }}>
               Logged in as <strong>{itAdminName || itAdminId}</strong>
               {pendingCount > 0 && ` · ${pendingCount} pending request${pendingCount !== 1 ? 's' : ''}`}
@@ -204,7 +211,7 @@ export default function ITAdminDashboard({ onLogout }) {
         {!itAdminId && (
           <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
             <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}>
-              ⚠️ Your IT admin session could not be identified. Please log out and log back in.
+              <Icon name="warning" /> Your IT admin session could not be identified. Please log out and log back in.
             </p>
           </div>
         )}
@@ -222,7 +229,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {/* ══════════════ ADD STUDENT ══════════════ */}
         {activeTab === 'add' && (
-          <div style={twoColLayout}>
+          <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Add a Student</h4>
               <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 16px' }}>
@@ -259,7 +266,7 @@ export default function ITAdminDashboard({ onLogout }) {
                       key={method}
                       onClick={() => setPaymentMethod(method)}
                       style={{
-                        padding: '10px 14px', borderRadius: '8px', cursor: 'pointer',
+                        padding: '10px 14px', minHeight: '44px', display: 'flex', alignItems: 'center', borderRadius: '8px', cursor: 'pointer',
                         border: paymentMethod === method ? '2px solid #2ecc71' : '1px solid var(--border-color)',
                         backgroundColor: paymentMethod === method ? '#2ecc7110' : 'var(--card-bg)',
                         fontSize: '13px', color: 'var(--text-color)'
@@ -281,7 +288,7 @@ export default function ITAdminDashboard({ onLogout }) {
                       style={{ maxHeight: '150px', maxWidth: '100%', objectFit: 'contain', borderRadius: '8px' }} />
                   ) : (
                     <div style={{ textAlign: 'center', opacity: 0.5, fontSize: '13px' }}>
-                      🧾 Click to upload receipt or screenshot
+                      <Icon name="receipt" /> Click to upload receipt or screenshot
                     </div>
                   )}
                   <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }}
@@ -300,20 +307,39 @@ export default function ITAdminDashboard({ onLogout }) {
                   </button>
                 )}
                 
-                {addError && <div style={errorBox}>⚠️ {addError}</div>}
-                {addSuccess && <div style={successBox}>✅ {addSuccess}</div>}
+                {addError && <div style={errorBox}><Icon name="warning" /> {addError}</div>}
+                {addSuccess && <div style={successBox}><Icon name="success" /> {addSuccess}</div>}
 
               <button type="submit" style={{ ...greenBtn, marginTop: '14px' }} disabled={addSubmitting}>
-                {uploadingProof ? '⏳ Uploading receipt…' : addSubmitting ? 'Submitting…' : '📨 Submit Add Request'}
+                {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : addSubmitting ? 'Submitting…' : <><Icon name="send" /> Submit Add Request</>}
               </button>
               </form>
             </div>
+            <aside style={card} className="itadmin-summary" aria-label="Live summary">
+              <h4 style={cardTitle}>Summary</h4>
+              {[
+                ['Registration no.', addForm.student_id.trim()],
+                ['Name', addForm.full_name.trim()],
+                ['Phone', addForm.phone.trim() ? (previewPhone(addForm.phone) || 'Not a valid number') : ''],
+                ['Reason', addForm.reason.trim()],
+                ['Payment', paymentMethod],
+                ['Receipt', paymentProof ? paymentProof.name : ''],
+              ].map(([k, v]) => (
+                <div key={k} className="itadmin-kv"><span>{k}</span><b>{v || '—'}</b></div>
+              ))}
+              <p style={{ fontSize: '12px', opacity: 0.6, marginTop: '12px' }}>
+                Sent to the Financial Controller for approval once submitted.
+              </p>
+            </aside>
           </div>
         )}
 
+        {/* ══════════════ EDIT STUDENT ══════════════ */}
+        {activeTab === 'edit' && <ITAdminStudentEdit />}
+
         {/* ══════════════ REMOVE STUDENT ══════════════ */}
         {activeTab === 'remove' && (
-          <div style={{ maxWidth: '540px' }}>
+          <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Remove a Student</h4>
               <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 16px' }}>
@@ -367,7 +393,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 </div>
                 {removeForm.student_id && (
                   <p style={{ fontSize: '11px', color: '#2ecc71', margin: '4px 0 0' }}>
-                    ✓ Selected: {removeForm.student_id}
+                    <Icon name="check" /> Selected: {removeForm.student_id}
                   </p>
                 )}
 
@@ -377,14 +403,24 @@ export default function ITAdminDashboard({ onLogout }) {
                   value={removeForm.reason}
                   onChange={e => setRemoveForm({ ...removeForm, reason: e.target.value })} />
 
-                {removeError && <div style={errorBox}>⚠️ {removeError}</div>}
-                {removeSuccess && <div style={successBox}>✅ {removeSuccess}</div>}
+                {removeError && <div style={errorBox}><Icon name="warning" /> {removeError}</div>}
+                {removeSuccess && <div style={successBox}><Icon name="success" /> {removeSuccess}</div>}
 
                 <button type="submit" style={{ ...redBtn, marginTop: '14px' }} disabled={removeSubmitting}>
-                  {removeSubmitting ? 'Submitting…' : '📨 Submit Removal Request'}
+                  {removeSubmitting ? 'Submitting…' : <><Icon name="send" /> Submit Removal Request</>}
                 </button>
               </form>
             </div>
+            <aside style={card} className="itadmin-summary" aria-label="Live summary">
+              <h4 style={cardTitle}>Summary</h4>
+              {[
+                ['Student', removeForm.student_id ? (voters.find(v => v.student_id === removeForm.student_id)?.full_name || '') : ''],
+                ['Registration no.', removeForm.student_id],
+                ['Reason', removeForm.reason.trim()],
+              ].map(([k, v]) => (
+                <div key={k} className="itadmin-kv"><span>{k}</span><b>{v || '—'}</b></div>
+              ))}
+            </aside>
           </div>
         )}
 
@@ -393,13 +429,13 @@ export default function ITAdminDashboard({ onLogout }) {
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '14px' }}>
               <button style={ghostBtn} onClick={fetchMyRequests} disabled={loading}>
-                {loading ? 'Syncing…' : '🔄 Refresh'}
+                {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
               </button>
             </div>
 
             {myRequests.length === 0 && !loading && (
               <div style={emptyState}>
-                <div style={{ fontSize: '40px', marginBottom: '10px' }}>📭</div>
+                <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="inbox" /></div>
                 <p style={{ opacity: 0.5 }}>You haven't submitted any requests yet.</p>
               </div>
             )}
@@ -409,7 +445,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                   <div>
                     <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
-                      {req.change_type === 'add' ? '➕ Add Student' : '➖ Remove Student'}
+                      {req.change_type === 'add' ? <><Icon name="plus" /> Add Student</> : <><Icon name="minus" /> Remove Student</>}
                     </b>
                     <span style={{ ...statusBadge(req.status), marginLeft: '10px' }}>
                       {req.status.toUpperCase().replace('_', ' ')}
@@ -435,7 +471,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
                 {req.status === 'pending' && (
                   <p style={{ margin: '6px 0 0', fontSize: '12px', opacity: 0.5 }}>
-                    ⏳ Awaiting the Financial Controller's review.
+                    <Icon name="loading" /> Awaiting the Financial Controller's review.
                   </p>
                 )}
 
@@ -458,7 +494,7 @@ export default function ITAdminDashboard({ onLogout }) {
                     disabled={cancelling[req._id]}
                     onClick={() => handleCancel(req._id)}
                   >
-                    {cancelling[req._id] ? 'Withdrawing…' : '🚫 Withdraw Request'}
+                    {cancelling[req._id] ? 'Withdrawing…' : <><Icon name="ban" /> Withdraw Request</>}
                   </button>
                 )}
               </div>
@@ -492,9 +528,8 @@ function statusBadge(status) {
 // ── Styles ──
 const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto', zIndex: 20 };
 const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
-const twoColLayout = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', alignItems: 'start' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
-const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const container   = { width: '100%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const headerFlex  = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
 const tabBar      = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
 const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };

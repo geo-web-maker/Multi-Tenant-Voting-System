@@ -1,0 +1,60 @@
+/* IT admin screens only. Everything is scoped under .itadmin-root so no other role's dashboard changes. */
+.itadmin-root .dashboard-shell { box-sizing: border-box; min-width: 0; }
+.itadmin-root { max-width: 100%; }
+
+.itadmin-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 400px);
+  gap: 24px;
+  align-items: start;
+}
+.itadmin-split > * { min-width: 0; }
+.itadmin-summary { position: sticky; top: 16px; min-height: 320px; }
+
+.itadmin-card { padding: 20px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-color); box-sizing: border-box; }
+.itadmin-row { display: flex; gap: 8px; align-items: stretch; }
+.itadmin-row > .itadmin-input { flex: 1 1 auto; min-width: 0; }
+.itadmin-input {
+  padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color);
+  background: var(--card-bg); color: var(--text-color); font-size: 13px;
+  width: 100%; box-sizing: border-box; min-height: 44px; font-family: inherit;
+}
+.itadmin-btn {
+  padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: 700;
+  font-size: 13px; min-height: 44px; min-width: 44px; color: #fff;
+}
+.itadmin-btn.green { background: #2ecc71; }
+.itadmin-btn.red { background: #e74c3c; }
+.itadmin-btn.ghost { background: none; border: 1px solid var(--border-color); color: var(--text-color); font-weight: 600; }
+.itadmin-pick {
+  display: block; width: 100%; text-align: left; padding: 12px; min-height: 44px; cursor: pointer;
+  background: var(--card-bg); color: var(--text-color); border: 1px solid var(--border-color);
+  border-radius: 8px; margin-top: 6px; font-size: 13px;
+}
+/* Summary rows keep a fixed shape so filling in the form never makes the layout jump. */
+.itadmin-kv { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; min-height: 20px; }
+.itadmin-kv > span { opacity: 0.6; flex-shrink: 0; }
+.itadmin-kv > b { text-align: right; word-break: break-word; min-width: 0; }
+.itadmin-changes { min-height: 96px; }
+.itadmin-change { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; word-break: break-word; }
+.itadmin-option { min-height: 44px; display: flex; align-items: center; }
+
+@media (max-width: 900px) {
+  .itadmin-split { grid-template-columns: 1fr; }
+  .itadmin-summary { position: static; min-height: 0; }
+}
+@media (max-width: 768px) {
+  .itadmin-root table { display: block; max-width: 100%; overflow-x: auto; }
+  .itadmin-root .table-scroll { overflow-x: auto; max-width: 100%; }
+  .itadmin-root img { max-width: 100%; height: auto; }
+  .itadmin-root input, .itadmin-root select, .itadmin-root textarea { min-height: 44px; }
+}
+@media (max-width: 600px) {
+  /* Use the full phone width: no outer margin, small inner padding. */
+  .itadmin-root.outer-wrap { padding: 0 !important; }
+  .itadmin-root .dashboard-shell { padding: 12px !important; width: 100% !important; }
+  .itadmin-card { padding: 14px; }
+  .itadmin-row { flex-wrap: wrap; }
+  .itadmin-root .itadmin-btn.green, .itadmin-root .itadmin-btn.red { width: 100%; }
+  .itadmin-root form button[type="submit"] { width: 100%; }
+}

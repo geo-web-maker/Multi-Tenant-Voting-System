@@ -446,3 +446,8 @@ td, th {
     page-break-inside: avoid;
   }
 }
+
+/* Spinner for loading icons */
+@keyframes icon-spin { to { transform: rotate(360deg); } }
+.icon-spin { animation: icon-spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .icon-spin { animation-duration: 2.5s; } }

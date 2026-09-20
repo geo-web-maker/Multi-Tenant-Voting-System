@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api';
+import { Icon } from './icons.jsx';
 
 export default function VoterRegisterSearch() {
   const [q, setQ] = useState('');
@@ -16,6 +17,8 @@ export default function VoterRegisterSearch() {
 
   useEffect(() => {
     clearTimeout(debounceRef.current);
+    // Show the spinner immediately; the request itself is debounced below.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     debounceRef.current = setTimeout(() => {
       api.get('/voter-register', { params: { q, page } })
@@ -39,7 +42,7 @@ export default function VoterRegisterSearch() {
   return (
     <div style={wrapStyle}>
       <div style={colStyle}>
-        <h3 style={headingStyle}>🔍 Voter Register</h3>
+        <h3 style={headingStyle}><Icon name="search" /> Voter Register</h3>
         <p style={subStyle}>Search by name or registration number to confirm your record.</p>
         <input
           placeholder="e.g. Namusoke or 23/U/BCS/10245/GV"
@@ -65,15 +68,15 @@ export default function VoterRegisterSearch() {
         </div>
         {total > 25 && (
           <div style={pagerStyle}>
-            <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} style={pagerBtnStyle}>← Prev</button>
+            <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} style={pagerBtnStyle}><Icon name="back" /> Prev</button>
             <span style={{ opacity: 0.8, fontSize: '13px' }}>Page {page} of {pageCount}</span>
-            <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)} style={pagerBtnStyle}>Next →</button>
+            <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)} style={pagerBtnStyle}>Next <Icon name="next" /></button>
           </div>
         )}
       </div>
 
       <div style={colStyle}>
-        <h3 style={headingStyle}>📱 Check My Number</h3>
+        <h3 style={headingStyle}><Icon name="phone" /> Check My Number</h3>
         <p style={subStyle}>Confirm the phone number we have on file is still yours.</p>
         <input placeholder="Registration Number" value={checkId} onChange={e => setCheckId(e.target.value)} style={registerInputStyle} />
         <input placeholder="Full Name" value={checkName} onChange={e => setCheckName(e.target.value)} style={registerInputStyle} />
@@ -84,8 +87,8 @@ export default function VoterRegisterSearch() {
         {checkResult && (
           <div style={resultBoxStyle(checkResult.phone_on_file)}>
             {checkResult.phone_on_file
-              ? <>✅ Number on file: <strong>{checkResult.masked_phone}</strong></>
-              : <>⚠️ No phone number on file for this voter.</>}
+              ? <><Icon name="success" /> Number on file: <strong>{checkResult.masked_phone}</strong></>
+              : <><Icon name="warning" /> No phone number on file for this voter.</>}
           </div>
         )}
       </div>

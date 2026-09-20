@@ -22,6 +22,7 @@ export function HelpMenuProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useHelpMenu() {
   const ctx = useContext(HelpMenuContext);
   if (!ctx) throw new Error('useHelpMenu must be used within a HelpMenuProvider');

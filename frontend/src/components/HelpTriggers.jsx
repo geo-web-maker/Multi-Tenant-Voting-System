@@ -1,5 +1,6 @@
 import React from 'react';
 import { useHelpMenu } from '../context/HelpMenuContext';
+import { Icon } from './icons.jsx';
 
 /**
  * Floating pill button — the default Help affordance on pages that have
@@ -10,7 +11,7 @@ export function FabTrigger() {
   const { open, toggle } = useHelpMenu();
   return (
     <button onClick={toggle} style={fabStyle} aria-label="Help">
-      <span className="help-fab-label" style={fabLabelStyle}>{open ? '✕' : '?'}</span>
+      <span className="help-fab-label" style={fabLabelStyle}>{open ? <Icon name="close" /> : '?'}</span>
       <span className="help-fab-label" style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
     </button>
   );
@@ -26,7 +27,7 @@ export function InlineHelpButton({ style }) {
   const { open, toggle } = useHelpMenu();
   return (
     <button onClick={toggle} style={{ ...inlineBtnStyle, ...style }} aria-label="Help">
-      {open ? '✕' : '?'} Help
+      {open ? <Icon name="close" /> : '?'} Help
     </button>
   );
 }

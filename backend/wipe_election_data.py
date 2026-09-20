@@ -20,6 +20,8 @@ import motor.motor_asyncio
 import os
 from dotenv import load_dotenv
 
+import backup
+
 load_dotenv()
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 
@@ -62,6 +64,17 @@ async def main(keep_nothing: bool, dry_run: bool):
         print("Aborted — confirmation phrase did not match.")
         client.close()
         return
+
+    # Safety snapshot of EVERY tenant before anything is deleted (delete_many({}) below is
+    # not tenant-scoped). Any failure aborts the wipe: it never proceeds without a backup.
+    try:
+        snaps = await backup.snapshot_before_destructive(db, None, "wipe-script", all_tenants=True)
+    except Exception as e:
+        print(f"ABORTED: pre-wipe backup to B2 failed, nothing was deleted.\n  {e}")
+        client.close()
+        sys.exit(1)
+    for s in snaps:
+        print(f"  backed up tenant {s['tenant']}: {s['prefix']} ({s['bytes_gz']} bytes gz)")
 
     total = 0
     for name in targets:

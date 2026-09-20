@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import { Icon } from './icons.jsx';
 
 
 export default function FinancialControllerDashboard({ onLogout }) {
@@ -86,14 +87,14 @@ export default function FinancialControllerDashboard({ onLogout }) {
         {/* ── Header ── */}
         <div style={headerFlex}>
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>💰 Financial Controller</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="wallet" /> Financial Controller</h2>
             <span style={{ fontSize: '12px', opacity: 0.5 }}>
               Verify payment status and decide on student register change requests
             </span>
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <button style={ghostBtn} onClick={fetchAll} disabled={loading}>
-              {loading ? 'Syncing…' : '🔄 Refresh'}
+              {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
             </button>
             <button style={redBtn} onClick={onLogout}>Logout</button>
           </div>
@@ -160,7 +161,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         {['pending', 'approved', 'denied'].includes(activeTab) && currentList.length === 0 && !loading && (
           <div style={emptyState}>
             <div style={{ fontSize: '40px', marginBottom: '10px' }}>
-              {activeTab === 'pending' ? '📭' : activeTab === 'approved' ? '✅' : '📂'}
+              {activeTab === 'pending' ? <Icon name="inbox" /> : activeTab === 'approved' ? <Icon name="success" /> : <Icon name="folderOpen" />}
             </div>
             <p style={{ opacity: 0.5 }}>No {activeTab} requests.</p>
           </div>
@@ -176,7 +177,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                 <div>
                   <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
-                    {change.change_type === 'add' ? '➕ Add Student' : '➖ Remove Student'}
+                    {change.change_type === 'add' ? <><Icon name="plus" /> Add Student</> : <><Icon name="minus" /> Remove Student</>}
                   </b>
                   <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
                     {change.status.toUpperCase()}
@@ -210,7 +211,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   {change.payment_proof_url && (
                     <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
                       style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
-                      🧾 View Receipt
+                      <Icon name="receipt" /> View Receipt
                     </a>
                   )}
                 </div>
@@ -235,14 +236,14 @@ export default function FinancialControllerDashboard({ onLogout }) {
                       disabled={isDecidingNow}
                       onClick={() => decide(change._id, 'approve')}
                     >
-                      {isDecidingNow ? 'Submitting…' : '✅ Approve'}
+                      {isDecidingNow ? 'Submitting…' : <><Icon name="success" /> Approve</>}
                     </button>
                     <button
                       style={{ ...redBtn, flex: 1 }}
                       disabled={isDecidingNow}
                       onClick={() => decide(change._id, 'deny')}
                     >
-                      {isDecidingNow ? 'Submitting…' : '❌ Deny'}
+                      {isDecidingNow ? 'Submitting…' : <><Icon name="error" /> Deny</>}
                     </button>
                     <button
                       style={ghostBtn}

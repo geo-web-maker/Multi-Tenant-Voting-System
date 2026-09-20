@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import VoterRegisterSearch from './VoterRegisterSearch';
+import { Icon } from './icons.jsx';
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
 const modalContentStyle = {
@@ -17,11 +18,11 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
     // ballot preview stops being offered — it's a "here's what you'll see
     // when you vote" guide, and showing it after voting has ended just
     // advertises something that's no longer possible.
-    ...(showSampleBallot ? [{ icon: '📖', label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } }] : []),
-    { icon: '🔍', label: 'Check Voter Register', onClick: () => { setShowRegister(true); setOpen(false); } },
-    ...(supportPdfUrl ? [{ icon: '📄', label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
+    ...(showSampleBallot ? [{ icon: <Icon name="book" />, label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } }] : []),
+    { icon: <Icon name="search" />, label: 'Check Voter Register', onClick: () => { setShowRegister(true); setOpen(false); } },
+    ...(supportPdfUrl ? [{ icon: <Icon name="file" />, label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
-      icon: '💬', label: 'Contact Support', color: '#25D366',
+      icon: <Icon name="chat" />, label: 'Contact Support', color: '#25D366',
       href: supportPhone ? `https://wa.me/${supportPhone}?text=Hello%20Admin,%20I%20am%20having%20issues%20with%20the%20Election%20Portal.` : undefined
     },
   ];
@@ -42,8 +43,8 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
         </div>
       )}
 
-      <button onClick={() => setOpen(o => !o)} style={fabStyle(open)} aria-label="Help">
-        {open ? '✕' : '?'} <span style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
+      <button onClick={() => setOpen(o => !o)} style={fabStyle()} aria-label="Help">
+        {open ? <Icon name="close" /> : '?'} <span style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
       </button>
 
       {showRegister && (
@@ -58,7 +59,7 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
   );
 }
 
-const fabStyle = (open) => ({
+const fabStyle = () => ({
   position: 'fixed', bottom: '24px', right: '24px', zIndex: 2600,
   display: 'flex', alignItems: 'center', gap: '8px',
   padding: '14px 20px', borderRadius: '30px',

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import { Icon } from './icons.jsx';
 
 
 export default function OverseerDashboard({ onLogout }) {
@@ -35,9 +36,9 @@ export default function OverseerDashboard({ onLogout }) {
   };
 
   const tabs = [
-    { id: 'applications', label: '🗳️ Applications', count: data?.applications?.length },
-    { id: 'changes',      label: '📋 Student Changes', count: data?.student_changes?.length },
-    { id: 'results',      label: '📊 Candidate Results' },
+    { id: 'applications', label: <><Icon name="vote" /> Applications</>, count: data?.applications?.length },
+    { id: 'changes',      label: <><Icon name="clipboard" /> Student Changes</>, count: data?.student_changes?.length },
+    { id: 'results',      label: <><Icon name="chart" /> Candidate Results</> },
     // Observer role: read-only visibility only — no write actions are added.
     ...SHARED_TAB_DEFS,
   ];
@@ -49,7 +50,7 @@ export default function OverseerDashboard({ onLogout }) {
         {/* ── Header ── */}
         <div style={headerFlex}>
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>👁️ Overseer Panel</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="eye" /> Overseer Panel</h2>
             <span style={{ fontSize: '12px', opacity: 0.6 }}>
               Logged in as <strong>{overseerName || overseerId}</strong> · read-only
             </span>
@@ -60,7 +61,7 @@ export default function OverseerDashboard({ onLogout }) {
         {!overseerId && (
           <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
             <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}>
-              ⚠️ Your Overseer session could not be identified. Please log out and log back in.
+              <Icon name="warning" /> Your Overseer session could not be identified. Please log out and log back in.
             </p>
           </div>
         )}
@@ -76,7 +77,7 @@ export default function OverseerDashboard({ onLogout }) {
               <div style={summaryCard}>
                 <span style={summaryLabel}>Election Status</span>
                 <span style={summaryValue}>
-                  {data.election_status.is_open ? '🟢 Open' : '🔴 Closed'}
+                  {data.election_status.is_open ? <><Icon name="dotGreen" /> Open</> : <><Icon name="dotRed" /> Closed</>}
                   {data.election_status.is_certified && ' · Certified'}
                 </span>
               </div>
@@ -108,7 +109,7 @@ export default function OverseerDashboard({ onLogout }) {
                 </button>
               ))}
               <button style={{ ...ghostBtn, marginLeft: 'auto' }} onClick={fetchDashboard} disabled={loading}>
-                {loading ? 'Syncing…' : '🔄 Refresh'}
+                {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
               </button>
             </div>
 
@@ -124,8 +125,8 @@ export default function OverseerDashboard({ onLogout }) {
                     </div>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>{a.position_id}</p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
-                      ✅ {a.approve_count} · ❌ {a.deny_count} · {a.votes_cast} vote(s) cast
-                      {a.finance_cleared && ' · 💰 Finance cleared'}
+                      <Icon name="success" /> {a.approve_count} · <Icon name="error" /> {a.deny_count} · {a.votes_cast} vote(s) cast
+                      {a.finance_cleared && <> · <Icon name="wallet" /> Finance cleared</>}
                     </p>
                   </div>
                 ))}
@@ -140,7 +141,7 @@ export default function OverseerDashboard({ onLogout }) {
                   <div key={c.id} style={appCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                       <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>
-                        {c.change_type === 'add' ? '➕' : '➖'} {c.full_name} <code style={{ fontSize: '11px' }}>{c.student_id}</code>
+                        {c.change_type === 'add' ? <Icon name="plus" /> : <Icon name="minus" />} {c.full_name} <code style={{ fontSize: '11px' }}>{c.student_id}</code>
                       </b>
                       <span style={statusBadge(c.status)}>{c.status.toUpperCase().replace('_', ' ')}</span>
                     </div>
