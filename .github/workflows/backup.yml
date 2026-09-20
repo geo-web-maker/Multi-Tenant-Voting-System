@@ -1,0 +1,45 @@
+# External scheduler for tenant backups (Task 4.5). Render sleeps when idle, so the
+# backend cannot schedule itself; each call below wakes it and runs the job.
+# Repo secrets: BACKUP_URL (e.g. https://<your-render-host>) and BACKUP_TOKEN
+# (same value as BACKUP_TRIGGER_TOKEN on the backend).
+# A non-2xx answer fails the run and GitHub emails the repo owner: that is the uptime alert.
+# (The backend also emails the superadmin if it sees the 15-minute job go silent.)
+name: tenant-backups
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # incremental vote + audit backup (open elections only)
+    - cron: "0 2 * * *"      # daily full backup (open elections)
+    - cron: "0 3 * * 0"      # weekly full backup for idle tenants, only if changed
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: incr | full | weekly
+        default: incr
+
+concurrency:
+  group: tenant-backups
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Call backup endpoint
+        env:
+          URL: ${{ secrets.BACKUP_URL }}
+          TOKEN: ${{ secrets.BACKUP_TOKEN }}
+          SCHEDULE: ${{ github.event.schedule }}
+          MANUAL: ${{ github.event.inputs.mode }}
+        run: |
+          case "$SCHEDULE" in
+            "*/15 * * * *") MODE=incr ;;
+            "0 2 * * *")    MODE=full ;;
+            "0 3 * * 0")    MODE=weekly ;;
+            *)              MODE="${MANUAL:-incr}" ;;
+          esac
+          # --retry covers the cold start of a sleeping Render instance.
+          curl --fail-with-body --silent --show-error \
+               --retry 4 --retry-delay 30 --retry-all-errors --max-time 900 \
+               -X POST -H "X-Backup-Token: $TOKEN" \
+               "$URL/internal/backup/run?mode=$MODE" | head -c 4000
