@@ -36,6 +36,9 @@ from auth import (
     require_admin,
     require_role,
     set_revocation_check,
+    create_voter_token,
+    verify_voter_token,
+    VOTER_TOKEN_HEADER,
     ADMIN_ROLES,
     JWT_EXPIRE_MINUTES,
 )
@@ -263,8 +266,9 @@ async def org_context_middleware(request: Request, call_next):
 # protected automatically the moment it's added, with no extra step.
 #
 # Voter-facing endpoints (verify-identity, verify-otp, vote, apply, etc.) stay
-# public on purpose — voters authenticate per-request via student_id + OTP,
-# not via this admin session layer.
+# public on purpose — they are outside this admin session layer. Casting a
+# ballot (/vote, /vote-bulk) is instead protected by the voter's own token,
+# issued by /verify-otp and checked in the handlers (see auth.py).
 
 PUBLIC_PATHS = {
     "/", "/health", "/election-status",
@@ -356,7 +360,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Org-Slug"],
+    allow_headers=["Authorization", "Content-Type", "X-Org-Slug", VOTER_TOKEN_HEADER],
     max_age=600,
 )
 
@@ -1561,7 +1565,17 @@ async def verify_otp(data: OTPCheck, request: Request):
         # Constant-time compare so response timing can't leak how many
         # leading digits of a guess were correct.
         if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
-            await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
+            # Issue the voter's session token. Its jti is stored on the voter
+            # record so /vote can require *this* login's token — a newer OTP
+            # login replaces it and any earlier token stops working.
+            voter_token, voter_jti = create_voter_token(
+                student_id=normalize_student_id(data.student_id),
+                org_id=request.state.org_id,
+            )
+            await db.voters.update_one(
+                search,
+                {"$set": {"last_status": "authenticated", "otp_count": 0, "voter_session_jti": voter_jti}},
+            )
             await db.otps.delete_one(search)
             await _clear_otp_attempts(request, data.student_id)
             # Failure (otp_verify_locked) was already logged; success never
@@ -1569,7 +1583,7 @@ async def verify_otp(data: OTPCheck, request: Request):
             # lifecycle for a voter — only that they'd been locked out, never
             # that they got in.
             await log_action("otp_verified", normalize_student_id(data.student_id), {}, org_id=request.state.org_id)
-            return {"status": "success"}
+            return {"status": "success", "voter_token": voter_token}
 
     await _record_otp_failure(request, data.student_id)
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
@@ -1581,6 +1595,10 @@ async def cast_vote(data: VoteRequest, request: Request):
         candidate_oid = ObjectId(data.candidate_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid candidate.")
+
+    # Must hold the token /verify-otp issued to THIS voter (see auth.py) —
+    # knowing a student_id is no longer enough to cast that voter's ballot.
+    voter_claims = verify_voter_token(request, normalize_student_id(data.student_id), request.state.org_id)
 
     # Wrapped in a transaction: "mark voter as having voted" and "increment
     # the candidate's tally" are all-or-nothing. Uses with_transaction()
@@ -1606,6 +1624,10 @@ async def cast_vote(data: VoteRequest, request: Request):
             raise HTTPException(status_code=400, detail="Ineligible voter")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+        if student.get("voter_session_jti") != voter_claims["jti"]:
+            # Token is genuine but from an older login — a newer OTP
+            # verification has replaced it.
+            raise HTTPException(status_code=401, detail="Your voting session has expired. Please verify your identity again.")
 
         candidate_still_exists = await db.candidates.count_documents(
             org_query(request, {"_id": candidate_oid}), session=session
@@ -1649,6 +1671,10 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
+    # Must hold the token /verify-otp issued to THIS voter (see auth.py) —
+    # knowing a student_id is no longer enough to cast that voter's ballot.
+    voter_claims = verify_voter_token(request, normalize_student_id(data.student_id), request.state.org_id)
+
     # Same id submitted twice used to slip through: the existence check only
     # compared distinct ids, but insert_many below looped over the raw list
     # — so a repeated id got inserted as two separate vote_events, double
@@ -1674,6 +1700,10 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             raise HTTPException(status_code=400, detail="You have already cast your vote.")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+        if student.get("voter_session_jti") != voter_claims["jti"]:
+            # Token is genuine but from an older login — a newer OTP
+            # verification has replaced it.
+            raise HTTPException(status_code=401, detail="Your voting session has expired. Please verify your identity again.")
 
         # Validate every candidate exists BEFORE writing anything. The old
         # version incremented whichever candidates happened to resolve and

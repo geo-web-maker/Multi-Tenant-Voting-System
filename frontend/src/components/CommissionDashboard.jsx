@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { usePersistedTab } from '../session';
 import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
@@ -7,7 +8,7 @@ import { Icon } from './icons.jsx';
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
 
-  const [activeTab, setActiveTab]       = useState('pending');
+  const [activeTab, setActiveTab]       = usePersistedTab('commission', 'pending');
   const [applications, setApplications] = useState([]);
   const [loading, setLoading]           = useState(false);
   const [commissionerId, setCommissionerId] = useState('');

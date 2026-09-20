@@ -155,6 +155,11 @@ class VoterUser(HttpUser):
             if resp.status_code != 200:
                 resp.failure(f"verify-otp failed: {resp.status_code} {resp.text[:150]}")
                 return
+            try:
+                voter_token = resp.json()["voter_token"]
+            except Exception:
+                resp.failure("verify-otp response had no voter_token")
+                return
             resp.success()
 
         # Step 3: fetch candidates so the vote is realistic (matches what the
@@ -177,7 +182,7 @@ class VoterUser(HttpUser):
         with self.client.post(
             "/vote-bulk",
             json={"student_id": student_id, "candidate_ids": chosen_ids},
-            headers=self.headers,
+            headers={**self.headers, "X-Voter-Token": voter_token},
             name="/vote-bulk",
             catch_response=True,
         ) as resp:

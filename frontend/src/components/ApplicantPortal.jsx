@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
+import { loadDraft, saveDraft, clearDraft } from '../session';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -16,6 +17,11 @@ async function uploadToCloudinary(file) {
 
 export default function ApplicantPortal({ orgName = "the Organisation" }) {
 
+  // Text fields of an unfinished application survive a page reload. Files
+  // (candidate photo, payment proof) can't be stored, so those need to be
+  // selected again.
+  const [savedDraft] = useState(() => loadDraft('apply'));
+
   const [positions, setPositions]   = useState([]);
   const [posLoading, setPosLoading] = useState(true);
   const [uploading, setUploading]   = useState(false);
@@ -24,25 +30,44 @@ export default function ApplicantPortal({ orgName = "the Organisation" }) {
   const [error, setError]           = useState('');
 
   const [form, setForm] = useState({
-    student_id:  '',
-    full_name:   '',
-    position_id: '',
-    manifesto:   '',
+    student_id:  savedDraft?.student_id  ?? '',
+    full_name:   savedDraft?.full_name   ?? '',
+    position_id: savedDraft?.position_id ?? '',
+    manifesto:   savedDraft?.manifesto   ?? '',
     image:       null,
   });
 
   const [preview, setPreview] = useState(null);
-  const [paymentMethod, setPaymentMethod] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState(savedDraft?.payment_method ?? '');
   const [paymentProof, setPaymentProof] = useState(null);
   const [paymentProofPreview, setPaymentProofPreview] = useState(null);
   const [uploadingProof, setUploadingProof] = useState(false);
 
   useEffect(() => {
     api.get('/positions')
-      .then(res => setPositions(res.data))
+      .then(res => {
+        setPositions(res.data);
+        // A restored draft may point at a position that has since been removed.
+        setForm(prev => (
+          prev.position_id && !res.data.some(p => p._id === prev.position_id)
+            ? { ...prev, position_id: '' }
+            : prev
+        ));
+      })
       .catch(() => setPositions([]))
       .finally(() => setPosLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (submitted) { clearDraft('apply'); return; }
+    saveDraft('apply', {
+      student_id:     form.student_id,
+      full_name:      form.full_name,
+      position_id:    form.position_id,
+      manifesto:      form.manifesto,
+      payment_method: paymentMethod,
+    });
+  }, [submitted, form.student_id, form.full_name, form.position_id, form.manifesto, paymentMethod]);
 
   const handlePhotoChange = (e) => {
     const file = e.target.files[0];

@@ -12,6 +12,14 @@ import FinancialControllerDashboard from './components/FinancialControllerDashbo
 import OverseerDashboard from './components/OverseerDashboard';
 import FloatingHelpMenu from './components/FloatingHelpMenu';
 import { Icon } from './components/icons.jsx';
+import {
+  restoreAdminView, clearAdminSession,
+  markPasswordChangePending, clearPasswordChangePending,
+  loadPublicView, savePublicView,
+  loadVoterProgress, saveVoterProgress, clearVoterProgress, clearVoterSession,
+  saveVoterToken, clearVoterToken,
+  saveResendDeadline, loadResendSeconds,
+} from './session';
 
 // Sample IDs/names cycled in the login placeholder animation.
 const examples = [
@@ -23,13 +31,20 @@ const examples = [
 ];
 
 function App() {
+  // Restored once, on first render, so a page reload lands the person back
+  // where they were instead of on the voter login screen. An admin whose
+  // token is still valid resumes their dashboard; a voter who already passed
+  // OTP resumes on the OTP/ballot step (the server keeps them "authenticated"
+  // until the ballot is cast).
+  const [restoredAdminView] = useState(() => restoreAdminView());
+  const [restoredVoter] = useState(() => (restoredAdminView ? null : loadVoterProgress()));
   const [supportPdfUrl, setSupportPdfUrl] = useState("");
   const [supportPhone, setSupportPhone] = useState("");
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
   const [candidates, setCandidates] = useState([]); // To store candidates for preview
-  const [step, setStep] = useState(1); 
-  const [view, setView] = useState("voter"); 
-  const [studentId, setStudentId] = useState("");
+  const [step, setStep] = useState(restoredVoter?.step ?? 1); 
+  const [view, setView] = useState(restoredAdminView || loadPublicView() || "voter"); 
+  const [studentId, setStudentId] = useState(restoredVoter?.studentId ?? "");
   const [name, setName] = useState("");
   const [otp, setOtp] = useState("");
   const [placeholderText, setPlaceholderText] = useState({ id: "", name: "" });
@@ -43,8 +58,8 @@ function App() {
   const [isVotingPhaseOpen, setIsVotingPhaseOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState("");
-  const [timer, setTimer] = useState(0);
-  const [selectedPhone, setSelectedPhone] = useState("");
+  const [timer, setTimer] = useState(() => (restoredVoter?.step === 2 ? loadResendSeconds() : 0));
+  const [selectedPhone, setSelectedPhone] = useState(restoredVoter?.selectedPhone ?? "");
   const [isVerifying, setIsVerifying] = useState(false);
   const [statusModal, setStatusModal] = useState({ 
     show: false, 
@@ -70,6 +85,21 @@ function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+
+  // Remember which public tab (Live Results / Apply) is open across reloads.
+  useEffect(() => { savePublicView(view); }, [view]);
+
+  // Remember the voter's place in the flow (OTP entry -> ballot -> done).
+  // Only ids and the step are stored — never the OTP. Steps 1 / 1.5 hold
+  // nothing worth resuming, so reaching them clears the saved progress.
+  useEffect(() => {
+    if (isAdminPath) return;
+    if ((step === 2 || step === 3 || step === 4) && studentId) {
+      saveVoterProgress({ step, studentId, selectedPhone });
+    } else if (step === 1 || step === 1.5) {
+      clearVoterSession();
+    }
+  }, [step, studentId, selectedPhone, isAdminPath]);
 
   
 // --- USEEFFECTS ---
@@ -190,7 +220,10 @@ useEffect(() => {
     // 2. Save it to the browser
     document.cookie = `voted_status=true; expires=${expiry.toUTCString()}; path=/; SameSite=Lax`;
 
-    // 3. Move to the final screen
+    // 3. The token has done its job (the voter has now voted).
+    clearVoterToken();
+
+    // 4. Move to the final screen
     setStep(4);
   };
 
@@ -227,6 +260,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           }
         
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
+            markPasswordChangePending();
             setPendingAdminEmail(studentId);
             // Carry the temp password they just logged in with straight into
             // the "set new password" form instead of asking them to retype
@@ -258,6 +292,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           
           setStep(2);
           setTimer(60);
+          saveResendDeadline(60);
         }
       } catch (err) {
         // Superadmin credentials matched but no code was entered yet — reveal
@@ -285,10 +320,13 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
    const handleVerifyOtp = async () => {
     setIsVerifying(true);
     try {
-      await api.post('/verify-otp', {
+      const otpRes = await api.post('/verify-otp', {
         student_id: studentId,
         code: otp
       });
+
+      // Session token the ballot endpoints require (see api.js / auth.py).
+      if (!isAdminPath) saveVoterToken(otpRes.data.voter_token);
   
       setOtp("");
   
@@ -370,6 +408,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           sessionStorage.setItem("overseer_name", res.data.full_name || "");
       }
   
+      clearPasswordChangePending();
       setMustChangePassword(false);
       setNewPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
       setView(res.data.role);
@@ -380,6 +419,21 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     }
   };
   
+  // Called by the ballot when the server says the voting session is no longer
+  // valid (expired, or replaced by a newer login). Back to login, keeping the
+  // ID filled in and the saved ballot picks.
+  const handleVoterSessionExpired = (message) => {
+    clearVoterSession();
+    setOtp("");
+    setStep(1);
+    setStatusModal({
+      show: true,
+      title: "Session Expired",
+      message: message || "Your voting session has expired. Please verify your identity again.",
+      type: "error",
+    });
+  };
+
   const resetFlow = () => {
     // Best-effort server-side revocation — fire and forget, don't block the
     // UI on it. Client-side clearing below happens regardless, so a failed
@@ -398,15 +452,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     setMaskedNumbers([]);
     setTimer(0);
     setSelectedPhone("");
-    sessionStorage.removeItem("admin_role");
-    sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-    sessionStorage.removeItem("commissioner_id");
-    sessionStorage.removeItem("it_admin_id");
-    sessionStorage.removeItem("it_admin_name");
-    sessionStorage.removeItem("financial_controller_id");
-    sessionStorage.removeItem("financial_controller_name");
-    sessionStorage.removeItem("overseer_id");
-    sessionStorage.removeItem("overseer_name");
+    clearAdminSession();
+    clearVoterProgress();
   };
 
   return (
@@ -455,7 +502,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+            <button
+              onClick={() => (view === "results" || view === "apply" ? setView("voter") : resetFlow())}
+              style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}
+            >
               Vote Now
             </button>
         
@@ -583,7 +633,13 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   {timer > 0 ? (
                     <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
                   ) : (
-                    <button onClick={() => handleVerifyIdentity()} style={resendBtnStyle}>Resend SMS</button>
+                    // After a page reload the full name isn't kept (it's half of the
+                    // login credential, so it's deliberately not stored). Resending
+                    // needs it, so in that case send them back to the login form
+                    // with their ID still filled in.
+                    <button onClick={() => (name ? handleVerifyIdentity() : setStep(1))} style={resendBtnStyle}>
+                      {name ? 'Resend SMS' : 'Re-enter details to resend'}
+                    </button>
                   )}
                 </div>
               </div>
@@ -593,6 +649,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <BallotBox 
                 studentId={studentId} 
                 onVoteSuccess={handleVoteSuccess}
+                onSessionExpired={handleVoterSessionExpired}
                 apiBase={API_BASE} 
                 propCandidates={candidates}
                 orgName={orgName}

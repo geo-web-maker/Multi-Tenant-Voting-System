@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { RosterStats } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
@@ -17,7 +18,7 @@ export default function ITAdminDashboard({ onLogout }) {
   const itAdminId   = sessionStorage.getItem('it_admin_id')   || '';
   const itAdminName = sessionStorage.getItem('it_admin_name') || '';
 
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = usePersistedTab('it_admin', 'overview');
   const [myRequests, setMyRequests] = useState([]);
   const [loading, setLoading]       = useState(false);
   

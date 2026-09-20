@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
+import { usePersistedTab } from '../session';
 import { useToast, useConfirm } from './UIFeedback';
 import {
   SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock,
@@ -38,7 +39,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const toast = useToast();
   const confirm = useConfirm();
 
-  const [activeTab, setActiveTab] = useState('candidates');
+  const [activeTab, setActiveTab] = usePersistedTab('superadmin', 'candidates');
 
   // --- Org switcher: which organization's data this session is scoped to ---
   const [activeOrgSlug, setActiveOrgSlug] = useState(

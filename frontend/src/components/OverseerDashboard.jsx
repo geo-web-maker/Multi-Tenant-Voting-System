@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
 
@@ -11,7 +12,7 @@ export default function OverseerDashboard({ onLogout }) {
   const [data, setData]       = useState(null);
   const [liveResults, setLiveResults] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab]         = useState('applications');
+  const [tab, setTab]         = usePersistedTab('overseer', 'applications');
 
   useEffect(() => {
     fetchDashboard();
