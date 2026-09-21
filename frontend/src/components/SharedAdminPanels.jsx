@@ -437,35 +437,33 @@ export function Timeline({ canEdit = false, isChief = false }) {
             did before phases existed. Turning enforcement on blocks the action outright once
             the window closes.
           </p>
-          <div className="table-scroll">
-            <table style={{ ...tableStyle, minWidth: 700, tableLayout: 'auto' }}>
-              <thead>
-                <tr>{['Phase', 'Start', 'End', 'Enforce'].map(h => <th key={h} style={{ ...thStyle, whiteSpace: 'nowrap' }}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {data.phases.map(p => (
-                  <tr key={p.name}>
-                    <td style={{ ...tdStyle, whiteSpace: 'nowrap', minWidth: 96 }}><strong>{PHASE_LABELS[p.name]}</strong></td>
-                    <td style={tdStyle}>
-                      <input type="datetime-local" style={{ ...inputStyle, minWidth: 210 }}
-                        value={draft[p.name]?.start || ''}
-                        onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], start: e.target.value } })} />
-                    </td>
-                    <td style={tdStyle}>
-                      <input type="datetime-local" style={{ ...inputStyle, minWidth: 210 }}
-                        value={draft[p.name]?.end || ''}
-                        onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], end: e.target.value } })} />
-                    </td>
-                    <td style={{ ...tdStyle, textAlign: 'center' }}>
-                      <input type="checkbox" style={{ width: '20px', height: '20px' }}
-                        checked={Boolean(draft[p.name]?.enforced)}
-                        aria-label={`Enforce the ${PHASE_LABELS[p.name]} phase`}
-                        onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], enforced: e.target.checked } })} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="phase-editor">
+            <div className="phase-editor-head" aria-hidden="true">
+              {['Phase', 'Start', 'End', 'Enforce'].map(h => <span key={h}>{h}</span>)}
+            </div>
+            {data.phases.map(p => (
+              <div key={p.name} className="phase-editor-row">
+                <strong className="phase-editor-name">{PHASE_LABELS[p.name]}</strong>
+                <label className="phase-editor-field">
+                  <span className="phase-editor-label">Start</span>
+                  <input type="datetime-local" style={inputStyle}
+                    value={draft[p.name]?.start || ''}
+                    onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], start: e.target.value } })} />
+                </label>
+                <label className="phase-editor-field">
+                  <span className="phase-editor-label">End</span>
+                  <input type="datetime-local" style={inputStyle}
+                    value={draft[p.name]?.end || ''}
+                    onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], end: e.target.value } })} />
+                </label>
+                <label className="phase-editor-enforce">
+                  <input type="checkbox" style={{ width: '20px', height: '20px' }}
+                    checked={Boolean(draft[p.name]?.enforced)}
+                    onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], enforced: e.target.checked } })} />
+                  <span className="phase-editor-label">Enforce</span>
+                </label>
+              </div>
+            ))}
           </div>
           <button style={primaryBtn} onClick={saveSchedule} disabled={saving}>
             {saving ? 'Saving…' : 'Save Schedule'}

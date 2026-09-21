@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { usePersistedTab } from '../session';
 import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
-import ContactChangesQueue from './ContactChangesQueue';
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
 
-  const [activeTab, setActiveTab]       = useState('pending');
+  const [activeTab, setActiveTab]       = usePersistedTab('commission', 'pending');
   const [applications, setApplications] = useState([]);
   const [loading, setLoading]           = useState(false);
   const [commissionerId, setCommissionerId] = useState('');
@@ -159,7 +159,6 @@ export default function CommissionDashboard({ onLogout }) {
     { id: 'denied',          label: 'Denied',          count: denied.length },
     { id: 'removed',         label: 'Removed',         count: removed.length },
     { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
-    { id: 'contact_changes', label: 'Contact Changes', count: null },
     { id: 'results',         label: 'Live Results',    count: null },
     ...SHARED_TAB_DEFS,
     { id: 'official_doc',    label: <><Icon name="file" /> Official Document</>, count: null },
@@ -209,7 +208,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Search ── */}
-        {activeTab !== 'student_changes' && activeTab !== 'contact_changes' && activeTab !== 'results' && (
+        {activeTab !== 'student_changes' && activeTab !== 'results' && (
           <div style={{ marginBottom: '16px' }}>
             <input
               style={inp}
@@ -232,7 +231,7 @@ export default function CommissionDashboard({ onLogout }) {
         </div>
 
         {/* ── Empty state ── */}
-        {activeTab !== 'student_changes' && activeTab !== 'contact_changes' && activeTab !== 'results' && currentList.length === 0 && !loading && (
+        {activeTab !== 'student_changes' && activeTab !== 'results' && currentList.length === 0 && !loading && (
           <div style={emptyState}>
             <div style={{ fontSize: '40px', marginBottom: '10px' }}>
               {activeTab === 'pending' ? <Icon name="inbox" /> : activeTab === 'approved' ? <Icon name="success" /> : <Icon name="folderOpen" />}
@@ -245,7 +244,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Application cards ── */}
-        {activeTab !== 'student_changes' && activeTab !== 'contact_changes' && activeTab !== 'results' && currentList.map(app => {
+        {activeTab !== 'student_changes' && activeTab !== 'results' && currentList.map(app => {
           const vc      = voteCount(app);
           const myVote  = myVoteFor(app);
           const isVotingNow        = voting[app._id];
@@ -424,8 +423,6 @@ export default function CommissionDashboard({ onLogout }) {
           );
         })}
         
-        {activeTab === 'contact_changes' && <ContactChangesQueue />}
-
         {/* ── Student Changes tab ── */}
         {activeTab === 'student_changes' && (
           <div>

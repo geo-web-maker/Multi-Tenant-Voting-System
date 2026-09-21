@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { usePersistedTab } from '../session';
 import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
@@ -8,7 +9,7 @@ import { Icon } from './icons.jsx';
 export default function FinancialControllerDashboard({ onLogout }) {
   const toast = useToast();
 
-  const [activeTab, setActiveTab]     = useState('pending');
+  const [activeTab, setActiveTab]     = usePersistedTab('financial_controller', 'pending');
   const [changes, setChanges]         = useState([]);
   const [loading, setLoading]         = useState(false);
   const [fcId, setFcId]               = useState('');

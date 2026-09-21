@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react'; 
 import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
 import OtpInput from './components/OtpInput';
-import TurnstileWidget from './components/TurnstileWidget';
-import { saveResendDeadline, fmtWait, turnstileConfigured } from './supportLink';
 import BallotBox from './components/BallotBox';
 import Results from './components/Results';
 import AdminDashboard from './components/AdminDashboard';
@@ -14,6 +12,14 @@ import FinancialControllerDashboard from './components/FinancialControllerDashbo
 import OverseerDashboard from './components/OverseerDashboard';
 import FloatingHelpMenu from './components/FloatingHelpMenu';
 import { Icon } from './components/icons.jsx';
+import {
+  restoreAdminView, clearAdminSession,
+  markPasswordChangePending, clearPasswordChangePending,
+  loadPublicView, savePublicView,
+  loadVoterProgress, saveVoterProgress, clearVoterProgress, clearVoterSession,
+  saveVoterToken, clearVoterToken,
+  saveResendDeadline, loadResendSeconds,
+} from './session';
 
 // Sample IDs/names cycled in the login placeholder animation.
 const examples = [
@@ -25,13 +31,20 @@ const examples = [
 ];
 
 function App() {
+  // Restored once, on first render, so a page reload lands the person back
+  // where they were instead of on the voter login screen. An admin whose
+  // token is still valid resumes their dashboard; a voter who already passed
+  // OTP resumes on the OTP/ballot step (the server keeps them "authenticated"
+  // until the ballot is cast).
+  const [restoredAdminView] = useState(() => restoreAdminView());
+  const [restoredVoter] = useState(() => (restoredAdminView ? null : loadVoterProgress()));
   const [supportPdfUrl, setSupportPdfUrl] = useState("");
   const [supportPhone, setSupportPhone] = useState("");
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
   const [candidates, setCandidates] = useState([]); // To store candidates for preview
-  const [step, setStep] = useState(1); 
-  const [view, setView] = useState("voter"); 
-  const [studentId, setStudentId] = useState("");
+  const [step, setStep] = useState(restoredVoter?.step ?? 1); 
+  const [view, setView] = useState(restoredAdminView || loadPublicView() || "voter"); 
+  const [studentId, setStudentId] = useState(restoredVoter?.studentId ?? "");
   const [name, setName] = useState("");
   const [otp, setOtp] = useState("");
   const [placeholderText, setPlaceholderText] = useState({ id: "", name: "" });
@@ -45,17 +58,8 @@ function App() {
   const [isVotingPhaseOpen, setIsVotingPhaseOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState("");
-  const [timer, setTimer] = useState(0);
-  // OTP_SMS_Design_v2: the SERVER decides every wait (429 + retry_after); the browser only displays it.
-  const [turnstileMode, setTurnstileMode] = useState('off');   // off | adaptive | on (from /election-status)
-  const [needCaptcha, setNeedCaptcha] = useState(false);       // adaptive mode: server asked for a check
-  const [captchaToken, setCaptchaToken] = useState('');
-  const [captchaKey, setCaptchaKey] = useState(0);
-  const [sendLock, setSendLock] = useState(null);              // { message, reason, until }
-  const [sendLockLeft, setSendLockLeft] = useState(0);
-  const [phoneIdx, setPhoneIdx] = useState(null);
-  const [otpFeedback, setOtpFeedback] = useState(null);
-  const [selectedPhone, setSelectedPhone] = useState("");
+  const [timer, setTimer] = useState(() => (restoredVoter?.step === 2 ? loadResendSeconds() : 0));
+  const [selectedPhone, setSelectedPhone] = useState(restoredVoter?.selectedPhone ?? "");
   const [isVerifying, setIsVerifying] = useState(false);
   const [statusModal, setStatusModal] = useState({ 
     show: false, 
@@ -81,6 +85,21 @@ function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+
+  // Remember which public tab (Live Results / Apply) is open across reloads.
+  useEffect(() => { savePublicView(view); }, [view]);
+
+  // Remember the voter's place in the flow (OTP entry -> ballot -> done).
+  // Only ids and the step are stored — never the OTP. Steps 1 / 1.5 hold
+  // nothing worth resuming, so reaching them clears the saved progress.
+  useEffect(() => {
+    if (isAdminPath) return;
+    if ((step === 2 || step === 3 || step === 4) && studentId) {
+      saveVoterProgress({ step, studentId, selectedPhone });
+    } else if (step === 1 || step === 1.5) {
+      clearVoterSession();
+    }
+  }, [step, studentId, selectedPhone, isAdminPath]);
 
   
 // --- USEEFFECTS ---
@@ -161,25 +180,12 @@ useEffect(() => {
         const res = await api.get('/election-status');
         setIsElectionOpen(res.data.is_open);
         setIsVotingPhaseOpen(res.data.voting_phase_open ?? true);
-        setTurnstileMode(res.data.turnstile_mode || 'off');
       } catch {
         console.error("Could not fetch election status");
       }
     };
     checkStatus();
   }, []);
-
-  useEffect(() => {
-    if (!sendLock?.until) { setSendLockLeft(0); return undefined; }
-    const tick = () => {
-      const left = Math.max(0, Math.ceil((sendLock.until - Date.now()) / 1000));
-      setSendLockLeft(left);
-      if (left === 0) setSendLock(null);
-    };
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [sendLock]);
 
   useEffect(() => {
     let interval = null;
@@ -214,7 +220,10 @@ useEffect(() => {
     // 2. Save it to the browser
     document.cookie = `voted_status=true; expires=${expiry.toUTCString()}; path=/; SameSite=Lax`;
 
-    // 3. Move to the final screen
+    // 3. The token has done its job (the voter has now voted).
+    clearVoterToken();
+
+    // 4. Move to the final screen
     setStep(4);
   };
 
@@ -223,12 +232,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       try {
         const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
       
-        const idxToUse = selectedIdx ?? phoneIdx;
         const payload = isAdminPath
           ? { email: studentId, password: name, totp_code: totpCode || undefined }
-          : { student_id: studentId, full_name: name, phone_index: idxToUse,
-              turnstile_token: captchaToken || undefined };
-        if (!isAdminPath) setSendLock(null);
+          : { student_id: studentId, full_name: name, phone_index: selectedIdx };
     
         const res = await api.post(endpoint, payload);
   
@@ -254,6 +260,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           }
         
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
+            markPasswordChangePending();
             setPendingAdminEmail(studentId);
             // Carry the temp password they just logged in with straight into
             // the "set new password" form instead of asking them to retype
@@ -276,21 +283,16 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             setSelectedPhone(res.data.phone);
           }
           
-          if (selectedIdx !== null && selectedIdx !== undefined) setPhoneIdx(selectedIdx);
-          setOtpFeedback(null);
           setStatusModal({
             show: true,
             title: "Code Sent!",
-            message: res.data.delivery === 'unconfirmed'
-              ? `We tried to send a code to ${res.data.phone || 'your phone'} but could not confirm delivery. Wait for the timer, then tap Resend — the same code is sent again.`
-              : (res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}. If you tap Resend, the same code is sent again while it is valid.`),
+            message: res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}.`,
             type: "success"
           });
           
           setStep(2);
-          const wait = res.data.next_send_in ?? 60;      // server-driven resend timer, persisted across reloads
-          setTimer(wait);
-          saveResendDeadline(studentId, wait);
+          setTimer(60);
+          saveResendDeadline(60);
         }
       } catch (err) {
         // Superadmin credentials matched but no code was entered yet — reveal
@@ -303,14 +305,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           setIsVerifying(false);
           return;
         }
-        const d = err.response?.data;
-        if (!isAdminPath && err.response?.status === 429 && d?.reason) {
-          // Throttled: an inline countdown, never an error modal.
-          if (d.reason === 'captcha_required') setNeedCaptcha(true);
-          setSendLock({ message: d.detail, reason: d.reason, until: d.retry_after ? Date.now() + d.retry_after * 1000 : null });
-          if (step === 1.5) setStep(1);
-          return;
-        }
         const errorData = err.response?.data?.detail || "Verification Failed";
         setStatusModal({
           show: true,
@@ -320,18 +314,19 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         });
       } finally {
         setIsVerifying(false);
-        setCaptchaToken('');
-        setCaptchaKey(k => k + 1);        // Turnstile tokens are single-use
       }
     };
 
    const handleVerifyOtp = async () => {
     setIsVerifying(true);
     try {
-      await api.post('/verify-otp', {
+      const otpRes = await api.post('/verify-otp', {
         student_id: studentId,
         code: otp
       });
+
+      // Session token the ballot endpoints require (see api.js / auth.py).
+      if (!isAdminPath) saveVoterToken(otpRes.data.voter_token);
   
       setOtp("");
   
@@ -355,15 +350,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         setStep(3);
       }
     } catch (err) {
-      const d = err.response?.data;
-      if (['wrong_code', 'guess_lock', 'no_live_code'].includes(d?.reason)) {
-        // Inline feedback (attempts left / live lock countdown) instead of a modal.
-        setOtpFeedback({ message: d.detail, reason: d.reason, attempts_remaining: d.attempts_remaining,
-          lock_until: d.retry_after ? Date.now() + d.retry_after * 1000 : 0 });
-        setOtp("");
-        return;
-      }
-      const errorMsg = d?.detail || "Invalid or Expired Code. Please try again.";
+      const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
       setStatusModal({
         show: true,
         title: "Verification Failed",
@@ -421,6 +408,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           sessionStorage.setItem("overseer_name", res.data.full_name || "");
       }
   
+      clearPasswordChangePending();
       setMustChangePassword(false);
       setNewPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
       setView(res.data.role);
@@ -431,6 +419,21 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     }
   };
   
+  // Called by the ballot when the server says the voting session is no longer
+  // valid (expired, or replaced by a newer login). Back to login, keeping the
+  // ID filled in and the saved ballot picks.
+  const handleVoterSessionExpired = (message) => {
+    clearVoterSession();
+    setOtp("");
+    setStep(1);
+    setStatusModal({
+      show: true,
+      title: "Session Expired",
+      message: message || "Your voting session has expired. Please verify your identity again.",
+      type: "error",
+    });
+  };
+
   const resetFlow = () => {
     // Best-effort server-side revocation — fire and forget, don't block the
     // UI on it. Client-side clearing below happens regardless, so a failed
@@ -449,30 +452,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     setMaskedNumbers([]);
     setTimer(0);
     setSelectedPhone("");
-    setPhoneIdx(null);
-    setOtpFeedback(null);
-    setSendLock(null);
-    setNeedCaptcha(false);
-    sessionStorage.removeItem("admin_role");
-    sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-    sessionStorage.removeItem("commissioner_id");
-    sessionStorage.removeItem("it_admin_id");
-    sessionStorage.removeItem("it_admin_name");
-    sessionStorage.removeItem("financial_controller_id");
-    sessionStorage.removeItem("financial_controller_name");
-    sessionStorage.removeItem("overseer_id");
-    sessionStorage.removeItem("overseer_name");
+    clearAdminSession();
+    clearVoterProgress();
   };
-
-  const showCaptcha = turnstileConfigured && (turnstileMode === 'on' || needCaptcha);
-  const captchaBlocked = showCaptcha && !captchaToken;
-  const sendLockBanner = sendLock && (
-    <div role="alert" style={{ background: 'rgba(230,126,34,0.12)', border: '1px solid #e67e22', color: 'var(--text-color)',
-      borderRadius: '10px', padding: '10px 12px', margin: '10px 0', fontSize: '13px', textAlign: 'center' }}>
-      {sendLock.message}
-      {sendLockLeft > 0 && <> <b>({fmtWait(sendLockLeft)})</b></>}
-    </div>
-  );
 
   return (
     <div style={containerStyle}>
@@ -480,7 +462,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         <FloatingHelpMenu
           supportPdfUrl={supportPdfUrl}
           supportPhone={supportPhone}
-          orgName={orgName}
           onShowGuide={() => setShowGuide(true)}
           showSampleBallot={isElectionOpen && isVotingPhaseOpen}
         />
@@ -521,7 +502,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+            <button
+              onClick={() => (view === "results" || view === "apply" ? setView("voter") : resetFlow())}
+              style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}
+            >
               Vote Now
             </button>
         
@@ -606,11 +590,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 </>
               )}
               
-              {!isAdminPath && showCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
-              {!isAdminPath && sendLockBanner}
               <button
                 onClick={() => handleVerifyIdentity()}
-                disabled={(!isElectionOpen && !isAdminPath) || isVerifying || (!isAdminPath && captchaBlocked)}
+                disabled={(!isElectionOpen && !isAdminPath) || isVerifying}
                 style={{
                   ...primaryBtnStyle,
                   backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7',
@@ -630,12 +612,11 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <div style={cardStyle}>
                 <h2 style={{ textAlign: 'center' }}>Select Phone Number</h2>
                 <p style={{ textAlign: 'center', opacity: 0.8, marginBottom: '20px' }}>Choose where to receive your code:</p>
-                {showCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
                   {maskedNumbers.map((num, index) => (
                   <button
                     key={index}
                     onClick={() => { setSelectedPhone(num); handleVerifyIdentity(index); }}
-                    disabled={isVerifying || captchaBlocked}
+                    disabled={isVerifying}
                     style={{ ...selectionBtnStyle, opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' }}
                   >
                     {isVerifying ? 'Sending…' : `Receive code on ${num}`}
@@ -647,16 +628,18 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
             {step === 2 && (
               <div style={cardStyle}>
-               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)}
-                  isSubmitting={isVerifying} feedback={otpFeedback} supportPhone={supportPhone} orgName={orgName} studentId={studentId} />
+               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying} />
                 <div style={{ marginTop: '20px', textAlign: 'center' }}>
-                  {showCaptcha && timer === 0 && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
-                  {sendLockBanner}
                   {timer > 0 ? (
-                    <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{fmtWait(timer)}</b> — your last code is still valid.</p>
+                    <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
                   ) : (
-                    <button onClick={() => handleVerifyIdentity()} disabled={isVerifying || captchaBlocked || sendLockLeft > 0}
-                      style={{ ...resendBtnStyle, opacity: (isVerifying || captchaBlocked || sendLockLeft > 0) ? 0.5 : 1 }}>Resend SMS</button>
+                    // After a page reload the full name isn't kept (it's half of the
+                    // login credential, so it's deliberately not stored). Resending
+                    // needs it, so in that case send them back to the login form
+                    // with their ID still filled in.
+                    <button onClick={() => (name ? handleVerifyIdentity() : setStep(1))} style={resendBtnStyle}>
+                      {name ? 'Resend SMS' : 'Re-enter details to resend'}
+                    </button>
                   )}
                 </div>
               </div>
@@ -666,6 +649,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <BallotBox 
                 studentId={studentId} 
                 onVoteSuccess={handleVoteSuccess}
+                onSessionExpired={handleVoterSessionExpired}
                 apiBase={API_BASE} 
                 propCandidates={candidates}
                 orgName={orgName}

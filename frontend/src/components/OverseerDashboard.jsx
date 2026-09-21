@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
-import ContactChangesQueue from './ContactChangesQueue';
 
 
 export default function OverseerDashboard({ onLogout }) {
@@ -12,7 +12,7 @@ export default function OverseerDashboard({ onLogout }) {
   const [data, setData]       = useState(null);
   const [liveResults, setLiveResults] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab]         = useState('applications');
+  const [tab, setTab]         = usePersistedTab('overseer', 'applications');
 
   useEffect(() => {
     fetchDashboard();
@@ -39,7 +39,6 @@ export default function OverseerDashboard({ onLogout }) {
   const tabs = [
     { id: 'applications', label: <><Icon name="vote" /> Applications</>, count: data?.applications?.length },
     { id: 'changes',      label: <><Icon name="clipboard" /> Student Changes</>, count: data?.student_changes?.length },
-    { id: 'contact',      label: <><Icon name="lock" /> Contact Changes (live)</> },
     { id: 'results',      label: <><Icon name="chart" /> Candidate Results</> },
     // Observer role: read-only visibility only — no write actions are added.
     ...SHARED_TAB_DEFS,
@@ -134,8 +133,6 @@ export default function OverseerDashboard({ onLogout }) {
                 ))}
               </div>
             )}
-
-            {tab === 'contact' && <ContactChangesQueue readOnly />}
 
             {/* ── Student changes (read-only) ── */}
             {tab === 'changes' && (

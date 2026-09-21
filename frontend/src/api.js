@@ -20,6 +20,13 @@ export const SUPERADMIN_ORG_OVERRIDE_KEY = 'superadmin_active_org_slug';
 // Set on login, cleared on logout, read here on every request.
 export const ADMIN_TOKEN_KEY = 'admin_token';
 
+// sessionStorage key for the voter session token returned by /verify-otp.
+// It is required by /vote and /vote-bulk (sent as X-Voter-Token) and is
+// deliberately NOT the admin bearer token: voters never touch the admin
+// Authorization header, so a rejected voter token can't trigger the admin
+// 401 -> reload handling below.
+export const VOTER_TOKEN_KEY = 'voter_token';
+
 // Shared axios instance. Every component should import `api` from here
 // instead of importing axios directly, so every request automatically
 // carries the org context and admin session token without each call site
@@ -36,6 +43,14 @@ api.interceptors.request.use((config) => {
   const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`;
+  }
+  // Only the ballot-casting endpoints need the voter token; don't attach it
+  // to unrelated requests.
+  if (config.url && config.url.startsWith('/vote')) {
+    const voterToken = sessionStorage.getItem(VOTER_TOKEN_KEY);
+    if (voterToken) {
+      config.headers['X-Voter-Token'] = voterToken;
+    }
   }
   return config;
 });

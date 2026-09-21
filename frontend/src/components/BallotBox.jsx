@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
+import { loadBallot, saveBallot, clearBallot } from '../session';
 
-export default function BallotBox({ studentId, onVoteSuccess, propCandidates, isPreview = false, orgName = "" }) {
+export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
   const [loading, setLoading] = useState(!propCandidates); // Don't show loading if we already have data
   const [isVoting, setIsVoting] = useState(false);
-  const [ballot, setBallot] = useState({});
+  // Selections survive a page reload (kept per voter, only until the ballot is
+  // submitted or the tab is closed). The sample-ballot preview never persists.
+  const [ballot, setBallot] = useState(() => (isPreview ? {} : loadBallot(studentId)));
   const [showSummary, setShowSummary] = useState(false);
   // Add this near your other state declarations
   const [statusModal, setStatusModal] = useState({ 
@@ -70,6 +73,26 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
     return () => clearInterval(timer);
   }, [showSummary, countdown]);
 
+  useEffect(() => {
+    if (!isPreview) saveBallot(studentId, ballot);
+  }, [ballot, studentId, isPreview]);
+
+  // Drop restored picks that no longer match a candidate (e.g. one was removed
+  // from the ballot while the page was closed). Skipped until real candidate
+  // data has loaded, so an empty list can't wipe a valid restored ballot.
+  useEffect(() => {
+    if (isPreview || candidates.length === 0) return;
+    setBallot(prev => {
+      const valid = {};
+      for (const [pos, id] of Object.entries(prev)) {
+        if (candidates.some(c => (c.position || "Other") === pos && (c._id || c.id) === id)) {
+          valid[pos] = id;
+        }
+      }
+      return Object.keys(valid).length === Object.keys(prev).length ? prev : valid;
+    });
+  }, [candidates, isPreview]);
+
   const openSummary = () => {
     setCountdown(3);
     setShowSummary(true);
@@ -85,12 +108,21 @@ export default function BallotBox({ studentId, onVoteSuccess, propCandidates, is
       });
       
       if (res.data.status === "success") {
+        // The ballot is in — discard the saved selections before moving on.
+        clearBallot(studentId);
         // SKIP THE MODAL: Go straight to the success screen
         onVoteSuccess(); 
       }
     } catch (err) {
       setIsVoting(false);
       setShowSummary(false);
+      // 401 on this endpoint means the voting session token is missing,
+      // expired, or replaced by a newer login. Retrying can't help — send the
+      // voter back to verify again (their picks are kept).
+      if (err.response?.status === 401 && onSessionExpired) {
+        onSessionExpired(err.response?.data?.detail);
+        return;
+      }
       // Keep the Error Modal so they know why it failed
       setStatusModal({
         show: true,
