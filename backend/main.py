@@ -12,7 +12,8 @@ import io
 import re
 import httpx
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from bson import ObjectId
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -23,11 +24,14 @@ import cloudinary.uploader
 import pyotp
 import hashlib
 import json
+import math
+import time
 import boto3
 from fastapi.concurrency import run_in_threadpool
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 import backup
 from backup_routes import build_router as build_backup_router
+import otp_limits as ol
 
 from auth import (
     create_access_token,
@@ -36,9 +40,6 @@ from auth import (
     require_admin,
     require_role,
     set_revocation_check,
-    create_voter_token,
-    verify_voter_token,
-    VOTER_TOKEN_HEADER,
     ADMIN_ROLES,
     JWT_EXPIRE_MINUTES,
 )
@@ -137,6 +138,22 @@ async def lifespan(app: FastAPI):
     # OTP verify-attempt lockouts (brute-force guard on /verify-otp).
     await db.otp_attempts.create_index("key", unique=True)
     await db.otp_attempts.create_index("last_attempt", expireAfterSeconds=24 * 3600)
+    # OTP_SMS_Design_v2 state. Unique keys make reserve_send / consume_guess race-safe.
+    await db.otp_send_state.create_index("key", unique=True)
+    await db.otp_send_state.create_index("last_send_at", expireAfterSeconds=48 * 3600)
+    await db.otp_guess_state.create_index("key", unique=True)
+    await db.otp_guess_state.create_index("updated_at", expireAfterSeconds=7 * 24 * 3600)  # > a full refill at the 12 h cap
+    await db.sms_usage.create_index("org_key", unique=True)
+    await db.ip_send_stats.create_index("key", unique=True)
+    await db.ip_send_stats.create_index("updated_at", expireAfterSeconds=2 * 3600)
+    await db.contact_changes.create_index([("org_id", 1), ("status", 1)])
+    await db.contact_changes.create_index("student_id")
+    await db.contact_changes.create_index("change.new_value")     # duplicate-number warning
+    await db.contact_changes.create_index(                         # one pending request per voter, atomically
+        [("org_id", 1), ("student_id", 1)], unique=True, partialFilterExpression={"status": "pending"})
+    await db.roster_ledger.create_index([("org_id", 1), ("seq", 1)], unique=True)
+    await db.roster_ledger.create_index([("org_id", 1), ("event", 1), ("ref_id", 1), ("ts", -1)])
+    await db.voters.create_index([("has_voted", 1), ("sms_sends_total", 1)])
     # Phase exception grants — looked up on every gated action.
     await db.exception_grants.create_index([("org_id", 1), ("student_id", 1), ("phase", 1)])
     # The activity log is read by every admin role now, filtered and sorted.
@@ -266,9 +283,8 @@ async def org_context_middleware(request: Request, call_next):
 # protected automatically the moment it's added, with no extra step.
 #
 # Voter-facing endpoints (verify-identity, verify-otp, vote, apply, etc.) stay
-# public on purpose — they are outside this admin session layer. Casting a
-# ballot (/vote, /vote-bulk) is instead protected by the voter's own token,
-# issued by /verify-otp and checked in the handlers (see auth.py).
+# public on purpose — voters authenticate per-request via student_id + OTP,
+# not via this admin session layer.
 
 PUBLIC_PATHS = {
     "/", "/health", "/election-status",
@@ -360,7 +376,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Org-Slug", VOTER_TOKEN_HEADER],
+    allow_headers=["Authorization", "Content-Type", "X-Org-Slug"],
     max_age=600,
 )
 
@@ -427,6 +443,7 @@ class IdentityCheck(BaseModel):
     student_id: str
     full_name: str
     phone_index: int | None = None
+    turnstile_token: str | None = None   # Cloudflare Turnstile (see enforce_turnstile)
 
 class AdminIdentityCheck(BaseModel):
     student_id: str
@@ -618,8 +635,9 @@ async def send_sms_via_mambosms(to_number: str, message_text: str) -> bool:
         return False
 
 
-async def send_sms_via_egosms(to_number: str, message_text: str) -> bool:
-    """Primary OTP provider. See send_sms()."""
+async def send_sms_via_egosms(to_number: str, message_text: str) -> str:
+    """Primary OTP provider. See send_sms_status(). Returns "ok", "failed" (definitely not sent) or
+    "ambiguous" (the request may have been accepted: timeout / connection dropped after sending)."""
     try:
         clean_number = to_number.replace("+", "").strip()
         params = {
@@ -637,36 +655,61 @@ async def send_sms_via_egosms(to_number: str, message_text: str) -> bool:
             )
             resp_text = response.text.strip()
             logger.info(f"EgoSMS Result: {resp_text}")
-            return "OK" in resp_text.upper()
+            return "ok" if "OK" in resp_text.upper() else "failed"
+    except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.RemoteProtocolError) as e:
+        logger.error(f"EgoSMS ambiguous result ({type(e).__name__}): {e}")
+        return "ambiguous"
     except Exception as e:
         logger.error(f"EgoSMS Connection Error: {e}")
-        return False
+        return "failed"
 
 
-async def send_sms(to_number: str, message_text: str, request: Request | None = None) -> bool:
-    """Single entrypoint every route should call to send an SMS. Tries
-    EgoSMS (primary) first; if that fails for any reason, automatically
-    falls back to MamboSMS (secondary) before giving up. Logs which provider
-    actually delivered, so a pattern of fallback (or total failure) is
-    visible in the Activity Log rather than silently invisible.
+async def _safe_count_sms(org_id, kind: str):
+    try:
+        await count_sms(org_id, kind)
+    except Exception as e:                      # accounting must never block a voter's code
+        logger.error(f"sms usage count failed: {e}")
+
+
+async def send_sms_status(to_number: str, message_text: str, request: Request | None = None,
+                          kind: str = "otp", org_id: str | None = None) -> str:
+    """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
+
+    EgoSMS (primary) first; on a DEFINITE failure falls back to MamboSMS. On an AMBIGUOUS EgoSMS result
+    (timeout) it does NOT fall back unless SMS_FALLBACK_ON_TIMEOUT=true, because the first send may have
+    been delivered and billed. Every provider send (Ego and Mambo) is counted toward the election budget.
     """
+    org = request.state.org_id if request is not None else org_id
     if DEBUG_MODE:
-        # Local/load-testing only: never hit either real API. Log the
-        # message (which contains the OTP) so Locust or a manual tester can
-        # read it back, and report success so the normal OTP flow proceeds.
+        # Local/load-testing only: never hit either real API. Log the message (which contains the OTP)
+        # so Locust or a manual tester can read it back, and report success.
         logger.info(f"[DEBUG_MODE] SMS to {to_number}: {message_text}")
-        return True
+        await _safe_count_sms(org, kind)
+        return "ok"
 
-    if await send_sms_via_egosms(to_number, message_text):
-        return True
+    first = await send_sms_via_egosms(to_number, message_text)
+    if first == "ok":
+        await _safe_count_sms(org, kind)
+        return "ok"
+    if first == "ambiguous":
+        await _safe_count_sms(org, kind)        # may have been billed
+        if not SMS_FALLBACK_ON_TIMEOUT:
+            await log_action("sms_ambiguous_no_fallback", "system", {"primary": "egosms"}, org_id=org)
+            return "ambiguous"
 
     logger.warning(f"EgoSMS failed for {to_number}, falling back to MamboSMS.")
-    if request is not None:
-        await log_action("sms_provider_fallback", "system", {
-            "primary": "egosms", "fallback": "mambosms",
-        }, org_id=request.state.org_id)
+    await log_action("sms_provider_fallback", "system", {"primary": "egosms", "fallback": "mambosms"}, org_id=org)
+    if await send_sms_via_mambosms(to_number, message_text):
+        await _safe_count_sms(org, kind)
+        return "ok"
+    return "failed"
 
-    return await send_sms_via_mambosms(to_number, message_text)
+
+async def send_sms(to_number: str, message_text: str, request: Request | None = None,
+                   kind: str = "otp", org_id: str | None = None) -> bool:
+    """Boolean wrapper over send_sms_status(): True only on a confirmed send."""
+    return await send_sms_status(to_number, message_text, request, kind, org_id) == "ok"
+
 
 # =============================================================================
 # PASSWORD HELPERS
@@ -787,6 +830,8 @@ async def _publish_checkpoint_externally(checkpoint: dict) -> None:
         "event_count": checkpoint["event_count"],
         "prev_chain_hash": checkpoint["prev_chain_hash"],
         "chain_hash": checkpoint["chain_hash"],
+        "roster_ledger_seq": checkpoint.get("roster_ledger_seq", 0),
+        "roster_ledger_head": checkpoint.get("roster_ledger_head"),
         "created_at": checkpoint["created_at"].isoformat(),
     }, indent=2)
 
@@ -820,6 +865,8 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
     see /vote) so the chain itself carries no voter-identity risk.
     """
     org_id = request.state.org_id
+    await anchor_roster_ledger(request)   # ledger head goes to B2 Object Lock even when there are no new ballots
+    ledger_head = await db.roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
     last = await db.audit_checkpoints.find_one(
         org_query(request), sort=[("to_id", -1)]
     )
@@ -843,6 +890,8 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
         "event_count": len(events),
         "prev_chain_hash": prev_hash,
         "chain_hash": chain_hash,
+        "roster_ledger_seq": ledger_head["seq"] if ledger_head else 0,
+        "roster_ledger_head": ledger_head["hash"] if ledger_head else None,
         "created_at": datetime.utcnow(),
     })
 
@@ -937,7 +986,7 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
         f"You will be asked to set a new password on first login. "
         f"Do not share this code with anyone."
     )
-    return await send_sms(phone_list[0], message)
+    return await send_sms(phone_list[0], message, kind="admin", org_id=voter.get("org_id"))
 
 # --- Application consensus helpers ---
 
@@ -1083,14 +1132,18 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             {"$set": {
                 "full_name":       change_doc["full_name"],
                 "phone_numbers":   [clean],
-                "is_commissioner": False,
-                "is_it_admin":     False,
-                "has_voted":       False,
-                "last_status":     "idle",
                 "added_by_it":     True,
                 "added_by":        change_doc.get("requested_by", ""),
                 "org_id":          org_id,
                 "student_id":      normalize_student_id(change_doc["student_id"])
+            },
+            # Defaults ONLY on insert: for an existing ID, $set here used to flip has_voted back to
+            # False (a double-vote path) and wipe every role flag.
+            "$setOnInsert": {
+                "is_commissioner": False,
+                "is_it_admin":     False,
+                "has_voted":       False,
+                "last_status":     "idle",
             }},
             upsert=True
         )
@@ -1193,6 +1246,17 @@ async def require_superadmin_state(request: Request) -> dict:
 
 PHASE_NAMES = ("applications", "campaign", "voting", "results")
 DEFAULT_ROUND_ID = "round-1"
+# Times are STORED as UTC. The election timezone is the zone admins think in when they type a start/end,
+# and the one every screen shows them in — so a laptop set to another timezone can't start an election early/late.
+DEFAULT_ELECTION_TZ = os.getenv("ELECTION_DEFAULT_TIMEZONE", "Africa/Kampala")
+
+
+def validate_timezone(name: str) -> str:
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        raise HTTPException(400, f"'{name}' is not a valid IANA timezone (e.g. Africa/Kampala).")
+    return name
 
 
 class PhaseWindow(BaseModel):
@@ -1204,6 +1268,7 @@ class PhaseWindow(BaseModel):
 class PhaseScheduleUpdate(BaseModel):
     phases: dict[str, PhaseWindow]
     round_id: str = DEFAULT_ROUND_ID
+    timezone: str | None = None      # IANA name; omitted = keep the current one
 
 
 class ExceptionGrantCreate(BaseModel):
@@ -1218,6 +1283,7 @@ async def get_phase_schedule(request: Request) -> dict:
     phases = (doc or {}).get("phases", {})
     return {
         "round_id": (doc or {}).get("round_id", DEFAULT_ROUND_ID),
+        "timezone": (doc or {}).get("timezone") or DEFAULT_ELECTION_TZ,
         "phases": {
             name: {
                 "start": (phases.get(name) or {}).get("start"),
@@ -1377,6 +1443,488 @@ async def clear_login_attempts(email: str, org_id: str | None):
     await db.login_attempts.delete_one({"key": key})
 
 # =============================================================================
+# OTP THROTTLING, SMS-BUDGET PROTECTION & ROSTER CONTROL  (OTP_SMS_Design_v2)
+# =============================================================================
+# Pure maths (ladder, guess bucket, attack detection) lives in otp_limits.py;
+# everything that touches Mongo lives here. Rollout flags (design section 15):
+# OTP_LIMITER_MODE=legacy|new, ROSTER_FREEZE_ENABLED, CONTACT_CHANGE_REQUIRED.
+
+OTP_LIMITER_MODE = os.getenv("OTP_LIMITER_MODE", "new").strip().lower()
+TURNSTILE_SECRET = os.getenv("TURNSTILE_SECRET")
+SMS_FALLBACK_ON_TIMEOUT = ol.env_bool("SMS_FALLBACK_ON_TIMEOUT", False)
+SMS_BUDGET_DEFAULT_MULTIPLIER = ol.env_float("SMS_BUDGET_DEFAULT_MULTIPLIER", 2.5)
+
+CONTACT_EVIDENCE_TYPES = (
+    "id_card_in_person", "registrar_record", "student_portal_record",
+    "commission_verified_by_call", "other_documented",
+)
+CONTACT_CHANGE_TYPES = ("phone_change", "phone_add", "phone_remove", "registration_number_change")
+RESET_REASONS = ("sms_delayed", "victim_of_lockout", "wrong_details_fixed", "test")
+
+# Per-org overrides live in db.settings {name: "security_settings"}; these are the fallbacks.
+_SEC_DEFAULTS = {
+    "roster_freeze_at": None,
+    "roster_freeze_enabled": ol.env_bool("ROSTER_FREEZE_ENABLED", True),
+    "contact_change_required": ol.env_bool("CONTACT_CHANGE_REQUIRED", True),
+    "otp_target_risk": ol.TARGET_RISK,
+    "turnstile_mode": os.getenv("TURNSTILE_MODE", "off").strip().lower(),
+    "sms_budget_total": None,
+    "sms_budget_enforce": ol.env_bool("SMS_BUDGET_ENFORCE", False),  # monitor-only until the dry run passes
+    "sms_mode": "normal",                                             # normal | conservation
+    "contact_change_ttl_hours": ol.env_int("CONTACT_CHANGE_TTL_HOURS", 6),
+    "contact_change_max_per_voter": ol.env_int("CONTACT_CHANGE_MAX_PER_VOTER", 2),
+    "approver_daily_cap": ol.env_int("CONTACT_CHANGE_APPROVER_DAILY_CAP", 30),
+    "quota_alert_pct": ol.env_float("CONTACT_CHANGE_ALERT_PCT", 2),
+    "quota_hard_cap_pct": ol.env_float("CONTACT_CHANGE_HARD_CAP_PCT", 5),
+    "superadmin_breakglass": ol.env_bool("CONTACT_CHANGE_SUPERADMIN_BREAKGLASS", False),
+    "digest_days": ol.env_int("CONTACT_DIGEST_DAYS", 7),
+    "reset_admin_hourly_alert": ol.env_int("OTP_RESET_PER_ADMIN_HOURLY_ALERT", 50),
+    "reset_admin_hourly_hard_cap": ol.env_int(
+        "OTP_RESET_PER_ADMIN_HOURLY_HARD_CAP", ol.env_int("ADMIN_RESET_HARD_CAP", 150)),
+    "reset_per_voter_daily": ol.env_int("OTP_RESET_PER_VOTER_DAILY", 3),
+    "reset_per_voter_election": ol.env_int("OTP_RESET_PER_VOTER_ELECTION", 10),
+    "freeze_lifted_at": None,   # set by reset-election / new round
+    "epoch_at": None,           # counters (caps, quotas) only look at events after this
+    "cap_overrides": {},        # {"approver_daily": {sid: cap}, "reset_hourly": {sid: cap}} (chief commissioner)
+}
+
+
+def _oq(org_id, extra: dict | None = None) -> dict:
+    """org_query for code that has an org_id but no request (same semantics)."""
+    q = dict(extra) if extra else {}
+    if org_id:
+        q["org_id"] = org_id
+    return q
+
+
+class ApiError(Exception):
+    """HTTP error that carries machine-readable fields (reason, retry_after, ...) next to `detail`."""
+
+    def __init__(self, status_code: int, detail: str, reason: str | None = None,
+                 retry_after: int | None = None, **extra):
+        self.status_code, self.detail, self.reason = status_code, detail, reason
+        self.retry_after, self.extra = retry_after, extra
+
+
+@app.exception_handler(ApiError)
+async def api_error_handler(request: Request, exc: ApiError):
+    body = {"detail": exc.detail}
+    if exc.reason:
+        body["reason"] = exc.reason
+    if exc.retry_after is not None:
+        body["retry_after"] = int(exc.retry_after)
+    body.update(exc.extra)
+    headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+
+
+async def security_settings_for(org_id) -> dict:
+    doc = await db.settings.find_one(_oq(org_id, {"name": "security_settings"})) or {}
+    out = dict(_SEC_DEFAULTS)
+    out.update({k: doc[k] for k in _SEC_DEFAULTS if doc.get(k) is not None})
+    if not isinstance(out.get("cap_overrides"), dict):
+        out["cap_overrides"] = {}
+    return out
+
+
+async def get_security_settings(request: Request) -> dict:
+    return await security_settings_for(request.state.org_id)
+
+
+def _epoch(sec: dict) -> datetime:
+    return sec.get("epoch_at") or datetime(1970, 1, 1)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _otp_key_for(org_id, student_id: str) -> str:
+    return f"{org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+
+
+def _otp_key(request: Request, student_id: str) -> str:
+    return _otp_key_for(request.state.org_id, student_id)
+
+
+# ── Election window -> guess-bucket parameters ──────────────────────────────
+
+async def guess_params(request: Request, sec: dict | None = None) -> dict:
+    sec = sec or await get_security_settings(request)
+    schedule = await get_phase_schedule(request)
+    v = schedule["phases"]["voting"]
+    w, is_default = ol.window_seconds(v.get("start"), v.get("end"), v.get("enforced"))
+    risk = float(sec["otp_target_risk"])
+    return {
+        "window_s": w, "window_is_default": is_default,
+        "budget": ol.guess_budget(risk), "interval": ol.refill_interval(w, risk),
+    }
+
+
+# ── Part A: atomic send reservation (ladder + 24 h ceiling) ─────────────────
+
+async def reserve_send(request: Request, student_id: str) -> dict:
+    """Reserve the voter's next SMS slot or raise 429. Optimistic-concurrency on `version`, so
+    20 parallel Resend taps produce exactly one reservation. Returns {"snapshot", "wait"}."""
+    key = _otp_key(request, student_id)
+    for _ in range(3):
+        now = datetime.utcnow()
+        doc = await db.otp_send_state.find_one({"key": key})
+        if doc is None:
+            wait = ol.next_wait(1)
+            try:
+                await db.otp_send_state.insert_one({
+                    "key": key, "send_count": 1, "last_send_at": now,
+                    "next_send_at": now + timedelta(seconds=wait), "sends_24h": [now], "version": 0,
+                })
+            except DuplicateKeyError:
+                continue                       # someone else won the insert; re-read
+            return {"snapshot": None, "wait": wait}
+
+        count = doc.get("send_count", 0)
+        if now - doc["last_send_at"] > timedelta(seconds=ol.LADDER_RESET_S):
+            count = 0                          # ladder forgets after idle time
+        nxt = doc.get("next_send_at")
+        if nxt and nxt > now:
+            secs = max(1, math.ceil((nxt - now).total_seconds()))
+            raise ApiError(429, f"Please wait {ol.fmt_wait(secs)} before requesting another code. "
+                                f"Your last code is still valid.", "cooldown", secs)
+        recent = ol.prune_24h(doc.get("sends_24h", []), now)
+        if len(recent) >= ol.DAILY_SEND_CEILING:
+            secs = max(1, math.ceil((min(recent) + timedelta(hours=24) - now).total_seconds()))
+            raise ApiError(429, "You have reached today's limit for codes. Please try again later.",
+                           "daily_ceiling", secs)
+        new_count = count + 1
+        wait = ol.next_wait(new_count)
+        res = await db.otp_send_state.update_one(
+            {"key": key, "version": doc.get("version", 0)},
+            {"$set": {"send_count": new_count, "last_send_at": now,
+                      "next_send_at": now + timedelta(seconds=wait), "sends_24h": recent + [now]},
+             "$inc": {"version": 1}},
+        )
+        if res.modified_count == 1:
+            return {"snapshot": doc, "wait": wait}
+    raise ApiError(429, "Too many requests at once. Please wait a moment and try again.", "cooldown", 2)
+
+
+async def rollback_send(request: Request, student_id: str, snapshot: dict | None):
+    """Gateway failure is free: give the reserved slot back."""
+    key = _otp_key(request, student_id)
+    if snapshot is None:
+        await db.otp_send_state.delete_one({"key": key})
+        return
+    await db.otp_send_state.update_one(
+        {"key": key},
+        {"$set": {f: snapshot[f] for f in ("send_count", "last_send_at", "next_send_at", "sends_24h") if f in snapshot},
+         "$inc": {"version": 1}},
+    )
+
+
+# ── Part B: guess token bucket ──────────────────────────────────────────────
+
+async def peek_guess(request: Request, student_id: str, params: dict) -> tuple[float, int]:
+    """(tokens, retry_after) without consuming. Used to refuse SMS sends while the bucket is empty."""
+    doc = await db.otp_guess_state.find_one({"key": _otp_key(request, student_id)})
+    if not doc:
+        return float(ol.FREE_GUESSES), 0
+    tokens = ol.refill(doc["tokens"], (datetime.utcnow() - doc["updated_at"]).total_seconds(),
+                       params["interval"])
+    return tokens, (ol.retry_after(tokens, params["interval"]) if tokens < 1 else 0)
+
+
+async def consume_guess(request: Request, student_id: str, params: dict) -> tuple[bool, float, int]:
+    """Atomically pay one token BEFORE comparing the code (so parallel guesses can't overdraw).
+    Returns (allowed, tokens_after, retry_after)."""
+    key = _otp_key(request, student_id)
+    interval = params["interval"]
+    for _ in range(4):
+        now = datetime.utcnow()
+        doc = await db.otp_guess_state.find_one({"key": key})
+        if doc is None:
+            try:
+                await db.otp_guess_state.insert_one(
+                    {"key": key, "tokens": ol.FREE_GUESSES - 1.0, "updated_at": now, "v": 0})
+            except DuplicateKeyError:
+                continue
+            return True, ol.FREE_GUESSES - 1.0, 0
+        tokens = ol.refill(doc["tokens"], (now - doc["updated_at"]).total_seconds(), interval)
+        if tokens < 1:
+            return False, tokens, ol.retry_after(tokens, interval)
+        res = await db.otp_guess_state.update_one(
+            {"key": key, "v": doc.get("v", 0)},
+            {"$set": {"tokens": tokens - 1.0, "updated_at": now}, "$inc": {"v": 1}},
+        )
+        if res.modified_count == 1:
+            return True, tokens - 1.0, 0
+    return False, 0.0, 1
+
+
+async def clear_otp_limit_state(org_id, student_ids):
+    """Forget send + guess state for these voters. Never touches or creates a code."""
+    for sid in {normalize_student_id(s) for s in student_ids if s}:
+        key = _otp_key_for(org_id, sid)
+        await db.otp_send_state.delete_one({"key": key})
+        await db.otp_guess_state.delete_one({"key": key})
+
+
+async def reset_voter_otp_state(org_id, student_ids):
+    """Approved correction: also delete any live code so it can't reach the OLD number's owner."""
+    await clear_otp_limit_state(org_id, student_ids)
+    for sid in {normalize_student_id(s) for s in student_ids if s}:
+        q = _oq(org_id, {"student_id": sid})
+        await db.otps.delete_many(q)
+        await db.admin_otps.delete_many(q)
+
+
+# ── Part C: SMS budget, usage counters, bot check ───────────────────────────
+
+async def sms_usage_doc(org_id) -> dict:
+    return await db.sms_usage.find_one({"org_key": org_id or "default"}) or {}
+
+
+async def _budget_alerts(org_id, usage: dict):
+    sec = await security_settings_for(org_id)
+    total = sec["sms_budget_total"]
+    if not total:
+        return
+    left_frac = (total - usage.get("sent_total", 0)) / total
+    for threshold in (0.5, 0.25, 0.10):
+        if left_frac <= threshold:
+            r = await db.sms_usage.update_one(
+                {"org_key": org_id or "default", "alerts_fired": {"$ne": threshold}},
+                {"$addToSet": {"alerts_fired": threshold}})
+            if r.modified_count:
+                await log_action("sms_budget_alert", "system", {
+                    "threshold_pct": int(threshold * 100), "sent": usage.get("sent_total", 0),
+                    "budget": total}, org_id=org_id)
+
+
+async def count_sms(org_id, kind: str = "otp"):
+    """Count one billable SMS toward the election budget (OTP, notice, or a provider fallback)."""
+    now = datetime.utcnow()
+    upd: dict = {"$inc": {"sent_total": 1, f"sent_{kind}": 1}, "$set": {"updated_at": now}}
+    if kind == "otp":
+        upd["$push"] = {"recent_sends": {"$each": [now], "$slice": -300}}
+    key = org_id or "default"
+    try:
+        doc = await db.sms_usage.find_one_and_update({"org_key": key}, upd, upsert=True, return_document=True)
+    except DuplicateKeyError:
+        doc = await db.sms_usage.find_one_and_update({"org_key": key}, upd, upsert=True, return_document=True)
+    await _budget_alerts(org_id, doc or {})
+
+
+async def count_verified(org_id):
+    now = datetime.utcnow()
+    upd = {"$inc": {"verified_total": 1},
+           "$push": {"recent_verifies": {"$each": [now], "$slice": -300}}, "$set": {"updated_at": now}}
+    try:
+        await db.sms_usage.update_one({"org_key": org_id or "default"}, upd, upsert=True)
+    except DuplicateKeyError:
+        await db.sms_usage.update_one({"org_key": org_id or "default"}, upd, upsert=True)
+
+
+def current_sms_mode(sec: dict, usage: dict) -> str:
+    if ol.under_attack(usage.get("recent_sends", []), usage.get("recent_verifies", []), datetime.utcnow()):
+        return "under_attack"
+    return "conservation" if sec.get("sms_mode") == "conservation" else "normal"
+
+
+async def sms_budget_gate(request: Request, sec: dict, usage: dict, student: dict):
+    """Hard stop when the budget is spent; conservation keeps the remaining credit for first codes.
+    Both are monitor-only (counted + alerted, never enforced) until sms_budget_enforce is on."""
+    total = sec["sms_budget_total"]
+    if not total or not sec["sms_budget_enforce"]:
+        return
+    left = total - usage.get("sent_total", 0)
+    msg = "Verification codes are temporarily unavailable. Please contact support."
+    if left <= 0:
+        raise ApiError(429, msg, "budget")
+    if sec["sms_mode"] == "conservation" and (student.get("sms_sends_total") or 0) > 0:
+        reserve = await db.voters.count_documents(org_query(request, {
+            "has_voted": {"$ne": True}, "sms_sends_total": {"$not": {"$gt": 0}}}))
+        if left <= reserve * 1.2:
+            raise ApiError(429, "Codes are limited right now so that everyone can receive their first one. "
+                                "Please try again later or contact support.", "budget")
+
+
+async def ip_record(request: Request, field: str):
+    """field: sends | verifies | fails. Feeds the per-IP challenge guard (never a hard block)."""
+    now = datetime.utcnow()
+    upd = {"$push": {field: {"$each": [now], "$slice": -120}}, "$set": {"updated_at": now}}
+    for _ in range(2):
+        try:
+            await db.ip_send_stats.update_one({"key": _client_ip(request)}, upd, upsert=True)
+            return
+        except DuplicateKeyError:
+            continue
+
+
+async def ip_flagged(request: Request) -> bool:
+    d = await db.ip_send_stats.find_one({"key": _client_ip(request)}) or {}
+    return ol.ip_needs_captcha(d.get("sends", []), d.get("verifies", []), d.get("fails", []), datetime.utcnow())
+
+
+_last_turnstile_alert = 0.0
+
+
+async def _turnstile_verify(token: str, ip: str) -> bool | None:
+    """True/False = Cloudflare answered; None = not configured or unreachable."""
+    if not TURNSTILE_SECRET:
+        return None
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.post("https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                             data={"secret": TURNSTILE_SECRET, "response": token, "remoteip": ip}, timeout=6.0)
+            return bool(r.json().get("success"))
+    except Exception as e:
+        logger.error(f"Turnstile verify failed: {e}")
+        return None
+
+
+async def enforce_turnstile(request: Request, token: str | None, sec: dict, mode_now: str, flagged: bool):
+    """Modes: off | adaptive (challenge flagged IPs / under attack) | on. Fails OPEN if Cloudflare is
+    unreachable (voters first), except under_attack, which fails closed."""
+    global _last_turnstile_alert
+    mode, attack = sec["turnstile_mode"], mode_now == "under_attack"
+    if not (mode == "on" or attack or (mode == "adaptive" and flagged)):
+        return
+    if not token:
+        raise ApiError(429, "Please complete the security check, then try again.", "captcha_required")
+    ok = await _turnstile_verify(token, _client_ip(request))
+    if ok is True:
+        return
+    if ok is False:
+        raise ApiError(429, "The security check failed. Please try again.", "captcha_required")
+    if time.time() - _last_turnstile_alert > 60:
+        _last_turnstile_alert = time.time()
+        await log_action("turnstile_unavailable", "system", {
+            "configured": bool(TURNSTILE_SECRET), "mode": mode, "failing_closed": attack and bool(TURNSTILE_SECRET),
+        }, org_id=request.state.org_id)
+    if attack and TURNSTILE_SECRET:
+        raise ApiError(503, "The security check is temporarily unavailable. Please try again shortly.",
+                       "captcha_required", 30)
+
+
+# ── Roster freeze (Part D) ──────────────────────────────────────────────────
+
+async def roster_status(request: Request, sec: dict | None = None) -> dict:
+    """phase: pre_freeze | voting_frozen | closed.
+    - pre_freeze: everything allowed (audit-logged).
+    - voting_frozen: no add/remove/import; phone & registration-number edits need approval.
+    - closed (voting ended, no live exception grant): still no add/remove/import until a new round;
+      contact edits are audit-only again because no OTP can be issued."""
+    sec = sec or await get_security_settings(request)
+    v = (await get_phase_schedule(request))["phases"]["voting"]
+    now = datetime.utcnow()
+    freeze_at = sec["roster_freeze_at"] or v.get("start")
+    lifted = sec.get("freeze_lifted_at")
+    base = {"freeze_at": freeze_at, "freeze_enabled": sec["roster_freeze_enabled"]}
+    if (not sec["roster_freeze_enabled"] or freeze_at is None or now < freeze_at
+            or (lifted and lifted >= freeze_at)):
+        return {**base, "phase": "pre_freeze", "frozen": False, "contact_change_required": False}
+    end = v.get("end")
+    live_grant = await db.exception_grants.count_documents(org_query(request, {
+        "phase": "voting", "revoked": {"$ne": True},
+        "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}))
+    if end and now > end and not live_grant:
+        return {**base, "phase": "closed", "frozen": True, "contact_change_required": False}
+    return {**base, "phase": "voting_frozen", "frozen": True,
+            "contact_change_required": bool(sec["contact_change_required"])}
+
+
+async def _expire_pending_at_freeze(request: Request):
+    await db.student_changes.update_many(
+        org_query(request, {"status": "pending"}),
+        {"$set": {"status": "expired_at_freeze", "resolved_at": datetime.utcnow()}})
+
+
+async def assert_roster_unfrozen(request: Request):
+    """Call at the top of every add / remove / import route."""
+    st = await roster_status(request)
+    if st["frozen"]:
+        await _expire_pending_at_freeze(request)
+        raise ApiError(409, "The voter roster is frozen for this election: voters can no longer be added, "
+                            "removed or imported. Contact changes go through the commission.", "roster_frozen")
+
+
+# ── Tamper-evident roster ledger (Part D 7.6) ───────────────────────────────
+
+def _ledger_hash(prev: str, seq: int, event: str, ref_id: str, actor: str, role: str,
+                 ts: datetime, details: dict) -> str:
+    payload = "|".join([prev, str(seq), event, ref_id or "", actor or "", role or "", ts.isoformat(),
+                        json.dumps(details, sort_keys=True, separators=(",", ":"), default=str)])
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def append_ledger(org_id, event: str, ref_id: str, actor: str, role: str, details: dict | None = None):
+    """Append-only SHA-256 chain per org. Best effort: a ledger failure is logged, never fatal."""
+    details = {k: v for k, v in (details or {}).items()}
+    for _ in range(6):
+        last = await db.roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
+        seq = (last["seq"] if last else 0) + 1
+        prev = last["hash"] if last else "GENESIS"
+        now = datetime.utcnow()
+        ts = now.replace(microsecond=(now.microsecond // 1000) * 1000)   # Mongo keeps milliseconds
+        doc = {"org_id": org_id, "seq": seq, "event": event, "ref_id": ref_id, "actor": actor, "role": role,
+               "ts": ts, "details": details, "prev_hash": prev,
+               "hash": _ledger_hash(prev, seq, event, ref_id, actor, role, ts, details)}
+        try:
+            await db.roster_ledger.insert_one(doc)
+            return doc
+        except DuplicateKeyError:
+            continue
+        except Exception as e:
+            logger.error(f"roster_ledger append failed ({event}): {e}")
+            return None
+    logger.error(f"roster_ledger append lost the race 6 times ({event})")
+    return None
+
+
+async def verify_roster_ledger(org_id) -> dict:
+    prev, n, bad = "GENESIS", 0, None
+    async for e in db.roster_ledger.find({"org_id": org_id}).sort("seq", 1):
+        n += 1
+        expect_seq = n
+        if (e["seq"] != expect_seq or e["prev_hash"] != prev
+                or e["hash"] != _ledger_hash(prev, e["seq"], e["event"], e["ref_id"], e["actor"], e["role"],
+                                             e["ts"], e.get("details", {}))):
+            bad = e["seq"]
+            break
+        prev = e["hash"]
+    return {"valid": bad is None, "entries": n, "head_hash": prev if n else None, "first_bad_seq": bad}
+
+
+async def anchor_roster_ledger(request: Request):
+    """Publish the ledger head to B2 Object Lock (same trust anchor as the ballot chain)."""
+    org_id = request.state.org_id
+    head = await db.roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
+    if not head:
+        return
+    marker = await db.settings.find_one(org_query(request, {"name": "roster_ledger_anchor"})) or {}
+    if marker.get("seq", 0) >= head["seq"]:
+        return
+    key = f"{org_id or 'default'}/roster-ledger-{head['seq']:08d}.json"
+    body = json.dumps({"org_id": org_id, "seq": head["seq"], "head_hash": head["hash"],
+                       "anchored_at": datetime.utcnow().isoformat()}, indent=2)
+    try:
+        if b2_client is None:
+            raise RuntimeError("B2 client not configured (see startup logs)")
+        await run_in_threadpool(
+            b2_client.put_object, Bucket=B2_BUCKET_NAME, Key=key, Body=body.encode("utf-8"),
+            ContentType="application/json", ObjectLockMode="COMPLIANCE",
+            ObjectLockRetainUntilDate=datetime.utcnow() + timedelta(days=3650))
+    except Exception as e:
+        logging.error(f"B2 roster-ledger anchor failed for {key}: {e}")
+        await log_action("audit_checkpoint_anchor_failed", "system", {"ledger_seq": head["seq"], "error": str(e)},
+                         org_id=org_id)
+        return
+    await db.settings.update_one(org_query(request, {"name": "roster_ledger_anchor"}),
+                                 {"$set": org_stamp(request, {"name": "roster_ledger_anchor", "seq": head["seq"],
+                                                              "head_hash": head["hash"], "at": datetime.utcnow()})},
+                                 upsert=True)
+
+
+# =============================================================================
 # SYSTEM & HEALTH
 # =============================================================================
 
@@ -1397,10 +1945,13 @@ async def get_status(request: Request):
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     schedule = await get_phase_schedule(request)
     voting_phase_open = _phase_is_open(schedule["phases"]["voting"], datetime.utcnow())
+    turnstile_mode = (await get_security_settings(request))["turnstile_mode"]   # off | adaptive | on
 
     if not status_doc:
-        return {"is_open": True, "is_certified": False, "start": None, "end": None, "voting_phase_open": voting_phase_open}
+        return {"is_open": True, "is_certified": False, "start": None, "end": None,
+                "voting_phase_open": voting_phase_open, "turnstile_mode": turnstile_mode}
     return {
+        "turnstile_mode": turnstile_mode,
         "is_open": status_doc.get("is_open", True),
         "is_certified": status_doc.get("is_certified", False),
         "start": status_doc.get("start_time"),
@@ -1419,29 +1970,25 @@ async def get_status(request: Request):
 
 @app.post("/verify-identity")
 async def verify_identity(data: IdentityCheck, request: Request):
+    """Order (design section 10): election open -> identity/name -> bot check -> SMS budget -> guess
+    bucket -> reserve send slot -> send (re-using a live code) -> count -> roll back on gateway failure."""
     now = datetime.utcnow()
+    legacy = OTP_LIMITER_MODE == "legacy"
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
 
     if status_doc and not status_doc.get("is_open", True):
         raise HTTPException(status_code=403, detail="Election is closed.")
 
-    # Timing is governed entirely by the "applications" phase schedule (see
-    # PHASE_NAMES / assert_phase_open) — the standalone start_time/end_time
-    # window on election_config was a second, disconnected timer that only
-    # this one route ever checked. It's retired: this is now the single
-    # place voting-window timing is configured (Timeline tab), matching what
-    # /vote and /vote-bulk already enforce for the "voting" phase itself.
+    # Timing is governed entirely by the "voting" phase schedule (see PHASE_NAMES / assert_phase_open).
     await assert_phase_open(request, "voting", data.student_id)
 
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
+        await ip_record(request, "fails")
         raise HTTPException(status_code=404, detail="Student ID not found")
 
-    # otp_count tracks how many OTPs have already been SENT to this voter.
-    # We allow 3 total requests, so we only block once a 4th would be sent
-    # (i.e. once 3 have already gone out).
-    otp_count = student.get("otp_count", 0)
-    if otp_count >= 3:
+    # LEGACY (OTP_LIMITER_MODE=legacy only): permanent 3-send cap. The new limiter never reads otp_count.
+    if legacy and student.get("otp_count", 0) >= 3:
         raise HTTPException(
             status_code=403,
             detail="Too many attempts. Please check the official register for your details."
@@ -1451,6 +1998,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
         raise HTTPException(status_code=400, detail="Already voted")
 
     if not names_match(student.get("full_name", ""), data.full_name):
+        await ip_record(request, "fails")
         logger.warning(f"Name Match Fail: Reg({student.get('full_name','')}) vs Input({data.full_name})")
         raise HTTPException(status_code=400, detail="Name mismatch. Please provide your full registered names.")
 
@@ -1461,39 +2009,73 @@ async def verify_identity(data: IdentityCheck, request: Request):
     if len(phone_list) > 1 and data.phone_index is None:
         return {"status": "needs_selection", "masked_numbers": [f"{p[:6]}****{p[-2:]}" for p in phone_list]}
 
-    idx       = data.phone_index if data.phone_index is not None else 0
+    idx = data.phone_index if data.phone_index is not None else 0
+    if not 0 <= idx < len(phone_list):
+        raise HTTPException(status_code=400, detail="Invalid phone selection.")
     raw_phone = phone_list[idx]
-    otp       = str(secrets.randbelow(900000) + 100000)
+    sid = student["student_id"]
+
+    reservation = None
+    if not legacy:
+        sec = await get_security_settings(request)
+        usage = await sms_usage_doc(request.state.org_id)
+        mode = current_sms_mode(sec, usage)
+        await enforce_turnstile(request, data.turnstile_token, sec, mode, await ip_flagged(request))
+        await sms_budget_gate(request, sec, usage, student)
+        tokens, retry = await peek_guess(request, sid, await guess_params(request, sec))
+        if tokens < 1:      # a fresh code is useless while no guess is allowed
+            raise ApiError(429, f"Too many incorrect codes. You can try again in {ol.fmt_wait(retry)}. "
+                                f"You do not need to do anything.", "guess_lock", retry)
+        reservation = await reserve_send(request, sid)
+
+    # Re-send the SAME code while it is still valid, so a late first SMS never becomes a wrong guess.
+    existing = None if legacy else await db.otps.find_one(org_query(request, {"student_id": sid}))
+    live = bool(existing and existing.get("created_at")
+                and now - existing["created_at"] < timedelta(minutes=ol.CODE_TTL_MINUTES))
+    otp = existing["code"] if live else str(secrets.randbelow(900000) + 100000)
 
     first_name = student.get("full_name", "Voter").split()[0].capitalize()
     branding_doc = await db.settings.find_one(org_query(request, {"name": "branding"}))
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
-    
+
     message = (
         f"Hello {first_name}, your {sms_org_name} voting code is {otp}. "
         f"Your vote is secret. Do not share this code with anyone. Your voice, your power!"
     )
 
-    if await send_sms(raw_phone, message, request):
-        await db.voters.update_one(
-            org_query(request, {"student_id": student["student_id"]}),
-            {"$set": {"last_status": "otp_sent"}, "$inc": {"otp_count": 1}}
-        )
+    outcome = await send_sms_status(raw_phone, message, request)
+    if outcome == "failed":
+        if reservation:
+            await rollback_send(request, sid, reservation["snapshot"])      # gateway failure is free
+        raise HTTPException(status_code=500, detail="SMS Delivery Failed")
+
+    # "ok" or "ambiguous": the SMS may well be on its way, so the code must be valid and the cooldown must hold.
+    if not live:
         await db.otps.update_one(
-            org_query(request, {"student_id": student["student_id"]}),
+            org_query(request, {"student_id": sid}),
             {"$set": org_stamp(request, {"code": otp, "created_at": now})},
             upsert=True
         )
-        return {"status": "success", "phone": f"{raw_phone[:6]}****{raw_phone[-2:]}"}
+    await db.voters.update_one(
+        org_query(request, {"student_id": sid}),
+        {"$set": {"last_status": "otp_sent"}, "$inc": {"otp_count": 1, "sms_sends_total": 1},
+         "$min": {"first_sms_at": now}}
+    )
+    await ip_record(request, "sends")
+    resp = {"status": "success", "phone": f"{raw_phone[:6]}****{raw_phone[-2:]}",
+            "next_send_in": reservation["wait"] if reservation else 60}
+    if outcome == "ambiguous":
+        resp["delivery"] = "unconfirmed"
+    return resp
 
-    raise HTTPException(status_code=500, detail="SMS Delivery Failed")
+
+OTP_EXPIRY_MINUTES = ol.CODE_TTL_MINUTES
 
 
-OTP_EXPIRY_MINUTES = 10
-
-
+# LEGACY limiter (OTP_LIMITER_MODE=legacy): fixed 5 guesses -> fixed 15 min lock. Kept only as a rollback path.
 OTP_MAX_VERIFY_ATTEMPTS = 5
 OTP_VERIFY_LOCKOUT_MINUTES = 15
+
 
 
 async def _enforce_otp_attempt_limit(request: Request, student_id: str):
@@ -1541,8 +2123,7 @@ async def _clear_otp_attempts(request: Request, student_id: str):
     await db.otp_attempts.delete_one({"key": key})
 
 
-@app.post("/verify-otp")
-async def verify_otp(data: OTPCheck, request: Request):
+async def _verify_otp_legacy(data: OTPCheck, request: Request):
     await _enforce_otp_attempt_limit(request, data.student_id)
 
     search = org_query(request, get_forgiving_filter(data.student_id))
@@ -1565,17 +2146,7 @@ async def verify_otp(data: OTPCheck, request: Request):
         # Constant-time compare so response timing can't leak how many
         # leading digits of a guess were correct.
         if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
-            # Issue the voter's session token. Its jti is stored on the voter
-            # record so /vote can require *this* login's token — a newer OTP
-            # login replaces it and any earlier token stops working.
-            voter_token, voter_jti = create_voter_token(
-                student_id=normalize_student_id(data.student_id),
-                org_id=request.state.org_id,
-            )
-            await db.voters.update_one(
-                search,
-                {"$set": {"last_status": "authenticated", "otp_count": 0, "voter_session_jti": voter_jti}},
-            )
+            await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
             await db.otps.delete_one(search)
             await _clear_otp_attempts(request, data.student_id)
             # Failure (otp_verify_locked) was already logged; success never
@@ -1583,10 +2154,63 @@ async def verify_otp(data: OTPCheck, request: Request):
             # lifecycle for a voter — only that they'd been locked out, never
             # that they got in.
             await log_action("otp_verified", normalize_student_id(data.student_id), {}, org_id=request.state.org_id)
-            return {"status": "success", "voter_token": voter_token}
+            return {"status": "success"}
 
     await _record_otp_failure(request, data.student_id)
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
+
+
+@app.post("/verify-otp")
+async def verify_otp(data: OTPCheck, request: Request):
+    if OTP_LIMITER_MODE == "legacy":
+        return await _verify_otp_legacy(data, request)
+
+    search = org_query(request, get_forgiving_filter(data.student_id))
+    voter = await db.voters.find_one(search)
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter not found")
+    sid = voter["student_id"]
+
+    record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
+    created_at = (record or {}).get("created_at")
+    live = bool(record and created_at
+                and datetime.utcnow() - created_at <= timedelta(minutes=ol.CODE_TTL_MINUTES))
+    if not live:
+        # No live code: a guess cannot succeed, so it must NOT cost the voter a token (otherwise anyone
+        # could lock any voter out for free). Limited only by the per-IP guard.
+        if record:
+            await db.otps.delete_one(search)
+        await ip_record(request, "fails")
+        raise ApiError(400, "This code has expired. Please request a new one." if record
+                       else "Please request a new code first.", "no_live_code")
+
+    params = await guess_params(request)
+    allowed, tokens_after, retry = await consume_guess(request, sid, params)   # pay BEFORE comparing
+    if not allowed:
+        raise ApiError(429, f"Too many incorrect codes. You can try again in {ol.fmt_wait(retry)}. "
+                            f"You do not need to do anything.", "guess_lock", retry, attempts_remaining=0)
+
+    # Constant-time compare so response timing can't leak how many leading digits were correct.
+    if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
+        await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
+        await db.otps.delete_one(search)
+        await db.otp_guess_state.delete_one({"key": _otp_key(request, sid)})   # success forgives the bucket
+        await count_verified(request.state.org_id)
+        await ip_record(request, "verifies")
+        await log_action("otp_verified", sid, {}, org_id=request.state.org_id)
+        return {"status": "success"}
+
+    await ip_record(request, "fails")
+    remaining = int(tokens_after + 1e-9)
+    if remaining <= 0:
+        wait = ol.retry_after(tokens_after, params["interval"])
+        await log_action("otp_verify_locked", sid, {
+            "window_s": int(params["window_s"]), "refill_interval_s": int(params["interval"]),
+            "retry_after_s": wait}, org_id=request.state.org_id)
+        raise ApiError(429, f"Too many incorrect codes. You can try again in {ol.fmt_wait(wait)}. "
+                            f"You do not need to do anything.", "guess_lock", wait, attempts_remaining=0)
+    raise ApiError(400, f"That code is not correct. {remaining} {'try' if remaining == 1 else 'tries'} left.",
+                   "wrong_code", attempts_remaining=remaining)
 
 
 @app.post("/vote")
@@ -1595,10 +2219,6 @@ async def cast_vote(data: VoteRequest, request: Request):
         candidate_oid = ObjectId(data.candidate_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid candidate.")
-
-    # Must hold the token /verify-otp issued to THIS voter (see auth.py) —
-    # knowing a student_id is no longer enough to cast that voter's ballot.
-    voter_claims = verify_voter_token(request, normalize_student_id(data.student_id), request.state.org_id)
 
     # Wrapped in a transaction: "mark voter as having voted" and "increment
     # the candidate's tally" are all-or-nothing. Uses with_transaction()
@@ -1624,10 +2244,6 @@ async def cast_vote(data: VoteRequest, request: Request):
             raise HTTPException(status_code=400, detail="Ineligible voter")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
-        if student.get("voter_session_jti") != voter_claims["jti"]:
-            # Token is genuine but from an older login — a newer OTP
-            # verification has replaced it.
-            raise HTTPException(status_code=401, detail="Your voting session has expired. Please verify your identity again.")
 
         candidate_still_exists = await db.candidates.count_documents(
             org_query(request, {"_id": candidate_oid}), session=session
@@ -1671,10 +2287,6 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
-    # Must hold the token /verify-otp issued to THIS voter (see auth.py) —
-    # knowing a student_id is no longer enough to cast that voter's ballot.
-    voter_claims = verify_voter_token(request, normalize_student_id(data.student_id), request.state.org_id)
-
     # Same id submitted twice used to slip through: the existence check only
     # compared distinct ids, but insert_many below looped over the raw list
     # — so a repeated id got inserted as two separate vote_events, double
@@ -1700,10 +2312,6 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             raise HTTPException(status_code=400, detail="You have already cast your vote.")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
-        if student.get("voter_session_jti") != voter_claims["jti"]:
-            # Token is genuine but from an older login — a newer OTP
-            # verification has replaced it.
-            raise HTTPException(status_code=401, detail="Your voting session has expired. Please verify your identity again.")
 
         # Validate every candidate exists BEFORE writing anything. The old
         # version incremented whichever candidates happened to resolve and
@@ -2222,6 +2830,16 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
             f"could not be uploaded, so nothing was deleted.\n\nError: {e}")
         raise HTTPException(503, "Reset aborted: the safety backup could not be uploaded, so nothing was deleted.")
     await db.otps.delete_many(org_query(request))
+    # New limiter state belongs to this election run only (the roster_ledger is append-only and is kept).
+    _kf = {} if request.state.org_id is None else {"key": {"$regex": f"^{re.escape(request.state.org_id)}:otp:"}}
+    await db.otp_send_state.delete_many(_kf)
+    await db.otp_guess_state.delete_many(_kf)
+    await db.sms_usage.delete_many({} if request.state.org_id is None else {"org_key": request.state.org_id})
+    await db.ip_send_stats.delete_many({})
+    await db.contact_changes.delete_many(org_query(request))
+    await _save_security(request, {"freeze_lifted_at": datetime.utcnow(), "epoch_at": datetime.utcnow()})
+    await append_ledger(request.state.org_id, "election_reset", "election", current_actor(request),
+                        current_role(request), {"note": "roster freeze lifted; caps and quotas restart"})
     await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
     await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
     # votes now live in vote_events, not candidates.votes — without this, a
@@ -2293,7 +2911,7 @@ async def test_sms_connection(data: AdminTestSMS, request: Request, admin: dict 
     # send_sms() dispatch as real OTPs (EgoSMS primary, MamboSMS fallback),
     # so this test reflects what a voter would actually experience.
     await log_action("sms_test_sent", current_actor(request), {"phone": _mask_phone(data.phone)}, org_id=request.state.org_id)
-    success = await send_sms(data.phone, "SMS Connection Verified for BallotBox!", request)
+    success = await send_sms(data.phone, "SMS Connection Verified for BallotBox!", request, kind="test")
     if success:
         return {"status": "success", "message": f"Test message delivered to {data.phone}"}
     raise HTTPException(status_code=400, detail="Both MamboSMS and EgoSMS rejected the request. Check server logs for the reason.")
@@ -2317,6 +2935,7 @@ _UGANDA_MSISDN_RE = re.compile(r"^256\d{9}$")
 
 @app.post("/admin/import-voters")
 async def import_voters(request: Request, file: UploadFile = File(...), admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    await assert_roster_unfrozen(request)   # import also overwrites phones/names of existing voters
     content = await file.read()
     reader  = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
     now     = datetime.utcnow()
@@ -2463,6 +3082,8 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
 async def get_all_voters(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     voters = []
     async for v in db.voters.find(org_query(request), {"_id": 0}):
+        # Full numbers are only served by the audited /admin/students/lookup edit screens.
+        v["phone_numbers"] = [_mask_phone(p) for p in v.get("phone_numbers", [])]
         voters.append(v)
     return voters
 
@@ -3358,6 +3979,7 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
 
 @app.post("/it-admin/students/request-add")
 async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    await assert_roster_unfrozen(request)
     # A request attributed to someone else would make the audit trail lie
     # about who asked for a voter to be added to the register.
     bind_identity(request, data.requested_by, "IT Admin account")
@@ -3430,6 +4052,7 @@ async def reset_commissioner_password(student_id: str, request: Request):
 
 @app.post("/it-admin/students/request-remove")
 async def request_remove_student(data: ITAdminStudentRemove, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    await assert_roster_unfrozen(request)
     bind_identity(request, data.requested_by, "IT Admin account")
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
@@ -3506,6 +4129,8 @@ async def get_my_requests(it_admin_id: str, request: Request, admin: dict = Depe
 
 @app.get("/admin/student-changes")
 async def list_student_changes(request: Request, status: str = None):
+    if (await roster_status(request))["frozen"]:
+        await _expire_pending_at_freeze(request)
     query = org_query(request)
     if status:
         query["status"] = status
@@ -3526,6 +4151,7 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     an IT Admin's student-register change. Single-approver decision — this is
     completely separate from Commission voting on candidates.
     """
+    await assert_roster_unfrozen(request)
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "decision must be 'approve' or 'deny'.")
 
@@ -3806,6 +4432,8 @@ async def reset_overseer_password(student_id: str, request: Request):
 
 @app.get("/superadmin/student-changes")
 async def superadmin_list_student_changes(request: Request, status: str = None):
+    if (await roster_status(request))["frozen"]:
+        await _expire_pending_at_freeze(request)
     # Superadmin sees ALL including cancelled
     query = org_query(request)
     if status:
@@ -3819,6 +4447,7 @@ async def superadmin_list_student_changes(request: Request, status: str = None):
 
 @app.post("/superadmin/student-changes/{change_id}/force-approve")
 async def superadmin_force_student_change_approve(change_id: str, request: Request):
+    await assert_roster_unfrozen(request)
     oid = parse_oid(change_id, "change id")
     change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
     if not change:
@@ -3856,6 +4485,7 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
 
 @app.post("/superadmin/student-changes/{change_id}/force-deny")
 async def superadmin_force_student_change_deny(change_id: str, request: Request):
+    await assert_roster_unfrozen(request)
     oid = parse_oid(change_id, "change id")
     change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
     if not change:
@@ -3886,6 +4516,7 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
 
 @app.post("/superadmin/students/add")
 async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
+    await assert_roster_unfrozen(request)
     phone = data.phone
     clean = re.sub(r'\D', '', phone)
     if clean.startswith('0'):
@@ -3897,13 +4528,16 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
         {"$set": org_stamp(request, {
             "full_name":       data.full_name,
             "phone_numbers":   [clean],
+            "added_by":        "superadmin",
+            "add_reason":      data.reason
+        }),
+         # Defaults ONLY on insert (see _execute_student_change): never un-vote an existing voter or wipe roles.
+         "$setOnInsert": {
             "is_commissioner": False,
             "is_it_admin":     False,
             "has_voted":       False,
             "last_status":     "idle",
-            "added_by":        "superadmin",
-            "add_reason":      data.reason
-        })},
+         }},
         upsert=True
     )
     await log_action("student_added_by_superadmin", current_actor(request), {
@@ -3916,6 +4550,7 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
 
 @app.post("/superadmin/students/remove")
 async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request):
+    await assert_roster_unfrozen(request)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         raise HTTPException(404, "Student not found.")
@@ -3994,34 +4629,26 @@ async def lookup_students_for_edit(q: str, request: Request,
     return [_student_edit_view(v) async for v in cur]
 
 
-@app.post("/admin/students/edit")
-async def edit_student(data: StudentEditRequest, request: Request,
-                       admin: dict = Depends(require_role(*STUDENT_EDIT_ROLES))):
-    org_id = request.state.org_id          # the tenant being acted on; exact match, never unscoped
-    reason = data.reason.strip()
-    if len(reason) < 3:
-        raise HTTPException(400, "A reason is required for every change.")
-
-    old_sid = normalize_student_id(data.student_id)
-    voter = await db.voters.find_one({"org_id": org_id, "student_id": old_sid})
-    if not voter:
-        raise HTTPException(404, "Student not found in this organization.")
-
+async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_student_id: str | None,
+                              phone_ops: list) -> dict:
+    """Validate and apply name / registration-number / phone operations with optimistic concurrency.
+    Shared by direct edits and approved contact changes so the two can never drift apart."""
+    old_sid = voter["student_id"]
     old_name = voter.get("full_name", "")
     old_phones = list(voter.get("phone_numbers", []))
     new_name, new_sid, phones = old_name, old_sid, list(old_phones)
     events: list[dict] = []          # {event, field, old, new}
 
-    if data.full_name is not None:
-        candidate = " ".join(data.full_name.split())
+    if full_name is not None:
+        candidate = " ".join(full_name.split())
         if not candidate or len(candidate) > 120:
             raise HTTPException(400, "Name must be 1-120 characters.")
         if candidate != old_name:
             new_name = candidate
             events.append({"event": "student_name_changed", "field": "full_name", "old": old_name, "new": candidate})
 
-    if data.new_student_id is not None:
-        candidate_sid = normalize_student_id(data.new_student_id)
+    if new_student_id is not None:
+        candidate_sid = normalize_student_id(new_student_id)
         if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", candidate_sid):
             raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
         if candidate_sid != old_sid:
@@ -4034,7 +4661,7 @@ async def edit_student(data: StudentEditRequest, request: Request,
             events.append({"event": "student_registration_number_changed", "field": "student_id",
                            "old": old_sid, "new": candidate_sid})
 
-    for op in data.phone_ops:
+    for op in phone_ops:
         if op.op == "add":
             num = normalize_phone_number(op.number or "")
             if num in phones:
@@ -4082,17 +4709,25 @@ async def edit_student(data: StudentEditRequest, request: Request,
                 {"$set": {"full_name": old_name, "student_id": old_sid, "phone_numbers": old_phones}})
             raise HTTPException(409, "Another student in this organization already has that registration number.")
         # Keep the student's own records attached to the new number.
-        for coll in (db.applications, db.exception_grants):
+        for coll in (db.applications, db.exception_grants, db.contact_changes):
             await coll.update_many({"org_id": org_id, "student_id": old_sid}, {"$set": {"student_id": new_sid}})
 
-    actor, role, now, batch = current_actor(request), admin.get("role", ""), datetime.utcnow(), secrets.token_hex(8)
-    terms = sorted({old_sid, new_sid, old_name.lower(), new_name.lower()} - {""})
-    for ev in events:
+    return {"events": events, "old_sid": old_sid, "new_sid": new_sid, "old_name": old_name,
+            "new_name": new_name, "old_phones": old_phones, "phones": phones}
+
+
+async def _write_student_audit(org_id, voter: dict, res: dict, reason: str, actor: str, role: str,
+                               extra: dict | None = None):
+    now, batch = datetime.utcnow(), secrets.token_hex(8)
+    old_sid, new_sid = res["old_sid"], res["new_sid"]
+    terms = sorted({old_sid, new_sid, res["old_name"].lower(), res["new_name"].lower()} - {""})
+    for ev in res["events"]:
         await db.student_edit_audit.insert_one({
             "org_id": org_id, "student_key": str(voter["_id"]), "batch": batch,
             "event": ev["event"], "field": ev["field"], "old_value": ev["old"], "new_value": ev["new"],
             "reason": reason, "actor": actor, "actor_role": role, "at": now,
             "student_id_before": old_sid, "student_id_after": new_sid, "search_terms": terms,
+            **(extra or {}),
         })
         # Masked mirror in the general activity log (that log is visible to every admin role).
         await log_action(ev["event"], actor, {
@@ -4101,9 +4736,53 @@ async def edit_student(data: StudentEditRequest, request: Request,
             "new": _mask_phone(ev["new"]) if ev["field"] == "phone_numbers" else ev["new"],
         }, org_id=org_id)
 
-    return {"status": "updated", "changes": [e["event"] for e in events],
-            "student": _student_edit_view({**voter, "full_name": new_name, "student_id": new_sid,
-                                           "phone_numbers": phones})}
+
+@app.post("/admin/students/edit")
+async def edit_student(data: StudentEditRequest, request: Request,
+                       admin: dict = Depends(require_role(*STUDENT_EDIT_ROLES))):
+    org_id = request.state.org_id          # the tenant being acted on; exact match, never unscoped
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every change.")
+
+    old_sid = normalize_student_id(data.student_id)
+    voter = await db.voters.find_one({"org_id": org_id, "student_id": old_sid})
+    if not voter:
+        raise HTTPException(404, "Student not found in this organization.")
+
+    # Roster freeze (design D3/D4): from the freeze until voting closes, phone and registration-number
+    # edits are requests a commissioner approves; only name typos stay direct (unvoted voters, max 2).
+    st = await roster_status(request)
+    if st["contact_change_required"]:
+        touches_contact = bool(data.phone_ops) or (
+            data.new_student_id is not None and normalize_student_id(data.new_student_id) != old_sid)
+        if touches_contact:
+            raise ApiError(409, "The roster is frozen: phone and registration-number changes must be submitted "
+                                "as a contact-change request for a commissioner to approve.", "contact_change_required")
+        if voter.get("has_voted"):
+            raise ApiError(409, "This voter has already voted; their details can no longer be edited.", "already_voted")
+        name_changes = await db.student_edit_audit.count_documents({
+            "org_id": org_id, "student_key": str(voter["_id"]), "event": "student_name_changed",
+            "at": {"$gte": st["freeze_at"] or datetime(1970, 1, 1)}})
+        if name_changes >= 2:
+            raise ApiError(409, "This voter has already had 2 name corrections since the freeze.", "name_edit_cap")
+
+    res = await _apply_student_edit(org_id, voter, data.full_name, data.new_student_id, data.phone_ops)
+    actor, role = current_actor(request), admin.get("role", "")
+    await _write_student_audit(org_id, voter, res, reason, actor, role)
+    # D5: any applied correction forgets this voter's send/guess state and live code.
+    await reset_voter_otp_state(org_id, [res["old_sid"], res["new_sid"]])
+    if st["phase"] != "pre_freeze":
+        for ev in res["events"]:
+            is_name = ev["event"] == "student_name_changed"
+            await append_ledger(org_id, "name_changed" if is_name else "contact_edit_audit_only", res["new_sid"], actor, role, {
+                "reason": reason, "event": ev["event"],
+                "old": _mask_name(ev["old"]) if is_name else _mask_phone(ev["old"]) if ev["field"] == "phone_numbers" else _mask_student_id(ev["old"] or ""),
+                "new": _mask_name(ev["new"]) if is_name else _mask_phone(ev["new"]) if ev["field"] == "phone_numbers" else _mask_student_id(ev["new"] or "")})
+
+    return {"status": "updated", "changes": [e["event"] for e in res["events"]],
+            "student": _student_edit_view({**voter, "full_name": res["new_name"], "student_id": res["new_sid"],
+                                           "phone_numbers": res["phones"]})}
 
 
 @app.get("/admin/students/edit-history")
@@ -4151,7 +4830,9 @@ async def post_audit_checkpoint(request: Request, admin: dict = Depends(require_
 
 @app.get("/superadmin/audit/verify")
 async def get_audit_verify(request: Request, admin: dict = Depends(require_role("superadmin"))):
-    return await verify_audit_chain(request)
+    result = await verify_audit_chain(request)
+    result["roster_ledger"] = await verify_roster_ledger(request.state.org_id)
+    return result
 
 # =============================================================================
 # AUDIT LOG
@@ -4207,6 +4888,7 @@ async def get_admin_schedule(request: Request):
 
     return {
         "round_id": schedule["round_id"],
+        "timezone": schedule["timezone"],
         "phases": phases,
         "server_time": now,
         "election": {
@@ -4225,6 +4907,7 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
     if unknown:
         raise HTTPException(400, f"Unknown phase(s): {', '.join(sorted(unknown))}.")
 
+    tz_name = validate_timezone(data.timezone) if data.timezone else (await get_phase_schedule(request))["timezone"]
     stored = {}
     for name, window in data.phases.items():
         if window.start and window.end and window.end <= window.start:
@@ -4237,14 +4920,40 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
             "name": "election_phases",
             "phases": stored,
             "round_id": data.round_id or DEFAULT_ROUND_ID,
+            "timezone": tz_name,
             "updated_at": datetime.utcnow(),
         })},
         upsert=True,
     )
     await log_action("phases_scheduled", current_actor(request), {
-        "round_id": data.round_id,
-        "phases": {k: {"enforced": v["enforced"]} for k, v in stored.items()},
+        "round_id": data.round_id, "timezone": tz_name,
+        "phases": {k: {"enforced": v["enforced"], "start_utc": v["start"].isoformat() if v["start"] else None,
+                       "end_utc": v["end"].isoformat() if v["end"] else None} for k, v in stored.items()},
     }, org_id=request.state.org_id)
+
+    # Design 5.3(2): recompute lock strength from the new window and log it whenever W changes.
+    if "voting" in stored:
+        params = await guess_params(request)
+        prior = await db.settings.find_one(org_query(request, {"name": "otp_derived"})) or {}
+        if int(prior.get("window_s", -1)) != int(params["window_s"]):
+            await db.settings.update_one(
+                org_query(request, {"name": "otp_derived"}),
+                {"$set": org_stamp(request, {"name": "otp_derived", "window_s": int(params["window_s"])})}, upsert=True)
+            await log_action("otp_lock_params_changed", current_actor(request), {
+                "window_s": int(params["window_s"]), "guess_budget": round(params["budget"], 1),
+                "refill_interval_s": int(params["interval"]), "window_is_default": params["window_is_default"]},
+                org_id=request.state.org_id)
+        # A new future voting window re-arms the roster freeze; a new round with a past start lifts it.
+        new_start = stored["voting"].get("start")
+        if new_start is not None and new_start.tzinfo is not None:      # pydantic hands us aware datetimes
+            new_start = new_start.astimezone(timezone.utc).replace(tzinfo=None)
+        prev_round = (await db.settings.find_one(org_query(request, {"name": "otp_derived"})) or {}).get("round_id")
+        if new_start and new_start > datetime.utcnow():
+            await _save_security(request, {"freeze_lifted_at": None})
+        elif prev_round and prev_round != (data.round_id or DEFAULT_ROUND_ID):
+            await _save_security(request, {"freeze_lifted_at": datetime.utcnow(), "epoch_at": datetime.utcnow()})
+        await db.settings.update_one(org_query(request, {"name": "otp_derived"}),
+                                     {"$set": {"round_id": data.round_id or DEFAULT_ROUND_ID}})
     return {"status": "saved", "round_id": data.round_id or DEFAULT_ROUND_ID}
 
 
@@ -4350,9 +5059,11 @@ async def get_admin_audit_log(request: Request, limit: int = 200, action: str = 
 async def get_admin_audit_verify(request: Request):
     """Independently re-derives the whole hash chain from raw vote_events."""
     result = await verify_audit_chain(request)
+    result["roster_ledger"] = await verify_roster_ledger(request.state.org_id)
     await log_action("audit_chain_verified", current_actor(request), {
         "valid": result.get("valid"),
         "checkpoints": result.get("checkpoints_verified"),
+        "ledger_valid": result["roster_ledger"].get("valid"),
     }, org_id=request.state.org_id)
     return result
 
@@ -4597,8 +5308,21 @@ async def get_official_report(request: Request):
             f"and voters for participating and upholding the principles of a free, fair, and transparent election."
         )
 
+    ledger = await verify_roster_ledger(request.state.org_id)
+    sec_r = await get_security_settings(request)
+    contact_changes = [
+        {"student_id": _mask_student_id(c["student_id"]), "type": c["change"]["type"],
+         "requested_by": c.get("requested_by"), "requested_at": c.get("requested_at"),
+         "decided_by": c.get("decided_by"), "decided_at": c.get("decided_at"), "status": c.get("status"),
+         "evidence_type": c.get("evidence_type"), "notice_status": c.get("notice_status"),
+         "breakglass": bool(c.get("breakglass"))}
+        async for c in db.contact_changes.find(org_query(request, {
+            "status": {"$in": ["approved", "denied", "expired", "failed"]},
+            "requested_at": {"$gte": _epoch(sec_r)}})).sort("requested_at", 1).limit(1000)
+    ]
+
     await log_action("official_report_generated", current_actor(request), {
-        "is_certified": is_certified, "chain_valid": chain.get("valid")
+        "is_certified": is_certified, "chain_valid": chain.get("valid"), "ledger_valid": ledger.get("valid")
     }, org_id=request.state.org_id)
 
     return {
@@ -4626,6 +5350,8 @@ async def get_official_report(request: Request):
             "head_hash": chain.get("head_hash"),
         },
         "fingerprint": fingerprint,
+        "contact_changes": contact_changes,
+        "roster_ledger": ledger,
         "generated_at": datetime.utcnow(),
         "generated_by": current_actor(request),
     }
@@ -4660,3 +5386,652 @@ async def get_public_voter_roll(request: Request):
     async for v in cursor:
         roll.append({"full_name": _mask_name(v.get("full_name", ""))})
     return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": True, "roll": roll}
+
+
+# =============================================================================
+# OTP_SMS_Design_v2 — ROUTES: contact-change approval, OTP-limit reset, SMS budget,
+# security settings, roster status / ledger
+# =============================================================================
+
+class ContactChangeRequest(BaseModel):
+    student_id: str
+    change_type: str                  # phone_change | phone_add | phone_remove | registration_number_change
+    index: int | None = None          # phone position (change / remove)
+    expected_old: str | None = None   # what the requester saw there (409 if it moved)
+    new_value: str | None = None
+    evidence_type: str
+    evidence_note: str = ""
+
+
+class ContactChangeDecision(BaseModel):
+    decision: str = "approve"         # approve | deny
+    note: str = ""
+    acknowledge_warnings: bool = False
+
+
+class ContactChangeCancel(BaseModel):
+    reason: str = ""
+
+
+class OtpResetRequest(BaseModel):
+    reason: str
+    note: str
+
+
+class CapOverride(BaseModel):
+    kind: str                         # approver_daily | reset_hourly
+    admin_id: str
+    cap: int
+    reason: str
+
+
+class SecuritySettingsUpdate(BaseModel):
+    reason: str
+    roster_freeze_at: datetime | None = None
+    clear_roster_freeze_at: bool = False
+    roster_freeze_enabled: bool | None = None
+    contact_change_required: bool | None = None
+    otp_target_risk: float | None = None
+    turnstile_mode: str | None = None
+    contact_change_ttl_hours: int | None = None
+    contact_change_max_per_voter: int | None = None
+    approver_daily_cap: int | None = None
+    quota_alert_pct: float | None = None
+    quota_hard_cap_pct: float | None = None
+    superadmin_breakglass: bool | None = None
+    digest_days: int | None = None
+    reset_admin_hourly_alert: int | None = None
+    reset_admin_hourly_hard_cap: int | None = None
+    reset_per_voter_daily: int | None = None
+    reset_per_voter_election: int | None = None
+
+
+class SmsBudgetUpdate(BaseModel):
+    reason: str
+    sms_budget_total: int | None = None
+    sms_mode: str | None = None
+    sms_budget_enforce: bool | None = None
+
+
+_SEC_RANGES = {
+    "otp_target_risk": (1e-6, 0.01), "contact_change_ttl_hours": (1, 72), "contact_change_max_per_voter": (1, 10),
+    "approver_daily_cap": (1, 1000), "quota_alert_pct": (0, 100), "quota_hard_cap_pct": (0, 100),
+    "digest_days": (1, 60), "reset_admin_hourly_alert": (1, 10000), "reset_admin_hourly_hard_cap": (1, 10000),
+    "reset_per_voter_daily": (1, 50), "reset_per_voter_election": (1, 200),
+}
+
+
+def _capkey(sid: str) -> str:
+    return normalize_student_id(sid).replace(".", "%2E").replace("$", "%24")
+
+
+async def _save_security(request: Request, updates: dict):
+    await db.settings.update_one(
+        org_query(request, {"name": "security_settings"}),
+        {"$set": org_stamp(request, {"name": "security_settings", **updates, "updated_at": datetime.utcnow()})},
+        upsert=True)
+
+
+async def _is_chief(request: Request) -> bool:
+    try:
+        await require_chief_commissioner(request)
+        return True
+    except HTTPException:
+        return False
+
+
+async def _branding(request: Request) -> dict:
+    return await db.settings.find_one(org_query(request, {"name": "branding"})) or {}
+
+
+# ── Contact-change requests ─────────────────────────────────────────────────
+
+async def _expire_contact_changes(request: Request):
+    now = datetime.utcnow()
+    async for c in db.contact_changes.find(org_query(request, {"status": "pending", "expires_at": {"$lt": now}})):
+        r = await db.contact_changes.update_one({"_id": c["_id"], "status": "pending"},
+                                                {"$set": {"status": "expired", "decided_at": now}})
+        if r.modified_count:
+            await append_ledger(request.state.org_id, "contact_change_expired", c["student_id"], "system", "system",
+                                {"change_id": str(c["_id"]), "type": c["change"]["type"]})
+
+
+async def _validate_contact_change(data: ContactChangeRequest, voter: dict, org_id) -> dict:
+    t = data.change_type
+    if t not in CONTACT_CHANGE_TYPES:
+        raise HTTPException(400, f"change_type must be one of: {', '.join(CONTACT_CHANGE_TYPES)}.")
+    phones = list(voter.get("phone_numbers", []))
+    ch: dict = {"type": t, "index": None, "expected_old": None, "new_value": None}
+    if t in ("phone_change", "phone_remove"):
+        if data.index is None or not 0 <= data.index < len(phones):
+            raise HTTPException(400, "Phone position is out of range; reload the student and try again.")
+        if data.expected_old is not None and normalize_phone_number(data.expected_old) != phones[data.index]:
+            raise HTTPException(409, "The phone list changed since you loaded it; reload and try again.")
+        ch["index"], ch["expected_old"] = data.index, phones[data.index]
+    if t in ("phone_change", "phone_add"):
+        num = normalize_phone_number(data.new_value or "")
+        if num in phones:
+            raise HTTPException(400, "That phone number is already on this student.")
+        ch["new_value"] = num
+    if t == "phone_remove" and len(phones) <= 1:
+        raise HTTPException(400, "That would leave the voter with no phone number. Change the number instead.")
+    if t == "registration_number_change":
+        new_sid = normalize_student_id(data.new_value or "")
+        if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", new_sid):
+            raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
+        if new_sid == voter["student_id"]:
+            raise HTTPException(400, "That is already this student's registration number.")
+        if any(voter.get(f) for f in STUDENT_ROLE_FLAGS):
+            raise HTTPException(409, "This student holds an admin/commission role; the registration number cannot be changed.")
+        if await db.voters.find_one(_oq(org_id, {"student_id": new_sid})):
+            raise HTTPException(409, "Another student in this organization already has that registration number.")
+        ch["new_value"], ch["expected_old"] = new_sid, voter["student_id"]
+    return ch
+
+
+@app.post("/it-admin/contact-changes/request")
+async def request_contact_change(data: ContactChangeRequest, request: Request,
+                                 admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    org_id = request.state.org_id
+    sec = await get_security_settings(request)
+    st = await roster_status(request, sec)
+    if st["phase"] == "pre_freeze":
+        raise HTTPException(409, "The roster is not frozen yet — edit the student directly (audit-logged).")
+    if st["phase"] == "closed":
+        raise HTTPException(409, "Voting has closed, so no code can be issued. Edit the student directly (audit-only).")
+    if not st["contact_change_required"]:
+        raise HTTPException(409, "Contact-change approval is switched off for this election — edit the student directly.")
+
+    if data.evidence_type not in CONTACT_EVIDENCE_TYPES:
+        raise HTTPException(400, f"evidence_type must be one of: {', '.join(CONTACT_EVIDENCE_TYPES)}.")
+    note = data.evidence_note.strip()
+    if len(note) < (20 if data.evidence_type == "other_documented" else 3):
+        raise HTTPException(400, "Describe the evidence you checked (at least 20 characters for 'other_documented').")
+
+    voter = await db.voters.find_one(_oq(org_id, get_forgiving_filter(data.student_id)))
+    if not voter:
+        raise HTTPException(404, "Student not found in this organization.")
+    if voter.get("has_voted"):
+        raise HTTPException(409, "This student has already voted; their contact details can no longer be changed.")
+    actor, role = current_actor(request), current_role(request)
+    if normalize_student_id(actor) == voter["student_id"]:
+        raise HTTPException(403, "You cannot request a change to your own record.")
+
+    await _expire_contact_changes(request)
+    approved = await db.contact_changes.count_documents(_oq(org_id, {
+        "student_id": voter["student_id"], "status": "approved", "requested_at": {"$gte": _epoch(sec)}}))
+    if approved >= sec["contact_change_max_per_voter"]:
+        raise HTTPException(409, f"This voter already has {approved} approved contact changes (the maximum).")
+    ch = await _validate_contact_change(data, voter, org_id)
+
+    now = datetime.utcnow()
+    doc = {"org_id": org_id, "student_id": voter["student_id"], "student_key": str(voter["_id"]),
+           "full_name": voter.get("full_name", ""), "change": ch, "evidence_type": data.evidence_type,
+           "evidence_note": note, "requested_by": actor, "requested_role": role, "requested_at": now,
+           "status": "pending", "expires_at": now + timedelta(hours=sec["contact_change_ttl_hours"]),
+           "decided_by": None, "decided_at": None, "decision_note": "", "notice_status": None}
+    try:
+        res = await db.contact_changes.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "This voter already has a pending contact-change request.")
+    await append_ledger(org_id, "contact_change_requested", voter["student_id"], actor, role,
+                        {"change_id": str(res.inserted_id), "type": ch["type"], "evidence": data.evidence_type})
+    await log_action("contact_change_requested", actor, {
+        "student_id": _mask_student_id(voter["student_id"]), "type": ch["type"], "evidence": data.evidence_type,
+    }, org_id=org_id)
+    return {"status": "requested", "id": str(res.inserted_id), "expires_at": doc["expires_at"]}
+
+
+@app.post("/it-admin/contact-changes/{change_id}/cancel")
+async def cancel_contact_change(change_id: str, data: ContactChangeCancel, request: Request,
+                                admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    oid = parse_oid(change_id, "change id")
+    c = await db.contact_changes.find_one(org_query(request, {"_id": oid}))
+    if not c:
+        raise HTTPException(404, "Request not found.")
+    actor = current_actor(request)
+    if current_role(request) != "superadmin" and normalize_student_id(c["requested_by"]) != normalize_student_id(actor):
+        raise HTTPException(403, "You can only cancel your own requests.")
+    r = await db.contact_changes.update_one(
+        {"_id": oid, "status": "pending"},
+        {"$set": {"status": "cancelled", "decided_by": actor, "decided_at": datetime.utcnow(),
+                  "decision_note": data.reason.strip()}})
+    if r.modified_count == 0:
+        raise HTTPException(409, f"Cannot cancel a request that is already {c.get('status')}.")
+    await append_ledger(request.state.org_id, "contact_change_cancelled", c["student_id"], actor,
+                        current_role(request), {"change_id": change_id})
+    return {"status": "cancelled"}
+
+
+async def _cc_warnings(request: Request, c: dict) -> list[dict]:
+    ch, out = c["change"], []
+    nv = ch.get("new_value")
+    if nv and ch["type"] != "registration_number_change":
+        on_voters = await db.voters.count_documents(org_query(request, {
+            "phone_numbers": nv, "student_id": {"$ne": c["student_id"]}}))
+        in_pending = await db.contact_changes.count_documents(org_query(request, {
+            "status": "pending", "change.new_value": nv, "_id": {"$ne": c["_id"]}}))
+        if on_voters:
+            out.append({"code": "new_number_on_other_voter",
+                        "message": f"This new number is already registered to {on_voters} other voter(s)."})
+        if in_pending:
+            out.append({"code": "new_number_in_other_request",
+                        "message": f"This new number is also in {in_pending} other pending request(s)."})
+    return out
+
+
+async def _cc_view(request: Request, c: dict, role: str) -> dict:
+    ch = c["change"]
+    full = role in ("it_admin", "superadmin")
+    old = ch.get("expected_old")
+    old_masked = (_mask_student_id(old) if ch["type"] == "registration_number_change" else _mask_phone(old)) if old else None
+    live_otp = bool(await db.otps.find_one(org_query(request, {"student_id": c["student_id"]})))
+    return {
+        "id": str(c["_id"]),
+        "student_id": c["student_id"] if full else _mask_student_id(c["student_id"]),
+        "full_name": c.get("full_name", "") if full else _mask_name(c.get("full_name", "")),
+        "change_type": ch["type"], "old_masked": old_masked, "new_value": ch.get("new_value"),
+        "evidence_type": c.get("evidence_type"), "evidence_note": c.get("evidence_note", ""),
+        "requested_by": c.get("requested_by"), "requested_at": c.get("requested_at"),
+        "status": c.get("status"), "decided_by": c.get("decided_by"), "decided_at": c.get("decided_at"),
+        "decision_note": c.get("decision_note", ""), "expires_at": c.get("expires_at"),
+        "notice_status": c.get("notice_status"), "breakglass": bool(c.get("breakglass")),
+        "otp_in_progress": live_otp,
+        "warnings": await _cc_warnings(request, c) if c.get("status") == "pending" else [],
+    }
+
+
+async def _cc_stats(request: Request, sec: dict) -> dict:
+    since = _epoch(sec)
+    rows = [c async for c in db.contact_changes.find(
+        org_query(request, {"requested_at": {"$gte": since}, "status": {"$in": ["approved", "pending"]}}),
+        {"status": 1, "decided_by": 1, "change": 1, "notice_status": 1})]
+    approved = [c for c in rows if c["status"] == "approved"]
+    electorate = await db.voters.count_documents(org_query(request))
+    by_approver: dict = {}
+    for c in approved:
+        by_approver[c.get("decided_by")] = by_approver.get(c.get("decided_by"), 0) + 1
+    top_share = (max(by_approver.values()) / len(approved)) if approved else 0.0
+    seen: dict = {}
+    for c in rows:
+        nv = c["change"].get("new_value")
+        if nv and c["change"]["type"] != "registration_number_change":
+            seen[nv] = seen.get(nv, 0) + 1
+    pct = (100.0 * len(approved) / electorate) if electorate else 0.0
+    resets = [{"actor": a["actor"], "at": a["timestamp"]} async for a in db.audit_log.find(org_query(request, {
+        "action": "otp_reset_admin_alert", "timestamp": {"$gte": datetime.utcnow() - timedelta(hours=24)}}))
+        .sort("timestamp", -1).limit(10)]
+    return {
+        "approved_total": len(approved), "pending_total": len(rows) - len(approved), "electorate": electorate,
+        "pct_of_electorate": round(pct, 2), "approvals_by_approver": by_approver, "top_approver_share": round(top_share, 2),
+        "duplicate_new_numbers": [n for n, k in seen.items() if k > 1],
+        "notice_failed": sum(1 for c in approved if c.get("notice_status") == "failed"),
+        "alerts": {
+            "quota": pct >= sec["quota_alert_pct"], "hard_stop": pct >= sec["quota_hard_cap_pct"],
+            "approver_concentration": len(approved) >= 10 and top_share > 0.70,
+            "duplicate_number": any(k > 1 for k in seen.values()),
+        },
+        "otp_reset_alerts": resets,
+        "limits": {"alert_pct": sec["quota_alert_pct"], "hard_cap_pct": sec["quota_hard_cap_pct"],
+                   "approver_daily_cap": sec["approver_daily_cap"]},
+    }
+
+
+@app.get("/admin/contact-changes")
+async def list_contact_changes(request: Request, status: str | None = None,
+                               admin: dict = Depends(require_role("commission", "overseer", "it_admin", "superadmin"))):
+    sec = await get_security_settings(request)
+    await _expire_contact_changes(request)
+    role = current_role(request)
+    q = org_query(request)
+    if status:
+        q["status"] = status
+    if role == "it_admin":
+        q["requested_by"] = current_actor(request)          # IT admins only ever see their own requests
+    items = [await _cc_view(request, c, role) async for c in db.contact_changes.find(q).sort("requested_at", -1).limit(300)]
+    out = {"items": items, "role": role, "roster": await roster_status(request, sec)}
+    if role != "it_admin":
+        out["stats"] = await _cc_stats(request, sec)
+    return out
+
+
+@app.get("/admin/contact-changes/digest")
+async def contact_changes_digest(request: Request,
+                                 admin: dict = Depends(require_role("commission", "overseer", "superadmin"))):
+    """Read-only list of every contact edit made in the N days before the freeze (masked)."""
+    sec = await get_security_settings(request)
+    st = await roster_status(request, sec)
+    if not st["freeze_at"]:
+        return {"freeze_at": None, "days": sec["digest_days"], "entries": []}
+    until = min(datetime.utcnow(), st["freeze_at"])
+    since = until - timedelta(days=sec["digest_days"])
+    entries = []
+    async for r in db.student_edit_audit.find(org_query(request, {
+            "at": {"$gte": since, "$lte": until},
+            "event": {"$in": ["phone_added", "phone_removed", "phone_changed", "student_registration_number_changed"]},
+    })).sort("at", -1).limit(1000):
+        is_sid = r["event"] == "student_registration_number_changed"
+        mk = _mask_student_id if is_sid else _mask_phone
+        entries.append({"at": r["at"], "event": r["event"], "student_id": _mask_student_id(r.get("student_id_after", "")),
+                        "old": mk(r["old_value"]) if r.get("old_value") else None,
+                        "new": mk(r["new_value"]) if r.get("new_value") else None,
+                        "actor": r.get("actor"), "reason": r.get("reason")})
+    return {"freeze_at": st["freeze_at"], "days": sec["digest_days"], "entries": entries}
+
+
+async def _notify_old_number(request: Request, c: dict, old_phones: list[str], new_sid: str) -> str:
+    """Best-effort notice (no code inside) to the number that just lost control. Counted toward the SMS budget."""
+    ch = c["change"]
+    old = ch.get("expected_old") if ch["type"] in ("phone_change", "phone_remove") else (old_phones[0] if old_phones else None)
+    if not old:
+        return "failed"
+    b = await _branding(request)
+    org = b.get("org_name", "the election")
+    when = datetime.utcnow().strftime("%H:%M UTC")
+    what = {"phone_change": "The phone number on", "phone_remove": "A phone number on",
+            "phone_add": "A phone number was added to", "registration_number_change": "The registration number on"}[ch["type"]]
+    tail = " was changed" if ch["type"] in ("phone_change", "registration_number_change") else (
+        " was removed" if ch["type"] == "phone_remove" else "")
+    contact = f" If this was not you, contact {b['support_phone']}." if b.get("support_phone") else " If this was not you, contact the electoral commission."
+    text = f"{what} the {org} voting register{tail} at {when}.{contact}" if ch["type"] != "phone_add" else \
+           f"{what} the {org} voting register at {when}.{contact}"
+    return "sent" if await send_sms(old, text, request, kind="notice") else "failed"
+
+
+async def _decide_contact_change(change_id: str, data: ContactChangeDecision, request: Request, breakglass: bool):
+    if data.decision not in ("approve", "deny"):
+        raise HTTPException(400, "decision must be 'approve' or 'deny'.")
+    note = data.note.strip()
+    if data.decision == "deny" and len(note) < 3:
+        raise HTTPException(400, "A denial needs a note.")
+    if breakglass and len(note) < 10:
+        raise HTTPException(400, "Break-glass approval needs a written justification (10+ characters).")
+    org_id, oid = request.state.org_id, parse_oid(change_id, "change id")
+    sec = await get_security_settings(request)
+    await _expire_contact_changes(request)
+    c = await db.contact_changes.find_one(org_query(request, {"_id": oid}))
+    if not c:
+        raise HTTPException(404, "Contact-change request not found.")
+    if c["status"] != "pending":
+        raise HTTPException(409, f"This request is already {c['status']}. Please refresh.")
+
+    actor, role = current_actor(request), current_role(request)
+    actor_n = normalize_student_id(actor)
+    if actor_n == normalize_student_id(c["requested_by"]):
+        raise HTTPException(403, "The person who requested a change cannot decide it.")
+    if actor_n == c["student_id"]:
+        raise HTTPException(403, "You cannot decide a change to your own record.")
+    if role == "commission" and not await db.voters.find_one(org_query(request, {
+            **get_forgiving_filter(actor), "is_commissioner": True})):
+        raise HTTPException(403, "Not a registered commissioner.")
+
+    now = datetime.utcnow()
+    if data.decision == "approve":
+        warnings = await _cc_warnings(request, c)
+        if warnings and not data.acknowledge_warnings:
+            raise ApiError(409, "Please review the warnings and tick 'I have checked' to approve.",
+                           "warnings_unacknowledged", warnings=warnings)
+        cap = (sec["cap_overrides"].get("approver_daily") or {}).get(_capkey(actor), sec["approver_daily_cap"])
+        done_today = await db.contact_changes.count_documents(org_query(request, {
+            "decided_by": actor, "status": "approved", "decided_at": {"$gte": now - timedelta(days=1)}}))
+        if done_today >= cap:
+            raise ApiError(429, f"Daily approval limit reached ({cap}). The chief commissioner can raise it.", "approver_cap")
+        electorate = await db.voters.count_documents(org_query(request))
+        total_approved = await db.contact_changes.count_documents(org_query(request, {
+            "status": "approved", "requested_at": {"$gte": _epoch(sec)}}))
+        if electorate and 100.0 * total_approved / electorate >= sec["quota_hard_cap_pct"] and not await _is_chief(request):
+            raise ApiError(409, "The election-wide contact-change limit has been reached. "
+                                "Only the chief commissioner can approve further changes.", "quota_hard_stop")
+
+    claim = await db.contact_changes.update_one(
+        org_query(request, {"_id": oid, "status": "pending", "expires_at": {"$gt": now}}),
+        {"$set": {"status": "approved" if data.decision == "approve" else "denied", "decided_by": actor,
+                  "decided_role": role, "decided_at": now, "decision_note": note, "breakglass": breakglass,
+                  "warnings_acknowledged": bool(data.acknowledge_warnings)}})
+    if claim.matched_count == 0:
+        raise HTTPException(409, "This request was just decided by someone else or has expired. Please refresh.")
+
+    sid_masked = _mask_student_id(c["student_id"])
+    if data.decision == "deny":
+        await append_ledger(org_id, "contact_change_denied", c["student_id"], actor, role,
+                            {"change_id": change_id, "requested_by": c["requested_by"]})
+        await log_action("contact_change_denied", actor, {"student_id": sid_masked, "requested_by": c["requested_by"]}, org_id=org_id)
+        return {"status": "denied"}
+
+    async def _fail(msg: str):
+        await db.contact_changes.update_one({"_id": oid}, {"$set": {"status": "failed", "decision_note": f"{note} | FAILED: {msg}"}})
+        await append_ledger(org_id, "contact_change_failed", c["student_id"], actor, role, {"change_id": change_id, "why": msg})
+
+    voter = await db.voters.find_one(_oq(org_id, {"_id": ObjectId(c["student_key"])}))
+    if not voter or voter.get("has_voted"):
+        await _fail("voter missing or already voted")
+        raise HTTPException(409, "This voter has already voted (or was removed), so the change was not applied.")
+    ch = c["change"]
+    try:
+        res = await _apply_student_edit(
+            org_id, voter,
+            None, ch["new_value"] if ch["type"] == "registration_number_change" else None,
+            {"phone_change": [StudentPhoneOp(op="change", index=ch["index"], expected_old=ch["expected_old"], number=ch["new_value"])],
+             "phone_remove": [StudentPhoneOp(op="remove", index=ch["index"], expected_old=ch["expected_old"])],
+             "phone_add": [StudentPhoneOp(op="add", number=ch["new_value"])]}.get(ch["type"], []))
+    except HTTPException as e:
+        await _fail(str(e.detail))
+        raise
+
+    await _write_student_audit(org_id, voter, res, f"[contact change] {c['evidence_type']}: {c['evidence_note']}", actor, role,
+                               {"requested_by": c["requested_by"], "approved_by": actor, "change_id": change_id})
+    await reset_voter_otp_state(org_id, [res["old_sid"], res["new_sid"]])       # D5: nothing issued before survives
+    notice = await _notify_old_number(request, c, res["old_phones"], res["new_sid"])
+    await db.contact_changes.update_one({"_id": oid}, {"$set": {"notice_status": notice}})
+    await append_ledger(org_id, "contact_change_approved", res["new_sid"], actor, role, {
+        "change_id": change_id, "type": ch["type"], "requested_by": c["requested_by"], "evidence": c["evidence_type"],
+        "notice": notice, "breakglass": breakglass})
+    if notice == "failed":
+        await append_ledger(org_id, "contact_change_notice_failed", res["new_sid"], "system", "system", {"change_id": change_id})
+    await log_action("contact_change_approved" if not breakglass else "contact_change_breakglass", actor, {
+        "student_id": _mask_student_id(res["new_sid"]), "type": ch["type"], "requested_by": c["requested_by"],
+        "notice": notice, "breakglass": breakglass}, org_id=org_id)
+
+    electorate = await db.voters.count_documents(org_query(request))
+    total_approved = await db.contact_changes.count_documents(org_query(request, {
+        "status": "approved", "requested_at": {"$gte": _epoch(sec)}}))
+    if electorate and 100.0 * total_approved / electorate >= sec["quota_alert_pct"] and not await db.roster_ledger.find_one(
+            {"org_id": org_id, "event": "contact_quota_alert", "ts": {"$gte": _epoch(sec)}}):
+        await append_ledger(org_id, "contact_quota_alert", "election", "system", "system", {"approved": total_approved})
+        await log_action("contact_change_quota_alert", "system", {"approved": total_approved, "electorate": electorate}, org_id=org_id)
+    return {"status": "approved", "notice_status": notice}
+
+
+@app.post("/admin/contact-changes/{change_id}/decide")
+async def decide_contact_change(change_id: str, data: ContactChangeDecision, request: Request,
+                                admin: dict = Depends(require_role("commission"))):
+    """Any ONE commissioner may decide (D7). it_admin / overseer / financial_controller are refused by role."""
+    return await _decide_contact_change(change_id, data, request, breakglass=False)
+
+
+@app.post("/superadmin/contact-changes/{change_id}/force-approve")
+async def superadmin_force_contact_change(change_id: str, data: ContactChangeDecision, request: Request):
+    """Break-glass only (CONTACT_CHANGE_SUPERADMIN_BREAKGLASS): flagged red in the ledger and overseer feed."""
+    sec = await get_security_settings(request)
+    if not sec["superadmin_breakglass"]:
+        raise HTTPException(403, "Superadmin break-glass approval is disabled for contact changes.")
+    data.decision = "approve"
+    return await _decide_contact_change(change_id, data, request, breakglass=True)
+
+
+@app.post("/admin/caps/override")
+async def override_cap(data: CapOverride, request: Request, admin: dict = Depends(require_chief_commissioner)):
+    """Chief commissioner raises one person's approval cap (approver_daily) or reset cap (reset_hourly)."""
+    if data.kind not in ("approver_daily", "reset_hourly"):
+        raise HTTPException(400, "kind must be approver_daily or reset_hourly.")
+    if not 1 <= data.cap <= 10000 or len(data.reason.strip()) < 3:
+        raise HTTPException(400, "cap must be 1-10000 and a reason is required.")
+    await _save_security(request, {f"cap_overrides.{data.kind}.{_capkey(data.admin_id)}": data.cap})
+    await append_ledger(request.state.org_id, "cap_override", normalize_student_id(data.admin_id), current_actor(request),
+                        current_role(request), {"kind": data.kind, "cap": data.cap, "reason": data.reason.strip()})
+    await log_action("cap_override", current_actor(request), {"kind": data.kind, "admin": data.admin_id, "cap": data.cap},
+                     org_id=request.state.org_id)
+    return {"status": "saved"}
+
+
+# ── Part E: admin "Reset OTP limits" ────────────────────────────────────────
+
+@app.post("/admin/voters/{student_id:path}/reset-otp-limits")
+async def reset_otp_limits(student_id: str, data: OtpResetRequest, request: Request,
+                           admin: dict = Depends(require_role("it_admin", "commission", "superadmin"))):
+    """Clears the send ladder and guess bucket. NEVER reveals or creates a code."""
+    if data.reason not in RESET_REASONS:
+        raise HTTPException(400, f"reason must be one of: {', '.join(RESET_REASONS)}.")
+    if len(data.note.strip()) < 3:
+        raise HTTPException(400, "A short note is required.")
+    org_id, sec = request.state.org_id, await get_security_settings(request)
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    sid, actor, role, now = voter["student_id"], current_actor(request), current_role(request), datetime.utcnow()
+    base = {"org_id": org_id, "event": "otp_limits_reset", "ts": {"$gte": _epoch(sec)}}
+
+    if await db.roster_ledger.count_documents({**base, "ref_id": sid, "ts": {"$gte": max(_epoch(sec), now - timedelta(days=1))}}) \
+            >= sec["reset_per_voter_daily"]:
+        raise ApiError(429, "This voter has reached today's reset limit. Ask the commission to review.", "reset_voter_daily_cap")
+    if await db.roster_ledger.count_documents({**base, "ref_id": sid}) >= sec["reset_per_voter_election"]:
+        raise ApiError(429, "This voter has reached the reset limit for this election.", "reset_voter_election_cap")
+
+    hourly = await db.roster_ledger.count_documents({**base, "actor": actor, "ts": {"$gte": now - timedelta(hours=1)}})
+    hard = (sec["cap_overrides"].get("reset_hourly") or {}).get(_capkey(actor), sec["reset_admin_hourly_hard_cap"])
+    if hourly >= hard:
+        raise ApiError(429, f"Hourly reset limit reached ({hard}). The chief commissioner can lift it.", "reset_admin_hard_cap")
+
+    await clear_otp_limit_state(org_id, [sid])
+    await append_ledger(org_id, "otp_limits_reset", sid, actor, role, {"reason": data.reason, "note": data.note.strip()})
+    await log_action("otp_limits_reset", actor, {"student_id": _mask_student_id(sid), "reason": data.reason, "role": role}, org_id=org_id)
+    if hourly + 1 > sec["reset_admin_hourly_alert"] and not await db.audit_log.find_one(org_query(request, {
+            "action": "otp_reset_admin_alert", "actor": actor, "timestamp": {"$gte": now - timedelta(hours=1)}})):
+        await log_action("otp_reset_admin_alert", actor, {"resets_last_hour": hourly + 1}, org_id=org_id)   # alert only, never blocks
+    return {"status": "reset"}
+
+
+# ── Roster status, ledger, SMS usage, settings ──────────────────────────────
+
+@app.get("/admin/roster-status")
+async def get_roster_status(request: Request):
+    st = await roster_status(request)
+    return {**st, "server_time": datetime.utcnow()}
+
+
+@app.get("/admin/roster-ledger/verify")
+async def get_roster_ledger_verify(request: Request, admin: dict = Depends(require_role("superadmin", "commission", "overseer"))):
+    return await verify_roster_ledger(request.state.org_id)
+
+
+@app.get("/admin/sms-usage")
+async def get_sms_usage(request: Request, admin: dict = Depends(require_role("superadmin", "overseer", "commission"))):
+    sec, usage = await get_security_settings(request), await sms_usage_doc(request.state.org_id)
+    now = datetime.utcnow()
+    cut = now - timedelta(seconds=ol.GUARD_WINDOW_S)
+    s30 = sum(1 for t in usage.get("recent_sends", []) if t > cut)
+    v30 = sum(1 for t in usage.get("recent_verifies", []) if t > cut)
+    sent_otp, verified = usage.get("sent_otp", 0), usage.get("verified_total", 0)
+    total = sec["sms_budget_total"]
+    voters = await db.voters.count_documents(org_query(request))
+    return {
+        "sent_total": usage.get("sent_total", 0), "sent_otp": sent_otp, "sent_notice": usage.get("sent_notice", 0),
+        "verified_total": verified, "send_to_verify_ratio": round(verified / sent_otp, 3) if sent_otp else None,
+        "recent": {"sends_30m": s30, "verifies_30m": v30, "ratio_30m": round(v30 / s30, 3) if s30 else None},
+        "budget_total": total, "budget_left": (total - usage.get("sent_total", 0)) if total else None,
+        "budget_pct_left": round(100 * (total - usage.get("sent_total", 0)) / total, 1) if total else None,
+        "mode": current_sms_mode(sec, usage), "budget_enforced": sec["sms_budget_enforce"],
+        "alerts_fired": sorted(usage.get("alerts_fired", []), reverse=True),
+        "voters": voters, "suggested_budget": math.ceil(voters * SMS_BUDGET_DEFAULT_MULTIPLIER),
+        "turnstile_mode": sec["turnstile_mode"],
+    }
+
+
+@app.get("/superadmin/sms-budget")
+async def superadmin_get_sms_budget(request: Request):
+    return await get_sms_usage(request, {})
+
+
+@app.put("/superadmin/sms-budget")
+async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
+    if len(data.reason.strip()) < 3:
+        raise HTTPException(400, "A reason is required.")
+    sec, updates = await get_security_settings(request), {}
+    if data.sms_budget_total is not None:
+        if data.sms_budget_total < 0:
+            raise HTTPException(400, "Budget cannot be negative.")
+        updates["sms_budget_total"] = data.sms_budget_total
+    if data.sms_mode is not None:
+        if data.sms_mode not in ("normal", "conservation"):
+            raise HTTPException(400, "sms_mode must be normal or conservation.")
+        updates["sms_mode"] = data.sms_mode
+    if data.sms_budget_enforce is not None:
+        updates["sms_budget_enforce"] = data.sms_budget_enforce
+    if not updates:
+        raise HTTPException(400, "Nothing to change.")
+    await _save_security(request, updates)
+    if "sms_budget_total" in updates:      # a top-up re-arms the 50/25/10 % alerts
+        await db.sms_usage.update_one({"org_key": request.state.org_id or "default"}, {"$set": {"alerts_fired": []}})
+    diff = {k: {"old": sec.get(k), "new": v} for k, v in updates.items()}
+    await log_action("sms_budget_changed", current_actor(request), {"reason": data.reason.strip(), "changes": diff}, org_id=request.state.org_id)
+    await append_ledger(request.state.org_id, "sms_budget_changed", "election", current_actor(request), "superadmin",
+                        {"reason": data.reason.strip(), **{k: str(v["new"]) for k, v in diff.items()}})
+    return await get_sms_usage(request, {})
+
+
+@app.get("/superadmin/security-settings")
+async def superadmin_get_security_settings(request: Request):
+    sec = await get_security_settings(request)
+    params = await guess_params(request, sec)
+    voters = await db.voters.count_documents(org_query(request))
+    return {
+        "settings": {k: v for k, v in sec.items() if k not in ("cap_overrides", "epoch_at", "freeze_lifted_at")},
+        "roster": await roster_status(request, sec),
+        "derived": {
+            "voting_window_seconds": params["window_s"], "window_scheduled": not params["window_is_default"],
+            "guess_budget": round(params["budget"], 1), "refill_interval_seconds": round(params["interval"]),
+            "free_guesses": ol.FREE_GUESSES, "suggested_sms_budget": math.ceil(voters * SMS_BUDGET_DEFAULT_MULTIPLIER),
+            "turnstile_secret_configured": bool(TURNSTILE_SECRET),
+        },
+        "banner": None if not params["window_is_default"] else
+                  f"Voting window not scheduled — using {ol.DEFAULT_WINDOW_HOURS} h defaults for lock strength.",
+    }
+
+
+@app.put("/superadmin/security-settings")
+async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request: Request):
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every settings change.")
+    sec, updates = await get_security_settings(request), {}
+    for f in ("roster_freeze_enabled", "contact_change_required", "superadmin_breakglass"):
+        if getattr(data, f) is not None:
+            updates[f] = getattr(data, f)
+    for f, (lo, hi) in _SEC_RANGES.items():
+        v = getattr(data, f)
+        if v is not None:
+            if not lo <= v <= hi:
+                raise HTTPException(400, f"{f} must be between {lo} and {hi}.")
+            updates[f] = v
+    if data.turnstile_mode is not None:
+        if data.turnstile_mode not in ("off", "adaptive", "on"):
+            raise HTTPException(400, "turnstile_mode must be off, adaptive or on.")
+        updates["turnstile_mode"] = data.turnstile_mode
+    if data.clear_roster_freeze_at:
+        updates["roster_freeze_at"] = None
+    elif data.roster_freeze_at is not None:
+        updates["roster_freeze_at"] = data.roster_freeze_at
+    if "reset_admin_hourly_alert" in updates or "reset_admin_hourly_hard_cap" in updates:
+        a = updates.get("reset_admin_hourly_alert", sec["reset_admin_hourly_alert"])
+        h = updates.get("reset_admin_hourly_hard_cap", sec["reset_admin_hourly_hard_cap"])
+        if a >= h:
+            raise HTTPException(400, "The hourly alert threshold must be below the hard cap.")
+    if not updates:
+        raise HTTPException(400, "Nothing to change.")
+    await _save_security(request, updates)
+    diff = {k: {"old": str(sec.get(k)), "new": str(v)} for k, v in updates.items()}
+    actor = current_actor(request)
+    await log_action("security_settings_changed", actor, {"reason": reason, "changes": diff}, org_id=request.state.org_id)
+    await append_ledger(request.state.org_id, "security_settings_changed", "election", actor, "superadmin",
+                        {"reason": reason, **{k: v["new"] for k, v in diff.items()}})
+    return await superadmin_get_security_settings(request)

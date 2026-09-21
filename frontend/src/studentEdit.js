@@ -110,3 +110,25 @@ export function errMsg(e, fallback) {
   if (Array.isArray(d)) return d.map((x) => x?.msg || JSON.stringify(x)).join(', ');
   return fallback;
 }
+
+// ── OTP_SMS_Design_v2: roster freeze + contact-change requests ──────────────
+export const fetchRosterStatus = () => api.get('/admin/roster-status').then((r) => r.data);
+export const submitContactChange = (body) => api.post('/it-admin/contact-changes/request', body).then((r) => r.data);
+export const listContactChanges = (status) =>
+  api.get('/admin/contact-changes', { params: status ? { status } : {} }).then((r) => r.data);
+export const cancelContactChange = (id, reason = '') =>
+  api.post(`/it-admin/contact-changes/${id}/cancel`, { reason }).then((r) => r.data);
+export const decideContactChange = (id, body) =>
+  api.post(`/admin/contact-changes/${id}/decide`, body).then((r) => r.data);
+
+export const EVIDENCE_TYPES = [
+  ['id_card_in_person', 'Student ID card checked in person'],
+  ['registrar_record', 'Registrar record'],
+  ['student_portal_record', 'Student portal record'],
+  ['commission_verified_by_call', 'Commission verified by call'],
+  ['other_documented', 'Other (documented, 20+ characters)'],
+];
+export const CHANGE_LABELS = {
+  phone_change: 'Change phone number', phone_add: 'Add phone number',
+  phone_remove: 'Remove phone number', registration_number_change: 'Change registration number',
+};

@@ -3,6 +3,7 @@ import api from '../api';
 import FinalReport from './FinalReport';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
+import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, fmtZoned, tzShort, utcOffsetLabel, zoneList } from '../tz';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -53,7 +54,8 @@ function countdown(seconds) {
 
 function fmt(value) {
   if (!value) return '—';
-  return new Date(value).toLocaleString('en-UG', { dateStyle: 'medium', timeStyle: 'short' });
+  const d = parseUtc(value);   // backend timestamps are naive UTC; new Date(str) would read them as local
+  return d ? d.toLocaleString('en-UG', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 }
 
 /* ══════════════════════ HUMAN-READABLE ACTIVITY LOG ══════════════════════
@@ -273,17 +275,6 @@ function describeAction(action) {
 }
 
 
-// Backend sends naive UTC ISO strings; <input type="datetime-local"> needs
-// local wall-clock. Convert both ways rather than letting the browser drift
-// the schedule by the timezone offset on every save.
-function toLocalInput(value) {
-  if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 /* ══════════════════════════ TIMELINE ══════════════════════════ */
 
 export function Timeline({ canEdit = false, isChief = false }) {
@@ -293,6 +284,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState({});
+  const [tzDraft, setTzDraft] = useState(DEFAULT_TZ);
   const [grants, setGrants] = useState([]);
   const [grantForm, setGrantForm] = useState({ student_id: '', phase: 'applications', reason: '', expires_at: '' });
 
@@ -300,8 +292,10 @@ export function Timeline({ canEdit = false, isChief = false }) {
     try {
       const res = await api.get('/admin/schedule');
       setData(res.data);
+      const tz = res.data.timezone || DEFAULT_TZ;
+      setTzDraft(tz);
       setDraft(Object.fromEntries(res.data.phases.map(p => [
-        p.name, { start: toLocalInput(p.start), end: toLocalInput(p.end), enforced: p.enforced },
+        p.name, { start: utcToZonedInput(p.start, tz), end: utcToZonedInput(p.end, tz), enforced: p.enforced },
       ])));
       setError('');
     } catch (e) {
@@ -326,17 +320,29 @@ export function Timeline({ canEdit = false, isChief = false }) {
   }, [load, loadGrants]);
 
   const saveSchedule = async () => {
+    // Read the times back in the election timezone (and UTC) before saving, so a wrong zone is obvious.
+    const lines = Object.entries(draft).filter(([, w]) => w.start || w.end).map(([name, w]) =>
+      `${PHASE_LABELS[name]}: ${w.start ? fmtZoned(zonedInputToUtcISO(w.start, tzDraft), tzDraft) : '—'} → ${w.end ? fmtZoned(zonedInputToUtcISO(w.end, tzDraft), tzDraft) : '—'}`);
+    const here = browserTz();
+    const ok = await confirm(
+      <div style={{ textAlign: 'left', fontSize: 13, lineHeight: 1.6 }}>
+        <b>All times are in {tzDraft} ({utcOffsetLabel(tzDraft)}).</b>
+        {here !== tzDraft && <p style={{ margin: '6px 0', color: 'var(--warning)' }}><Icon name="warning" /> Your device is set to {here} ({utcOffsetLabel(here)}). The times below are what voters in {tzDraft} will experience.</p>}
+        {lines.map(l => <div key={l}>{l}</div>)}
+      </div>,
+      { confirmText: 'Save schedule' });
+    if (!ok) return;
     setSaving(true);
     try {
       const phases = {};
       Object.entries(draft).forEach(([name, w]) => {
         phases[name] = {
-          start: w.start ? new Date(w.start).toISOString() : null,
-          end: w.end ? new Date(w.end).toISOString() : null,
+          start: zonedInputToUtcISO(w.start, tzDraft),
+          end: zonedInputToUtcISO(w.end, tzDraft),
           enforced: Boolean(w.enforced),
         };
       });
-      await api.post('/admin/schedule/phases', { phases, round_id: data?.round_id || 'round-1' });
+      await api.post('/admin/schedule/phases', { phases, round_id: data?.round_id || 'round-1', timezone: tzDraft });
       await load();
       setError('');
     } catch (e) {
@@ -354,7 +360,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
         student_id: grantForm.student_id,
         phase: grantForm.phase,
         reason: grantForm.reason,
-        expires_at: grantForm.expires_at ? new Date(grantForm.expires_at).toISOString() : null,
+        expires_at: zonedInputToUtcISO(grantForm.expires_at, tz),
       });
       setGrantForm({ student_id: '', phase: 'applications', reason: '', expires_at: '' });
       loadGrants();
@@ -375,10 +381,16 @@ export function Timeline({ canEdit = false, isChief = false }) {
 
   if (error && !data) return <p style={errStyle}>{error}</p>;
   if (!data) return <p style={mutedStyle}>Loading schedule…</p>;
+  const tz = data.timezone || DEFAULT_TZ;
 
   return (
     <div>
       <h4 style={panelTitle}>Election Timeline <span style={roundPill}>{data.round_id}</span></h4>
+      <p style={{ ...mutedStyle, marginTop: 0 }}>
+        <Icon name="calendar" /> All times below are shown in <b>{tz}</b> ({tzShort(tz)}, {utcOffsetLabel(tz)}).
+        Now: <b>{fmtZoned(data.server_time, tz)}</b>
+        {browserTz() !== tz && <> · your device is in {browserTz()} ({utcOffsetLabel(browserTz())})</>}
+      </p>
 
       <div style={phaseGrid}>
         {data.phases.map(p => (
@@ -387,8 +399,8 @@ export function Timeline({ canEdit = false, isChief = false }) {
               <strong style={{ fontSize: '13px' }}>{PHASE_LABELS[p.name]}</strong>
               <span style={{ ...statePill, color: STATE_COLORS[p.state] }}>{p.state}</span>
             </div>
-            <p style={phaseMeta}>Opens: {fmt(p.start)}</p>
-            <p style={phaseMeta}>Closes: {fmt(p.end)}</p>
+            <p style={phaseMeta}>Opens: {fmtZoned(p.start, tz)}</p>
+            <p style={phaseMeta}>Closes: {fmtZoned(p.end, tz)}</p>
             {p.state === 'upcoming' && p.seconds_until_start != null && (
               <p style={countdownStyle}>Opens in {countdown(p.seconds_until_start)}</p>
             )}
@@ -405,6 +417,21 @@ export function Timeline({ canEdit = false, isChief = false }) {
       {canEdit && (
         <div style={{ ...panel, marginTop: '16px' }} className="card-pad">
           <h4 style={panelTitle}>Edit Phase Schedule</h4>
+          <label style={{ display: 'block', fontSize: '12px', margin: '0 0 10px' }}>
+            <span style={{ opacity: 0.7, fontWeight: 600 }}>Election timezone — the times you type below are in this zone</span>
+            <select style={{ ...inputStyle, marginTop: 4, maxWidth: 360 }} value={tzDraft}
+              onChange={e => {
+                // Same instants, re-expressed in the new zone, so switching zones never silently moves the election.
+                const next = e.target.value;
+                setDraft(Object.fromEntries(Object.entries(draft).map(([n, w]) => [n, {
+                  ...w, start: utcToZonedInput(zonedInputToUtcISO(w.start, tzDraft), next),
+                  end: utcToZonedInput(zonedInputToUtcISO(w.end, tzDraft), next),
+                }])));
+                setTzDraft(next);
+              }}>
+              {[...new Set([DEFAULT_TZ, tz, ...zoneList()])].map(z => <option key={z} value={z}>{z} ({utcOffsetLabel(z)})</option>)}
+            </select>
+          </label>
           <p style={mutedStyle}>
             A phase with no times set, or with enforcement off, behaves exactly as the system
             did before phases existed. Turning enforcement on blocks the action outright once
@@ -566,7 +593,7 @@ export function ActivityLog() {
             {entries.map(e => (
               <tr key={e._id} style={rowStyle}>
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap', fontSize: '11px', opacity: 0.7 }}>
-                  {new Date(e.timestamp).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
+                  {(parseUtc(e.timestamp) || new Date(0)).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
                 </td>
                 <td style={{ ...tdStyle, fontWeight: 600 }}>{describeAction(e.action)}</td>
                 <td style={{ ...tdStyle, fontSize: '12px' }}>{e.actor}</td>
@@ -948,7 +975,7 @@ export function Analytics() {
               {anomalies?.events?.map(e => (
                 <tr key={e._id} style={rowStyle}>
                   <td style={{ ...tdStyle, whiteSpace: 'nowrap', fontSize: '11px' }}>
-                    {new Date(e.timestamp).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
+                    {(parseUtc(e.timestamp) || new Date(0)).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
                   </td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}>{describeAction(e.action)}</td>
                   <td style={{ ...tdStyle, fontSize: '12px' }}>{e.actor}</td>
@@ -1091,6 +1118,8 @@ export function OfficialCertificationBlock() {
             declaration={report.declaration}
             signatories={report.signatories}
             ccList={report.cc_list}
+            contactChanges={report.contact_changes}
+            rosterLedger={report.roster_ledger}
           />
 
           {/* Chain/fingerprint provenance — admin-only context, not part of

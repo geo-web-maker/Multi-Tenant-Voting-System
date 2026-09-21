@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
-import { usePersistedTab } from '../session';
 import { useToast, useConfirm } from './UIFeedback';
 import {
   SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock,
 } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
+import SecurityPanel from './SecurityPanel';
+import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -39,7 +40,9 @@ export default function SuperAdminDashboard({ onLogout }) {
   const toast = useToast();
   const confirm = useConfirm();
 
-  const [activeTab, setActiveTab] = usePersistedTab('superadmin', 'candidates');
+  const [activeTab, setActiveTab] = useState('candidates');
+  const roster = useRosterStatus();
+  const rosterFrozen = Boolean(roster?.frozen);
 
   // --- Org switcher: which organization's data this session is scoped to ---
   const [activeOrgSlug, setActiveOrgSlug] = useState(
@@ -676,6 +679,7 @@ const handleSuperAdminRemoveStudent = async () => {
     { id: 'positions',    label: <><Icon name="pin" /> Positions</> },
     { id: 'branding',     label: <><Icon name="palette" /> Branding</> },
     { id: 'election',     label: <><Icon name="settings" /> Election</> },
+    { id: 'security',     label: <><Icon name="lock" /> Security &amp; SMS</> },
     { id: 'it_admins',  label: <><Icon name="monitor" /> IT Admins</> },
     { id: 'student_changes', label: <><Icon name="users" /> Student Changes</> },
     { id: 'financial_controllers', label: <><Icon name="wallet" /> Financial Controllers</> },
@@ -1125,8 +1129,10 @@ const handleSuperAdminRemoveStudent = async () => {
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '14px', alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ ...card, flexDirection: 'row', alignItems: 'center', padding: '14px', gap: '12px', flex: 1 }}>
-                <span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters CSV</span>
-                <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} />
+                {rosterFrozen
+                  ? <span style={{ fontSize: '13px', opacity: 0.8 }}><Icon name="lock" /> {FROZEN_NOTE}</span>
+                  : <><span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters CSV</span>
+                    <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} /></>}
               </div>
               <button style={ghostBtn} onClick={fetchElectionData} disabled={loading}>
                 {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
@@ -1520,6 +1526,8 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
         
         {/* ══════════════ IT ADMINS TAB ══════════════ */}
+        {activeTab === 'security' && <SecurityPanel />}
+
         {activeTab === 'it_admins' && (
           <div style={twoCol}>
             <div style={card}>
@@ -1603,7 +1611,8 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'student_changes' && (
           <div>
             <SuperAdminStudentEdit />
-            <div style={twoCol}>
+            {rosterFrozen && <div style={{ ...card, margin: '16px 0', borderColor: 'var(--warning)' }}><Icon name="lock" /> {FROZEN_NOTE} Direct add / remove is disabled.</div>}
+            {!rosterFrozen && <div style={twoCol}>
               <div style={card}>
                 <h4 style={cardTitle}>Add Student Directly</h4>
                 <form onSubmit={handleSuperAdminAddStudent} style={formCol}>
@@ -1676,7 +1685,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </button>
                 </div>
               </div>
-            </div>
+            </div>}
 
             <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
               {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (

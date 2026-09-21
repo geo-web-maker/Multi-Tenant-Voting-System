@@ -35,9 +35,9 @@ if not JWT_SECRET:
         "Refusing to start with no secret rather than falling back to a default."
     )
 
-# The five admin roles verify-admin can issue. Voters get their own,
-# separate token (see "Voter session tokens" below) whose role is NOT in this
-# set, so it can never open an admin route.
+# The five admin roles verify-admin can issue. Voters never get a token —
+# they authenticate per-request via student_id + OTP, which is unrelated
+# to this session layer.
 ADMIN_ROLES = {"superadmin", "it_admin", "financial_controller", "overseer", "commission"}
 
 # main.py sets this to an async function that checks a token's jti against
@@ -67,73 +67,6 @@ def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_
         "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
-# ---------------------------------------------------------------------------
-# Voter session tokens
-# ---------------------------------------------------------------------------
-# Voters used to be identified at vote time by student_id alone, with the
-# server-side flag last_status == "authenticated" as the only proof they'd
-# passed the OTP. Anyone who knew a student ID could therefore cast that
-# voter's ballot in the window between their OTP and their submit. Now a
-# correct OTP also returns a short-lived signed token, and /vote and
-# /vote-bulk require it.
-#
-# Deliberately separate from the admin session layer:
-#  - role is "voter", which is NOT in ADMIN_ROLES, so require_admin and the
-#    auth guard middleware reject it on every admin route;
-#  - it travels in X-Voter-Token, not Authorization, so it can never be
-#    mistaken for (or collide with) an admin bearer token;
-#  - it is bound to one student_id and one org_id, and to a per-login jti that
-#    main.py stores on the voter record, so a fresh OTP login invalidates any
-#    earlier token.
-VOTER_ROLE = "voter"
-VOTER_TOKEN_HEADER = "X-Voter-Token"
-VOTER_JWT_EXPIRE_MINUTES = int(os.getenv("VOTER_JWT_EXPIRE_MINUTES", "60"))
-
-
-def create_voter_token(*, student_id: str, org_id: Optional[str]) -> tuple[str, str]:
-    """Returns (token, jti). `student_id` must already be normalized."""
-    now = datetime.now(timezone.utc)
-    jti = secrets.token_hex(16)
-    payload = {
-        "sub": student_id,
-        "role": VOTER_ROLE,
-        "org_id": org_id,
-        "jti": jti,
-        "iat": now,
-        "exp": now + timedelta(minutes=VOTER_JWT_EXPIRE_MINUTES),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM), jti
-
-
-def verify_voter_token(request: Request, student_id: str, org_id: Optional[str]) -> dict:
-    """Validate the X-Voter-Token header for this voter and tenant.
-
-    `student_id` must already be normalized. Returns the token payload (the
-    caller compares payload["jti"] against the voter record). Raises 401 with a
-    message the ballot screen can show as-is.
-    """
-    expired = HTTPException(
-        status_code=401,
-        detail="Your voting session has expired. Please verify your identity again.",
-    )
-    token = request.headers.get(VOTER_TOKEN_HEADER, "").strip()
-    if not token:
-        raise expired
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.InvalidTokenError:  # includes ExpiredSignatureError
-        raise expired
-
-    if (
-        payload.get("role") != VOTER_ROLE
-        or payload.get("sub") != student_id
-        or payload.get("org_id") != org_id
-        or not payload.get("jti")
-    ):
-        raise HTTPException(status_code=403, detail="This voting session does not belong to this voter.")
-    return payload
 
 
 async def decode_access_token(token: str, check_revocation: bool = True) -> dict:

@@ -9,4 +9,4 @@ bcrypt
 PyJWT
 cloudinary
 pyotp
-boto3
+boto3tzdata

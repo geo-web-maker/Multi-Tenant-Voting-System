@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import VoterRegisterSearch from './VoterRegisterSearch';
 import { Icon } from './icons.jsx';
+import { buildSupportLink } from '../supportLink';
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
 const modalContentStyle = {
@@ -9,7 +10,7 @@ const modalContentStyle = {
   boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', border: '1px solid var(--border-color)'
 };
 
-export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGuide, showSampleBallot = true }) {
+export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, orgName = '', onShowGuide, showSampleBallot = true }) {
   const [open, setOpen] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
 
@@ -23,7 +24,7 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
     ...(supportPdfUrl ? [{ icon: <Icon name="file" />, label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
       icon: <Icon name="chat" />, label: 'Contact Support', color: '#25D366',
-      href: supportPhone ? `https://wa.me/${supportPhone}?text=Hello%20Admin,%20I%20am%20having%20issues%20with%20the%20Election%20Portal.` : undefined
+      href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)')
     },
   ];
 
@@ -31,6 +32,10 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, onShowGu
     <>
       {open && (
         <div style={menuPanelStyle}>
+          <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
+            <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend — the same code is sent again while it is valid.
+            If you see “try again in…”, the wait ends by itself; nothing needs to be reset. Nobody can send or read out your code.
+          </div>
           {items.map((it, i) => it.href ? (
             <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
               <span>{it.icon}</span> {it.label}

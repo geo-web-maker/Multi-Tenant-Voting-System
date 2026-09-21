@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
-import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { RosterStats } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ITAdminStudentEdit from './ITAdminStudentEdit';
+import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
 import { previewPhone } from '../studentEdit';
 import './ITAdminDashboard.css';
 
@@ -18,7 +18,9 @@ export default function ITAdminDashboard({ onLogout }) {
   const itAdminId   = sessionStorage.getItem('it_admin_id')   || '';
   const itAdminName = sessionStorage.getItem('it_admin_name') || '';
 
-  const [activeTab, setActiveTab] = usePersistedTab('it_admin', 'overview');
+  const roster = useRosterStatus();
+  const rosterFrozen = Boolean(roster?.frozen);   // no add / remove / import after the freeze
+  const [activeTab, setActiveTab] = useState('overview');
   const [myRequests, setMyRequests] = useState([]);
   const [loading, setLoading]       = useState(false);
   
@@ -186,9 +188,9 @@ export default function ITAdminDashboard({ onLogout }) {
     // IT Admin previously had no visibility into election state at all —
     // only the three roster-change tabs. Overview is now the landing tab.
     { id: 'overview', label: <><Icon name="chart" /> Overview</> },
-    { id: 'add',      label: <><Icon name="plus" /> Add Student</> },
+    ...(rosterFrozen ? [] : [{ id: 'add', label: <><Icon name="plus" /> Add Student</> }]),
     { id: 'edit',     label: <><Icon name="user" /> Edit Student</> },
-    { id: 'remove',   label: <><Icon name="minus" /> Remove Student</> },
+    ...(rosterFrozen ? [] : [{ id: 'remove', label: <><Icon name="minus" /> Remove Student</> }]),
     { id: 'requests', label: <><Icon name="clipboard" /> My Requests</>, count: myRequests.length },
     ...SHARED_TAB_DEFS,
   ];
@@ -217,6 +219,12 @@ export default function ITAdminDashboard({ onLogout }) {
           </div>
         )}
 
+        {rosterFrozen && (
+          <div style={{ ...infoBox, borderColor: 'var(--warning)', marginBottom: '16px' }}>
+            <p style={{ margin: 0, fontSize: '13px' }}><Icon name="lock" /> {FROZEN_NOTE}</p>
+          </div>
+        )}
+
         {/* ── Tabs ── */}
         <div style={tabBar} className="tab-scroll">
           {tabs.map(t => (
@@ -229,7 +237,7 @@ export default function ITAdminDashboard({ onLogout }) {
         </div>
 
         {/* ══════════════ ADD STUDENT ══════════════ */}
-        {activeTab === 'add' && (
+        {activeTab === 'add' && !rosterFrozen && (
           <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Add a Student</h4>
@@ -339,7 +347,7 @@ export default function ITAdminDashboard({ onLogout }) {
         {activeTab === 'edit' && <ITAdminStudentEdit />}
 
         {/* ══════════════ REMOVE STUDENT ══════════════ */}
-        {activeTab === 'remove' && (
+        {activeTab === 'remove' && !rosterFrozen && (
           <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Remove a Student</h4>

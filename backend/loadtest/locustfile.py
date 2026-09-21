@@ -155,11 +155,6 @@ class VoterUser(HttpUser):
             if resp.status_code != 200:
                 resp.failure(f"verify-otp failed: {resp.status_code} {resp.text[:150]}")
                 return
-            try:
-                voter_token = resp.json()["voter_token"]
-            except Exception:
-                resp.failure("verify-otp response had no voter_token")
-                return
             resp.success()
 
         # Step 3: fetch candidates so the vote is realistic (matches what the
@@ -182,7 +177,7 @@ class VoterUser(HttpUser):
         with self.client.post(
             "/vote-bulk",
             json={"student_id": student_id, "candidate_ids": chosen_ids},
-            headers={**self.headers, "X-Voter-Token": voter_token},
+            headers=self.headers,
             name="/vote-bulk",
             catch_response=True,
         ) as resp:
@@ -195,3 +190,20 @@ class VoterUser(HttpUser):
 @events.quitting.add_listener
 def _(environment, **kwargs):
     mongo_client.close()
+
+
+class ResendStormUser(HttpUser):
+    """Design test plan #2/#6: hammer Resend for ONE voter. Expect exactly one 200 per cooldown and
+    429 {reason: cooldown} otherwise (never a second SMS). Run alone: locust -f locustfile.py ResendStormUser"""
+    wait_time = between(0.05, 0.2)
+    weight = 0  # excluded from the default mix
+
+    @task
+    def resend(self):
+        with self.client.post("/verify-identity", json={"student_id": "kyuccu-voter-00000", "full_name": "Test Voter 0"},
+                              headers={"X-Org-Slug": "kyuccu"}, name="/verify-identity (resend storm)",
+                              catch_response=True) as r:
+            if r.status_code in (200, 429):
+                r.success()
+            else:
+                r.failure(f"unexpected {r.status_code}")

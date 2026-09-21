@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
+import ContactChangePanel from './ContactChangePanel';
+import useRosterStatus from '../hooks/useRosterStatus';
 import {
   lookupStudents, saveStudentEdit, fetchEditHistory,
   draftFromStudent, withNewPhoneRow, computeChanges, buildPayload, EVENT_LABELS, errMsg,
@@ -11,6 +13,8 @@ import {
 export default function ITAdminStudentEdit() {
   const toast = useToast();
   const confirm = useConfirm();
+  const roster = useRosterStatus();
+  const frozen = Boolean(roster?.contact_change_required);   // phone / registration number become requests
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
   const [searched, setSearched] = useState(false);
@@ -55,7 +59,7 @@ export default function ITAdminStudentEdit() {
     <div className="itadmin-split">
       <div className="itadmin-card">
         <h4 style={title}>Edit Student Details</h4>
-        <p style={muted}>Name, phone numbers and registration number can be changed here. Changes apply immediately and need a reason.</p>
+        <p style={muted}>{frozen ? 'The roster is frozen: only name typos can be corrected here (max 2 per voter). Phone and registration-number changes are submitted below for approval.' : 'Name, phone numbers and registration number can be changed here. Changes apply immediately and need a reason.'}</p>
 
         <form onSubmit={search} className="itadmin-row">
           <input className="itadmin-input" placeholder="Search by name or registration number" aria-label="Search students"
@@ -68,27 +72,28 @@ export default function ITAdminStudentEdit() {
           </button>
         ))}
         {searched && results.length === 0 && <p style={muted}>No matching students.</p>}
+        {frozen && <ContactChangePanel student={draft?.original || null} />}
 
         {draft && (
           <div style={{ marginTop: 16 }}>
             <label style={lbl}>Name</label>
             <input className="itadmin-input" value={draft.full_name} onChange={e => setDraft({ ...draft, full_name: e.target.value })} />
             <label style={{ ...lbl, marginTop: 10 }}>Registration number</label>
-            <input className="itadmin-input" value={draft.new_student_id} disabled={draft.original.holds_admin_role}
+            <input className="itadmin-input" value={draft.new_student_id} disabled={draft.original.holds_admin_role || frozen}
               onChange={e => setDraft({ ...draft, new_student_id: e.target.value })} />
             {draft.original.holds_admin_role && <p style={warn}><Icon name="warning" /> This student holds an admin or commission role; the registration number cannot be changed.</p>}
 
             <label style={{ ...lbl, marginTop: 10 }}>Phone numbers</label>
             {draft.phones.map(p => (
               <div key={p.key} className="itadmin-row" style={{ marginTop: 6 }}>
-                <input className="itadmin-input" aria-label="Phone number" value={p.value} disabled={p.removed}
+                <input className="itadmin-input" aria-label="Phone number" value={p.value} disabled={p.removed || frozen}
                   style={{ textDecoration: p.removed ? 'line-through' : 'none' }} placeholder="e.g. 0705123456"
                   onChange={e => setPhone(p.key, { value: e.target.value })} />
-                <button type="button" className="itadmin-btn ghost" aria-label={p.removed ? 'Undo remove' : 'Remove phone'}
+                <button type="button" className="itadmin-btn ghost" disabled={frozen} aria-label={p.removed ? 'Undo remove' : 'Remove phone'}
                   onClick={() => setPhone(p.key, { removed: !p.removed })}><Icon name={p.removed ? 'refresh' : 'trash'} /></button>
               </div>
             ))}
-            <button type="button" className="itadmin-btn ghost" style={{ marginTop: 8 }} onClick={() => setDraft(withNewPhoneRow(draft))}>
+            <button type="button" className="itadmin-btn ghost" style={{ marginTop: 8 }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
               <Icon name="plus" /> Add phone number
             </button>
 

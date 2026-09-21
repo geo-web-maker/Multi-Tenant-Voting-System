@@ -71,6 +71,8 @@ export default function FinalReport({
   // disclaimer to the signed instrument — so a caller can never show
   // signatures without also having fetched the declaration they attach to.
   declaration = null, signatories = null, ccList = [],
+  // Signed document only: contact-change appendix + roster-ledger integrity (design Appendix I).
+  contactChanges = null, rosterLedger = null,
 }) {
   // Pick the active config
   const activeStage = isElectionOpen ? 'open' : (isCertified ? 'certified' : 'provisional');
@@ -378,6 +380,40 @@ export default function FinalReport({
             signature page are issued separately by the Electoral Commission and are not
             part of this document.
           </p>
+        </div>
+      )}
+
+      {declaration && contactChanges && (
+        <div style={{ marginTop: '30px', position: 'relative', zIndex: 1, breakInside: 'avoid' }}>
+          <h3 style={{ fontSize: '14px', textDecoration: 'underline', marginBottom: '10px' }}>Appendix: Voter Contact Changes</h3>
+          {rosterLedger && (
+            <p style={{ fontSize: '10px', margin: '0 0 8px' }}>
+              Roster ledger: <strong>{rosterLedger.valid ? 'VERIFIED' : 'MISMATCH'}</strong> ({rosterLedger.entries} entries)
+              {rosterLedger.head_hash ? ` · head ${rosterLedger.head_hash.slice(0, 16).toUpperCase()}` : ''}
+            </p>
+          )}
+          {contactChanges.length === 0 ? (
+            <p style={{ fontSize: '11px' }}>No contact changes were requested during this election.</p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>{['Voter (masked)', 'Change', 'Requested by', 'Decided by', 'Requested', 'Decided', 'Evidence', 'Result', 'Notice'].map(h => <th key={h} style={tableHeaderStyle}>{h}</th>)}</tr></thead>
+              <tbody>
+                {contactChanges.map((c, i) => (
+                  <tr key={i}>
+                    <td style={tableCellStyle}>{c.student_id}</td>
+                    <td style={tableCellStyle}>{String(c.type).replace(/_/g, ' ')}</td>
+                    <td style={tableCellStyle}>{c.requested_by}</td>
+                    <td style={tableCellStyle}>{c.decided_by || '—'}{c.breakglass ? ' (break-glass)' : ''}</td>
+                    <td style={tableCellStyle}>{c.requested_at ? new Date(c.requested_at + 'Z').toLocaleString() : '—'}</td>
+                    <td style={tableCellStyle}>{c.decided_at ? new Date(c.decided_at + 'Z').toLocaleString() : '—'}</td>
+                    <td style={tableCellStyle}>{String(c.evidence_type || '').replace(/_/g, ' ')}</td>
+                    <td style={tableCellStyle}>{c.status}</td>
+                    <td style={tableCellStyle}>{c.status === 'approved' ? (c.notice_status || '—') : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 

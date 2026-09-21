@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react'; 
 import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
 import OtpInput from './components/OtpInput';
-import TurnstileWidget from './components/TurnstileWidget';
-import { saveResendDeadline, fmtWait, turnstileConfigured } from './supportLink';
 import BallotBox from './components/BallotBox';
 import Results from './components/Results';
 import AdminDashboard from './components/AdminDashboard';
@@ -12,8 +10,10 @@ import ApplicantPortal from './components/ApplicantPortal';
 import ITAdminDashboard from './components/ITAdminDashboard';
 import FinancialControllerDashboard from './components/FinancialControllerDashboard';
 import OverseerDashboard from './components/OverseerDashboard';
-import FloatingHelpMenu from './components/FloatingHelpMenu';
-import { Icon } from './components/icons.jsx';
+import { HelpMenuProvider } from './context/HelpMenuContext';
+import HelpPanel from './components/HelpPanel';
+import { FabTrigger } from './components/HelpTriggers';
+import { Icon } from './icons.jsx';
 
 // Sample IDs/names cycled in the login placeholder animation.
 const examples = [
@@ -42,19 +42,9 @@ function App() {
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
-  const [isVotingPhaseOpen, setIsVotingPhaseOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(0);
-  // OTP_SMS_Design_v2: the SERVER decides every wait (429 + retry_after); the browser only displays it.
-  const [turnstileMode, setTurnstileMode] = useState('off');   // off | adaptive | on (from /election-status)
-  const [needCaptcha, setNeedCaptcha] = useState(false);       // adaptive mode: server asked for a check
-  const [captchaToken, setCaptchaToken] = useState('');
-  const [captchaKey, setCaptchaKey] = useState(0);
-  const [sendLock, setSendLock] = useState(null);              // { message, reason, until }
-  const [sendLockLeft, setSendLockLeft] = useState(0);
-  const [phoneIdx, setPhoneIdx] = useState(null);
-  const [otpFeedback, setOtpFeedback] = useState(null);
   const [selectedPhone, setSelectedPhone] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
   const [statusModal, setStatusModal] = useState({ 
@@ -160,26 +150,12 @@ useEffect(() => {
       try {
         const res = await api.get('/election-status');
         setIsElectionOpen(res.data.is_open);
-        setIsVotingPhaseOpen(res.data.voting_phase_open ?? true);
-        setTurnstileMode(res.data.turnstile_mode || 'off');
       } catch {
         console.error("Could not fetch election status");
       }
     };
     checkStatus();
   }, []);
-
-  useEffect(() => {
-    if (!sendLock?.until) { setSendLockLeft(0); return undefined; }
-    const tick = () => {
-      const left = Math.max(0, Math.ceil((sendLock.until - Date.now()) / 1000));
-      setSendLockLeft(left);
-      if (left === 0) setSendLock(null);
-    };
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [sendLock]);
 
   useEffect(() => {
     let interval = null;
@@ -223,12 +199,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       try {
         const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
       
-        const idxToUse = selectedIdx ?? phoneIdx;
         const payload = isAdminPath
           ? { email: studentId, password: name, totp_code: totpCode || undefined }
-          : { student_id: studentId, full_name: name, phone_index: idxToUse,
-              turnstile_token: captchaToken || undefined };
-        if (!isAdminPath) setSendLock(null);
+          : { student_id: studentId, full_name: name, phone_index: selectedIdx };
     
         const res = await api.post(endpoint, payload);
   
@@ -255,10 +228,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
             setPendingAdminEmail(studentId);
-            // Carry the temp password they just logged in with straight into
-            // the "set new password" form instead of asking them to retype
-            // it — they typed it once, in the login form above, seconds ago.
-            setNewPasswordForm(prev => ({ ...prev, old_password: name }));
             setMustChangePassword(true);
             return;
           }
@@ -276,21 +245,15 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             setSelectedPhone(res.data.phone);
           }
           
-          if (selectedIdx !== null && selectedIdx !== undefined) setPhoneIdx(selectedIdx);
-          setOtpFeedback(null);
           setStatusModal({
             show: true,
             title: "Code Sent!",
-            message: res.data.delivery === 'unconfirmed'
-              ? `We tried to send a code to ${res.data.phone || 'your phone'} but could not confirm delivery. Wait for the timer, then tap Resend — the same code is sent again.`
-              : (res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}. If you tap Resend, the same code is sent again while it is valid.`),
+            message: res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}.`,
             type: "success"
           });
           
           setStep(2);
-          const wait = res.data.next_send_in ?? 60;      // server-driven resend timer, persisted across reloads
-          setTimer(wait);
-          saveResendDeadline(studentId, wait);
+          setTimer(60);
         }
       } catch (err) {
         // Superadmin credentials matched but no code was entered yet — reveal
@@ -303,14 +266,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           setIsVerifying(false);
           return;
         }
-        const d = err.response?.data;
-        if (!isAdminPath && err.response?.status === 429 && d?.reason) {
-          // Throttled: an inline countdown, never an error modal.
-          if (d.reason === 'captcha_required') setNeedCaptcha(true);
-          setSendLock({ message: d.detail, reason: d.reason, until: d.retry_after ? Date.now() + d.retry_after * 1000 : null });
-          if (step === 1.5) setStep(1);
-          return;
-        }
         const errorData = err.response?.data?.detail || "Verification Failed";
         setStatusModal({
           show: true,
@@ -320,8 +275,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         });
       } finally {
         setIsVerifying(false);
-        setCaptchaToken('');
-        setCaptchaKey(k => k + 1);        // Turnstile tokens are single-use
       }
     };
 
@@ -355,15 +308,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         setStep(3);
       }
     } catch (err) {
-      const d = err.response?.data;
-      if (['wrong_code', 'guess_lock', 'no_live_code'].includes(d?.reason)) {
-        // Inline feedback (attempts left / live lock countdown) instead of a modal.
-        setOtpFeedback({ message: d.detail, reason: d.reason, attempts_remaining: d.attempts_remaining,
-          lock_until: d.retry_after ? Date.now() + d.retry_after * 1000 : 0 });
-        setOtp("");
-        return;
-      }
-      const errorMsg = d?.detail || "Invalid or Expired Code. Please try again.";
+      const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
       setStatusModal({
         show: true,
         title: "Verification Failed",
@@ -449,10 +394,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     setMaskedNumbers([]);
     setTimer(0);
     setSelectedPhone("");
-    setPhoneIdx(null);
-    setOtpFeedback(null);
-    setSendLock(null);
-    setNeedCaptcha(false);
     sessionStorage.removeItem("admin_role");
     sessionStorage.removeItem(ADMIN_TOKEN_KEY);
     sessionStorage.removeItem("commissioner_id");
@@ -464,26 +405,21 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     sessionStorage.removeItem("overseer_name");
   };
 
-  const showCaptcha = turnstileConfigured && (turnstileMode === 'on' || needCaptcha);
-  const captchaBlocked = showCaptcha && !captchaToken;
-  const sendLockBanner = sendLock && (
-    <div role="alert" style={{ background: 'rgba(230,126,34,0.12)', border: '1px solid #e67e22', color: 'var(--text-color)',
-      borderRadius: '10px', padding: '10px 12px', margin: '10px 0', fontSize: '13px', textAlign: 'center' }}>
-      {sendLock.message}
-      {sendLockLeft > 0 && <> <b>({fmtWait(sendLockLeft)})</b></>}
-    </div>
-  );
-
   return (
+    <HelpMenuProvider>
     <div style={containerStyle}>
       {view === "voter" && (
-        <FloatingHelpMenu
-          supportPdfUrl={supportPdfUrl}
-          supportPhone={supportPhone}
-          orgName={orgName}
-          onShowGuide={() => setShowGuide(true)}
-          showSampleBallot={isElectionOpen && isVotingPhaseOpen}
-        />
+        <>
+          <HelpPanel
+            supportPdfUrl={supportPdfUrl}
+            supportPhone={supportPhone}
+            onShowGuide={() => setShowGuide(true)}
+          />
+          {/* Ballot page (step 3) puts Help inside its own footer bar via
+              <InlineHelpButton /> — see BallotBox.jsx — so the floating
+              trigger only renders when nothing else owns that space. */}
+          {step !== 3 && <FabTrigger />}
+        </>
       )}
       <div style={{ 
           width: '100%', 
@@ -515,6 +451,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             letterSpacing: '1px',
             textTransform: 'uppercase',
             opacity: 0.8,
+            marginTop: '-10px',
             textAlign: 'center'
           }}>
             {orgName} Election Portal
@@ -606,11 +543,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 </>
               )}
               
-              {!isAdminPath && showCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
-              {!isAdminPath && sendLockBanner}
               <button
                 onClick={() => handleVerifyIdentity()}
-                disabled={(!isElectionOpen && !isAdminPath) || isVerifying || (!isAdminPath && captchaBlocked)}
+                disabled={(!isElectionOpen && !isAdminPath) || isVerifying}
                 style={{
                   ...primaryBtnStyle,
                   backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7',
@@ -630,12 +565,11 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <div style={cardStyle}>
                 <h2 style={{ textAlign: 'center' }}>Select Phone Number</h2>
                 <p style={{ textAlign: 'center', opacity: 0.8, marginBottom: '20px' }}>Choose where to receive your code:</p>
-                {showCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
                   {maskedNumbers.map((num, index) => (
                   <button
                     key={index}
                     onClick={() => { setSelectedPhone(num); handleVerifyIdentity(index); }}
-                    disabled={isVerifying || captchaBlocked}
+                    disabled={isVerifying}
                     style={{ ...selectionBtnStyle, opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' }}
                   >
                     {isVerifying ? 'Sending…' : `Receive code on ${num}`}
@@ -647,16 +581,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
             {step === 2 && (
               <div style={cardStyle}>
-               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)}
-                  isSubmitting={isVerifying} feedback={otpFeedback} supportPhone={supportPhone} orgName={orgName} studentId={studentId} />
+               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying} />
                 <div style={{ marginTop: '20px', textAlign: 'center' }}>
-                  {showCaptcha && timer === 0 && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
-                  {sendLockBanner}
                   {timer > 0 ? (
-                    <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{fmtWait(timer)}</b> — your last code is still valid.</p>
+                    <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
                   ) : (
-                    <button onClick={() => handleVerifyIdentity()} disabled={isVerifying || captchaBlocked || sendLockLeft > 0}
-                      style={{ ...resendBtnStyle, opacity: (isVerifying || captchaBlocked || sendLockLeft > 0) ? 0.5 : 1 }}>Resend SMS</button>
+                    <button onClick={() => handleVerifyIdentity()} style={resendBtnStyle}>Resend SMS</button>
                   )}
                 </div>
               </div>
@@ -693,12 +623,19 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                <form onSubmit={handleSetNewPassword}>
                 <input
                   type="password"
+                  placeholder="Temporary password (from SMS)"
+                  style={inputStyle}
+                  value={newPasswordForm.old_password}
+                  onChange={e => setNewPasswordForm({ ...newPasswordForm, old_password: e.target.value })}
+                  disabled={passwordChangeSubmitting}
+                />
+                <input
+                  type="password"
                   placeholder="New password (min 6 characters)"
                   style={inputStyle}
                   value={newPasswordForm.new_password}
                   onChange={e => setNewPasswordForm({ ...newPasswordForm, new_password: e.target.value })}
                   disabled={passwordChangeSubmitting}
-                  autoFocus
                 />
                 <input
                   type="password"
@@ -799,6 +736,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         </div>
       )}
     </div>
+    </HelpMenuProvider>
   );
 }
 

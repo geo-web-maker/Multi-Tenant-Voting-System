@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
+import ContactChangePanel from './ContactChangePanel';
+import useRosterStatus from '../hooks/useRosterStatus';
 import {
   lookupStudents, fetchEditHistory, saveStudentEdit,
   draftFromStudent, withNewPhoneRow, computeChanges, buildPayload, EVENT_LABELS, errMsg,
@@ -11,6 +13,8 @@ import {
 export default function SuperAdminStudentEdit() {
   const toast = useToast();
   const confirm = useConfirm();
+  const roster = useRosterStatus();
+  const frozen = Boolean(roster?.contact_change_required);
 
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
@@ -100,6 +104,7 @@ export default function SuperAdminStudentEdit() {
         </div>
       )}
 
+      {frozen && <ContactChangePanel student={draft?.original || null} />}
       {draft && (
         <div style={{ marginTop: '16px' }}>
           <div style={fieldGrid}>
@@ -109,7 +114,7 @@ export default function SuperAdminStudentEdit() {
             </label>
             <label style={field}>
               <span style={lbl}>Registration number</span>
-              <input style={inp} value={draft.new_student_id}
+              <input style={inp} value={draft.new_student_id} disabled={frozen}
                 onChange={e => setDraft({ ...draft, new_student_id: e.target.value })} />
             </label>
           </div>
@@ -123,15 +128,15 @@ export default function SuperAdminStudentEdit() {
           {draft.phones.map(p => (
             <div key={p.key} style={{ display: 'flex', gap: '8px', marginTop: '6px', alignItems: 'center' }}>
               <input style={{ ...inp, flex: 1, textDecoration: p.removed ? 'line-through' : 'none', opacity: p.removed ? 0.5 : 1 }}
-                aria-label="Phone number" value={p.value} disabled={p.removed}
+                aria-label="Phone number" value={p.value} disabled={p.removed || frozen}
                 onChange={e => setPhone(p.key, { value: e.target.value })} placeholder="e.g. 0705123456" />
-              <button type="button" style={ghostBtn} onClick={() => setPhone(p.key, { removed: !p.removed })}
+              <button type="button" style={ghostBtn} disabled={frozen} onClick={() => setPhone(p.key, { removed: !p.removed })}
                 aria-label={p.removed ? 'Undo remove' : 'Remove phone'}>
                 <Icon name={p.removed ? 'refresh' : 'trash'} />
               </button>
             </div>
           ))}
-          <button type="button" style={{ ...ghostBtn, marginTop: '8px' }} onClick={() => setDraft(withNewPhoneRow(draft))}>
+          <button type="button" style={{ ...ghostBtn, marginTop: '8px' }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
             <Icon name="plus" /> Add phone number
           </button>
 

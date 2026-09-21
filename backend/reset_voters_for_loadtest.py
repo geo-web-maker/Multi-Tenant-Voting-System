@@ -56,6 +56,10 @@ async def main(dry_run: bool, skip_confirm: bool):
         {"$set": {"has_voted": False, "otp_count": 0, "last_status": "idle"}},
     )
     otps_result = await db.otps.delete_many({})
+    # OTP_SMS_Design_v2 state: send ladder, guess bucket, SMS usage, per-IP stats.
+    for coll in ("otp_send_state", "otp_guess_state", "sms_usage", "ip_send_stats"):
+        await db[coll].delete_many({})
+    await db.voters.update_many({}, {"$unset": {"sms_sends_total": "", "first_sms_at": ""}})
 
     print(f"\nDone.")
     print(f"  voters reset : {voters_result.modified_count}")
