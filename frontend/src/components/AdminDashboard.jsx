@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import api, { getErrorMessage } from '../api';
-import { useToast, useConfirm } from './UIFeedback';
+import { useToast, useConfirm, usePrompt } from './UIFeedback';
+import { toggleElection, electionToggleFeedback } from '../electionControls';
 import { Icon } from './icons.jsx';
 
 export default function AdminDashboard({ onLogout }) {
   const toast = useToast();
   const confirm = useConfirm();
+  const prompt = usePrompt();
   // --- STATE MANAGEMENT ---
   const [voters, setVoters] = useState([]);
   const [candidates, setCandidates] = useState([]);
@@ -84,11 +86,16 @@ export default function AdminDashboard({ onLogout }) {
 
   // --- EXISTING ACTIONS ---
   const handleToggleElection = async () => {
+    if (!isElectionOpen && isCertified) {
+      toast('Results are certified. Revoke certification before starting the election.', { kind: 'error' });
+      return;
+    }
     try {
-      // Change this line to remove the body and use the response from the server
-      const res = await api.post(`/admin/toggle-election`);
-      setIsElectionOpen(res.data.is_open);
-      toast(`Election is now ${res.data.is_open ? "STARTED" : "STOPPED"}`, { kind: 'success' });
+      const data = await toggleElection(api, prompt);
+      if (!data) return; // cancelled at the early-stop reason prompt
+      setIsElectionOpen(data.is_open);
+      const fb = electionToggleFeedback(data);
+      toast(fb.text, { kind: fb.kind });
     } catch (err) { 
       toast(getErrorMessage(err, "Toggle failed. Ensure the route /admin/toggle-election exists on the backend."), { kind: 'error' }); 
     }
@@ -212,7 +219,16 @@ useEffect(() => {
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <button onClick={() => setIsPreviewOpen(true)} style={previewBtnStyle}><Icon name="eye" /> Preview Ballot</button>
             
-            <button onClick={handleToggleElection} style={{ ...primaryBtnStyle, backgroundColor: isElectionOpen ? '#e67e22' : '#2ecc71' }}>
+            <button
+              onClick={handleToggleElection}
+              aria-disabled={!isElectionOpen && isCertified}
+              title={!isElectionOpen && isCertified ? 'Revoke certification before starting the election' : undefined}
+              style={{
+                ...primaryBtnStyle,
+                backgroundColor: isElectionOpen ? '#e67e22' : '#2ecc71',
+                opacity: !isElectionOpen && isCertified ? 0.5 : 1,
+                cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
+              }}>
               {isElectionOpen ? <><Icon name="pause" /> Stop Election</> : <><Icon name="play" /> Start Election</>}
             </button>
 

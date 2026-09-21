@@ -216,7 +216,9 @@ function describePath(path) {
 }
 
 const DETAIL_DESCRIBERS = {
-  election_toggled: d => d.is_open ? 'Voting opened — election started' : 'Voting closed — election stopped',
+  election_toggled: d => d.is_open
+    ? 'Voting opened — election started'
+    : (d.early_stop ? `Voting closed EARLY, before the window ended — reason: ${d.reason}` : 'Voting closed — election stopped'),
   results_certified: d => d.is_certified ? 'Marked as officially certified' : 'Certification revoked (back to provisional)',
   it_admin_toggled: d => d.is_active === false ? 'Account deactivated' : 'Account activated',
   commissioner_toggled: d => d.is_commissioner === false ? 'Commission access removed' : 'Commission access granted',
@@ -437,33 +439,37 @@ export function Timeline({ canEdit = false, isChief = false }) {
             did before phases existed. Turning enforcement on blocks the action outright once
             the window closes.
           </p>
-          <div className="phase-editor">
-            <div className="phase-editor-head" aria-hidden="true">
-              {['Phase', 'Start', 'End', 'Enforce'].map(h => <span key={h}>{h}</span>)}
-            </div>
-            {data.phases.map(p => (
-              <div key={p.name} className="phase-editor-row">
-                <strong className="phase-editor-name">{PHASE_LABELS[p.name]}</strong>
-                <label className="phase-editor-field">
-                  <span className="phase-editor-label">Start</span>
-                  <input type="datetime-local" style={inputStyle}
-                    value={draft[p.name]?.start || ''}
-                    onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], start: e.target.value } })} />
-                </label>
-                <label className="phase-editor-field">
-                  <span className="phase-editor-label">End</span>
-                  <input type="datetime-local" style={inputStyle}
-                    value={draft[p.name]?.end || ''}
-                    onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], end: e.target.value } })} />
-                </label>
-                <label className="phase-editor-enforce">
-                  <input type="checkbox" style={{ width: '20px', height: '20px' }}
-                    checked={Boolean(draft[p.name]?.enforced)}
-                    onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], enforced: e.target.checked } })} />
-                  <span className="phase-editor-label">Enforce</span>
-                </label>
-              </div>
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '14px' }}>
+            {data.phases.map(p => {
+              const setField = (k, v) => setDraft({ ...draft, [p.name]: { ...draft[p.name], [k]: v } });
+              return (
+                <div key={p.name} style={phaseCard}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                    <strong style={{ fontSize: '13px' }}>{PHASE_LABELS[p.name]}</strong>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', margin: 0, cursor: 'pointer', color: 'var(--text-muted)' }}>
+                      <input type="checkbox" style={{ width: '18px', height: '18px', margin: 0 }}
+                        checked={Boolean(draft[p.name]?.enforced)}
+                        onChange={e => setField('enforced', e.target.checked)} />
+                      Enforce
+                    </label>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '10px' }}>
+                    <label style={{ display: 'block', margin: 0, minWidth: 0 }}>
+                      <span style={fieldLabel}>Start</span>
+                      <input type="datetime-local" style={inputStyle}
+                        value={draft[p.name]?.start || ''}
+                        onChange={e => setField('start', e.target.value)} />
+                    </label>
+                    <label style={{ display: 'block', margin: 0, minWidth: 0 }}>
+                      <span style={fieldLabel}>End</span>
+                      <input type="datetime-local" style={inputStyle}
+                        value={draft[p.name]?.end || ''}
+                        onChange={e => setField('end', e.target.value)} />
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <button style={primaryBtn} onClick={saveSchedule} disabled={saving}>
             {saving ? 'Saving…' : 'Save Schedule'}
@@ -1172,6 +1178,7 @@ const roundPill = { fontSize: '10px', fontWeight: 700, padding: '3px 8px', borde
 const statePill = { fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' };
 const phaseGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '12px' };
 const phaseCard = { ...panel, padding: '14px' };
+const fieldLabel = { display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.4px', color: 'var(--text-muted)', marginBottom: '4px' };
 const phaseMeta = { fontSize: '11px', margin: '4px 0', color: 'var(--text-muted)' };
 const countdownStyle = { fontSize: '12px', margin: '6px 0', fontWeight: 700, color: 'var(--info)' };
 const filterRow = { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px', alignItems: 'center' };

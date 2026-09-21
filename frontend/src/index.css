@@ -451,24 +451,3 @@ td, th {
 @keyframes icon-spin { to { transform: rotate(360deg); } }
 .icon-spin { animation: icon-spin 0.9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .icon-spin { animation-duration: 2.5s; } }
-
-/* Phase schedule editor: 4-column grid on desktop, stacked cards on phones. */
-.phase-editor { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-.phase-editor-head, .phase-editor-row {
-  display: grid; grid-template-columns: 110px 1fr 1fr 80px; gap: 12px; align-items: center;
-}
-.phase-editor-head { padding: 0 12px; font-size: 11px; text-transform: uppercase; color: var(--text-muted); }
-.phase-editor-row { padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--surface-2); }
-.phase-editor-name { font-size: 13px; }
-.phase-editor-field, .phase-editor-enforce { display: block; margin: 0; min-width: 0; }
-.phase-editor-enforce { display: flex; align-items: center; justify-content: center; gap: 8px; }
-.phase-editor-label { display: none; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }
-.phase-editor-enforce .phase-editor-label { margin: 0; }
-
-@media (max-width: 700px) {
-  .phase-editor-head { display: none; }
-  .phase-editor-row { grid-template-columns: 1fr; gap: 10px; padding: 14px; }
-  .phase-editor-name { font-size: 15px; }
-  .phase-editor-label { display: block; }
-  .phase-editor-enforce { justify-content: flex-start; min-height: 44px; }
-}
