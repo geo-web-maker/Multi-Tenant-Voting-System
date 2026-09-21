@@ -59,7 +59,12 @@ export function utcOffsetLabel(tz, at = new Date()) {
 export function fmtZoned(v, tz) {
   const d = parseUtc(v);
   if (!d) return '—';
-  return new Intl.DateTimeFormat('en-GB', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short', timeZoneName: 'short' }).format(d);
+  // NOTE: dateStyle/timeStyle can't be combined with timeZoneName (throws "Invalid option : option"),
+  // so use explicit fields instead.
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+  }).format(d);
 }
 
 export function zoneList() {

@@ -438,21 +438,21 @@ export function Timeline({ canEdit = false, isChief = false }) {
             the window closes.
           </p>
           <div className="table-scroll">
-            <table style={tableStyle}>
+            <table style={{ ...tableStyle, minWidth: 700, tableLayout: 'auto' }}>
               <thead>
-                <tr>{['Phase', 'Start', 'End', 'Enforce'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                <tr>{['Phase', 'Start', 'End', 'Enforce'].map(h => <th key={h} style={{ ...thStyle, whiteSpace: 'nowrap' }}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {data.phases.map(p => (
                   <tr key={p.name}>
-                    <td style={tdStyle}><strong>{PHASE_LABELS[p.name]}</strong></td>
+                    <td style={{ ...tdStyle, whiteSpace: 'nowrap', minWidth: 96 }}><strong>{PHASE_LABELS[p.name]}</strong></td>
                     <td style={tdStyle}>
-                      <input type="datetime-local" style={inputStyle}
+                      <input type="datetime-local" style={{ ...inputStyle, minWidth: 210 }}
                         value={draft[p.name]?.start || ''}
                         onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], start: e.target.value } })} />
                     </td>
                     <td style={tdStyle}>
-                      <input type="datetime-local" style={inputStyle}
+                      <input type="datetime-local" style={{ ...inputStyle, minWidth: 210 }}
                         value={draft[p.name]?.end || ''}
                         onChange={e => setDraft({ ...draft, [p.name]: { ...draft[p.name], end: e.target.value } })} />
                     </td>

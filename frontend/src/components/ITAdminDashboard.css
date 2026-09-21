@@ -46,6 +46,8 @@
 @media (max-width: 768px) {
   .itadmin-root table { display: block; max-width: 100%; overflow-x: auto; }
   .itadmin-root .table-scroll { overflow-x: auto; max-width: 100%; }
+  /* The wrapper already scrolls; a display:block table collapses its column widths (letter-per-line text). */
+  .itadmin-root .table-scroll > table { display: table; }
   .itadmin-root img { max-width: 100%; height: auto; }
   .itadmin-root input, .itadmin-root select, .itadmin-root textarea { min-height: 44px; }
 }
