@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api';
 import FinalReport from './FinalReport';
-import { useToast, useConfirm } from './UIFeedback';
+import { useToast, useConfirm, usePrompt } from './UIFeedback';
+import { askEarlyReason } from '../electionControls';
 import { Icon } from './icons.jsx';
 import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, fmtZoned, tzShort, utcOffsetLabel, zoneList } from '../tz';
 
@@ -234,9 +235,10 @@ const DETAIL_DESCRIBERS = {
     const phases = d.phases || {};
     const names = Object.keys(phases);
     if (!names.length) return 'Phase schedule updated';
-    return names
+    const summary = names
       .map(name => `${PHASE_LABELS[name] || name}: ${phases[name]?.enforced ? 'enforced' : 'not enforced'}`)
       .join(' · ');
+    return d.early_end ? `Voting window closed EARLY by this change — reason: ${d.reason} (${summary})` : summary;
   },
 };
 
@@ -282,6 +284,7 @@ function describeAction(action) {
 export function Timeline({ canEdit = false, isChief = false }) {
   const toast = useToast();
   const confirm = useConfirm();
+  const prompt = usePrompt();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -344,7 +347,21 @@ export function Timeline({ canEdit = false, isChief = false }) {
           enforced: Boolean(w.enforced),
         };
       });
-      await api.post('/admin/schedule/phases', { phases, round_id: data?.round_id || 'round-1', timezone: tzDraft });
+      const payload = { phases, round_id: data?.round_id || 'round-1', timezone: tzDraft };
+      try {
+        await api.post('/admin/schedule/phases', payload);
+      } catch (e) {
+        // The server says this edit closes a live voting window: ask why, then retry with the reason.
+        const d = e?.response?.data?.detail;
+        if (e?.response?.status !== 409 || d?.code !== 'early_end_reason_required') throw e;
+        const reason = await askEarlyReason(
+          d, prompt,
+          'This change closes the voting window while it is still open (it was due to close {ends}).\nEnding voting early affects everyone.',
+          'Save schedule',
+        );
+        if (reason == null) return;   // cancelled — nothing saved
+        await api.post('/admin/schedule/phases', { ...payload, reason });
+      }
       await load();
       setError('');
     } catch (e) {

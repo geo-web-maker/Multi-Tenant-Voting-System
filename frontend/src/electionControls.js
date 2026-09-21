@@ -7,6 +7,22 @@ import { fmtZoned } from './tz';
 
 const MIN_REASON = 5;
 
+/**
+ * Ask for the reason the server demanded (early stop / early end of a live voting window).
+ * `d` is the 409 `detail` object. Resolves the trimmed reason, or null if the admin cancelled.
+ */
+export async function askEarlyReason(d, prompt, lead, confirmText = 'Confirm') {
+  const ends = d.voting_ends_at ? fmtZoned(d.voting_ends_at, d.timezone) : null;
+  const ask = (msg) => prompt(`${msg}\n\nReason (recorded in the audit log):`, {
+    placeholder: 'e.g. Suspected ballot tampering', confirmText,
+  });
+  let reason = await ask(lead.replace('{ends}', ends || 'its scheduled end'));
+  while (reason != null && reason.trim().length < MIN_REASON) {
+    reason = await ask(`A reason of at least ${MIN_REASON} characters is required.`);
+  }
+  return reason == null ? null : reason.trim();
+}
+
 /** Returns the server response, or null if the admin cancelled the reason prompt. Throws on other errors. */
 export async function toggleElection(api, prompt) {
   const post = (body) => api.post('/admin/toggle-election', body);
@@ -15,18 +31,13 @@ export async function toggleElection(api, prompt) {
   } catch (e) {
     const d = e?.response?.data?.detail;
     if (e?.response?.status !== 409 || d?.code !== 'early_stop_reason_required') throw e;
-
-    const ends = fmtZoned(d.voting_ends_at, d.timezone);
-    const ask = (lead) => prompt(
-      `${lead}\n\nReason (recorded in the audit log):`,
-      { placeholder: 'e.g. Suspected ballot tampering', confirmText: 'Stop election' },
+    const reason = await askEarlyReason(
+      d, prompt,
+      'The voting window is still open until {ends}.\nStopping now ends voting early for everyone.',
+      'Stop election',
     );
-    let reason = await ask(`The voting window is still open until ${ends}.\nStopping now ends voting early for everyone.`);
-    while (reason != null && reason.trim().length < MIN_REASON) {
-      reason = await ask(`A reason of at least ${MIN_REASON} characters is required to stop the election early.`);
-    }
     if (reason == null) return null;
-    return (await post({ reason: reason.trim() })).data;
+    return (await post({ reason })).data;
   }
 }
 

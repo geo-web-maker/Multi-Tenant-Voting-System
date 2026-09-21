@@ -1269,6 +1269,7 @@ class PhaseScheduleUpdate(BaseModel):
     phases: dict[str, PhaseWindow]
     round_id: str = DEFAULT_ROUND_ID
     timezone: str | None = None      # IANA name; omitted = keep the current one
+    reason: str | None = None        # required only when this edit ends a live voting window right now
 
 
 class ExceptionGrantCreate(BaseModel):
@@ -1285,6 +1286,13 @@ class ElectionToggle(BaseModel):
 
 
 EARLY_STOP_MIN_REASON = 5
+
+
+def naive_utc(dt: datetime | None) -> datetime | None:
+    """Pydantic hands us aware datetimes; everything stored/compared here is naive UTC."""
+    if dt is not None and dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def voting_window_state(schedule: dict, now: datetime) -> dict:
@@ -4985,6 +4993,26 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
             raise HTTPException(400, f"'{name}' end time must be after its start time.")
         stored[name] = {"start": window.start, "end": window.end, "enforced": window.enforced}
 
+    # Editing the schedule is the other way to end voting early: pull the voting end into the past
+    # (or push the start into the future) while it is live and the window slams shut with no
+    # record of why. Same rule as an early stop from the election switch: a reason is required.
+    now = datetime.utcnow()
+    old_schedule = await get_phase_schedule(request)
+    was_live = voting_window_state(old_schedule, now)["live"]
+    new_v = stored.get("voting") or {}
+    new_window = {"start": naive_utc(new_v.get("start")), "end": naive_utc(new_v.get("end")),
+                  "enforced": bool(new_v.get("enforced"))}
+    ends_voting_now = was_live and new_window["enforced"] and not _phase_is_open(new_window, now)
+    reason = (data.reason or "").strip()
+    if ends_voting_now and len(reason) < EARLY_STOP_MIN_REASON:
+        old_end = old_schedule["phases"]["voting"]["end"]
+        raise HTTPException(409, {
+            "code": "early_end_reason_required",
+            "message": "This change closes the voting window while it is still open — a reason is required.",
+            "voting_ends_at": old_end.isoformat() if old_end else None,
+            "timezone": old_schedule["timezone"],
+        })
+
     await db.settings.update_one(
         org_query(request, {"name": "election_phases"}),
         {"$set": org_stamp(request, {
@@ -5000,6 +5028,7 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
         "round_id": data.round_id, "timezone": tz_name,
         "phases": {k: {"enforced": v["enforced"], "start_utc": v["start"].isoformat() if v["start"] else None,
                        "end_utc": v["end"].isoformat() if v["end"] else None} for k, v in stored.items()},
+        **({"early_end": True, "reason": reason[:500]} if ends_voting_now else {}),
     }, org_id=request.state.org_id)
 
     # Design 5.3(2): recompute lock strength from the new window and log it whenever W changes.
@@ -5440,10 +5469,20 @@ async def get_official_report(request: Request):
 PUBLIC_ROLL_THRESHOLD = 50
 PUBLIC_ROLL_MAX = 500
 
+# The roll used to share the "register" bucket (10 requests / 60s / IP) with the searchable voter
+# register, while the public results page polled it every 5s (12/min). The page tripped its own
+# limit, got a 429, and the UI (which swallowed the error) fell back to "Privacy Lock Active" even
+# with 1820 voters. Own bucket, sized for a 30s poll with several viewers behind one campus NAT.
+ROLL_RATE_LIMIT = 30
+ROLL_RATE_WINDOW_S = 60
+
 
 @app.get("/election-results/voter-roll")
 async def get_public_voter_roll(request: Request):
-    await _check_register_rate_limit(request)
+    await _check_rate_limit(
+        request, bucket="voter_roll", limit=ROLL_RATE_LIMIT, window_s=ROLL_RATE_WINDOW_S,
+        message="Too many requests. Please try again shortly.",
+    )
     voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
     if voted < PUBLIC_ROLL_THRESHOLD:
         # Below the threshold the server returns nothing at all, so a small

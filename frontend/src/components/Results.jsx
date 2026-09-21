@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import api from '../api';
 import FinalReport from './FinalReport';
 import { Icon } from './icons.jsx';
@@ -40,45 +40,57 @@ export default function Results() {
 const PRIVACY_THRESHOLD = 50;
   const BATCH_SIZE = 10; 
 
-const fetchData = async () => {
+// Results + status refresh every 5s. The voter roll (heavier, rate-limited, changes slowly) refreshes
+// every ROLL_EVERY ticks, and branding is loaded once — polling all four every 5s was what got the
+// roll rate-limited.
+const ROLL_EVERY = 6;                 // 6 ticks x 5s = 30s
+const tickRef = useRef(0);
+const brandingLoadedRef = useRef(false);
+
+const fetchData = async ({ force = false } = {}) => {
+  const tick = tickRef.current++;
+  const wantRoll = force || tick % ROLL_EVERY === 0;
+  const wantBranding = !brandingLoadedRef.current;
   try {
-    // The dead call to /superadmin/commissioners is gone: it could only ever
-    // 403 for this page's actual audience (unauthenticated visitors), and the
-    // failure was silently swallowed by .catch().
+    // A failed roll/branding request resolves to null and the previous value is KEPT. Falling back to
+    // "locked, empty roll" on any error (e.g. a 429) made the page claim the privacy lock was active
+    // when 1820 people had voted.
     const [resultsRes, statusRes, votersRes, brandingRes] = await Promise.all([
       api.get('/election-results'),
       api.get('/election-status'),
-      api.get('/election-results/voter-roll').catch(() => ({ data: { roll: [], unlocked: false } })),
-      api.get('/superadmin/branding').catch(() => ({ data: {} }))
+      wantRoll ? api.get('/election-results/voter-roll').catch(() => null) : Promise.resolve(null),
+      wantBranding ? api.get('/superadmin/branding').catch(() => null) : Promise.resolve(null),
     ]);
 
-    // The privacy threshold is now enforced server-side — below it the
-    // backend returns an empty roll, so the names are not merely hidden in
-    // the UI, they are never sent.
-    const rollPayload = votersRes.data || {};
-    const votedList = Array.isArray(rollPayload) ? rollPayload : (rollPayload.roll || []);
-    setRollUnlocked(Boolean(rollPayload.unlocked));
+    // The privacy threshold is enforced server-side — below it the backend returns an empty roll, so
+    // the names are not merely hidden in the UI, they are never sent.
+    let newRoll = null;   // null = keep whatever roll we already have
+    if (votersRes) {
+      const rollPayload = votersRes.data || {};
+      setRollUnlocked(Boolean(rollPayload.unlocked));
+      newRoll = Array.isArray(rollPayload) ? rollPayload : (rollPayload.roll || []);
+    }
 
-    setElectionData({
+    setElectionData(prev => ({
       ...resultsRes.data,
-      voter_roll: votedList,
+      voter_roll: newRoll ?? prev.voter_roll,
       voter_turnout: resultsRes.data.voter_turnout || 0,
       results: resultsRes.data.results || []
-    });
+    }));
 
     setIsElectionOpen(statusRes.data.is_open);
     setIsCertified(statusRes.data.is_certified || false);
     setLastSynced(new Date());
     setLoading(false);
 
-    if (brandingRes.data.logo_url)
-      setLogoUrl(brandingRes.data.logo_url);
-    if (brandingRes.data.org_name)
-      setOrgName(brandingRes.data.org_name);
-    if (brandingRes.data.university_name)
-      setUniversityName(brandingRes.data.university_name);
-    if (brandingRes.data.university_logo_url)
-      setUniversityLogoUrl(brandingRes.data.university_logo_url);
+    if (brandingRes) {
+      brandingLoadedRef.current = true;
+      const b = brandingRes.data || {};
+      if (b.logo_url) setLogoUrl(b.logo_url);
+      if (b.org_name) setOrgName(b.org_name);
+      if (b.university_name) setUniversityName(b.university_name);
+      if (b.university_logo_url) setUniversityLogoUrl(b.university_logo_url);
+    }
   } catch (err) {
     console.error("Error fetching data:", err);
     setLoading(false);
@@ -117,7 +129,7 @@ const fetchData = async () => {
       
       try {
         // 1. Force a fresh fetch from the backend to catch the 'is_certified' flag
-        await fetchData(); 
+        await fetchData({ force: true }); 
         
         // 2. Short delay so React can swap the CSS to the "Official Blue" theme
         setTimeout(() => {
@@ -271,6 +283,12 @@ const fetchData = async () => {
                 * Names appear in batches of {BATCH_SIZE} and are randomized to protect voter privacy.
               </p>
             </div>
+          ) : electionData.voter_turnout >= PRIVACY_THRESHOLD ? (
+            // Threshold is met, so the lock is NOT active — the roll just hasn't (re)loaded yet, e.g. a
+            // rate-limited or failed request. Never claim a privacy lock the numbers contradict.
+            <div style={privacyLockStyle}>
+              <p style={{ margin: 0, fontSize: '13px' }}>Loading the participation roll…</p>
+            </div>
           ) : (
             <div style={privacyLockStyle}>
               <p style={{ margin: '0 0 10px 0', fontSize: '18px' }}><Icon name="lock" /> Privacy Lock Active</p>
@@ -279,7 +297,7 @@ const fetchData = async () => {
               </p>
               <div style={thresholdBarStyle}>
                 <div style={{ 
-                  width: `${(electionData.voter_turnout / PRIVACY_THRESHOLD) * 100}%`, 
+                  width: `${Math.min(100, (electionData.voter_turnout / PRIVACY_THRESHOLD) * 100)}%`, 
                   height: '100%', 
                   backgroundColor: 'var(--info)',
                   transition: 'width 1s ease-in-out'
