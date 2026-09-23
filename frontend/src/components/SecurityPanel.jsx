@@ -20,7 +20,7 @@ export function SmsUsageTile() {
   return (
     <div style={box}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-        <b style={{ fontSize: 14 }}><Icon name="chat" /> SMS budget &amp; delivery</b>
+        <b style={{ fontSize: 14 }}>SMS budget &amp; delivery</b>
         <span style={{ fontSize: 12, fontWeight: 700, color: modeColor }}>{u.mode.replace('_', ' ').toUpperCase()}</span>
       </div>
       <div style={grid}>
@@ -70,11 +70,12 @@ export default function SecurityPanel() {
     if (!need()) return;
     if (!(await confirm('Save these security settings? The change is logged with your reason and shown to the overseer.', { confirmText: 'Save' }))) return;
     const body = { reason: reason.trim() };
-    ['roster_freeze_enabled', 'contact_change_required', 'superadmin_breakglass'].forEach(k => { body[k] = Boolean(f[k]); });
+    ['roster_freeze_enabled', 'contact_change_required', 'superadmin_breakglass', 'sms_fallback_on_timeout'].forEach(k => { body[k] = Boolean(f[k]); });
     ['otp_target_risk', 'quota_alert_pct', 'quota_hard_cap_pct'].forEach(k => { body[k] = Number(f[k]); });
     ['contact_change_ttl_hours', 'contact_change_max_per_voter', 'approver_daily_cap', 'digest_days',
       'reset_admin_hourly_alert', 'reset_admin_hourly_hard_cap', 'reset_per_voter_daily', 'reset_per_voter_election'].forEach(k => { body[k] = Number(f[k]); });
     body.turnstile_mode = f.turnstile_mode;
+    body.public_results_mode = f.public_results_mode;
     if (f.roster_freeze_at) body.roster_freeze_at = zonedInputToUtcISO(f.roster_freeze_at, tz);
     else body.clear_roster_freeze_at = true;
     try { await api.put('/superadmin/security-settings', body); toast('Security settings saved.', { kind: 'success' }); setReason(''); load(); }
@@ -144,6 +145,22 @@ export default function SecurityPanel() {
       </div>
 
       <div style={box}>
+        <b style={{ fontSize: 14 }}>SMS delivery</b>
+        <p style={note}>When EgoSMS times out (result unknown — it may still have been delivered and billed), fall back to MamboSMS automatically. Off by default to avoid double-sending a voter's OTP.</p>
+        {chk('sms_fallback_on_timeout', 'Fall back to MamboSMS on an ambiguous EgoSMS timeout')}
+      </div>
+
+      <div style={box}>
+        <b style={{ fontSize: 14 }}>Public results visibility</b>
+        <p style={note}>Controls when the public, unauthenticated results page shows numbers. This is per-org — it does not affect other organizations on this deployment.</p>
+        <select style={inp} value={f.public_results_mode} onChange={e => setF({ ...f, public_results_mode: e.target.value })}>
+          <option value="live">Live (visible while voting is open — original behavior)</option>
+          <option value="closed">Hidden until voting closes</option>
+          <option value="certified">Hidden until a commissioner certifies results (recommended)</option>
+        </select>
+      </div>
+
+      <div style={box}>
         <b style={{ fontSize: 14 }}>Bot check (Cloudflare Turnstile)</b>
         <select style={inp} value={f.turnstile_mode} onChange={e => setF({ ...f, turnstile_mode: e.target.value })}>
           <option value="off">Off</option><option value="adaptive">Adaptive (suspicious IPs / under attack)</option><option value="on">On (recommended for election day)</option>
@@ -153,7 +170,7 @@ export default function SecurityPanel() {
 
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
         <input style={inp} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. election-day hardening" /></label>
-      <button style={btn} onClick={saveSecurity}><Icon name="save" /> Save security settings</button>
+      <button style={btn} onClick={saveSecurity}>Save security settings</button>
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>SMS budget</b>
@@ -167,7 +184,7 @@ export default function SecurityPanel() {
         <label style={{ ...fld, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={budget.enforce} onChange={e => setBudget({ ...budget, enforce: e.target.checked })} />
           <span style={{ fontSize: 13 }}>Enforce (leave off / monitor-only until the dry run passes)</span></label>
-        <button style={{ ...btn, marginTop: 8 }} onClick={saveBudget}><Icon name="save" /> Save SMS budget</button>
+        <button style={{ ...btn, marginTop: 8 }} onClick={saveBudget}>Save SMS budget</button>
       </div>
 
       <div style={box}>

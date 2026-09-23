@@ -65,6 +65,11 @@ const PrintStyles = () => (
  */
 export default function FinalReport({
   data, totalVotes, isElectionOpen, isCertified, logoUrl,
+  // False when the backend is withholding the per-candidate breakdown (results
+  // not yet published). The report then prints a clean "not yet published"
+  // notice instead of empty tables. Defaults to true so callers that always
+  // have full results (the signed Official Document) are unaffected.
+  resultsReleased = true,
   orgName = "the Organisation", universityName = "", universityLogoUrl = "",
   // Present only for the authenticated Official Document. Their presence, not
   // a separate "mode" flag, is what switches the footer from the public
@@ -117,6 +122,12 @@ export default function FinalReport({
   if (!data || !data.results) {
     return null;
   }
+
+  // Only explain the solo-candidate mandate rule when a position actually is
+  // unopposed and the tallies are on the page. A note about a rule that
+  // doesn't apply just reads as an error.
+  const hasSoloPosition = orderedPositions.some(p => p.candidates.length === 1);
+  const showTallies = resultsReleased && orderedPositions.length > 0;
 
   return (
   <>
@@ -204,18 +215,10 @@ export default function FinalReport({
         </div>
       </div>
 
-        {/* The sworn Official Declaration that used to render here has moved
-            to the admin-only OfficialCertificationBlock. A public visitor sees
-            the certification STATUS (a fact) but not the signed legal
-            instrument. */}
-        <div style={certStatusStyle}>
-          <strong>Certification status:</strong>{' '}
-          {isElectionOpen
-            ? 'Voting is still open — these figures are a live tally.'
-            : (isCertified
-                ? 'Results have been certified by the Electoral Commission.'
-                : 'Voting is closed. Results are provisional, pending certification.')}
-        </div>
+        {/* No separate "Certification status" box: the Status line above, the
+            stage colour and the watermark already say where the results stand.
+            The sworn declaration lives only in the admin-only
+            OfficialCertificationBlock. */}
 
         {/* Signed declaration — only ever passed in by the authenticated
             OfficialCertificationBlock. Sits ahead of the tallies, same as
@@ -232,7 +235,7 @@ export default function FinalReport({
         )}
 
       {/* EXECUTIVE SUMMARY */}
-      {!isElectionOpen && (
+      {showTallies && !isElectionOpen && (
         <div style={{ marginBottom: '30px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
           <h3 className="print-color-keep" style={{ borderBottom: `2px solid ${config.color}`, color: config.color, paddingBottom: '5px', fontSize: '16px' }}>
             Executive Summary: Elected Officials
@@ -290,8 +293,19 @@ export default function FinalReport({
       )} {/* <--- THIS CLOSES THE EXECUTIVE SUMMARY BLOCK */}
 
       {/* DETAILED RESULTS SECTION */}
-      <h3 style={{ fontSize: '14px', textDecoration: 'underline', marginBottom: '10px', position: 'relative', zIndex: 1 }}>Detailed Tally Results</h3>
-      {orderedPositions.map((pos) => {
+      {!showTallies && (
+        <div style={{ margin: '10px 0 30px', padding: '28px 20px', border: '1px dashed #999', textAlign: 'center', position: 'relative', zIndex: 1, breakInside: 'avoid' }}>
+          <p style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: 'bold' }}>Candidate results not yet published</p>
+          <p style={{ margin: 0, fontSize: '12px', color: '#444', lineHeight: 1.5 }}>
+            Turnout is shown above. The per-candidate breakdown is released once
+            {isElectionOpen ? ' voting closes and results are certified.' : ' results are certified.'}
+          </p>
+        </div>
+      )}
+      {showTallies && (
+        <h3 style={{ fontSize: '14px', textDecoration: 'underline', marginBottom: '10px', position: 'relative', zIndex: 1 }}>Detailed Tally Results</h3>
+      )}
+      {showTallies && orderedPositions.map((pos) => {
         const sortedCandidates = [...pos.candidates].sort((a, b) => b.votes - a.votes);
         const maxVotes = sortedCandidates[0]?.votes || 0;
         const totalVotesForPos = pos.candidates.reduce((acc, curr) => acc + curr.votes, 0);
@@ -343,15 +357,18 @@ export default function FinalReport({
         );
       })}
 
-      {/* MANDATE EXPLANATION FOOTNOTE */}
-      <div style={{ marginTop: '-15px', marginBottom: '30px', padding: '10px', border: '1px solid #ddd', backgroundColor: '#f9f9f9', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
-        <p style={{ margin: 0, fontSize: '9px', color: '#444', lineHeight: '1.4' }}>
-          <strong>Note on Minimum Mandate:</strong> In accordance with the {orgName} Election Guidelines, 
-          candidates running unopposed (solo) in any position must secure a minimum of <strong>100 valid votes</strong> 
-           to be declared constitutionally elected. Failure to meet this threshold results in an 'Undermandated' 
-           status, requiring a by-election or appointment per union bylaws.
-        </p>
-      </div>
+      {/* MANDATE EXPLANATION FOOTNOTE — only when a position is unopposed and
+          the tallies are actually shown. */}
+      {showTallies && hasSoloPosition && (
+        <div style={{ marginTop: '-15px', marginBottom: '30px', padding: '10px', border: '1px solid #ddd', backgroundColor: '#f9f9f9', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
+          <p style={{ margin: 0, fontSize: '9px', color: '#444', lineHeight: '1.4' }}>
+            <strong>Note on Minimum Mandate:</strong> Under the Election Guidelines, a candidate
+            running unopposed must receive at least <strong>100 valid votes</strong> to be
+            declared elected. A candidate who falls short is marked &lsquo;Undermandated&rsquo;,
+            and the position is filled by a by-election or appointment under the union bylaws.
+          </p>
+        </div>
+      )}
 
      
       {signatories ? (
@@ -371,17 +388,7 @@ export default function FinalReport({
             </div>
           )}
         </>
-      ) : (
-        /* Public copy only: the signed declaration and signature page are
-           issued separately by the Electoral Commission. */
-        <div style={{ marginTop: '30px', fontSize: '10px', borderTop: '1px solid #000', paddingTop: '10px', position: 'relative', zIndex: 1 }}>
-          <p style={{ margin: 0 }}>
-            This is the public results record for {orgName}. The signed declaration and
-            signature page are issued separately by the Electoral Commission and are not
-            part of this document.
-          </p>
-        </div>
-      )}
+      ) : null}
 
       {declaration && contactChanges && (
         <div style={{ marginTop: '30px', position: 'relative', zIndex: 1, breakInside: 'avoid' }}>
@@ -432,18 +439,6 @@ export default function FinalReport({
 // Styles
 const declarationBoxStyle = { border: '2px solid currentColor', padding: '20px', marginBottom: '20px', fontFamily: '"Times New Roman", Times, serif', position: 'relative', zIndex: 1 };
 const signatureGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '26px', marginTop: '30px', position: 'relative', zIndex: 1 };
-const certStatusStyle = {
-  border: '1px solid #000',
-  padding: '12px',
-  marginBottom: '24px',
-  fontSize: '12px',
-  position: 'relative',
-  zIndex: 1,
-  breakInside: 'avoid',
-};
-
-
-
 
 const summaryHeaderStyle = { padding: '8px', border: '1px solid #3b82f6', textAlign: 'left', fontSize: '11px' };
 const summaryCellStyle = { padding: '8px', border: '1px solid #ddd', fontSize: '11px' };

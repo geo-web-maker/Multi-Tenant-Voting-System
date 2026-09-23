@@ -91,7 +91,7 @@ export default function SuperAdminStudentEdit() {
       <form onSubmit={search} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <input style={{ ...inp, flex: '1 1 220px' }} placeholder="Search by name or registration number"
           aria-label="Search students" value={q} onChange={e => setQ(e.target.value)} />
-        <button type="submit" style={ghostBtn} disabled={q.trim().length < 2}><Icon name="search" /> Search</button>
+        <button type="submit" style={ghostBtn} disabled={q.trim().length < 2}>Search</button>
       </form>
 
       {results.length > 0 && (
@@ -137,7 +137,7 @@ export default function SuperAdminStudentEdit() {
             </div>
           ))}
           <button type="button" style={{ ...ghostBtn, marginTop: '8px' }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
-            <Icon name="plus" /> Add phone number
+            Add phone number
           </button>
 
           <div style={review}>
@@ -171,7 +171,7 @@ export default function SuperAdminStudentEdit() {
           {error && <p style={errText}><Icon name="warning" /> {error}</p>}
           <button type="button" style={{ ...greenBtn, marginTop: '12px', opacity: canSave ? 1 : 0.5 }}
             disabled={!canSave} onClick={save}>
-            {saving ? 'Saving…' : <><Icon name="save" /> Save changes</>}
+            {saving ? 'Saving…' : <>Save changes</>}
           </button>
         </div>
       )}
@@ -181,7 +181,7 @@ export default function SuperAdminStudentEdit() {
         <input style={{ ...inp, flex: '1 1 220px' }} aria-label="Search history"
           placeholder="Search by old or new registration number, or name"
           value={histQ} onChange={e => setHistQ(e.target.value)} />
-        <button type="submit" style={ghostBtn} disabled={histLoading}><Icon name="search" /> {histLoading ? 'Searching…' : 'Search'}</button>
+        <button type="submit" style={ghostBtn} disabled={histLoading}>{histLoading ? 'Searching…' : 'Search'}</button>
       </form>
       {history.length === 0 && !histLoading && <p style={muted}>No changes recorded.</p>}
       {history.map(h => (

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Icon } from './icons.jsx';
 import { buildSupportLink, fmtWait } from '../supportLink';
 
 /**
@@ -48,7 +47,7 @@ export default function OtpInput({
 
       {locked && (
         <p role="alert" style={{ color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}>
-          <Icon name="lock" /> Too many incorrect codes. You can try again in <b>{fmtWait(lockLeft)}</b>. You do not need to do anything.
+          Too many incorrect codes. You can try again in <b>{fmtWait(lockLeft)}</b>. You do not need to do anything.
         </p>
       )}
       {hasError && (
@@ -74,7 +73,7 @@ export default function OtpInput({
       {help && (locked || hasError) && (
         <a href={help} target="_blank" rel="noopener noreferrer"
            style={{ display: 'block', marginTop: '15px', color: 'var(--success)', fontWeight: 'bold', textDecoration: 'none' }}>
-          <Icon name="chat" /> Need help? Contact support on WhatsApp
+          Need help? Contact support on WhatsApp
         </a>
       )}
     </div>

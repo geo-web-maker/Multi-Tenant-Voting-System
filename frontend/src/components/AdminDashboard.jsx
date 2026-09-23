@@ -213,11 +213,11 @@ useEffect(() => {
         {/* HEADER */}
         <div style={headerFlexStyle}>
           <div>
-            <h2 style={{ margin: 0 }}><Icon name="shield" /> Admin Management</h2>
+            <h2 style={{ margin: 0 }}>Admin Management</h2>
             <span style={{ fontSize: '11px', opacity: 0.5 }}>Sync: {lastRefreshed.toLocaleTimeString()}</span>
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <button onClick={() => setIsPreviewOpen(true)} style={previewBtnStyle}><Icon name="eye" /> Preview Ballot</button>
+            <button onClick={() => setIsPreviewOpen(true)} style={previewBtnStyle}>Preview Ballot</button>
             
             <button
               onClick={handleToggleElection}
@@ -229,7 +229,7 @@ useEffect(() => {
                 opacity: !isElectionOpen && isCertified ? 0.5 : 1,
                 cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
               }}>
-              {isElectionOpen ? <><Icon name="pause" /> Stop Election</> : <><Icon name="play" /> Start Election</>}
+              {isElectionOpen ? <>Stop Election</> : <>Start Election</>}
             </button>
 
             {/* FIXED CERTIFY BUTTON */}
@@ -247,7 +247,7 @@ useEffect(() => {
                 fontWeight: 'bold'
               }}
             >
-              {isCertified ? <><Icon name="success" /> Certified (Final)</> : <><Icon name="warning" /> Certify Results</>}
+              {isCertified ? <>Certified (Final)</> : <>Certify Results</>}
             </button>
 
             <button onClick={onLogout} style={logoutBtnStyle}>Logout</button>
@@ -318,7 +318,7 @@ useEffect(() => {
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
               <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={adminInputStyle} />
-              <button onClick={fetchData} style={refreshBtnStyle}>{loading ? "Syncing..." : <><Icon name="refresh" /> Refresh</>}</button>
+              <button onClick={fetchData} style={refreshBtnStyle}>{loading ? "Syncing..." : <>Refresh</>}</button>
             </div>
 
             <div style={tableWrapperStyle}>
@@ -358,7 +358,7 @@ useEffect(() => {
             </div>
 
             <div style={dangerZoneStyle}>
-              <h4 style={{ color: '#d63031', margin: '0 0 10px 0' }}><Icon name="danger" /> Danger Zone</h4>
+              <h4 style={{ color: '#d63031', margin: '0 0 10px 0' }}>Danger Zone</h4>
               <button 
                 onClick={handleResetElection} 
                 disabled={isCertified} // Prevent accidental reset of certified results

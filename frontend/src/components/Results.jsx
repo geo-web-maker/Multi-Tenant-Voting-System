@@ -17,7 +17,8 @@ export default function Results() {
   const [electionData, setElectionData] = useState({ 
     voter_turnout: 0, 
     results: [], 
-    voter_roll: [] 
+    voter_roll: [],
+    results_released: true   // avoids a placeholder flash before the first response arrives
   });
   
   const [publicRoll, setPublicRoll] = useState([]);
@@ -36,6 +37,9 @@ export default function Results() {
   // `isCertified &&` was never a boundary — the code shipped in the public
   // bundle either way.
   const [rollUnlocked, setRollUnlocked] = useState(false);
+  const [rollQuery, setRollQuery] = useState("");
+  const ROLL_SEARCH_MIN_CHARS = 3;
+  const ROLL_SEARCH_MAX_RESULTS = 20;
   
 const PRIVACY_THRESHOLD = 50;
   const BATCH_SIZE = 10; 
@@ -75,7 +79,8 @@ const fetchData = async ({ force = false } = {}) => {
       ...resultsRes.data,
       voter_roll: newRoll ?? prev.voter_roll,
       voter_turnout: resultsRes.data.voter_turnout || 0,
-      results: resultsRes.data.results || []
+      results: resultsRes.data.results || [],
+      results_released: resultsRes.data.results_released !== false
     }));
 
     setIsElectionOpen(statusRes.data.is_open);
@@ -123,6 +128,20 @@ const fetchData = async ({ force = false } = {}) => {
     return shuffleArray(publicRoll);
   }, [publicRoll]);
 
+  // Client-side only: filters names already revealed in publicRoll. Never
+  // queries the backend, so a search can't surface anyone the batched reveal
+  // hasn't already shown. Requires 3+ chars so it can't be used to dump the
+  // whole roll, and caps results so it can't be used to scrape it either.
+  const trimmedRollQuery = rollQuery.trim();
+  const isSearchingRoll = trimmedRollQuery.length >= ROLL_SEARCH_MIN_CHARS;
+  const rollSearchResults = useMemo(() => {
+    if (!isSearchingRoll) return [];
+    const q = trimmedRollQuery.toLowerCase();
+    return publicRoll
+      .filter(v => v.full_name?.toLowerCase().includes(q))
+      .slice(0, ROLL_SEARCH_MAX_RESULTS);
+  }, [isSearchingRoll, trimmedRollQuery, publicRoll]);
+
  // PASTE THIS NEW VERSION
     const handlePrint = async () => {
       setLoading(true); // Show the loading spinner while we verify status
@@ -165,7 +184,7 @@ const fetchData = async ({ force = false } = {}) => {
     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
       
       <div className="no-print">
-        <h2 style={{ textAlign: 'center', color: '#2c3e50', marginBottom: '20px' }}><Icon name="chart" /> Election Results</h2>
+        <h2 style={{ textAlign: 'center', color: '#2c3e50', marginBottom: '20px' }}>Election Results</h2>
 
         {/* 2. THE TIE ALERT (Your new addition) */}
           {!isElectionOpen && orderedPositions.some(p => {
@@ -189,7 +208,17 @@ const fetchData = async ({ force = false } = {}) => {
           <div style={{ fontSize: '13px', color: '#666' }}>Total Verified Ballots Cast</div>
         </div>
 
-          {orderedPositions.map(position => {
+        {!electionData.results_released ? (
+          <div style={{ textAlign: 'center', padding: '30px 20px', color: '#666', border: '1px dashed #ccc', borderRadius: '10px', marginBottom: '20px' }}>
+            <Icon name="lock" />
+            <div style={{ marginTop: '8px', fontWeight: 600 }}>Candidate results not yet published</div>
+            <div style={{ fontSize: '13px', marginTop: '4px' }}>
+              Turnout above updates live. The per-candidate breakdown is released once
+              {isElectionOpen ? " voting closes and results are certified." : " results are certified."}
+            </div>
+          </div>
+        ) : (
+          orderedPositions.map(position => {
               const isSolo = position.candidates.length === 1;
               const MANDATE_THRESHOLD = 100;
               
@@ -199,14 +228,19 @@ const fetchData = async ({ force = false } = {}) => {
               // 2. Identify if multiple candidates share that top spot
               const tieCount = position.candidates.filter(c => c.votes === categoryMax && c.votes > 0).length;
               const isTie = tieCount > 1;
+
+              // Bars show each candidate's share of THIS position's votes (same basis as the
+              // printed report's Share column). Dividing by overall turnout was wrong: the
+              // numbers can exceed 100% and every bar pinned at full width.
+              const positionTotal = position.candidates.reduce((sum, c) => sum + (c.votes || 0), 0);
             
               return (
                 <div key={position.name} style={{ marginBottom: '40px' }}>
                   <h3 className="position-header" style={positionHeaderStyle}>{position.name}</h3>
                   
                   {position.candidates.sort((a,b) => b.votes - a.votes).map(candidate => {
-                    const percentage = electionData.voter_turnout > 0 
-                      ? (candidate.votes / electionData.voter_turnout) * 100 
+                    const percentage = positionTotal > 0
+                      ? (candidate.votes / positionTotal) * 100
                       : 0;
                     
                     let winStatus = null;
@@ -223,34 +257,30 @@ const fetchData = async ({ force = false } = {}) => {
                     }
             
                     return (
-                      <div key={candidate.id || candidate.name} style={{ marginBottom: '20px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <span style={{ fontWeight: '600', color: '#1e293b' }}>{candidate.name}</span>
-                            
-                            {/* WINNER BADGE */}
-                            {winStatus === 'WINNER' && <span style={badgeStyle('var(--warning)')}><Icon name="trophy" /> ELECTED</span>}
+                      <div key={candidate.id || candidate.name} className="cand-row">
+                        {/* Line 1: name (wraps freely) + votes (never squeezed) */}
+                        <div className="cand-top">
+                          <span className="cand-name">{candidate.name}</span>
+                          <span className="cand-votes"><strong>{candidate.votes}</strong> votes <span className="cand-pct">({percentage.toFixed(1)}%)</span></span>
+                        </div>
 
-                            {/* 2. NEW: Mandate Gained Badge */}
-                            {winStatus === 'MANDATE_GAINED' && (
-                                <span style={badgeStyle('#10b981', '#fff')}><Icon name="success" /> MANDATE GAINED</span>
-                            )}
-                            
-                            {/* TIE BADGE */}
-                            {winStatus === 'TIE' && <span style={badgeStyle('#e67e22', '#fff')}><Icon name="scale" /> TIE (RE-RUN)</span>}
-                            
-                            {winStatus === 'UNDERMANDATED' && <span style={badgeStyle('#ef4444', '#fff')}><Icon name="warning" /> UNDERMANDATED</span>}
-                            
-                            {/* LIVE STATUS */}
+                        {/* Line 2: status badge gets its own row, so it can never
+                            crush the name or the vote count. Rendered only when
+                            there is a status to show. */}
+                        {(winStatus || (isElectionOpen && isTopCandidate)) && (
+                          <div className="cand-badges">
+                            {winStatus === 'WINNER' && <span className="cand-badge" style={badgeStyle('var(--warning)', '#1e293b')}><Icon name="trophy" /> ELECTED</span>}
+                            {winStatus === 'MANDATE_GAINED' && <span className="cand-badge" style={badgeStyle('#10b981', '#fff')}><Icon name="success" /> MANDATE GAINED</span>}
+                            {winStatus === 'TIE' && <span className="cand-badge" style={badgeStyle('#e67e22', '#fff')}><Icon name="scale" /> TIE (RE-RUN)</span>}
+                            {winStatus === 'UNDERMANDATED' && <span className="cand-badge" style={badgeStyle('#ef4444', '#fff')}><Icon name="warning" /> UNDERMANDATED</span>}
                             {isElectionOpen && isTopCandidate && (
-                              <span style={{ color: isTie ? '#e67e22' : 'var(--success)', fontSize: '10px', fontWeight: 'bold' }}>
+                              <span className="cand-live" style={{ color: isTie ? '#e67e22' : 'var(--success)' }}>
                                 {isTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
                               </span>
                             )}
                           </div>
-                          <span style={{ fontSize: '14px', color: '#334155' }}><strong>{candidate.votes}</strong> votes</span>
-                        </div>
-                        
+                        )}
+
                         <div style={progressContainer}>
                            {/* Change color to Orange if it's a tie/deadlock */}
                            <div style={{
@@ -265,20 +295,47 @@ const fetchData = async ({ force = false } = {}) => {
                   })}
                 </div>
               );
-          })}
+          })
+        )}
         
         <div style={voterRollSectionStyle}>
-          <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}><Icon name="users" /> Voter Participation Roll</h3>
+          <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}>Voter Participation Roll</h3>
           {rollUnlocked && displayedVoters.length > 0 ? (
            <div style={scrollableListStyle}>
-              {displayedVoters.map((voter, idx) => (
-                <div key={`${voter.full_name}-${idx}`} style={voterRowStyle}>
-                  <span style={{ color: 'var(--text-color)' }}>{voter.full_name}</span>
-                  <span style={{ color: 'var(--success)', fontSize: '12px', fontWeight: 'bold' }}>
-                    Verified <Icon name="check" />
-                  </span>
-                </div>
-              ))} {/* This ) was the missing piece */}
+              <input
+                type="text"
+                value={rollQuery}
+                onChange={(e) => setRollQuery(e.target.value)}
+                placeholder="Search your name (3+ letters)…"
+                aria-label="Search the voter participation roll"
+                className="roll-search-input"
+                style={rollSearchInputStyle}
+              />
+              {isSearchingRoll ? (
+                rollSearchResults.length > 0 ? (
+                  rollSearchResults.map((voter, idx) => (
+                    <div key={`${voter.full_name}-${idx}`} style={voterRowStyle}>
+                      <span style={{ color: 'var(--text-color)' }}>{voter.full_name}</span>
+                      <span style={{ color: 'var(--success)', fontSize: '12px', fontWeight: 'bold' }}>
+                        Verified <Icon name="check" />
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <p style={{ fontSize: '12px', color: '#64748b', margin: '10px 0' }}>
+                    No match in the published list. Names appear in batches, so a recent voter may not show yet.
+                  </p>
+                )
+              ) : (
+                displayedVoters.map((voter, idx) => (
+                  <div key={`${voter.full_name}-${idx}`} style={voterRowStyle}>
+                    <span style={{ color: 'var(--text-color)' }}>{voter.full_name}</span>
+                    <span style={{ color: 'var(--success)', fontSize: '12px', fontWeight: 'bold' }}>
+                      Verified <Icon name="check" />
+                    </span>
+                  </div>
+                ))
+              )}
               <p style={{ fontSize: '11px', color: '#64748b', textAlign: 'center', marginTop: '15px' }}>
                 * Names appear in batches of {BATCH_SIZE} and are randomized to protect voter privacy.
               </p>
@@ -312,15 +369,10 @@ const fetchData = async ({ force = false } = {}) => {
 
         <div style={{ marginTop: '40px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
           <button onClick={handlePrint} style={printBtnStyle} className="print-btn">
-            <Icon name="print" /> Download Public Results Report
+            Download Public Results Report
           </button>
           <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '10px' }}>
             Syncing live from Server... Last update: {lastSynced.toLocaleTimeString()}
-          </p>
-          <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '4px', maxWidth: '520px', margin: '4px auto 0' }}>
-            This is the public record: tallies, turnout, the per-position breakdown,
-            certification status and the participation roll. The signed declaration and
-            signature page are issued separately by the Electoral Commission.
           </p>
         </div>
       </div>
@@ -331,6 +383,7 @@ const fetchData = async ({ force = false } = {}) => {
         totalVotes={electionData.voter_turnout} 
         isElectionOpen={isElectionOpen}
         isCertified={isCertified}
+        resultsReleased={electionData.results_released}
         logoUrl={logoUrl}
         orgName={orgName}
         universityName={universityName}
@@ -356,12 +409,16 @@ const bannerStyle = (isOpen, isCertified) => ({
 });
 
 const badgeStyle = (bgColor, textColor = '#000') => ({
-  backgroundColor: bgColor, 
-  color: textColor, 
-  fontSize: '10px', 
-  padding: '3px 10px', 
-  borderRadius: '20px', 
-  fontWeight: '800'
+  backgroundColor: bgColor,
+  color: textColor,
+  fontSize: '10px',
+  padding: '3px 10px',
+  borderRadius: '20px',
+  fontWeight: '800',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  whiteSpace: 'nowrap',
 });
 
 const positionHeaderStyle = {
@@ -369,7 +426,7 @@ const positionHeaderStyle = {
   fontSize: '18px', fontWeight: 'bold', borderLeft: '4px solid #3b82f6', marginBottom: '20px'
 };
 
-const progressContainer = { width: '100%', backgroundColor: '#f1f5f9', borderRadius: '20px', height: '10px', overflow: 'hidden' };
+const progressContainer = { width: '100%', backgroundColor: 'var(--surface-2)', borderRadius: '20px', height: '10px', overflow: 'hidden' };
 const progressBar = (pct, isWinner) => ({ 
   width: `${pct}%`, height: '100%', backgroundColor: isWinner ? 'var(--warning)' : '#3b82f6', transition: 'width 1.5s ease-in-out' 
 });
@@ -388,6 +445,7 @@ const tieWarningBanner = {
 
 const voterRollSectionStyle = { marginTop: '40px', padding: '25px', backgroundColor: 'var(--card-bg)', borderRadius: '15px', border: '1px solid var(--border-color)' };
 const scrollableListStyle = { maxHeight: '300px', overflowY: 'auto', paddingRight: '10px' };
+const rollSearchInputStyle = { width: '100%', boxSizing: 'border-box', padding: '10px 12px', marginBottom: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px' };
 const voterRowStyle = { display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border-color)' };
 const privacyLockStyle = { padding: '20px', textAlign: 'center', color: 'var(--text-muted)' };
 const thresholdBarStyle = { width: '100%', height: '8px', background: 'var(--border-color)', borderRadius: '4px', overflow: 'hidden' };

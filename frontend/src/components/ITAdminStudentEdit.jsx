@@ -64,7 +64,7 @@ export default function ITAdminStudentEdit() {
         <form onSubmit={search} className="itadmin-row">
           <input className="itadmin-input" placeholder="Search by name or registration number" aria-label="Search students"
             value={q} onChange={e => setQ(e.target.value)} />
-          <button type="submit" className="itadmin-btn ghost" disabled={q.trim().length < 2}><Icon name="search" /> Search</button>
+          <button type="submit" className="itadmin-btn ghost" disabled={q.trim().length < 2}>Search</button>
         </form>
         {results.map(s => (
           <button key={s.student_id} type="button" className="itadmin-pick" onClick={() => pick(s)}>
@@ -94,7 +94,7 @@ export default function ITAdminStudentEdit() {
               </div>
             ))}
             <button type="button" className="itadmin-btn ghost" style={{ marginTop: 8 }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
-              <Icon name="plus" /> Add phone number
+              Add phone number
             </button>
 
             <label style={{ ...lbl, marginTop: 14 }}>Reason (required)</label>
@@ -102,7 +102,7 @@ export default function ITAdminStudentEdit() {
               placeholder="Why is this change being made?" />
             {error && <p style={err}><Icon name="warning" /> {error}</p>}
             <button type="button" className="itadmin-btn green" style={{ marginTop: 12, opacity: canSave ? 1 : 0.5 }} disabled={!canSave} onClick={save}>
-              {saving ? 'Saving…' : <><Icon name="save" /> Save changes</>}
+              {saving ? 'Saving…' : <>Save changes</>}
             </button>
           </div>
         )}

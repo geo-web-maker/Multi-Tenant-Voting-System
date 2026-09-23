@@ -3,7 +3,6 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { useToast } from './UIFeedback';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
-import { Icon } from './icons.jsx';
 
 
 export default function FinancialControllerDashboard({ onLogout }) {
@@ -88,14 +87,14 @@ export default function FinancialControllerDashboard({ onLogout }) {
         {/* ── Header ── */}
         <div style={headerFlex}>
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="wallet" /> Financial Controller</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Financial Controller</h2>
             <span style={{ fontSize: '12px', opacity: 0.5 }}>
               Verify payment status and decide on student register change requests
             </span>
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
             <button style={ghostBtn} onClick={fetchAll} disabled={loading}>
-              {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
+              {loading ? 'Syncing…' : <>Refresh</>}
             </button>
             <button style={redBtn} onClick={onLogout}>Logout</button>
           </div>
@@ -161,9 +160,6 @@ export default function FinancialControllerDashboard({ onLogout }) {
             banner incorrectly appeared above that content on every shared tab. */}
         {['pending', 'approved', 'denied'].includes(activeTab) && currentList.length === 0 && !loading && (
           <div style={emptyState}>
-            <div style={{ fontSize: '40px', marginBottom: '10px' }}>
-              {activeTab === 'pending' ? <Icon name="inbox" /> : activeTab === 'approved' ? <Icon name="success" /> : <Icon name="folderOpen" />}
-            </div>
             <p style={{ opacity: 0.5 }}>No {activeTab} requests.</p>
           </div>
         )}
@@ -178,7 +174,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                 <div>
                   <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
-                    {change.change_type === 'add' ? <><Icon name="plus" /> Add Student</> : <><Icon name="minus" /> Remove Student</>}
+                    {change.change_type === 'add' ? <>Add Student</> : <>Remove Student</>}
                   </b>
                   <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
                     {change.status.toUpperCase()}
@@ -192,9 +188,9 @@ export default function FinancialControllerDashboard({ onLogout }) {
               <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
                 <b>Student:</b> {change.full_name} — <code style={{ fontSize: '12px' }}>{change.student_id}</code>
               </p>
-              {change.change_type === 'add' && (
+              {change.change_type === 'add' && (change.phones?.length > 0 || change.phone) && (
                 <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.6 }}>
-                  Phone: {change.phone}
+                  Phone{(change.phones?.length || 1) > 1 ? 's' : ''}: {change.phones?.length ? change.phones.join(', ') : change.phone}
                 </p>
               )}
               <p style={{ margin: '6px 0', fontSize: '13px', opacity: 0.8 }}>
@@ -212,7 +208,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   {change.payment_proof_url && (
                     <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
                       style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
-                      <Icon name="receipt" /> View Receipt
+                      View Receipt
                     </a>
                   )}
                 </div>
@@ -237,14 +233,14 @@ export default function FinancialControllerDashboard({ onLogout }) {
                       disabled={isDecidingNow}
                       onClick={() => decide(change._id, 'approve')}
                     >
-                      {isDecidingNow ? 'Submitting…' : <><Icon name="success" /> Approve</>}
+                      {isDecidingNow ? 'Submitting…' : <>Approve</>}
                     </button>
                     <button
                       style={{ ...redBtn, flex: 1 }}
                       disabled={isDecidingNow}
                       onClick={() => decide(change._id, 'deny')}
                     >
-                      {isDecidingNow ? 'Submitting…' : <><Icon name="error" /> Deny</>}
+                      {isDecidingNow ? 'Submitting…' : <>Deny</>}
                     </button>
                     <button
                       style={ghostBtn}

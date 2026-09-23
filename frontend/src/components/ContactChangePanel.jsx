@@ -55,7 +55,7 @@ export default function ContactChangePanel({ student = null }) {
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ ...box, borderColor: 'var(--warning)' }}>
-        <b style={{ fontSize: 13 }}><Icon name="lock" /> Roster frozen — contact changes need approval</b>
+        <b style={{ fontSize: 13 }}>Roster frozen — contact changes need approval</b>
         <p style={muted}>Any one commissioner can approve or deny. Never change a number because of a chat message: check the student’s ID card or an official record.</p>
         {student ? (
           student.has_voted ? <p style={{ ...muted, color: 'var(--danger)' }}>This student has already voted; details can no longer change.</p> : (

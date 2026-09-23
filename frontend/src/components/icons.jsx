@@ -8,6 +8,12 @@ import {
   Lock, ArrowLeft, ArrowRight, Check, X, Plus, Minus, Circle, TrendingUp,
 } from 'lucide-react';
 
+// ICON POLICY — use an icon only when it does a job text alone can't:
+//   • state/feedback (loading spinner, warning/error, success, lock/verified badges)
+//   • navigation or toggle affordance (back arrow, theme sun/moon, close)
+//   • marking a drop target or a status chip in dense UI (upload area, result badges)
+// Do NOT put icons before page headings, section titles, or on buttons whose
+// label already says what they do ("Submit", "Clear All", "Download …").
 // name -> component (+ optional per-icon props)
 const ICONS = {
   warning: [TriangleAlert], loading: [LoaderCircle, { className: 'icon-spin' }],

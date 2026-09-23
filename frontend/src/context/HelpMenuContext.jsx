@@ -5,6 +5,7 @@ const HelpMenuContext = createContext(null);
 export function HelpMenuProvider({ children }) {
   const [open, setOpen] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
 
   const value = {
     open,
@@ -13,6 +14,9 @@ export function HelpMenuProvider({ children }) {
     showRegister,
     openRegister: () => { setShowRegister(true); setOpen(false); },
     closeRegister: () => setShowRegister(false),
+    showTimeline,
+    openTimeline: () => { setShowTimeline(true); setOpen(false); },
+    closeTimeline: () => setShowTimeline(false),
   };
 
   return (

@@ -1,7 +1,7 @@
 import React from 'react';
 import VoterRegisterSearch from './VoterRegisterSearch';
+import ElectionTimeline from './ElectionTimeline';
 import { useHelpMenu } from '../context/HelpMenuContext';
-import { Icon } from './icons.jsx';
 import { buildSupportLink } from '../supportLink';
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
@@ -20,14 +20,15 @@ const modalContentStyle = {
  * to know which page it's on.
  */
 export default function HelpPanel({ supportPdfUrl, supportPhone, orgName = '', onShowGuide }) {
-  const { open, close, showRegister, openRegister, closeRegister } = useHelpMenu();
+  const { open, close, showRegister, openRegister, closeRegister, showTimeline, openTimeline, closeTimeline } = useHelpMenu();
 
   const items = [
-    { icon: <Icon name="book" />, label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
-    { icon: <Icon name="search" />, label: 'Check Voter Register', onClick: openRegister },
-    ...(supportPdfUrl ? [{ icon: <Icon name="file" />, label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
+    { label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
+    { label: 'Check Voter Register', onClick: openRegister },
+    { label: 'Election Timeline', onClick: openTimeline },
+    ...(supportPdfUrl ? [{ label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
-      icon: <Icon name="chat" />, label: 'Contact Support', color: '#25D366',
+      label: 'Contact Support', color: '#25D366',
       href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)')
     },
   ];
@@ -42,11 +43,11 @@ export default function HelpPanel({ supportPdfUrl, supportPhone, orgName = '', o
           </div>
           {items.map((it, i) => it.href ? (
             <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
-              <span>{it.icon}</span> {it.label}
+              {it.label}
             </a>
           ) : (
             <button key={i} onClick={it.onClick} style={menuItemStyle}>
-              <span>{it.icon}</span> {it.label}
+              {it.label}
             </button>
           ))}
         </div>
@@ -57,6 +58,15 @@ export default function HelpPanel({ supportPdfUrl, supportPhone, orgName = '', o
           <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
             <VoterRegisterSearch />
             <button onClick={closeRegister} style={closeBtnStyle}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {showTimeline && (
+        <div style={modalOverlayStyle} onClick={closeTimeline}>
+          <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
+            <ElectionTimeline />
+            <button onClick={closeTimeline} style={closeBtnStyle}>Close</button>
           </div>
         </div>
       )}

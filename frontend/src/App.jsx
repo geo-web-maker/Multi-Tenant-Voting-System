@@ -10,15 +10,15 @@ import ApplicantPortal from './components/ApplicantPortal';
 import ITAdminDashboard from './components/ITAdminDashboard';
 import FinancialControllerDashboard from './components/FinancialControllerDashboard';
 import OverseerDashboard from './components/OverseerDashboard';
-import FloatingHelpMenu from './components/FloatingHelpMenu';
+import { HelpMenuProvider } from './context/HelpMenuContext';
+import HelpPanel from './components/HelpPanel';
+import { FabTrigger } from './components/HelpTriggers';
 import { Icon } from './components/icons.jsx';
 import {
-  restoreAdminView, clearAdminSession,
-  markPasswordChangePending, clearPasswordChangePending,
-  loadPublicView, savePublicView,
+  restoreAdminView, loadPublicView, savePublicView,
   loadVoterProgress, saveVoterProgress, clearVoterProgress, clearVoterSession,
-  saveVoterToken, clearVoterToken,
-  saveResendDeadline, loadResendSeconds,
+  saveVoterToken, clearVoterToken, loadResendSeconds, saveResendDeadline,
+  clearAdminSession, markPasswordChangePending, clearPasswordChangePending,
 } from './session';
 
 // Sample IDs/names cycled in the login placeholder animation.
@@ -31,20 +31,33 @@ const examples = [
 ];
 
 function App() {
-  // Restored once, on first render, so a page reload lands the person back
-  // where they were instead of on the voter login screen. An admin whose
-  // token is still valid resumes their dashboard; a voter who already passed
-  // OTP resumes on the OTP/ballot step (the server keeps them "authenticated"
-  // until the ballot is cast).
-  const [restoredAdminView] = useState(() => restoreAdminView());
-  const [restoredVoter] = useState(() => (restoredAdminView ? null : loadVoterProgress()));
   const [supportPdfUrl, setSupportPdfUrl] = useState("");
   const [supportPhone, setSupportPhone] = useState("");
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
   const [candidates, setCandidates] = useState([]); // To store candidates for preview
-  const [step, setStep] = useState(restoredVoter?.step ?? 1); 
-  const [view, setView] = useState(restoredAdminView || loadPublicView() || "voter"); 
-  const [studentId, setStudentId] = useState(restoredVoter?.studentId ?? "");
+  // Decide ONCE, before the first render, where to resume after a reload
+  // (pull-to-refresh, F5, a discarded background tab). Everything below used
+  // to start from "voter login, step 1" unconditionally, which dropped even
+  // signed-in admins and OTP-verified voters back on the login screen.
+  // Priority: a public page (Results/Apply) the person was on, then a
+  // still-valid admin session, then a voter mid-flow.
+  const [restored] = useState(() => {
+    const adminView = restoreAdminView();          // null if none / expired
+    const pub = loadPublicView();
+    if (pub) return { view: pub, adminView };
+    if (adminView) return { view: adminView, adminView };
+    const vp = loadVoterProgress();
+    if (vp) return { view: "voter", ...vp };
+    return {};
+  });
+  const [step, setStep] = useState(restored.step || 1); 
+  const [view, setView] = useState(restored.view || "voter"); 
+  // Mirrors sessionStorage's "admin_role" in React state so the nav can react
+  // to it. Lets a logged-in admin who has navigated to Results/Apply/Vote get
+  // back to their dashboard with one click, instead of refreshing or hitting
+  // "Vote Now" — which calls resetFlow() and signs them out entirely.
+  const [adminRole, setAdminRole] = useState(restored.adminView || null);
+  const [studentId, setStudentId] = useState(restored.studentId || "");
   const [name, setName] = useState("");
   const [otp, setOtp] = useState("");
   const [placeholderText, setPlaceholderText] = useState({ id: "", name: "" });
@@ -55,11 +68,10 @@ function App() {
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
-  const [isVotingPhaseOpen, setIsVotingPhaseOpen] = useState(true);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState("");
-  const [timer, setTimer] = useState(() => (restoredVoter?.step === 2 ? loadResendSeconds() : 0));
-  const [selectedPhone, setSelectedPhone] = useState(restoredVoter?.selectedPhone ?? "");
+  const [timer, setTimer] = useState(() => (restored.step === 2 ? loadResendSeconds() : 0));
+  const [selectedPhone, setSelectedPhone] = useState(restored.selectedPhone || "");
   const [isVerifying, setIsVerifying] = useState(false);
   const [statusModal, setStatusModal] = useState({ 
     show: false, 
@@ -85,21 +97,6 @@ function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
-
-  // Remember which public tab (Live Results / Apply) is open across reloads.
-  useEffect(() => { savePublicView(view); }, [view]);
-
-  // Remember the voter's place in the flow (OTP entry -> ballot -> done).
-  // Only ids and the step are stored — never the OTP. Steps 1 / 1.5 hold
-  // nothing worth resuming, so reaching them clears the saved progress.
-  useEffect(() => {
-    if (isAdminPath) return;
-    if ((step === 2 || step === 3 || step === 4) && studentId) {
-      saveVoterProgress({ step, studentId, selectedPhone });
-    } else if (step === 1 || step === 1.5) {
-      clearVoterSession();
-    }
-  }, [step, studentId, selectedPhone, isAdminPath]);
 
   
 // --- USEEFFECTS ---
@@ -179,7 +176,6 @@ useEffect(() => {
       try {
         const res = await api.get('/election-status');
         setIsElectionOpen(res.data.is_open);
-        setIsVotingPhaseOpen(res.data.voting_phase_open ?? true);
       } catch {
         console.error("Could not fetch election status");
       }
@@ -211,7 +207,37 @@ useEffect(() => {
       fetchCandidates();
     }, []);
 
+  // --- SESSION PERSISTENCE ---
+  // Remember which public page is open so a reload doesn't bounce off it.
+  useEffect(() => { savePublicView(view); }, [view]);
+
+  // Remember the voter's place in the flow (never the OTP itself). Going back
+  // to step 1 / 1.5 means the session is over, so forget it.
+  useEffect(() => {
+    if (view !== "voter" || isAdminPath) return;
+    if ([2, 3, 4].includes(step) && studentId) {
+      saveVoterProgress({ step, studentId, selectedPhone });
+    } else if (step === 1 || step === 1.5) {
+      clearVoterSession();
+    }
+  }, [view, step, studentId, selectedPhone, isAdminPath]);
+
   // --- HANDLERS ---
+  // BallotBox calls this on a 401 from /vote-bulk (token missing/expired/
+  // replaced by a newer login). Their ballot picks are kept in sessionStorage.
+  const handleSessionExpired = (detail) => {
+    clearVoterSession();
+    setOtp("");
+    setStep(1);
+    setStatusModal({
+      show: true,
+      title: "Session Expired",
+      message: (typeof detail === "string" && detail) ||
+        "Your voting session has expired. Please verify again — your selections have been kept.",
+      type: "error"
+    });
+  };
+
   const handleVoteSuccess = () => {
     // 1. Create the cookie
     const expiry = new Date();
@@ -220,10 +246,8 @@ useEffect(() => {
     // 2. Save it to the browser
     document.cookie = `voted_status=true; expires=${expiry.toUTCString()}; path=/; SameSite=Lax`;
 
-    // 3. The token has done its job (the voter has now voted).
+    // 3. The one-time voting token is spent — drop it and move to the final screen
     clearVoterToken();
-
-    // 4. Move to the final screen
     setStep(4);
   };
 
@@ -240,6 +264,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   
         if (res.data.bypass === true) {
           sessionStorage.setItem("admin_role", res.data.role);
+          setAdminRole(res.data.role);
           if (res.data.access_token) {
             sessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
           }
@@ -262,10 +287,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
             markPasswordChangePending();
             setPendingAdminEmail(studentId);
-            // Carry the temp password they just logged in with straight into
-            // the "set new password" form instead of asking them to retype
-            // it — they typed it once, in the login form above, seconds ago.
-            setNewPasswordForm(prev => ({ ...prev, old_password: name }));
             setMustChangePassword(true);
             return;
           }
@@ -274,6 +295,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           return;
         }
         sessionStorage.setItem("admin_role",res.data.role || "commission");
+        setAdminRole(res.data.role || "commission");
   
         if (res.data.status === "needs_selection") {
           setMaskedNumbers(res.data.masked_numbers);
@@ -325,8 +347,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         code: otp
       });
 
-      // Session token the ballot endpoints require (see api.js / auth.py).
-      if (!isAdminPath) saveVoterToken(otpRes.data.voter_token);
+      // The server issues a one-time voting token on a correct OTP; the
+      // /vote-* calls send it (see api.js) and it lets a reload resume the ballot.
+      if (!isAdminPath && otpRes.data?.voter_token) saveVoterToken(otpRes.data.voter_token);
   
       setOtp("");
   
@@ -391,6 +414,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       });
   
       sessionStorage.setItem("admin_role", res.data.role);
+      setAdminRole(res.data.role);
       if (res.data.access_token) {
         sessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
       }
@@ -419,21 +443,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     }
   };
   
-  // Called by the ballot when the server says the voting session is no longer
-  // valid (expired, or replaced by a newer login). Back to login, keeping the
-  // ID filled in and the saved ballot picks.
-  const handleVoterSessionExpired = (message) => {
-    clearVoterSession();
-    setOtp("");
-    setStep(1);
-    setStatusModal({
-      show: true,
-      title: "Session Expired",
-      message: message || "Your voting session has expired. Please verify your identity again.",
-      type: "error",
-    });
-  };
-
   const resetFlow = () => {
     // Best-effort server-side revocation — fire and forget, don't block the
     // UI on it. Client-side clearing below happens regardless, so a failed
@@ -452,19 +461,29 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     setMaskedNumbers([]);
     setTimer(0);
     setSelectedPhone("");
+    setAdminRole(null);
+    // Full sign-out: admin token/role/ids/remembered tabs, the voter session
+    // and saved ballot picks, and the remembered public page.
     clearAdminSession();
     clearVoterProgress();
+    savePublicView(null);
   };
 
   return (
+    <HelpMenuProvider>
     <div style={containerStyle}>
       {view === "voter" && (
-        <FloatingHelpMenu
-          supportPdfUrl={supportPdfUrl}
-          supportPhone={supportPhone}
-          onShowGuide={() => setShowGuide(true)}
-          showSampleBallot={isElectionOpen && isVotingPhaseOpen}
-        />
+        <>
+          <HelpPanel
+            supportPdfUrl={supportPdfUrl}
+            supportPhone={supportPhone}
+            onShowGuide={() => setShowGuide(true)}
+          />
+          {/* Ballot page (step 3) puts Help inside its own footer bar via
+              <InlineHelpButton /> — see BallotBox.jsx — so the floating
+              trigger only renders when nothing else owns that space. */}
+          {step !== 3 && <FabTrigger />}
+        </>
       )}
       <div style={{ 
           width: '100%', 
@@ -485,7 +504,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 display: 'flex', alignItems: 'center', gap: '6px',
               }}
             >
-              {theme === 'dark' ? <><Icon name="sun" /> Light</> : <><Icon name="moon" /> Dark</>}
+              {theme === 'dark' ? <>Light</> : <>Dark</>}
             </button>
           </div>
           <img src={logoUrl} alt="Logo" style={logoStyle} />
@@ -496,16 +515,14 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             letterSpacing: '1px',
             textTransform: 'uppercase',
             opacity: 0.8,
+            marginTop: '-10px',
             textAlign: 'center'
           }}>
             {orgName} Election Portal
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button
-              onClick={() => (view === "results" || view === "apply" ? setView("voter") : resetFlow())}
-              style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}
-            >
+            <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
               Vote Now
             </button>
         
@@ -516,6 +533,23 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             <button onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
               Apply
             </button>
+
+            {/* Deliberately NOT shown while view === "voter": that flow is
+                someone actively proving they're a different identity (via
+                OTP), and a leftover admin session from earlier in the tab
+                has nothing to do with who's typing right now. Showing this
+                shortcut there meant anyone who knew an admin's voter
+                credentials (student ID + name — not a secret) could open
+                the voter OTP screen and skip straight into the admin
+                dashboard with zero re-authentication, on any device/tab
+                where an admin had once logged in and not explicitly logged
+                out. Restricted to results/apply — the two read-only pages
+                this was actually built for. */}
+            {adminRole && (view === "results" || view === "apply") && (
+              <button onClick={() => setView(adminRole)} style={backToAdminBtnStyle}>
+                Back to Admin
+              </button>
+            )}
           </div>
         </nav>
 
@@ -633,13 +667,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   {timer > 0 ? (
                     <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
                   ) : (
-                    // After a page reload the full name isn't kept (it's half of the
-                    // login credential, so it's deliberately not stored). Resending
-                    // needs it, so in that case send them back to the login form
-                    // with their ID still filled in.
-                    <button onClick={() => (name ? handleVerifyIdentity() : setStep(1))} style={resendBtnStyle}>
-                      {name ? 'Resend SMS' : 'Re-enter details to resend'}
-                    </button>
+                    <button onClick={() => handleVerifyIdentity()} style={resendBtnStyle}>Resend SMS</button>
                   )}
                 </div>
               </div>
@@ -649,7 +677,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <BallotBox 
                 studentId={studentId} 
                 onVoteSuccess={handleVoteSuccess}
-                onSessionExpired={handleVoterSessionExpired}
+                onSessionExpired={handleSessionExpired}
                 apiBase={API_BASE} 
                 propCandidates={candidates}
                 orgName={orgName}
@@ -668,7 +696,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {mustChangePassword && (
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={{ ...modalContentStyle, maxWidth: '420px' }}>
-              <div style={{ fontSize: '40px', textAlign: 'center', marginBottom: '10px' }}><Icon name="lock" /></div>
               <h2 style={{ textAlign: 'center', marginTop: 0, color: 'var(--text-color)' }}>Set a New Password</h2>
               <p style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
                 For your security, you must set a new password before continuing.
@@ -677,12 +704,19 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                <form onSubmit={handleSetNewPassword}>
                 <input
                   type="password"
+                  placeholder="Temporary password (from SMS)"
+                  style={inputStyle}
+                  value={newPasswordForm.old_password}
+                  onChange={e => setNewPasswordForm({ ...newPasswordForm, old_password: e.target.value })}
+                  disabled={passwordChangeSubmitting}
+                />
+                <input
+                  type="password"
                   placeholder="New password (min 6 characters)"
                   style={inputStyle}
                   value={newPasswordForm.new_password}
                   onChange={e => setNewPasswordForm({ ...newPasswordForm, new_password: e.target.value })}
                   disabled={passwordChangeSubmitting}
-                  autoFocus
                 />
                 <input
                   type="password"
@@ -720,7 +754,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           <div style={modalOverlayStyle}>
             <div className="modal-content" style={modalContentStyle}>
               <div style={{ fontSize: '50px', marginBottom: '10px', textAlign: 'center' }}>
-                {statusModal.type === 'success' ? <Icon name="mail" /> : <Icon name="warning" />}
+                {statusModal.type === 'success' ? <Icon name="success" /> : <Icon name="warning" />}
               </div>
               <h2 style={{ color: statusModal.type === 'success' ? 'var(--success)' : 'var(--danger)', textAlign: 'center', marginTop: 0 }}>
                 {statusModal.title}
@@ -765,7 +799,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 fontSize: '16px'
               }}
             >
-              <Icon name="back" /> Back to Login
+              Back to Login
             </button>
       
             {/* Reusing BallotBox in Preview Mode */}
@@ -783,6 +817,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         </div>
       )}
     </div>
+    </HelpMenuProvider>
   );
 }
 
@@ -813,6 +848,20 @@ const activeNavBtnStyle = {
   backgroundColor: 'var(--brand-accent, #f1c40f)',
   color: 'var(--brand-primary, #003366)',
   borderColor: 'var(--brand-primary, #003366)'
+};
+
+// Only shown when an admin session exists (sessionStorage's "admin_role")
+// and the visitor has clicked away from their dashboard — e.g. to preview
+// Live Results — so they never have to refresh or use "Vote Now" (which
+// signs them out) just to get back to where they were logged in.
+const backToAdminBtnStyle = {
+  ...navBtnStyle,
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  backgroundColor: 'transparent',
+  color: 'var(--brand-accent, #f1c40f)',
+  borderStyle: 'dashed',
 };
 
 const cardStyle = { background: 'var(--card-bg)', color: 'var(--text-color)', padding: '30px', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', border: '1px solid var(--border-color)', width: '100%', boxSizing: 'border-box' };

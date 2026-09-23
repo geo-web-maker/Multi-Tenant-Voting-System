@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 import secrets
 import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
@@ -28,7 +28,6 @@ import math
 import time
 import boto3
 from fastapi.concurrency import run_in_threadpool
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 import backup
 from backup_routes import build_router as build_backup_router
 import otp_limits as ol
@@ -42,12 +41,18 @@ from auth import (
     set_revocation_check,
     ADMIN_ROLES,
     JWT_EXPIRE_MINUTES,
+    create_voter_token,
+    verify_voter_token,
 )
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BallotBoxAPI")
+# httpx logs full request URLs at INFO; EgoSMS takes username/password/number/message (the OTP)
+# as query params, so this would write SMS credentials and live codes into the platform logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- CONFIGURATION & SECRETS ---
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -112,7 +117,12 @@ async def lifespan(app: FastAPI):
     # would have been valid — once it's past its natural exp it can't be
     # replayed anyway, so there's no need to keep the revocation record.
     
-    await db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=JWT_EXPIRE_MINUTES * 60)    
+    await db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=JWT_EXPIRE_MINUTES * 60)
+    # login_attempts had no TTL at all — a five-year-old failed-login record for a
+    # long-departed IT admin sat in the collection forever. An hour past the longest
+    # possible lockout (LOGIN_LOCKOUT_MINUTES) is enough margin for the lock to have
+    # already expired naturally before Mongo reaps the document.
+    await db.login_attempts.create_index("last_attempt", expireAfterSeconds=(LOGIN_LOCKOUT_MINUTES + 60) * 60)
     # Per-IP rate-limit buckets (upload, voter-register search) — Mongo-backed
     # replacement for the old in-memory dicts (see _check_rate_limit). TTL'd
     # well past the longest window used (UPLOAD_RATE_WINDOW_S) so a bucket
@@ -259,6 +269,13 @@ except Exception as e:
 # keeps working unmodified during rollout. Individual routes decide whether
 # org scoping is required once they're retrofitted in the next pass.
 
+# Fail-closed tenancy. Set REQUIRE_ORG_CONTEXT=false ONLY for a legacy single-tenant deployment
+# whose data still has org_id=None.
+REQUIRE_ORG_CONTEXT = os.getenv("REQUIRE_ORG_CONTEXT", "true").strip().lower() == "true"
+ORG_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json",
+                       "/superadmin/orgs", "/superadmin/mfa", "/verify-admin")
+
+
 @app.middleware("http")
 async def org_context_middleware(request: Request, call_next):
     org_slug = request.headers.get("X-Org-Slug")
@@ -266,9 +283,15 @@ async def org_context_middleware(request: Request, call_next):
     request.state.org_slug = None
     if org_slug:
         org_doc = await db.organizations.find_one({"slug": org_slug})
-        if org_doc:
-            request.state.org_id = str(org_doc["_id"])
-            request.state.org_slug = org_slug
+        if not org_doc:
+            # Unknown slug used to fall through as "no tenant" and org_query() then returned
+            # UNSCOPED filters, i.e. every tenant's data.
+            return JSONResponse(status_code=404, content={"detail": "Unknown organization."})
+        request.state.org_id = str(org_doc["_id"])
+        request.state.org_slug = org_slug
+    elif (REQUIRE_ORG_CONTEXT and request.method != "OPTIONS" and request.url.path != "/"
+          and not request.url.path.startswith(ORG_EXEMPT_PREFIXES)):
+        return JSONResponse(status_code=400, content={"detail": "X-Org-Slug header is required."})
     response = await call_next(request)
     return response
 
@@ -307,7 +330,7 @@ def _is_public(path: str, method: str) -> bool:
     # "logged in" anywhere. Branding is logo/colors/org-name/support-contact —
     # nothing sensitive — and is fetched unauthenticated on every page load
     # by App.jsx and Results.jsx for every visitor, not just superadmin.
-    if method == "GET" and path in {"/candidates", "/positions", "/superadmin/branding"}:
+    if method == "GET" and path in {"/candidates", "/positions", "/superadmin/branding", "/election-schedule", "/election-roadmap"}:
         return True
     return False
 
@@ -340,6 +363,50 @@ async def auth_guard_middleware(request: Request, call_next):
             {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id")
         )
         return JSONResponse(status_code=403, content={"detail": "Superadmin access required."})
+
+    # A token minted for tenant A must not work on tenant B by swapping X-Org-Slug. NB: this guard
+    # runs BEFORE org_context_middleware (Starlette runs the last-registered middleware first), so
+    # request.state.org_id isn't set yet: resolve the tenant here. Only the superadmin crosses tenants.
+    req_org = getattr(request.state, "org_id", None)
+    if req_org is None and request.headers.get("X-Org-Slug"):
+        _od = await db.organizations.find_one({"slug": request.headers["X-Org-Slug"]})
+        req_org = str(_od["_id"]) if _od else None
+    if payload["role"] != "superadmin" and payload.get("org_id") != req_org:
+        await log_action(
+            "admin_guard_tenant_mismatch", payload.get("sub", "unknown"),
+            {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id"))
+        return JSONResponse(status_code=403, content={"detail": "This session does not belong to this organization."})
+
+    # A temp-password login's token is scoped to password_change_only until the admin
+    # actually changes their password — everything else 403s even with a valid token.
+    if payload.get("scope") == SCOPE_PASSWORD_CHANGE_ONLY and request.url.path not in PASSWORD_CHANGE_ONLY_ALLOWED_PATHS:
+        return JSONResponse(status_code=403, content={
+            "detail": "You must change your temporary password before continuing."})
+
+    # Per-account session cutoff: a password reset or role revocation stamps
+    # sessions_valid_after on the voter doc (see _invalidate_sessions), so any token
+    # issued before that moment stops working here even though the JWT itself hasn't
+    # expired yet. Superadmin has no voter doc to stamp — it relies on its own shorter
+    # SUPERADMIN_JWT_EXPIRE_MINUTES lifetime instead.
+    if payload["role"] != "superadmin":
+        # NB: no flag_field filter here — a revoked role's whole point is that the flag is
+        # now False, so filtering on it True would make the lookup miss exactly the account
+        # whose session we most need to cut off. Role authorization is a separate check
+        # (require_role); this is only about "does this token still correspond to a live
+        # session for this account at all."
+        acct = await db.voters.find_one(
+            {**({"org_id": req_org} if req_org else {}), "student_id": payload.get("sub")},
+            {"sessions_valid_after": 1}
+        )
+        cutoff = acct.get("sessions_valid_after") if acct else None
+        if cutoff:
+            iat = payload.get("iat")
+            iat_dt = datetime.utcfromtimestamp(iat) if isinstance(iat, (int, float)) else iat
+            if iat_dt and iat_dt < cutoff:
+                await log_action("admin_guard_session_invalidated", payload.get("sub", "unknown"),
+                                  {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id"))
+                return JSONResponse(status_code=401, content={
+                    "detail": "Your session was ended (password changed or access updated). Please log in again."})
 
     request.state.admin = payload
     return await call_next(request)
@@ -376,7 +443,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Org-Slug"],
+    allow_headers=["Authorization", "Content-Type", "X-Org-Slug", "X-Voter-Token"],
     max_age=600,
 )
 
@@ -399,11 +466,18 @@ app.add_middleware(
 # down — but if this is ever deployed behind your own reverse proxy at a
 # known address, set TRUSTED_PROXY_HOSTS to that address (or a comma
 # separated list) instead of leaving it wildcarded.
-TRUSTED_PROXY_HOSTS = os.getenv("TRUSTED_PROXY_HOSTS", "*")
-app.add_middleware(
-    ProxyHeadersMiddleware,
-    trusted_hosts=[h.strip() for h in TRUSTED_PROXY_HOSTS.split(",")] if TRUSTED_PROXY_HOSTS != "*" else "*",
-)
+# uvicorn's ProxyHeadersMiddleware with trusted_hosts="*" takes the LEFTMOST X-Forwarded-For entry,
+# which is whatever the client typed, so every per-IP limiter was bypassable with a fresh fake header.
+# Proxies APPEND the peer they saw: the trustworthy entry is N hops from the RIGHT (N = proxies in
+# front of the app). Verify N for your host (Render / Cloudflare) by logging the header once.
+TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "1"))
+
+
+def real_client_ip(request: Request) -> str:
+    xff = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if TRUSTED_PROXY_HOPS > 0 and len(xff) >= TRUSTED_PROXY_HOPS:
+        return xff[-TRUSTED_PROXY_HOPS]
+    return request.client.host if request.client else "unknown"
 
 
 # =============================================================================
@@ -520,7 +594,7 @@ class FinanceClear(BaseModel):
 class ITAdminStudentAdd(BaseModel):
     student_id:        str
     full_name:         str
-    phone:             str
+    phones:            list[str]
     reason:            str
     requested_by:      str
     payment_method:    str = ""
@@ -676,7 +750,8 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
     """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
 
     EgoSMS (primary) first; on a DEFINITE failure falls back to MamboSMS. On an AMBIGUOUS EgoSMS result
-    (timeout) it does NOT fall back unless SMS_FALLBACK_ON_TIMEOUT=true, because the first send may have
+    (timeout) it does NOT fall back unless the org's sms_fallback_on_timeout setting is on (per-org,
+    defaults from SMS_FALLBACK_ON_TIMEOUT), because the first send may have
     been delivered and billed. Every provider send (Ego and Mambo) is counted toward the election budget.
     """
     org = request.state.org_id if request is not None else org_id
@@ -693,7 +768,8 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
         return "ok"
     if first == "ambiguous":
         await _safe_count_sms(org, kind)        # may have been billed
-        if not SMS_FALLBACK_ON_TIMEOUT:
+        sec = await security_settings_for(org)
+        if not sec["sms_fallback_on_timeout"]:
             await log_action("sms_ambiguous_no_fallback", "system", {"primary": "egosms"}, org_id=org)
             return "ambiguous"
 
@@ -716,8 +792,42 @@ async def send_sms(to_number: str, message_text: str, request: Request | None = 
 # =============================================================================
 
 def generate_temp_password() -> str:
-    """Simple 6-digit numeric code — easy to read and type from an SMS."""
-    return ''.join(secrets.choice(string.digits) for _ in range(6))
+    """12 chars from an unambiguous alphabet (no 0/O/1/I/l), ~62 bits of entropy.
+    The previous 6 digits (1e6 possibilities, no expiry) were guessable by an
+    online brute force against /admin/login well within LOGIN_MAX_ATTEMPTS's
+    15-minute lockout window resetting per attempt cycle."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+    return ''.join(secrets.choice(alphabet) for _ in range(12))
+
+
+# A temp password used to be permanent: if nobody ever logged in with it, it worked forever.
+TEMP_PASSWORD_EXPIRE_HOURS = int(os.getenv("TEMP_PASSWORD_EXPIRE_HOURS", "24"))
+# The superadmin can reset elections, force-approve applications, and read every tenant —
+# a shorter session than the other roles limits how long a stolen superadmin token is useful.
+SUPERADMIN_JWT_EXPIRE_MINUTES = int(os.getenv("SUPERADMIN_JWT_EXPIRE_MINUTES", "60"))
+SCOPE_PASSWORD_CHANGE_ONLY = "password_change_only"
+PASSWORD_CHANGE_ONLY_ALLOWED_PATHS = {"/admin/set-password", "/admin/logout"}
+
+
+def _login_token_for(voter: dict, role: str, must_change_field: str, org_id: str | None) -> str:
+    """A temp-password login (must_change_field still true) gets a token that the guard
+    will accept ONLY for /admin/set-password and /admin/logout — so an intercepted temp
+    password's token can't be used to touch anything else even if the client is buggy or
+    the person never opens the change-password screen."""
+    must_change = voter.get(must_change_field, True)
+    return create_access_token(
+        subject=voter["student_id"], role=role, org_id=org_id,
+        full_name=voter.get("full_name", ""),
+        scope=SCOPE_PASSWORD_CHANGE_ONLY if must_change else "full",
+    )
+
+
+async def _invalidate_sessions(voter_id) -> dict:
+    """Stamp used in an update_one's $set: any token issued before this moment for this
+    account stops working at the NEXT request (checked in auth_guard_middleware), even
+    though the JWT itself hasn't expired yet. Call this whenever a password is set/reset
+    or a role is revoked."""
+    return {"sessions_valid_after": datetime.utcnow()}
 
 def hash_password(plain_password: str) -> str:
     # bcrypt silently truncates at 72 bytes; reject rather than truncate so a
@@ -1021,6 +1131,15 @@ async def _create_candidate_from_application(app_doc: dict, org_id: str = None):
         "org_id": org_id
     })
 
+def _vote_key(student_id: str) -> str:
+    """One canonical key per commissioner (bind_identity normalizes, the old key did not)."""
+    return normalize_student_id(student_id).replace(".", "_").replace("/", "_").replace("$", "_")
+
+
+def _dedupe_votes(votes: dict) -> dict:
+    return {_vote_key(k): v for k, v in (votes or {}).items()}
+
+
 async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
     """
     Called after every commissioner vote.
@@ -1034,7 +1153,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
 
     required = (total // 2) + 1  # majority of total commissioner count
 
-    votes = app_doc.get("votes", {})
+    votes = _dedupe_votes(app_doc.get("votes", {}))
     approve_count = sum(1 for v in votes.values() if v == "approve")
     deny_count    = sum(1 for v in votes.values() if v == "deny")
 
@@ -1087,7 +1206,7 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
 
     required = (total // 2) + 1  # majority of total commissioner count
 
-    removal_votes = app_doc.get("removal_votes", {})
+    removal_votes = _dedupe_votes(app_doc.get("removal_votes", {}))
     approve_removals = sum(1 for v in removal_votes.values() if v == "approve")
 
     if approve_removals >= required:
@@ -1118,12 +1237,17 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
 
 async def _execute_student_change(change_doc: dict, org_id: str = None):
     if change_doc["change_type"] == "add":
-        phone = change_doc.get("phone", "")
-        clean = re.sub(r'\D', '', phone)
-        if clean.startswith('0'):
-            clean = '256' + clean[1:]
-        elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
-            clean = '256' + clean
+        # Accept both the new multi-number "phones" list and the older
+        # single "phone" field, for any change docs left over from before
+        # this became a list.
+        raw_phones = change_doc.get("phones") or ([change_doc["phone"]] if change_doc.get("phone") else [])
+        phones = []
+        for raw in raw_phones:
+            if not str(raw or "").strip():
+                continue
+            clean = normalize_phone_number(raw)
+            if clean not in phones:
+                phones.append(clean)
         q = {"student_id": normalize_student_id(change_doc["student_id"])}
         if org_id:
             q["org_id"] = org_id
@@ -1131,7 +1255,7 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             q,
             {"$set": {
                 "full_name":       change_doc["full_name"],
-                "phone_numbers":   [clean],
+                "phone_numbers":   phones,
                 "added_by_it":     True,
                 "added_by":        change_doc.get("requested_by", ""),
                 "org_id":          org_id,
@@ -1270,6 +1394,54 @@ class PhaseScheduleUpdate(BaseModel):
     round_id: str = DEFAULT_ROUND_ID
     timezone: str | None = None      # IANA name; omitted = keep the current one
     reason: str | None = None        # required only when this edit ends a live voting window right now
+
+
+class Milestone(BaseModel):
+    """One row of a client-supplied election roadmap (e.g. ASK-Table-EC.pdf).
+    Purely informational — doesn't gate anything, unlike PhaseWindow above.
+
+    Dates are structured: `start_date` (YYYY-MM-DD) is the event day, and
+    `end_date` is set only for a multi-day range (omitted/null = single-day
+    event). The public timeline derives the printed date text, the "● Today"
+    highlight (any day within start..end inclusive) and the automatic
+    "Week N" grouping from these. `date_label` is a legacy free-text field
+    kept only so rows saved before the date picker existed still render; it's
+    ignored whenever `start_date` is present."""
+    start_date: str | None = None
+    end_date: str | None = None
+    date_label: str = ""
+    activities: list[str] = []
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _iso_date(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            return datetime.strptime(str(v), "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            raise ValueError("dates must be YYYY-MM-DD")
+
+    @field_validator("end_date")
+    @classmethod
+    def _end_after_start(cls, v, info):
+        start = info.data.get("start_date")
+        if v and not start:
+            raise ValueError("end_date requires start_date")
+        if v and start and v < start:
+            raise ValueError("end_date must not be before start_date")
+        if v and v == start:
+            return None  # same day = single-day event
+        return v
+
+
+class RoadmapUpdate(BaseModel):
+    milestones: list[Milestone] = []
+    # First day of the week for the auto-computed week numbers on the public
+    # timeline. JS convention: 0 = Sunday ... 6 = Saturday. Week 1 always
+    # starts on the earliest event date (even mid-week); later weeks begin on
+    # this weekday. Default Monday.
+    week_start_day: int = Field(1, ge=0, le=6)
 
 
 class ExceptionGrantCreate(BaseModel):
@@ -1426,14 +1598,25 @@ async def assert_voting_allowed(request: Request, student_id: str):
 
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_LOCKOUT_MINUTES = 15
+# A superadmin can reset elections, force-approve applications, and read every tenant, so
+# it's the single highest-value account in the system — it must never be the one account an
+# attacker can fully deny access to just by typing its (publicly-known) email wrong 5 times.
+# Its lockout is short and capped rather than the normal 15 minutes, however many failures
+# pile up. Combined with (email, IP) keying below, an attacker spamming one IP no longer
+# blocks the same person's real login attempt from a different IP either.
+SUPERADMIN_LOCKOUT_SECONDS_CAP = int(os.getenv("SUPERADMIN_LOCKOUT_SECONDS_CAP", "60"))
 
 
-def _login_attempt_key(email: str, org_id: str | None) -> str:
-    return f"{org_id or 'default'}:{email}"
+def _login_attempt_key(email: str, org_id: str | None, ip: str) -> str:
+    return f"{org_id or 'default'}:{email}:{ip}"
 
 
-async def enforce_login_rate_limit(email: str, org_id: str | None):
-    key = _login_attempt_key(email, org_id)
+def _is_superadmin_email(email: str) -> bool:
+    return email.strip().lower() == SUPER_ADMIN_ID.strip().lower()
+
+
+async def enforce_login_rate_limit(email: str, org_id: str | None, ip: str):
+    key = _login_attempt_key(email, org_id, ip)
     record = await db.login_attempts.find_one({"key": key})
     if not record:
         return
@@ -1448,8 +1631,8 @@ async def enforce_login_rate_limit(email: str, org_id: str | None):
         )
 
 
-async def record_failed_login(email: str, org_id: str | None):
-    key = _login_attempt_key(email, org_id)
+async def record_failed_login(email: str, org_id: str | None, ip: str):
+    key = _login_attempt_key(email, org_id, ip)
     # CONCURRENCY: was find_one() then a separate update_one() — two failed
     # logins arriving at nearly the same instant (a script hammering one
     # account from parallel connections) could both read the same "attempts"
@@ -1465,14 +1648,20 @@ async def record_failed_login(email: str, org_id: str | None):
     )
     attempts = doc.get("attempts", 1)
     if attempts >= LOGIN_MAX_ATTEMPTS:
+        if _is_superadmin_email(email):
+            lock_for = timedelta(seconds=min(
+                SUPERADMIN_LOCKOUT_SECONDS_CAP,
+                5 * (2 ** (attempts - LOGIN_MAX_ATTEMPTS))))   # short, capped backoff — never a hard 15-min block
+        else:
+            lock_for = timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
         await db.login_attempts.update_one(
-            {"key": key}, {"$set": {"locked_until": datetime.utcnow() + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)}}
+            {"key": key}, {"$set": {"locked_until": datetime.utcnow() + lock_for}}
         )
-        await log_action("admin_login_locked", email, {"attempts": attempts}, org_id=org_id)
+        await log_action("admin_login_locked", email, {"attempts": attempts, "ip": ip}, org_id=org_id)
 
 
-async def clear_login_attempts(email: str, org_id: str | None):
-    key = _login_attempt_key(email, org_id)
+async def clear_login_attempts(email: str, org_id: str | None, ip: str):
+    key = _login_attempt_key(email, org_id, ip)
     await db.login_attempts.delete_one({"key": key})
 
 # =============================================================================
@@ -1484,7 +1673,6 @@ async def clear_login_attempts(email: str, org_id: str | None):
 
 OTP_LIMITER_MODE = os.getenv("OTP_LIMITER_MODE", "new").strip().lower()
 TURNSTILE_SECRET = os.getenv("TURNSTILE_SECRET")
-SMS_FALLBACK_ON_TIMEOUT = ol.env_bool("SMS_FALLBACK_ON_TIMEOUT", False)
 SMS_BUDGET_DEFAULT_MULTIPLIER = ol.env_float("SMS_BUDGET_DEFAULT_MULTIPLIER", 2.5)
 
 CONTACT_EVIDENCE_TYPES = (
@@ -1501,6 +1689,8 @@ _SEC_DEFAULTS = {
     "contact_change_required": ol.env_bool("CONTACT_CHANGE_REQUIRED", True),
     "otp_target_risk": ol.TARGET_RISK,
     "turnstile_mode": os.getenv("TURNSTILE_MODE", "off").strip().lower(),
+    "public_results_mode": os.getenv("PUBLIC_RESULTS_MODE", "live").strip().lower(),
+    "sms_fallback_on_timeout": ol.env_bool("SMS_FALLBACK_ON_TIMEOUT", False),
     "sms_budget_total": None,
     "sms_budget_enforce": ol.env_bool("SMS_BUDGET_ENFORCE", False),  # monitor-only until the dry run passes
     "sms_mode": "normal",                                             # normal | conservation
@@ -1569,7 +1759,7 @@ def _epoch(sec: dict) -> datetime:
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return real_client_ip(request)
 
 
 def _otp_key_for(org_id, student_id: str) -> str:
@@ -2179,7 +2369,11 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
         # Constant-time compare so response timing can't leak how many
         # leading digits of a guess were correct.
         if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
-            await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
+            voter_token, vote_jti = create_voter_token(
+                student_id=normalize_student_id(voter["student_id"]), org_id=request.state.org_id)
+            await db.voters.update_one(search, {"$set": {
+                "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
+                "authenticated_at": datetime.utcnow()}})
             await db.otps.delete_one(search)
             await _clear_otp_attempts(request, data.student_id)
             # Failure (otp_verify_locked) was already logged; success never
@@ -2187,7 +2381,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
             # lifecycle for a voter — only that they'd been locked out, never
             # that they got in.
             await log_action("otp_verified", normalize_student_id(data.student_id), {}, org_id=request.state.org_id)
-            return {"status": "success"}
+            return {"status": "success", "voter_token": voter_token}
 
     await _record_otp_failure(request, data.student_id)
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
@@ -2225,13 +2419,17 @@ async def verify_otp(data: OTPCheck, request: Request):
 
     # Constant-time compare so response timing can't leak how many leading digits were correct.
     if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
-        await db.voters.update_one(search, {"$set": {"last_status": "authenticated", "otp_count": 0}})
+        voter_token, vote_jti = create_voter_token(
+            student_id=normalize_student_id(sid), org_id=request.state.org_id)
+        await db.voters.update_one(search, {"$set": {
+            "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
+            "authenticated_at": datetime.utcnow()}})
         await db.otps.delete_one(search)
         await db.otp_guess_state.delete_one({"key": _otp_key(request, sid)})   # success forgives the bucket
         await count_verified(request.state.org_id)
         await ip_record(request, "verifies")
         await log_action("otp_verified", sid, {}, org_id=request.state.org_id)
-        return {"status": "success"}
+        return {"status": "success", "voter_token": voter_token}
 
     await ip_record(request, "fails")
     remaining = int(tokens_after + 1e-9)
@@ -2244,6 +2442,16 @@ async def verify_otp(data: OTPCheck, request: Request):
                             f"You do not need to do anything.", "guess_lock", wait, attempts_remaining=0)
     raise ApiError(400, f"That code is not correct. {remaining} {'try' if remaining == 1 else 'tries'} left.",
                    "wrong_code", attempts_remaining=remaining)
+
+
+def _assert_voter_session(request: Request, student: dict):
+    """Bind the ballot to whoever just passed OTP. auth.verify_voter_token checks signature,
+    expiry, role, student and tenant; the jti must also match the one stored at the LATEST
+    OTP verification, so a newer login (or a used token) invalidates older tokens. A 401 here
+    is what BallotBox.jsx turns into 'session expired, verify again'."""
+    payload = verify_voter_token(request, normalize_student_id(student.get("student_id", "")), request.state.org_id)
+    if not student.get("vote_jti") or not secrets.compare_digest(str(payload["jti"]), str(student["vote_jti"])):
+        raise HTTPException(status_code=401, detail="Your voting session has expired. Please verify your identity again.")
 
 
 @app.post("/vote")
@@ -2277,6 +2485,7 @@ async def cast_vote(data: VoteRequest, request: Request):
             raise HTTPException(status_code=400, detail="Ineligible voter")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+        _assert_voter_session(request, student)
 
         candidate_still_exists = await db.candidates.count_documents(
             org_query(request, {"_id": candidate_oid}), session=session
@@ -2284,11 +2493,13 @@ async def cast_vote(data: VoteRequest, request: Request):
         if not candidate_still_exists:
             raise HTTPException(status_code=404, detail="Candidate not found.")
 
-        await db.voters.update_one(
-            {"_id": student["_id"]},
-            {"$set": {"has_voted": True, "last_status": "completed"}},
+        claimed = await db.voters.update_one(
+            {"_id": student["_id"], "has_voted": {"$ne": True}},
+            {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
             session=session
         )
+        if claimed.matched_count != 1:
+            raise HTTPException(status_code=400, detail="Ineligible voter")
         # Append-only insert — no shared document for concurrent voters to
         # lock against, unlike the $inc this replaces. No voter_id is stored:
         # has_voted (on the voter doc) and this event are deliberately
@@ -2345,6 +2556,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             raise HTTPException(status_code=400, detail="You have already cast your vote.")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+        _assert_voter_session(request, student)
 
         # Validate every candidate exists BEFORE writing anything. The old
         # version incremented whichever candidates happened to resolve and
@@ -2366,11 +2578,13 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         if len(positions) != len(set(positions)):
             raise HTTPException(status_code=400, detail="Only one candidate can be selected per position.")
 
-        await db.voters.update_one(
-            {"_id": student["_id"]},
-            {"$set": {"has_voted": True, "last_status": "completed"}},
+        claimed = await db.voters.update_one(
+            {"_id": student["_id"], "has_voted": {"$ne": True}},
+            {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
             session=session
         )
+        if claimed.matched_count != 1:
+            raise HTTPException(status_code=400, detail="You have already cast your vote.")
         # Same append-only pattern as /vote, batched as one insert_many so a
         # multi-position ballot is still a single round trip inside the
         # transaction (still all-or-nothing with the has_voted update above).
@@ -2445,7 +2659,7 @@ async def get_positions(request: Request):
 # the real visitor, not the platform's reverse proxy, as long as
 # TRUSTED_PROXY_HOSTS is configured correctly for your deployment.
 async def _check_rate_limit(request: Request, *, bucket: str, limit: int, window_s: int, message: str):
-    ip = request.client.host if request.client else "unknown"
+    ip = real_client_ip(request)
     key = f"{bucket}:{ip}"
     now = datetime.utcnow()
     window_start = now - timedelta(seconds=window_s)
@@ -2650,17 +2864,18 @@ async def submit_application(data: ApplicationSubmit, request: Request):
 async def verify_admin(data: AdminLoginCheck, request: Request):
     email_key = data.email.strip().lower()
     org_id = request.state.org_id
+    ip = real_client_ip(request)
 
-    await enforce_login_rate_limit(email_key, org_id)
+    await enforce_login_rate_limit(email_key, org_id, ip)
 
     try:
         result = await _verify_admin_credentials(data, request)
     except HTTPException as exc:
         if exc.status_code in (401, 404):
-            await record_failed_login(email_key, org_id)
+            await record_failed_login(email_key, org_id, ip)
         raise
     else:
-        await clear_login_attempts(email_key, org_id)
+        await clear_login_attempts(email_key, org_id, ip)
         return result
 
 
@@ -2668,8 +2883,8 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     # ── Superadmin ── (env var based, no hashing needed — this is you)
     # compare_digest instead of == so a wrong password can't be narrowed down
     # character-by-character from response timing.
-    if (secrets.compare_digest(data.email, SUPER_ADMIN_ID)
-            and secrets.compare_digest(data.password, SUPER_ADMIN_PASSWORD)):
+    if (secrets.compare_digest(data.email.encode(), SUPER_ADMIN_ID.encode())
+            and secrets.compare_digest(data.password.encode(), SUPER_ADMIN_PASSWORD.encode())):
         if SUPERADMIN_TOTP_SECRET:
             if not data.totp_code:
                 # Distinct status code from "wrong code" on purpose: this is
@@ -2679,7 +2894,8 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
                 raise HTTPException(status_code=428, detail="totp_required")
             if not pyotp.TOTP(SUPERADMIN_TOTP_SECRET).verify(data.totp_code, valid_window=1):
                 raise HTTPException(status_code=401, detail="Invalid authenticator code.")
-        token = create_access_token(subject="superadmin", role="superadmin", org_id=request.state.org_id)
+        token = create_access_token(subject="superadmin", role="superadmin", org_id=request.state.org_id,
+                             expire_minutes=SUPERADMIN_JWT_EXPIRE_MINUTES)
         return {
             "status": "success",
             "bypass": True,
@@ -2697,11 +2913,11 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         stored_hash = it_admin.get("it_admin_password_hash", "")
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
+        expires = it_admin.get("it_admin_temp_password_expires")
+        if expires and datetime.utcnow() > expires and it_admin.get("it_admin_must_change_password"):
+            raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
         await log_action("it_admin_login", it_admin["student_id"], {"email": data.email}, org_id=request.state.org_id)
-        token = create_access_token(
-            subject=it_admin["student_id"], role="it_admin",
-            org_id=request.state.org_id, full_name=it_admin.get("full_name", "")
-        )
+        token = _login_token_for(it_admin, "it_admin", "it_admin_must_change_password", request.state.org_id)
         return {
             "status":              "success",
             "bypass":              True,
@@ -2721,11 +2937,12 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         stored_hash = financial_controller.get("financial_controller_password_hash", "")
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
+        expires = financial_controller.get("financial_controller_temp_password_expires")
+        if expires and datetime.utcnow() > expires and financial_controller.get("financial_controller_must_change_password"):
+            raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
         await log_action("financial_controller_login", financial_controller["student_id"], {"email": data.email}, org_id=request.state.org_id)
-        token = create_access_token(
-            subject=financial_controller["student_id"], role="financial_controller",
-            org_id=request.state.org_id, full_name=financial_controller.get("full_name", "")
-        )
+        token = _login_token_for(financial_controller, "financial_controller",
+                                  "financial_controller_must_change_password", request.state.org_id)
         return {
             "status":              "success",
             "bypass":              True,
@@ -2745,11 +2962,11 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         stored_hash = overseer.get("overseer_password_hash", "")
         if not verify_password(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
+        expires = overseer.get("overseer_temp_password_expires")
+        if expires and datetime.utcnow() > expires and overseer.get("overseer_must_change_password"):
+            raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
         await log_action("overseer_login", overseer["student_id"], {"email": data.email}, org_id=request.state.org_id)
-        token = create_access_token(
-            subject=overseer["student_id"], role="overseer",
-            org_id=request.state.org_id, full_name=overseer.get("full_name", "")
-        )
+        token = _login_token_for(overseer, "overseer", "overseer_must_change_password", request.state.org_id)
         return {
             "status":              "success",
             "bypass":              True,
@@ -2783,12 +3000,12 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     stored_hash = commissioner.get("commissioner_password_hash", "")
     if not verify_password(data.password, stored_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    expires = commissioner.get("commissioner_temp_password_expires")
+    if expires and datetime.utcnow() > expires and commissioner.get("commissioner_must_change_password"):
+        raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
 
     await log_action("commissioner_login", commissioner["student_id"], {"email": data.email}, org_id=request.state.org_id)
-    token = create_access_token(
-        subject=commissioner["student_id"], role="commission",
-        org_id=request.state.org_id, full_name=commissioner.get("full_name", "")
-    )
+    token = _login_token_for(commissioner, "commission", "commissioner_must_change_password", request.state.org_id)
     return {
         "status":              "success",
         "bypass":              True,
@@ -2829,6 +3046,24 @@ async def toggle_election(request: Request, data: ElectionToggle | None = None,
     # certification has to be revoked first, same rule as the election reset below.
     if new_status and (current or {}).get("is_certified"):
         raise HTTPException(400, "Results are certified. Revoke certification before starting the election.")
+
+    # A roster freeze with no resolvable timestamp is a no-op: roster_status() only ever
+    # freezes once `now >= freeze_at`, and with freeze_at None it never does, regardless of
+    # roster_freeze_enabled. That silently left "voters can be added/removed all the way
+    # through voting" as the default whenever nobody had set an explicit freeze time or a
+    # voting-phase start. Block opening in that state (unless the org explicitly disabled
+    # roster freeze protection) rather than let it open unprotected by omission.
+    if new_status:
+        sec = await get_security_settings(request)
+        if sec["roster_freeze_enabled"]:
+            voting_start = (await get_phase_schedule(request))["phases"]["voting"].get("start")
+            if not sec["roster_freeze_at"] and not voting_start:
+                raise HTTPException(400, {
+                    "code": "no_roster_freeze_time",
+                    "message": ("Roster freeze is enabled but has no time to freeze at. Set a roster freeze "
+                                "time or a voting start time before opening the election, or explicitly "
+                                "disable roster freeze if this election doesn't need it."),
+                })
 
     # Stopping while an enforced voting window is still live ends voting before the published
     # deadline. That is sometimes necessary (security incident), but it must be deliberate and on
@@ -3194,8 +3429,10 @@ async def set_new_password(data: SetNewPassword, request: Request):
             {"_id": it_admin["_id"]},
             {"$set": {
                 "it_admin_password_hash":        hash_password(data.new_password),
-                "it_admin_must_change_password": False
-            }}
+                "it_admin_must_change_password": False,
+                **(await _invalidate_sessions(it_admin["_id"])),
+              },
+              "$unset": {"it_admin_temp_password_expires": ""}}
         )
         await log_action("it_admin_password_changed", it_admin["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
@@ -3214,8 +3451,10 @@ async def set_new_password(data: SetNewPassword, request: Request):
             {"_id": financial_controller["_id"]},
             {"$set": {
                 "financial_controller_password_hash":        hash_password(data.new_password),
-                "financial_controller_must_change_password": False
-            }}
+                "financial_controller_must_change_password": False,
+                **(await _invalidate_sessions(financial_controller["_id"])),
+              },
+              "$unset": {"financial_controller_temp_password_expires": ""}}
         )
         await log_action("financial_controller_password_changed", financial_controller["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
@@ -3234,8 +3473,10 @@ async def set_new_password(data: SetNewPassword, request: Request):
             {"_id": overseer["_id"]},
             {"$set": {
                 "overseer_password_hash":        hash_password(data.new_password),
-                "overseer_must_change_password": False
-            }}
+                "overseer_must_change_password": False,
+                **(await _invalidate_sessions(overseer["_id"])),
+              },
+              "$unset": {"overseer_temp_password_expires": ""}}
         )
         await log_action("overseer_password_changed", overseer["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
@@ -3254,8 +3495,10 @@ async def set_new_password(data: SetNewPassword, request: Request):
             {"_id": commissioner["_id"]},
             {"$set": {
                 "commissioner_password_hash":        hash_password(data.new_password),
-                "commissioner_must_change_password": False
-            }}
+                "commissioner_must_change_password": False,
+                **(await _invalidate_sessions(commissioner["_id"])),
+              },
+              "$unset": {"commissioner_temp_password_expires": ""}}
         )
         await log_action("commissioner_password_changed", commissioner["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
@@ -3363,7 +3606,7 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     # Record vote (keyed by commissioner_id so they can only vote once per application)
     await db.applications.update_one(
         org_query(request, {"_id": oid}),
-        {"$set": {f"votes.{data.commissioner_id.replace('.', '_').replace('/', '_')}": data.vote}}
+        {"$set": {f"votes.{_vote_key(data.commissioner_id)}": data.vote}}
     )
 
     updated = await db.applications.find_one(org_query(request, {"_id": oid}))
@@ -3398,7 +3641,7 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
         "app_id": app_id, "vote": data.vote
     }, org_id=request.state.org_id)
 
-    safe_key = data.commissioner_id.replace('.', '_').replace('/', '_')
+    safe_key = _vote_key(data.commissioner_id)
     await db.applications.update_one(
         org_query(request, {"_id": oid}),
         {"$set": {f"removal_votes.{safe_key}": data.vote}}
@@ -3590,7 +3833,7 @@ async def generate_superadmin_mfa_secret(request: Request):
 # `slug` is what gets set as VITE_ORG_SLUG in that org's frontend deployment.
 
 @app.post("/superadmin/orgs")
-async def create_organization(data: OrganizationCreate):
+async def create_organization(data: OrganizationCreate, request: Request):
     slug = data.slug.strip().lower() if data.slug.strip() else await generate_unique_org_slug(data.name)
     if data.slug.strip():
         existing = await db.organizations.find_one({"slug": slug})
@@ -3649,8 +3892,14 @@ async def get_branding(request: Request):
             "cc_list":             []
         }
         
-    doc.pop("_id", None)
-    return doc
+    # This endpoint is unauthenticated by design (App.jsx and Results.jsx fetch it for
+    # every visitor before anyone logs in), so only return fields meant for a public
+    # visitor. cc_list (officials' email addresses) and org_id have no business here.
+    PUBLIC_BRANDING_FIELDS = (
+        "logo_url", "primary_color", "accent_color", "org_name", "university_name",
+        "university_logo_url", "commissioner_name", "support_phone", "support_pdf_url",
+    )
+    return {k: doc.get(k, "") for k in PUBLIC_BRANDING_FIELDS}
 
 
 @app.post("/superadmin/branding")
@@ -3812,7 +4061,7 @@ async def toggle_commissioner(student_id: str, request: Request):
     new_val = not voter.get("is_commissioner", False)
     await db.voters.update_one(
         {"_id": voter["_id"]},
-        {"$set": {"is_commissioner": new_val}}
+        {"$set": {"is_commissioner": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
     await log_action("commissioner_toggled", current_actor(request), {
     "student_id": student_id, "is_commissioner": new_val
@@ -3835,7 +4084,9 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
         {"$set": {
             "it_admin_email":                data.email,
             "it_admin_password_hash":        hashed,
-            "it_admin_must_change_password": True
+            "it_admin_must_change_password": True,
+            "it_admin_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "IT Admin", temp_password)
@@ -3959,20 +4210,44 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
 # RESULTS
 # =============================================================================
 
+# live (default: what Results.jsx does today) | closed | certified. "live" publishes running tallies
+# to anyone during voting; together with the public has_voted roll a watcher can correlate a tally
+# tick with a known voter finishing. Set closed/certified to withhold until then (admins always see).
 @app.get("/election-results")
 async def get_election_results(request: Request):
+    # Per-org, not process-wide: each tenant's own security_settings doc can
+    # override this; PUBLIC_RESULTS_MODE (env) is only the fallback default
+    # for orgs that haven't set their own (see _SEC_DEFAULTS).
+    #
+    # Turnout (how many people voted) is NEVER gated by this setting — it's
+    # participation data, not "who's winning," and hiding it too just breaks
+    # the public page instead of protecting anything. Only the per-candidate
+    # vote breakdown is withheld until results are released. A gated request
+    # gets a 200 with results_released=false and an empty results list, not
+    # a 403 — so the turnout figure and voter-roll section on the public page
+    # keep working even while the breakdown itself stays hidden.
+    results_mode = (await get_security_settings(request))["public_results_mode"]
+    results_released = True
+    if results_mode != "live":
+        try:
+            await require_admin(request)
+        except HTTPException:
+            cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+            results_released = cfg.get("is_certified", False) or (
+                results_mode == "closed" and not cfg.get("is_open", True))
     voter_turnout = await db.voters.count_documents(org_query(request, {"has_voted": True}))
-    vote_counts = await get_vote_counts(request)
     results = []
-    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
-        results.append({
-            "id": str(cand["_id"]),
-            "name": cand["name"],
-            "position": cand["position"],
-            "votes": vote_counts.get(str(cand["_id"]), 0),
-            "order": cand.get("order", 0)
-        })
-    return {"voter_turnout": voter_turnout, "results": results}
+    if results_released:
+        vote_counts = await get_vote_counts(request)
+        async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+            results.append({
+                "id": str(cand["_id"]),
+                "name": cand["name"],
+                "position": cand["position"],
+                "votes": vote_counts.get(str(cand["_id"]), 0),
+                "order": cand.get("order", 0)
+            })
+    return {"voter_turnout": voter_turnout, "results": results, "results_released": results_released}
 
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
@@ -4059,6 +4334,8 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
 @app.post("/it-admin/students/request-add")
 async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     await assert_roster_unfrozen(request)
+    if not any(str(p or "").strip() for p in data.phones):
+        raise HTTPException(400, "At least one phone number is required.")
     # A request attributed to someone else would make the audit trail lie
     # about who asked for a voter to be added to the register.
     bind_identity(request, data.requested_by, "IT Admin account")
@@ -4097,7 +4374,9 @@ async def reset_it_admin_password(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {
             "it_admin_password_hash":        hashed,
-            "it_admin_must_change_password": True
+            "it_admin_must_change_password": True,
+            "it_admin_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "IT Admin", temp_password)
@@ -4120,7 +4399,9 @@ async def reset_commissioner_password(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {
             "commissioner_password_hash":        hashed,
-            "commissioner_must_change_password": True
+            "commissioner_must_change_password": True,
+            "commissioner_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Commissioner", temp_password)
@@ -4311,7 +4592,7 @@ async def toggle_it_admin(student_id: str, request: Request):
     new_val = not voter.get("is_it_admin", False)
     await db.voters.update_one(
         {"_id": voter["_id"]},
-        {"$set": {"is_it_admin": new_val}}
+        {"$set": {"is_it_admin": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
     await log_action("it_admin_toggled", current_actor(request), {
         "student_id": student_id, "is_it_admin": new_val
@@ -4335,7 +4616,9 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
         {"$set": {
             "commissioner_email":                data.email,
             "commissioner_password_hash":        hashed,
-            "commissioner_must_change_password": True
+            "commissioner_must_change_password": True,
+            "commissioner_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Commissioner", temp_password)
@@ -4370,7 +4653,7 @@ async def toggle_financial_controller(student_id: str, request: Request):
     new_val = not voter.get("is_financial_controller", False)
     await db.voters.update_one(
         {"_id": voter["_id"]},
-        {"$set": {"is_financial_controller": new_val}}
+        {"$set": {"is_financial_controller": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
     await log_action("financial_controller_toggled", current_actor(request), {
         "student_id": student_id, "is_financial_controller": new_val
@@ -4394,7 +4677,9 @@ async def set_financial_controller_credentials(student_id: str, data: SetEmailOn
         {"$set": {
             "financial_controller_email":                data.email,
             "financial_controller_password_hash":        hashed,
-            "financial_controller_must_change_password": True
+            "financial_controller_must_change_password": True,
+            "financial_controller_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
@@ -4417,7 +4702,9 @@ async def reset_financial_controller_password(student_id: str, request: Request)
         {"_id": voter["_id"]},
         {"$set": {
             "financial_controller_password_hash":        hashed,
-            "financial_controller_must_change_password": True
+            "financial_controller_must_change_password": True,
+            "financial_controller_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Financial Controller", temp_password)
@@ -4452,7 +4739,7 @@ async def toggle_overseer(student_id: str, request: Request):
     new_val = not voter.get("is_overseer", False)
     await db.voters.update_one(
         {"_id": voter["_id"]},
-        {"$set": {"is_overseer": new_val}}
+        {"$set": {"is_overseer": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
     await log_action("overseer_toggled", current_actor(request), {
         "student_id": student_id, "is_overseer": new_val
@@ -4476,7 +4763,9 @@ async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request:
         {"$set": {
             "overseer_email":                data.email,
             "overseer_password_hash":        hashed,
-            "overseer_must_change_password": True
+            "overseer_must_change_password": True,
+            "overseer_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
@@ -4499,7 +4788,9 @@ async def reset_overseer_password(student_id: str, request: Request):
         {"_id": voter["_id"]},
         {"$set": {
             "overseer_password_hash":        hashed,
-            "overseer_must_change_password": True
+            "overseer_must_change_password": True,
+            "overseer_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+            **(await _invalidate_sessions(voter["_id"])),
         }}
     )
     sms_sent = await send_temp_password_sms(voter, "Overseer", temp_password)
@@ -4596,17 +4887,18 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
 @app.post("/superadmin/students/add")
 async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
     await assert_roster_unfrozen(request)
-    phone = data.phone
-    clean = re.sub(r'\D', '', phone)
-    if clean.startswith('0'):
-        clean = '256' + clean[1:]
-    elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
-        clean = '256' + clean
+    phones = []
+    for raw in data.phones:
+        if not str(raw or "").strip():
+            continue
+        clean = normalize_phone_number(raw)
+        if clean not in phones:
+            phones.append(clean)
     await db.voters.update_one(
         org_query(request, {"student_id": data.student_id}),
         {"$set": org_stamp(request, {
             "full_name":       data.full_name,
-            "phone_numbers":   [clean],
+            "phone_numbers":   phones,
             "added_by":        "superadmin",
             "add_reason":      data.reason
         }),
@@ -5055,6 +5347,78 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
         await db.settings.update_one(org_query(request, {"name": "otp_derived"}),
                                      {"$set": {"round_id": data.round_id or DEFAULT_ROUND_ID}})
     return {"status": "saved", "round_id": data.round_id or DEFAULT_ROUND_ID}
+
+
+@app.get("/admin/roadmap")
+async def get_admin_roadmap(request: Request):
+    """Read-only for any admin role (matches /admin/schedule's transparency
+    rule); only superadmin can write via POST /admin/roadmap below."""
+    doc = await db.settings.find_one(org_query(request, {"name": "election_roadmap"}))
+    return {
+        "milestones": (doc or {}).get("milestones", []),
+        "week_start_day": (doc or {}).get("week_start_day", 1),
+    }
+
+
+@app.post("/admin/roadmap")
+async def set_roadmap(data: RoadmapUpdate, request: Request,
+                      admin: dict = Depends(require_role("superadmin"))):
+    """Free-text, informational election roadmap (e.g. the client's own
+    week-by-week PDF table). Doesn't gate anything — PHASE_NAMES/PhaseWindow
+    above still do that. Each row carries a picked start date and an optional
+    end date (range); the "today" auto-highlight on the public timeline is
+    derived from those. Week
+    numbers are derived from those dates too (Week 1 = the week the first
+    event happens; later weeks start on `week_start_day`). Rows are stored
+    and returned in the order given, never re-sorted."""
+    stored = [m.model_dump() for m in data.milestones]
+    await db.settings.update_one(
+        org_query(request, {"name": "election_roadmap"}),
+        {"$set": org_stamp(request, {
+            "name": "election_roadmap",
+            "milestones": stored,
+            "week_start_day": data.week_start_day,
+            "updated_at": datetime.utcnow(),
+        })},
+        upsert=True,
+    )
+    await log_action("roadmap_updated", current_actor(request), {
+        "milestone_count": len(stored),
+        "week_start_day": data.week_start_day,
+    }, org_id=request.state.org_id)
+    return {"status": "saved", "milestone_count": len(stored),
+            "week_start_day": data.week_start_day}
+
+
+@app.get("/election-schedule")
+async def get_public_election_schedule(request: Request):
+    """Public, read-only, unauthenticated view of the phase schedule for the
+    Help menu's Election Timeline. Independent of /election-roadmap below —
+    each is its own document, its own endpoint, and the frontend fetches
+    them separately so one being slow/unset never blocks the other."""
+    schedule = await get_phase_schedule(request)
+    return {
+        "timezone": schedule["timezone"],
+        "phases": schedule["phases"],
+    }
+
+
+@app.get("/election-roadmap")
+async def get_public_election_roadmap(request: Request):
+    """Public, read-only, unauthenticated view of the informational
+    milestone roadmap (see Milestone/RoadmapUpdate above), shown to voters
+    under Help -> Election Timeline. Also returns the election timezone (set
+    on the admin Timeline) so the page can show a live clock and decide
+    "today" in that zone. The 4 enforced phases are deliberately NOT exposed
+    here — they're an admin-facing view of when the system switches state,
+    not voter information."""
+    doc = await db.settings.find_one(org_query(request, {"name": "election_roadmap"}))
+    schedule = await get_phase_schedule(request)
+    return {
+        "milestones": (doc or {}).get("milestones", []),
+        "week_start_day": (doc or {}).get("week_start_day", 1),
+        "timezone": schedule["timezone"],
+    }
 
 
 # =============================================================================
@@ -5543,12 +5907,14 @@ class SecuritySettingsUpdate(BaseModel):
     contact_change_required: bool | None = None
     otp_target_risk: float | None = None
     turnstile_mode: str | None = None
+    public_results_mode: str | None = None
     contact_change_ttl_hours: int | None = None
     contact_change_max_per_voter: int | None = None
     approver_daily_cap: int | None = None
     quota_alert_pct: float | None = None
     quota_hard_cap_pct: float | None = None
     superadmin_breakglass: bool | None = None
+    sms_fallback_on_timeout: bool | None = None
     digest_days: int | None = None
     reset_admin_hourly_alert: int | None = None
     reset_admin_hourly_hard_cap: int | None = None
@@ -6114,7 +6480,8 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
     if len(reason) < 3:
         raise HTTPException(400, "A reason is required for every settings change.")
     sec, updates = await get_security_settings(request), {}
-    for f in ("roster_freeze_enabled", "contact_change_required", "superadmin_breakglass"):
+    for f in ("roster_freeze_enabled", "contact_change_required", "superadmin_breakglass",
+              "sms_fallback_on_timeout"):
         if getattr(data, f) is not None:
             updates[f] = getattr(data, f)
     for f, (lo, hi) in _SEC_RANGES.items():
@@ -6127,6 +6494,10 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
         if data.turnstile_mode not in ("off", "adaptive", "on"):
             raise HTTPException(400, "turnstile_mode must be off, adaptive or on.")
         updates["turnstile_mode"] = data.turnstile_mode
+    if data.public_results_mode is not None:
+        if data.public_results_mode not in ("live", "closed", "certified"):
+            raise HTTPException(400, "public_results_mode must be live, closed or certified.")
+        updates["public_results_mode"] = data.public_results_mode
     if data.clear_roster_freeze_at:
         updates["roster_freeze_at"] = None
     elif data.roster_freeze_at is not None:

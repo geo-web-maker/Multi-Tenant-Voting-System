@@ -62,6 +62,15 @@
   --text-muted: #9aa3b5;
 }
 
+/* Global sizing model. Without this every element defaulted to content-box,
+   so anything with `width: 100%` plus padding/border (ballot candidate cards,
+   dashboard wrappers, cards, inputs) rendered wider than its parent by its own
+   padding — the source of the "pushed right, gap on the left, cut off on the
+   right" imbalance across the ballot and admin screens. */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   display: block; /* Changed from flex to allow our App container to take control */
@@ -169,7 +178,7 @@ button:hover {
   .candidate-name, 
   .vote-count, 
   .share-percentage,
-  h1, h2, p, span, 
+  h1, h2, p, span:not(.cand-badge):not(.cand-live):not(.cand-pct), 
   h3:not(.position-header) { /* <--- This tells CSS: "Every h3 EXCEPT the headers" */
     color: var(--text-color) !important;
     opacity: 1 !important;
@@ -264,6 +273,22 @@ button:hover {
     width: 100%;
   }
 }
+
+/* --- Dashboard shell sizing fix (all widths) ---
+   There is no global `box-sizing: border-box`, so .outer-wrap (width 100% +
+   20px padding) and .dashboard-shell (width 95%/100% + 16-30px padding +
+   border) were each wider than their parent by their own padding. Inside a
+   centering flexbox that overflow spills off BOTH sides, so admin pages sat
+   pushed right with a gap on the left edge and ran past the right edge.
+   `min-width: 0` also stops the nowrap tab bar's intrinsic width from
+   forcing the panel wider than the viewport. */
+.outer-wrap,
+.dashboard-shell {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+.outer-wrap { max-width: 100vw; }
 
 /* --- Dashboard shell: reclaim wasted padding on phones --- */
 @media (max-width: 600px) {
@@ -451,3 +476,37 @@ td, th {
 @keyframes icon-spin { to { transform: rotate(360deg); } }
 .icon-spin { animation: icon-spin 0.9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .icon-spin { animation-duration: 2.5s; } }
+
+
+/* ---- Results page: candidate rows (screen only) ------------------------- */
+@media screen {
+  .cand-row { margin-bottom: 22px; }
+
+  /* Name takes the free space and wraps; votes keep their natural width. */
+  .cand-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .cand-name  { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
+  .cand-votes { flex: 0 0 auto; font-size: 14px; white-space: nowrap; }
+  .cand-pct   { font-size: 12px; color: var(--text-muted); }
+
+  .cand-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .cand-live   { font-size: 10px; font-weight: 700; letter-spacing: .5px; }
+
+  /* Badge and LEADING text colours are set inline; they are excluded from the
+     global span colour rule above with :not(.cand-badge):not(.cand-live). */
+}
+
+/* The voter-roll search box sits inside a scrolling container
+   (overflow-y: auto), which forces overflow-x to auto too — so the
+   browser's default focus outline, which draws outside the box, was
+   getting clipped on the left/right. outline-offset: -2px draws it
+   inward instead, so it stays inside the box and never gets cut. */
+.roll-search-input:focus {
+  outline: 2px solid var(--brand-accent, #f1c40f);
+  outline-offset: -2px;
+}

@@ -19,11 +19,11 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, orgName 
     // ballot preview stops being offered — it's a "here's what you'll see
     // when you vote" guide, and showing it after voting has ended just
     // advertises something that's no longer possible.
-    ...(showSampleBallot ? [{ icon: <Icon name="book" />, label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } }] : []),
-    { icon: <Icon name="search" />, label: 'Check Voter Register', onClick: () => { setShowRegister(true); setOpen(false); } },
-    ...(supportPdfUrl ? [{ icon: <Icon name="file" />, label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
+    ...(showSampleBallot ? [{ label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } }] : []),
+    { label: 'Check Voter Register', onClick: () => { setShowRegister(true); setOpen(false); } },
+    ...(supportPdfUrl ? [{ label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
-      icon: <Icon name="chat" />, label: 'Contact Support', color: '#25D366',
+      label: 'Contact Support', color: '#25D366',
       href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)')
     },
   ];
@@ -38,11 +38,11 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, orgName 
           </div>
           {items.map((it, i) => it.href ? (
             <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
-              <span>{it.icon}</span> {it.label}
+              {it.label}
             </a>
           ) : (
             <button key={i} onClick={it.onClick} style={menuItemStyle}>
-              <span>{it.icon}</span> {it.label}
+              {it.label}
             </button>
           ))}
         </div>

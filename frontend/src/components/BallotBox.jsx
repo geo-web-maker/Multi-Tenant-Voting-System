@@ -226,7 +226,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
             style={clearAllBtnStyle}
             disabled={Object.keys(ballot).length === 0}
           >
-            <Icon name="trash" /> Clear All
+            Clear All
           </button>
       
           <button 
@@ -244,8 +244,6 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
       {!isPreview && showClearConfirm && (
         <div style={modalOverlayStyle}>
           <div className="modal-content" style={{...modalContentStyle, textAlign: 'center'}}>
-           {/* Icon for visual emphasis */}
-            <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="trash" /></div>
             
             <h2 style={{ color: '#e11d48', marginTop: 0, fontWeight: '800' }}>
               Reset Entire Ballot?
@@ -372,11 +370,11 @@ const summaryRowStyle = {
   alignItems: 'center',  // <--- This centers the name and the photo
   gap: '12px' 
 };
-const clearAllBtnStyle = { flex: 1, backgroundColor: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '16px', borderRadius: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' };
+const clearAllBtnStyle = { flex: 1, whiteSpace: 'nowrap', backgroundColor: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '16px 18px', borderRadius: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' };
 const cancelBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontWeight: '600', cursor: 'pointer', backgroundColor: 'transparent' };
 const confirmBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: 'none', color: '#fff', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' };
 const footerBarStyle = { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'var(--card-bg)', padding: '24px', borderTop: '1px solid var(--border-color)', zIndex: 1000 };
-const submitBallotBtnStyle = { backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '16px 48px', borderRadius: '14px', fontWeight: 'bold', fontSize: '18px', cursor: 'pointer' };
+const submitBallotBtnStyle = { backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '16px 20px', borderRadius: '14px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' };
 
 const horizontalCardStyle = {
   display: 'flex',
@@ -388,7 +386,8 @@ const horizontalCardStyle = {
   transition: 'all 0.2s ease',
   width: '100%',
   maxWidth: '550px',
-  margin: '0 auto'
+  margin: '0 auto',
+  boxSizing: 'border-box'
 };
 
 const horizontalImageStyle = {

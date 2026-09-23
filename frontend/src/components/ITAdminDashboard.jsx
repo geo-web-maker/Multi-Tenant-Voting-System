@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
-import { RosterStats } from './SharedAdminPanels';
+import { RosterStats, RecentActivity } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ITAdminStudentEdit from './ITAdminStudentEdit';
+import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
 import { previewPhone } from '../studentEdit';
 import './ITAdminDashboard.css';
 
@@ -30,7 +31,7 @@ export default function ITAdminDashboard({ onLogout }) {
   
   // ── Add student form state ──
   const [addForm, setAddForm] = useState({
-    student_id: '', full_name: '', phone: '', reason: ''
+    student_id: '', full_name: '', phones: [''], reason: ''
   });
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError]           = useState('');
@@ -89,14 +90,26 @@ export default function ITAdminDashboard({ onLogout }) {
 
   // ── Add student ──
 
+  const updateAddPhone = (i, value) => {
+    const phones = [...addForm.phones];
+    phones[i] = value;
+    setAddForm({ ...addForm, phones });
+  };
+  const addAddPhoneRow    = () => setAddForm({ ...addForm, phones: [...addForm.phones, ''] });
+  const removeAddPhoneRow = (i) => setAddForm({ ...addForm, phones: addForm.phones.filter((_, idx) => idx !== i) });
+
   const handleAddSubmit = async (e) => {
     e.preventDefault();
     setAddError('');
     setAddSuccess('');
-  
+
+    const cleanPhones = addForm.phones.map(p => p.trim()).filter(Boolean);
+
     if (!addForm.student_id.trim()) { setAddError('Student ID is required.'); return; }
     if (!addForm.full_name.trim())  { setAddError('Full name is required.');  return; }
-    if (!addForm.phone.trim())      { setAddError('Phone number is required.'); return; }
+    if (!cleanPhones.length)        { setAddError('At least one phone number is required.'); return; }
+    const invalidPhone = cleanPhones.find(p => !previewPhone(p));
+    if (invalidPhone)                { setAddError(`"${invalidPhone}" is not a valid phone number.`); return; }
     if (!addForm.reason.trim())     { setAddError('Reason is required.');     return; }
     if (!paymentMethod)             { setAddError('Please select a payment method.'); return; }
     if (!paymentProof)              { setAddError('Please upload proof of payment.'); return; }
@@ -110,14 +123,14 @@ export default function ITAdminDashboard({ onLogout }) {
       await api.post('/it-admin/students/request-add', {
         student_id:        addForm.student_id.trim(),
         full_name:         addForm.full_name.trim(),
-        phone:             addForm.phone.trim(),
+        phones:            cleanPhones,
         reason:            addForm.reason.trim(),
         requested_by:      itAdminId,
         payment_method:    paymentMethod,
         payment_proof_url,
       });
       setAddSuccess('Request submitted. Waiting for commission approval.');
-      setAddForm({ student_id: '', full_name: '', phone: '', reason: '' });
+      setAddForm({ student_id: '', full_name: '', phones: [''], reason: '' });
       setPaymentMethod('');
       setPaymentProof(null);
       setPaymentProofPreview(null);
@@ -182,14 +195,17 @@ export default function ITAdminDashboard({ onLogout }) {
 
   const pendingCount = myRequests.filter(r => r.status === 'pending').length;
 
+  const roster = useRosterStatus();
+  const rosterFrozen = Boolean(roster?.frozen);   // no add / remove / import after the freeze
+
   const tabs = [
     // IT Admin previously had no visibility into election state at all —
     // only the three roster-change tabs. Overview is now the landing tab.
-    { id: 'overview', label: <><Icon name="chart" /> Overview</> },
-    { id: 'add',      label: <><Icon name="plus" /> Add Student</> },
-    { id: 'edit',     label: <><Icon name="user" /> Edit Student</> },
-    { id: 'remove',   label: <><Icon name="minus" /> Remove Student</> },
-    { id: 'requests', label: <><Icon name="clipboard" /> My Requests</>, count: myRequests.length },
+    { id: 'overview', label: <>Overview</> },
+    ...(rosterFrozen ? [] : [{ id: 'add', label: <>Add Student</> }]),
+    { id: 'edit',     label: <>Edit Student</> },
+    ...(rosterFrozen ? [] : [{ id: 'remove', label: <>Remove Student</> }]),
+    { id: 'requests', label: <>My Requests</>, count: myRequests.length },
     ...SHARED_TAB_DEFS,
   ];
 
@@ -200,7 +216,7 @@ export default function ITAdminDashboard({ onLogout }) {
         {/* ── Header ── */}
         <div style={headerFlex}>
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="monitor" /> IT Admin Panel</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>IT Admin Panel</h2>
             <span style={{ fontSize: '12px', opacity: 0.6 }}>
               Logged in as <strong>{itAdminName || itAdminId}</strong>
               {pendingCount > 0 && ` · ${pendingCount} pending request${pendingCount !== 1 ? 's' : ''}`}
@@ -217,6 +233,12 @@ export default function ITAdminDashboard({ onLogout }) {
           </div>
         )}
 
+        {rosterFrozen && (
+          <div style={{ ...infoBox, borderColor: 'var(--warning)', marginBottom: '16px' }}>
+            <p style={{ margin: 0, fontSize: '13px' }}>{FROZEN_NOTE}</p>
+          </div>
+        )}
+
         {/* ── Tabs ── */}
         <div style={tabBar} className="tab-scroll">
           {tabs.map(t => (
@@ -229,7 +251,7 @@ export default function ITAdminDashboard({ onLogout }) {
         </div>
 
         {/* ══════════════ ADD STUDENT ══════════════ */}
-        {activeTab === 'add' && (
+        {activeTab === 'add' && !rosterFrozen && (
           <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Add a Student</h4>
@@ -249,10 +271,22 @@ export default function ITAdminDashboard({ onLogout }) {
                   value={addForm.full_name}
                   onChange={e => setAddForm({ ...addForm, full_name: e.target.value })} />
 
-                <label style={{ ...lbl, marginTop: '10px' }}>Phone Number *</label>
-                <input style={inp} placeholder="e.g. 0705123456"
-                  value={addForm.phone}
-                  onChange={e => setAddForm({ ...addForm, phone: e.target.value })} />
+                <label style={{ ...lbl, marginTop: '10px' }}>Phone Number(s) *</label>
+                {addForm.phones.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', gap: '8px', marginTop: i ? '6px' : 0 }}>
+                    <input style={{ ...inp, flex: 1 }} placeholder="e.g. 0705123456"
+                      value={p}
+                      onChange={e => updateAddPhone(i, e.target.value)} />
+                    {addForm.phones.length > 1 && (
+                      <button type="button" style={ghostBtn} onClick={() => removeAddPhoneRow(i)} aria-label="Remove phone number">
+                        <Icon name="trash" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" style={{ ...ghostBtn, marginTop: '8px', alignSelf: 'flex-start' }} onClick={addAddPhoneRow}>
+                  + Add another phone number
+                </button>
 
                 <label style={{ ...lbl, marginTop: '10px' }}>Reason for Adding *</label>
                 <textarea style={{ ...inp, height: '80px', resize: 'vertical' }}
@@ -312,7 +346,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 {addSuccess && <div style={successBox}><Icon name="success" /> {addSuccess}</div>}
 
               <button type="submit" style={{ ...greenBtn, marginTop: '14px' }} disabled={addSubmitting}>
-                {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : addSubmitting ? 'Submitting…' : <><Icon name="send" /> Submit Add Request</>}
+                {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : addSubmitting ? 'Submitting…' : <>Submit Add Request</>}
               </button>
               </form>
             </div>
@@ -321,7 +355,8 @@ export default function ITAdminDashboard({ onLogout }) {
               {[
                 ['Registration no.', addForm.student_id.trim()],
                 ['Name', addForm.full_name.trim()],
-                ['Phone', addForm.phone.trim() ? (previewPhone(addForm.phone) || 'Not a valid number') : ''],
+                ['Phone(s)', addForm.phones.map(p => p.trim()).filter(Boolean)
+                  .map(p => previewPhone(p) || `${p} (invalid)`).join(', ')],
                 ['Reason', addForm.reason.trim()],
                 ['Payment', paymentMethod],
                 ['Receipt', paymentProof ? paymentProof.name : ''],
@@ -339,7 +374,7 @@ export default function ITAdminDashboard({ onLogout }) {
         {activeTab === 'edit' && <ITAdminStudentEdit />}
 
         {/* ══════════════ REMOVE STUDENT ══════════════ */}
-        {activeTab === 'remove' && (
+        {activeTab === 'remove' && !rosterFrozen && (
           <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Remove a Student</h4>
@@ -408,7 +443,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 {removeSuccess && <div style={successBox}><Icon name="success" /> {removeSuccess}</div>}
 
                 <button type="submit" style={{ ...redBtn, marginTop: '14px' }} disabled={removeSubmitting}>
-                  {removeSubmitting ? 'Submitting…' : <><Icon name="send" /> Submit Removal Request</>}
+                  {removeSubmitting ? 'Submitting…' : <>Submit Removal Request</>}
                 </button>
               </form>
             </div>
@@ -430,13 +465,12 @@ export default function ITAdminDashboard({ onLogout }) {
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '14px' }}>
               <button style={ghostBtn} onClick={fetchMyRequests} disabled={loading}>
-                {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
+                {loading ? 'Syncing…' : <>Refresh</>}
               </button>
             </div>
 
             {myRequests.length === 0 && !loading && (
               <div style={emptyState}>
-                <div style={{ fontSize: '40px', marginBottom: '10px' }}><Icon name="inbox" /></div>
                 <p style={{ opacity: 0.5 }}>You haven't submitted any requests yet.</p>
               </div>
             )}
@@ -446,7 +480,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                   <div>
                     <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
-                      {req.change_type === 'add' ? <><Icon name="plus" /> Add Student</> : <><Icon name="minus" /> Remove Student</>}
+                      {req.change_type === 'add' ? <>Add Student</> : <>Remove Student</>}
                     </b>
                     <span style={{ ...statusBadge(req.status), marginLeft: '10px' }}>
                       {req.status.toUpperCase().replace('_', ' ')}
@@ -461,9 +495,9 @@ export default function ITAdminDashboard({ onLogout }) {
                 <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
                   <b>Student:</b> {req.full_name} — <code style={{ fontSize: '12px' }}>{req.student_id}</code>
                 </p>
-                {req.change_type === 'add' && req.phone && (
+                {req.change_type === 'add' && (req.phones?.length > 0 || req.phone) && (
                   <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.6 }}>
-                    Phone: {req.phone}
+                    Phone{(req.phones?.length || 1) > 1 ? 's' : ''}: {req.phones?.length ? req.phones.join(', ') : req.phone}
                   </p>
                 )}
                 <p style={{ margin: '6px 0', fontSize: '13px', opacity: 0.8 }}>
@@ -495,7 +529,7 @@ export default function ITAdminDashboard({ onLogout }) {
                     disabled={cancelling[req._id]}
                     onClick={() => handleCancel(req._id)}
                   >
-                    {cancelling[req._id] ? 'Withdrawing…' : <><Icon name="ban" /> Withdraw Request</>}
+                    {cancelling[req._id] ? 'Withdrawing…' : <>Withdraw Request</>}
                   </button>
                 )}
               </div>
@@ -503,7 +537,29 @@ export default function ITAdminDashboard({ onLogout }) {
           </div>
         )}
 
-        {activeTab === 'overview' && <RosterStats />}
+        {activeTab === 'overview' && (
+          <div>
+            {pendingCount > 0 && (
+              <div style={{ ...infoBox, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '13px' }}>
+                  You have <b>{pendingCount}</b> request{pendingCount !== 1 ? 's' : ''} awaiting approval.
+                </span>
+                <button style={ghostBtn} onClick={() => setActiveTab('requests')}>View requests</button>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px' }}>
+              {!rosterFrozen && (
+                <button style={greenBtn} onClick={() => setActiveTab('add')}>+ Add Student</button>
+              )}
+              <button style={ghostBtn} onClick={() => setActiveTab('edit')}>Edit Student</button>
+              {!rosterFrozen && (
+                <button style={ghostBtn} onClick={() => setActiveTab('remove')}>Remove Student</button>
+              )}
+            </div>
+            <RosterStats />
+            <RecentActivity />
+          </div>
+        )}
         <SharedTabPanels activeTab={activeTab} />
       </div>
     </div>

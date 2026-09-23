@@ -264,7 +264,7 @@ function prettyDetailValue(v) {
   return String(v);
 }
 
-function describeDetails(action, details) {
+export function describeDetails(action, details) {
   const special = DETAIL_DESCRIBERS[action];
   if (special) return special(details || {});
   const entries = Object.entries(details || {}).filter(([k]) => !DETAIL_NOISE_KEYS.has(k));
@@ -274,7 +274,7 @@ function describeDetails(action, details) {
     .join(' · ');
 }
 
-function describeAction(action) {
+export function describeAction(action) {
   return ACTION_TITLES[action] || String(action).replace(/_/g, ' ');
 }
 
@@ -406,7 +406,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
     <div>
       <h4 style={panelTitle}>Election Timeline <span style={roundPill}>{data.round_id}</span></h4>
       <p style={{ ...mutedStyle, marginTop: 0 }}>
-        <Icon name="calendar" /> All times below are shown in <b>{tz}</b> ({tzShort(tz)}, {utcOffsetLabel(tz)}).
+        All times below are shown in <b>{tz}</b> ({tzShort(tz)}, {utcOffsetLabel(tz)}).
         Now: <b>{fmtZoned(data.server_time, tz)}</b>
         {browserTz() !== tz && <> · your device is in {browserTz()} ({utcOffsetLabel(browserTz())})</>}
       </p>
@@ -427,7 +427,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
               <p style={countdownStyle}>Closes in {countdown(p.seconds_until_end)}</p>
             )}
             <p style={{ ...phaseMeta, opacity: 0.6 }}>
-              {p.enforced ? <><Icon name="lock" /> Enforced — closed means blocked</> : <><Icon name="eye" /> Advisory only — not enforced</>}
+              {p.enforced ? <>Enforced — closed means blocked</> : <>Advisory only — not enforced</>}
             </p>
           </div>
         ))}
@@ -530,14 +530,15 @@ export function Timeline({ canEdit = false, isChief = false }) {
           <div className="table-scroll">
             <table style={tableStyle}>
               <thead>
-                <tr>{['Student', 'Phase', 'Reason', 'By', 'Expires', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                <tr>{[['Student', '18%'], ['Phase', '12%'], ['Reason', '32%'], ['By', '16%'], ['Expires', '16%'], ['', '6%']]
+                  .map(([h, w]) => <th key={h || 'actions'} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {grants.map(g => (
                   <tr key={g._id} style={{ opacity: g.revoked ? 0.4 : 1 }}>
                     <td style={tdStyle}>{g.full_name || g.student_id}</td>
                     <td style={tdStyle}>{PHASE_LABELS[g.phase] || g.phase}</td>
-                    <td style={{ ...tdStyle, maxWidth: '260px' }}>{g.reason}</td>
+                    <td style={tdStyle}>{g.reason}</td>
                     <td style={tdStyle}>{g.granted_by}</td>
                     <td style={tdStyle}>{g.expires_at ? fmt(g.expires_at) : 'No expiry'}</td>
                     <td style={tdStyle}>
@@ -553,6 +554,190 @@ export function Timeline({ canEdit = false, isChief = false }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ══════════════════════ ELECTION ROADMAP (independent of Timeline) ══════════════════════ */
+// Deliberately its own component, its own load/save cycle, and its own tab —
+// not a sub-panel of <Timeline>. The 4 phases above gate real behaviour
+// (voting open/closed etc.); the roadmap is a free-text, week-grouped
+// milestone list (e.g. a client's own printed election calendar) that is
+// purely informational and can be edited without touching phase dates at
+// all. Backed by GET/POST /admin/roadmap — a separate settings document
+// from election_phases.
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function emptyMilestone() {
+  return { mode: 'single', start_date: '', end_date: '', date_label: '', activities: [''] };
+}
+
+export function RoadmapEditor({ canEdit = false }) {
+  const toast = useToast();
+  const [rows, setRows] = useState(null);
+  const [weekStartDay, setWeekStartDay] = useState(1);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get('/admin/roadmap');
+      const loaded = (res.data.milestones || []).map(m => ({
+        mode: m.end_date ? 'range' : 'single',
+        start_date: m.start_date || '',
+        end_date: m.end_date || '',
+        date_label: m.date_label || '', // legacy free-text rows only
+        activities: m.activities && m.activities.length ? m.activities : [''],
+      }));
+      setRows(loaded.length ? loaded : [emptyMilestone()]);
+      setWeekStartDay(Number.isInteger(res.data.week_start_day) ? res.data.week_start_day : 1);
+      setError('');
+    } catch (e) {
+      setError(errText(e, 'Could not load the roadmap.'));
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setRow = (i, patch) => setRows(rs => rs.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  const setActivity = (i, j, val) => setRows(rs => rs.map((r, idx) =>
+    idx === i ? { ...r, activities: r.activities.map((a, k) => k === j ? val : a) } : r));
+  const addActivity = (i) => setRow(i, { activities: [...rows[i].activities, ''] });
+  const removeActivity = (i, j) => setRow(i, { activities: rows[i].activities.filter((_, k) => k !== j) });
+  const addRow = () => setRows(rs => [...rs, emptyMilestone()]);
+  const removeRow = (i) => setRows(rs => rs.filter((_, idx) => idx !== i));
+  const moveRow = (i, dir) => setRows(rs => {
+    const next = [...rs];
+    const j = i + dir;
+    if (j < 0 || j >= next.length) return rs;
+    [next[i], next[j]] = [next[j], next[i]];
+    return next;
+  });
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const bad = rows.findIndex(r => r.mode === 'range' && r.start_date && r.end_date && r.end_date < r.start_date);
+      if (bad !== -1) {
+        setError(`Row ${bad + 1}: the end date can't be before the start date.`);
+        setSaving(false);
+        return;
+      }
+      const milestones = rows
+        .filter(r => r.start_date || r.date_label.trim() || r.activities.some(a => a.trim()))
+        .map(r => ({
+          start_date: r.start_date || null,
+          end_date: r.mode === 'range' && r.end_date && r.end_date !== r.start_date ? r.end_date : null,
+          // legacy text is only kept while the row has no picked date
+          date_label: r.start_date ? '' : r.date_label,
+          activities: r.activities.map(a => a.trim()).filter(Boolean),
+        }));
+      setError('');
+      await api.post('/admin/roadmap', { milestones, week_start_day: weekStartDay });
+      await load();
+      toast('Roadmap saved.', { kind: 'success' });
+    } catch (e) {
+      setError(errText(e, 'Could not save the roadmap.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error && !rows) return <p style={errStyle}>{error}</p>;
+  if (!rows) return <p style={mutedStyle}>Loading roadmap…</p>;
+
+  return (
+    <div>
+      <h4 style={panelTitle}>Election Roadmap</h4>
+      <p style={{ ...mutedStyle, marginTop: 0 }}>
+        Free-text milestone list shown to voters under Help → Election Timeline.
+        This is independent of the Phase Schedule — it doesn't gate anything,
+        it's the printed-style calendar voters see. Both the "Today" highlight
+        and the "Week 1, Week 2…" headings are derived automatically by reading
+        the dates you pick — Week 1 begins on the earliest event
+        date (even mid-week), and later weeks begin on the weekday chosen below.
+      </p>
+
+      <label style={{ display: 'block', margin: '0 0 14px', maxWidth: '260px' }}>
+        <span style={fieldLabel}>Week starts on</span>
+        <select style={inputStyle} disabled={!canEdit} value={weekStartDay}
+          onChange={e => setWeekStartDay(parseInt(e.target.value, 10))}>
+          {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+        </select>
+      </label>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '14px' }}>
+        {rows.map((r, i) => (
+          <div key={i} style={phaseCard}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+              <strong style={{ fontSize: '13px' }}>Row {i + 1}</strong>
+              {canEdit && (
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button style={ghostBtn} onClick={() => moveRow(i, -1)} disabled={i === 0} title="Move up">↑</button>
+                  <button style={ghostBtn} onClick={() => moveRow(i, 1)} disabled={i === rows.length - 1} title="Move down">↓</button>
+                  <button style={linkBtn} onClick={() => removeRow(i)}>Remove</button>
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+              <div style={{ minWidth: 0 }}>
+                <span style={fieldLabel}>Event type</span>
+                <div style={{ display: 'flex', gap: '14px', fontSize: '13px', padding: '6px 0' }}>
+                  {[['single', 'Single day'], ['range', 'Date range']].map(([val, text]) => (
+                    <label key={val} style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0 }}>
+                      <input type="radio" name={`roadmap-mode-${i}`} disabled={!canEdit}
+                        checked={r.mode === val}
+                        onChange={() => setRow(i, { mode: val, ...(val === 'single' ? { end_date: '' } : {}) })} />
+                      {text}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <label style={{ display: 'block', margin: 0, minWidth: 0 }}>
+                <span style={fieldLabel}>{r.mode === 'range' ? 'Start date' : 'Date'}</span>
+                <input type="date" style={inputStyle} disabled={!canEdit} value={r.start_date}
+                  onChange={e => setRow(i, { start_date: e.target.value })} />
+              </label>
+              {r.mode === 'range' && (
+                <label style={{ display: 'block', margin: 0, minWidth: 0 }}>
+                  <span style={fieldLabel}>End date</span>
+                  <input type="date" style={inputStyle} disabled={!canEdit} value={r.end_date}
+                    min={r.start_date || undefined}
+                    onChange={e => setRow(i, { end_date: e.target.value })} />
+                </label>
+              )}
+            </div>
+            {!r.start_date && r.date_label && (
+              <p style={{ ...mutedStyle, margin: '0 0 10px' }}>
+                Older text label: "{r.date_label}" — pick a date above to replace it
+                (until then it's shown as typed and its dates are read from the text).
+              </p>
+            )}
+            <span style={fieldLabel}>Activities</span>
+            {r.activities.map((a, j) => (
+              <div key={j} style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
+                <input style={inputStyle} disabled={!canEdit} placeholder="Activity line"
+                  value={a} onChange={e => setActivity(i, j, e.target.value)} />
+                {canEdit && r.activities.length > 1 && (
+                  <button style={linkBtn} onClick={() => removeActivity(i, j)}>✕</button>
+                )}
+              </div>
+            ))}
+            {canEdit && <button style={ghostBtn} onClick={() => addActivity(i)}>+ Add activity</button>}
+          </div>
+        ))}
+      </div>
+
+      {canEdit && (
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button style={ghostBtn} onClick={addRow}>+ Add row</button>
+          <button style={primaryBtn} onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save Roadmap'}
+          </button>
+        </div>
+      )}
+      {error && <p style={errStyle}>{error}</p>}
     </div>
   );
 }
@@ -608,7 +793,8 @@ export function ActivityLog() {
       <div style={scrollBox} className="table-scroll">
         <table style={tableStyle}>
           <thead>
-            <tr>{['When', 'Action', 'Actor', 'Details'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr>
+            <tr>{[['When', '14%'], ['Action', '22%'], ['Actor', '18%'], ['Details', '46%']]
+              .map(([h, w]) => <th key={h} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {entries.map(e => (
@@ -680,7 +866,7 @@ export function ChainView() {
 
       <div style={filterRow} className="stack-mobile">
         <button style={primaryBtn} onClick={verify} disabled={verifying}>
-          {verifying ? 'Verifying…' : <><Icon name="secure" /> Verify Chain</>}
+          {verifying ? 'Verifying…' : <>Verify Chain</>}
         </button>
         <button style={ghostBtn} onClick={load}>Refresh</button>
       </div>
@@ -715,7 +901,8 @@ export function ChainView() {
       <div style={scrollBox} className="table-scroll">
         <table style={tableStyle}>
           <thead>
-            <tr>{['Created', 'Events', 'Chain Hash'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr>
+            <tr>{[['Created', '22%'], ['Events', '14%'], ['Chain Hash', '64%']]
+              .map(([h, w]) => <th key={h} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {checkpoints.map(c => (
@@ -943,7 +1130,8 @@ export function Analytics() {
         <div className="table-scroll">
           <table style={tableStyle}>
             <thead>
-              <tr>{['Position', 'Votes', 'Skipped', 'Rate'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr>
+              <tr>{[['Position', '40%'], ['Votes', '20%'], ['Skipped', '20%'], ['Rate', '20%']]
+                .map(([h, w]) => <th key={h} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {undervote?.positions?.map(p => (
@@ -990,7 +1178,8 @@ export function Analytics() {
         <div style={scrollBox} className="table-scroll">
           <table style={tableStyle}>
             <thead>
-              <tr>{['When', 'Event', 'Actor', 'Details'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr>
+              <tr>{[['When', '14%'], ['Event', '22%'], ['Actor', '18%'], ['Details', '46%']]
+                .map(([h, w]) => <th key={h} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {anomalies?.events?.map(e => (
@@ -1044,7 +1233,7 @@ export function RosterStats() {
     { label: 'Registered voters', value: data.total_registered },
     { label: 'Ballots cast', value: data.voted },
     { label: 'Turnout', value: `${data.turnout_pct}%` },
-    { label: 'Phone on file', value: data.with_phone_on_file },
+    { label: 'Voters with a phone number', value: data.with_phone_on_file },
     { label: 'Candidates', value: data.candidates },
     { label: 'Positions', value: data.positions },
     { label: 'Pending applications', value: data.applications_pending },
@@ -1075,7 +1264,57 @@ export function RosterStats() {
   );
 }
 
-/* ══════════ OFFICIAL CERTIFICATION BLOCK (admin-only) ══════════ */
+/* ══════════════ RECENT ACTIVITY (compact overview strip) ══════════════ */
+
+export function RecentActivity({ limit = 6 }) {
+  const [entries, setEntries] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await api.get(`/admin/audit-log?limit=${limit}`);
+        if (alive) { setEntries(res.data.entries || []); setError(''); }
+      } catch (e) {
+        if (alive) setError(errText(e, 'Could not load recent activity.'));
+      }
+    };
+    load();
+    const t = setInterval(load, 30000);
+    return () => { alive = false; clearInterval(t); };
+  }, [limit]);
+
+  return (
+    <div style={{ marginTop: '20px' }}>
+      <h4 style={panelTitle}>Recent Activity</h4>
+      {error && <p style={errStyle}>{error}</p>}
+      {!error && entries === null && <p style={mutedStyle}>Loading…</p>}
+      {!error && entries?.length === 0 && <p style={mutedStyle}>Nothing has happened yet.</p>}
+      {!error && entries?.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {entries.map(e => (
+            <div key={e._id} style={{
+              display: 'flex', justifyContent: 'space-between', gap: '10px',
+              fontSize: '12px', padding: '8px 10px', borderRadius: '8px',
+              background: 'var(--card-bg)', border: '1px solid var(--border-color)'
+            }}>
+              <span>
+                <b>{describeAction(e.action)}</b>
+                <span style={{ opacity: 0.6 }}> — {describeDetails(e.action, e.details)}</span>
+              </span>
+              <span style={{ opacity: 0.5, whiteSpace: 'nowrap' }}>
+                {(parseUtc(e.timestamp) || new Date(0)).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 export function OfficialCertificationBlock() {
   const [report, setReport] = useState(null);
@@ -1106,9 +1345,9 @@ export function OfficialCertificationBlock() {
 
       <div style={filterRow} className="stack-mobile no-print">
         <button style={primaryBtn} onClick={load} disabled={loading}>
-          {loading ? 'Building…' : <><Icon name="file" /> Generate Official Document</>}
+          {loading ? 'Building…' : <>Generate Official Document</>}
         </button>
-        {report && <button style={ghostBtn} onClick={() => window.print()}><Icon name="print" /> Print</button>}
+        {report && <button style={ghostBtn} onClick={() => window.print()}>Print</button>}
       </div>
 
       {error && <p style={errStyle} className="no-print">{error}</p>}
@@ -1125,8 +1364,7 @@ export function OfficialCertificationBlock() {
         <>
           {/* Same component, same visual structure as the public results PDF
               — declaration and signatories are the only props the public
-              path never passes, and that's what switches the footer from
-              the public disclaimer to the signed instrument. */}
+              path never passes; they add the signed instrument. */}
           <FinalReport
             data={{ results: report.results }}
             totalVotes={report.voter_turnout}
@@ -1167,18 +1405,24 @@ export function OfficialCertificationBlock() {
 
 /* ══════════════════════════ SHARED TAB HELPER ══════════════════════════ */
 
-// The four tabs every dashboard gets. Keeping the id/label pairs here means a
-// future tab is added once, not five times.
+// The tabs every dashboard gets. Keeping the id/label pairs here means a
+// future tab is added once, not five times. Roadmap is SuperAdmin-only —
+// see ROADMAP_TAB_DEF below — since it lets someone rewrite the phase
+// schedule wholesale, not just view it.
 // eslint-disable-next-line react-refresh/only-export-components
 export const SHARED_TAB_DEFS = [
-  { id: 'shared_timeline', label: <><Icon name="calendar" /> Timeline</> },
-  { id: 'shared_analytics', label: <><Icon name="trend" /> Analytics</> },
-  { id: 'shared_activity', label: <><Icon name="log" /> Activity Log</> },
-  { id: 'shared_chain', label: <><Icon name="secure" /> Chain Verify</> },
+  { id: 'shared_timeline', label: <>Timeline</> },
+  { id: 'shared_analytics', label: <>Analytics</> },
+  { id: 'shared_activity', label: <>Activity Log</> },
+  { id: 'shared_chain', label: <>Chain Verify</> },
 ];
+
+// eslint-disable-next-line react-refresh/only-export-components
+export const ROADMAP_TAB_DEF = { id: 'shared_roadmap', label: <>Roadmap</> };
 
 export function SharedTabPanels({ activeTab, canEditSchedule = false, isChief = false }) {
   if (activeTab === 'shared_timeline') return <Timeline canEdit={canEditSchedule} isChief={isChief} />;
+  if (activeTab === 'shared_roadmap') return <RoadmapEditor canEdit={canEditSchedule} />;
   if (activeTab === 'shared_analytics') return <Analytics />;
   if (activeTab === 'shared_activity') return <ActivityLog />;
   if (activeTab === 'shared_chain') return <ChainView />;
@@ -1205,8 +1449,8 @@ const primaryBtn = { padding: '10px 18px', color: '#fff', backgroundColor: 'var(
 const ghostBtn = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const linkBtn = { background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontWeight: 700, fontSize: '12px' };
 const scrollBox = { maxHeight: '460px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px', marginTop: '10px' };
-const tableStyle = { width: '100%', borderCollapse: 'separate', borderSpacing: 0 };
-const thStyle = { padding: '10px 12px', textAlign: 'left', fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', background: 'var(--surface-2)', position: 'sticky', top: 0, zIndex: 2 };
+const tableStyle = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, tableLayout: 'fixed' };
+const thStyle = { padding: '10px 12px', textAlign: 'left', fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', background: 'var(--surface-2)', position: 'sticky', top: 0, zIndex: 2, whiteSpace: 'nowrap' };
 const tdStyle = { padding: '10px 12px', color: 'var(--text-color)', fontSize: '13px' };
 const rowStyle = { borderBottom: '1px solid var(--border-color)' };
 const emptyCell = { ...tdStyle, textAlign: 'center', opacity: 0.45, padding: '28px' };

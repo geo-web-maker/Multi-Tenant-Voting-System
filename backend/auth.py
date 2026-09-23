@@ -53,7 +53,14 @@ def set_revocation_check(fn: Callable):
     _revocation_check = fn
 
 
-def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_name: str = "") -> str:
+def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_name: str = "",
+                         scope: str = "full", expire_minutes: Optional[int] = None) -> str:
+    """`scope` is "full" for a normal session, or "password_change_only" when the account
+    still has must_change_password set — main.py's guard then rejects every path for that
+    token except /admin/set-password and /admin/logout, so a temp-password login can't be
+    used to touch anything else even if the client never shows the change-password screen.
+    `expire_minutes` overrides JWT_EXPIRE_MINUTES for this token only (used to give the
+    superadmin a shorter-lived session than the other roles)."""
     if role not in ADMIN_ROLES:
         raise ValueError(f"Unknown admin role: {role}")
     now = datetime.now(timezone.utc)
@@ -62,9 +69,10 @@ def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_
         "role": role,
         "org_id": org_id,        # None on single-tenant deployments
         "full_name": full_name,
+        "scope": scope,
         "jti": secrets.token_hex(16),  # unique per-token id, used for revocation
         "iat": now,
-        "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
+        "exp": now + timedelta(minutes=expire_minutes if expire_minutes is not None else JWT_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

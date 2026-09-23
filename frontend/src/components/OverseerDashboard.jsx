@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import ContactChangesQueue from './ContactChangesQueue';
 import { Icon } from './icons.jsx';
 
 
@@ -37,9 +38,10 @@ export default function OverseerDashboard({ onLogout }) {
   };
 
   const tabs = [
-    { id: 'applications', label: <><Icon name="vote" /> Applications</>, count: data?.applications?.length },
-    { id: 'changes',      label: <><Icon name="clipboard" /> Student Changes</>, count: data?.student_changes?.length },
-    { id: 'results',      label: <><Icon name="chart" /> Candidate Results</> },
+    { id: 'applications', label: <>Applications</>, count: data?.applications?.length },
+    { id: 'changes',      label: <>Student Changes</>, count: data?.student_changes?.length },
+    { id: 'results',      label: <>Candidate Results</> },
+    { id: 'contact_changes', label: <>Contact Changes</> },
     // Observer role: read-only visibility only — no write actions are added.
     ...SHARED_TAB_DEFS,
   ];
@@ -51,7 +53,7 @@ export default function OverseerDashboard({ onLogout }) {
         {/* ── Header ── */}
         <div style={headerFlex}>
           <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}><Icon name="eye" /> Overseer Panel</h2>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Overseer Panel</h2>
             <span style={{ fontSize: '12px', opacity: 0.6 }}>
               Logged in as <strong>{overseerName || overseerId}</strong> · read-only
             </span>
@@ -110,7 +112,7 @@ export default function OverseerDashboard({ onLogout }) {
                 </button>
               ))}
               <button style={{ ...ghostBtn, marginLeft: 'auto' }} onClick={fetchDashboard} disabled={loading}>
-                {loading ? 'Syncing…' : <><Icon name="refresh" /> Refresh</>}
+                {loading ? 'Syncing…' : <>Refresh</>}
               </button>
             </div>
 
@@ -127,7 +129,7 @@ export default function OverseerDashboard({ onLogout }) {
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>{a.position_id}</p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                       <Icon name="success" /> {a.approve_count} · <Icon name="error" /> {a.deny_count} · {a.votes_cast} vote(s) cast
-                      {a.finance_cleared && <> · <Icon name="wallet" /> Finance cleared</>}
+                      {a.finance_cleared && <> · Finance cleared</>}
                     </p>
                   </div>
                 ))}
@@ -219,6 +221,8 @@ export default function OverseerDashboard({ onLogout }) {
             )}
           </>
         )}
+
+        {tab === 'contact_changes' && <ContactChangesQueue readOnly />}
 
         <SharedTabPanels activeTab={tab} />
       </div>

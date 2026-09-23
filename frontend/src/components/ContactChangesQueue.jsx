@@ -51,7 +51,7 @@ export default function ContactChangesQueue({ readOnly = false }) {
 
   return (
     <div>
-      {data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}><Icon name="info" /> The roster is not frozen yet — IT admins still edit directly. Requests appear here from the freeze onward.</div>}
+      {data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}>The roster is not frozen yet — IT admins still edit directly. Requests appear here from the freeze onward.</div>}
       {readOnly && <SmsUsageTile />}
       {readOnly && st && (
         <div style={{ ...box, margin: '12px 0' }}>
@@ -102,8 +102,8 @@ export default function ContactChangesQueue({ readOnly = false }) {
                 </label>)}
               <p style={muted}>If the old number is still reachable, phone it and ask whether the voter asked for this. A “no” means deny and escalate. Expires {fmt(c.expires_at)}.</p>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button disabled={busy === c.id} style={{ ...btn, background: '#2ecc71', flex: 1 }} onClick={() => decide(c, 'approve')}><Icon name="success" /> Approve</button>
-                <button disabled={busy === c.id} style={{ ...btn, background: '#e74c3c', flex: 1 }} onClick={() => decide(c, 'deny')}><Icon name="close" /> Deny</button>
+                <button disabled={busy === c.id} style={{ ...btn, background: '#2ecc71', flex: 1 }} onClick={() => decide(c, 'approve')}>Approve</button>
+                <button disabled={busy === c.id} style={{ ...btn, background: '#e74c3c', flex: 1 }} onClick={() => decide(c, 'deny')}>Deny</button>
               </div>
             </>
           )}
