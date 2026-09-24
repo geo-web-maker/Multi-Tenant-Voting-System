@@ -5,6 +5,8 @@ import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import ReceiptLink from './ReceiptLink';
+import { regNo } from '../regNo';
+import AdminHeader, { useLastSynced } from './AdminHeader';
 
 
 export default function FinancialControllerDashboard({ onLogout }) {
@@ -13,6 +15,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
   const [activeTab, setActiveTab]     = usePersistedTab('financial_controller', 'pending');
   const [changes, setChanges]         = useState([]);
   const [loading, setLoading]         = useState(false);
+  const [lastSynced, markSynced]      = useLastSynced();
   const [fcId, setFcId]               = useState('');
   const [reasons, setReasons]         = useState({});   // { change_id: string }
   const [showReasonBox, setShowReasonBox] = useState({}); // { change_id: bool }
@@ -30,6 +33,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
     try {
       const res = await api.get('/admin/student-changes');
       setChanges(res.data);
+      markSynced();
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
@@ -90,20 +94,14 @@ export default function FinancialControllerDashboard({ onLogout }) {
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex}>
-          <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Financial Controller</h2>
-            <span style={{ fontSize: '12px', opacity: 0.5 }}>
-              Verify payment status and decide on student register change requests
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <button style={ghostBtn} onClick={() => fetchAll()} disabled={loading}>
-              {loading ? 'Syncing…' : <>Refresh</>}
-            </button>
-            <button style={redBtn} onClick={onLogout}>Logout</button>
-          </div>
-        </div>
+        <AdminHeader
+          title="Financial Controller"
+          subtitle="Verify payment status and decide on student register change requests"
+          lastSynced={lastSynced}
+          onRefresh={() => fetchAll()}
+          refreshing={loading}
+          onLogout={onLogout}
+        />
 
         {/* Financial Controller ID prompt — shown if not stored yet */}
         {!fcId && (
@@ -192,7 +190,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
               </div>
 
               <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
-                <b>Student:</b> {change.full_name} — <code style={{ fontSize: '12px' }}>{change.student_id}</code>
+                <b>Student:</b> {change.full_name} — <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
               </p>
               {change.change_type === 'add' && (change.phones?.length > 0 || change.phone) && (
                 <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.6 }}>
@@ -284,7 +282,6 @@ function statusBadge(status) {
 // ── Styles (mirrors CommissionDashboard.jsx) ──
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const headerFlex = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
 const tabBar     = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
 const tab        = { background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
 const countPill  = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };

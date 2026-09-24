@@ -54,7 +54,7 @@ ASSET_FIELDS = {
     "applications": ("image_url", "payment_proof_url"),
     "candidates": ("image_url",),
     "student_changes": ("payment_proof_url",),
-    "settings": ("logo_url", "university_logo_url", "support_pdf_url"),
+    "settings": ("logo_url", "university_logo_url"),
 }
 
 ROUTINE_LOCK_DAYS = 14

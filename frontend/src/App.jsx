@@ -57,6 +57,8 @@ function useLogoNeedsInvert(logoUrl, theme) {
 import { FabTrigger } from './components/HelpTriggers';
 import usePolling from './hooks/usePolling';
 import { Icon } from './components/icons.jsx';
+import TurnstileWidget from './components/TurnstileWidget';
+import { turnstileConfigured } from './supportLink';
 import {
   restoreAdminView, loadPublicView, savePublicView,
   loadVoterProgress, saveVoterProgress, clearVoterProgress, clearVoterSession,
@@ -74,7 +76,7 @@ const examples = [
 ];
 
 function App() {
-  const [supportPdfUrl, setSupportPdfUrl] = useState("");
+  const [supportContacts, setSupportContacts] = useState([]);
   const [supportPhone, setSupportPhone] = useState("");
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
   const [candidates, setCandidates] = useState([]); // To store candidates for preview
@@ -112,6 +114,12 @@ function App() {
   const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [electionStatus, setElectionStatus] = useState(null);
+  // Cloudflare Turnstile (voter code requests only). The token is single-use, so every attempt
+  // bumps `captchaKey` to fetch a fresh one. `captchaForced` flips on when the server asks for the
+  // check even though the org mode isn't "on" (adaptive on a flagged IP, or under attack).
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaKey, setCaptchaKey] = useState(0);
+  const [captchaForced, setCaptchaForced] = useState(false);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
   const [orgName, setOrgName] = useState(import.meta.env.VITE_ELECTION_NAME || "");
   const [timer, setTimer] = useState(() => (restored.step === 2 ? loadResendSeconds() : 0));
@@ -125,7 +133,12 @@ function App() {
   });
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [pendingAdminEmail, setPendingAdminEmail]     = useState('');
-  const [newPasswordForm, setNewPasswordForm]         = useState({ old_password: '', new_password: '', confirm_password: '' });
+  // Captured from the login form the moment the temp-password login succeeds,
+  // so the forced password-change modal doesn't have to ask the admin to
+  // retype the code they just entered. Still sent to /admin/set-password as
+  // old_password so the backend keeps verifying it server-side.
+  const [pendingTempPassword, setPendingTempPassword] = useState('');
+  const [newPasswordForm, setNewPasswordForm]         = useState({ new_password: '', confirm_password: '' });
   const [passwordChangeError, setPasswordChangeError] = useState('');
   const [passwordChangeSubmitting, setPasswordChangeSubmitting] = useState(false);
   // Instant, zero-network fallback for the splash: baked into the build per
@@ -222,13 +235,10 @@ useEffect(() => {
   poll();
 
   api.get('/superadmin/branding').then(res => {
+    if (res.data.support_phone) setSupportPhone(res.data.support_phone);
+    if (Array.isArray(res.data.support_contacts)) setSupportContacts(res.data.support_contacts);
     if (res.data.logo_url) {
       setLogoUrl(res.data.logo_url);
-    if (res.data.support_pdf_url) 
-      setSupportPdfUrl(res.data.support_pdf_url);
-    if (res.data.support_phone) 
-      setSupportPhone(res.data.support_phone);
-    
       // Update browser tab favicon dynamically
       const favicon = document.querySelector("link[rel='icon']");
       if (favicon) favicon.href = res.data.logo_url;
@@ -384,6 +394,10 @@ useEffect(() => {
     setStep(4);
   };
 
+const needsCaptcha = !isAdminPath && turnstileConfigured
+    && (captchaForced || electionStatus?.turnstile_mode === 'on');
+  const captchaPending = needsCaptcha && !captchaToken;
+
 const handleVerifyIdentity = async (selectedIdx = null) => {
       setIsVerifying(true);
       try {
@@ -391,7 +405,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       
         const payload = isAdminPath
           ? { email: studentId, password: name, totp_code: totpCode || undefined }
-          : { student_id: studentId, full_name: name, phone_index: selectedIdx };
+          : { student_id: studentId, full_name: name, phone_index: selectedIdx, turnstile_token: captchaToken || undefined };
     
         const res = await api.post(endpoint, payload);
   
@@ -420,6 +434,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
             markPasswordChangePending();
             setPendingAdminEmail(studentId);
+            setPendingTempPassword(name); // `name` holds the password field for the admin login path
             setMustChangePassword(true);
             return;
           }
@@ -460,6 +475,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           setIsVerifying(false);
           return;
         }
+        if (!isAdminPath && err.response?.data?.reason === "captcha_required") setCaptchaForced(true);
         const errorData = err.response?.data?.detail || "Verification Failed";
         // The schedule changed after this page loaded: re-read the status so the notice says
         // the right thing (not started yet vs. ended) instead of guessing from the error text.
@@ -474,6 +490,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         });
       } finally {
         setIsVerifying(false);
+        if (!isAdminPath) { setCaptchaToken(""); setCaptchaKey(k => k + 1); }
       }
     };
 
@@ -541,7 +558,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     try {
       await api.post('/admin/set-password', {
         email:        pendingAdminEmail,
-        old_password: newPasswordForm.old_password,
+        old_password: pendingTempPassword,
         new_password: newPasswordForm.new_password,
       });
   
@@ -572,7 +589,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   
       clearPasswordChangePending();
       setMustChangePassword(false);
-      setNewPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
+      setPendingTempPassword('');
+      setNewPasswordForm({ new_password: '', confirm_password: '' });
       setView(res.data.role);
     } catch (err) {
       setPasswordChangeError(err.response?.data?.detail || 'Failed to update password.');
@@ -617,8 +635,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       {view === "voter" && (
         <>
           <HelpPanel
-            supportPdfUrl={supportPdfUrl}
             supportPhone={supportPhone}
+            supportContacts={supportContacts}
+            orgName={orgName}
             onShowGuide={() => setShowGuide(true)}
           />
           {/* Ballot page (step 3) puts Help inside its own footer bar via
@@ -762,9 +781,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 </>
               )}
               
+              {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
               <button
                 onClick={() => handleVerifyIdentity()}
-                disabled={(!isElectionOpen && !isAdminPath) || isVerifying}
+                disabled={(!isElectionOpen && !isAdminPath) || isVerifying || captchaPending}
                 style={{
                   ...primaryBtnStyle,
                   backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7',
@@ -784,11 +804,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <div style={cardStyle}>
                 <h2 style={{ textAlign: 'center' }}>Select Phone Number</h2>
                 <p style={{ textAlign: 'center', opacity: 0.8, marginBottom: '20px' }}>Choose where to receive your code:</p>
+                {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
                   {maskedNumbers.map((num, index) => (
                   <button
                     key={index}
                     onClick={() => { setSelectedPhone(num); handleVerifyIdentity(index); }}
-                    disabled={isVerifying}
+                    disabled={isVerifying || captchaPending}
                     style={{ ...selectionBtnStyle, opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' }}
                   >
                     {isVerifying ? 'Sending…' : `Receive code on ${num}`}
@@ -800,12 +821,17 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
             {step === 2 && (
               <div style={cardStyle}>
-               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying} />
+               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying}
+                 supportPhone={supportPhone || supportContacts[0]?.contacts?.[0]?.link || ''} orgName={orgName} studentId={studentId} />
                 <div style={{ marginTop: '20px', textAlign: 'center' }}>
                   {timer > 0 ? (
                     <p style={{ fontSize: '14px', opacity: 0.7 }}>Resend in <b>{timer}s</b></p>
                   ) : (
-                    <button onClick={() => handleVerifyIdentity()} style={resendBtnStyle}>Resend SMS</button>
+                    <>
+                      {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
+                      <button onClick={() => handleVerifyIdentity()} disabled={captchaPending || isVerifying}
+                        style={{ ...resendBtnStyle, opacity: captchaPending ? 0.5 : 1 }}>Resend SMS</button>
+                    </>
                   )}
                 </div>
               </div>
@@ -840,14 +866,6 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               </p>
         
                <form onSubmit={handleSetNewPassword}>
-                <input
-                  type="password"
-                  placeholder="Temporary password (from SMS)"
-                  style={inputStyle}
-                  value={newPasswordForm.old_password}
-                  onChange={e => setNewPasswordForm({ ...newPasswordForm, old_password: e.target.value })}
-                  disabled={passwordChangeSubmitting}
-                />
                 <input
                   type="password"
                   placeholder="New password (min 6 characters)"

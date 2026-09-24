@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { Icon } from './icons.jsx';
-import { listContactChanges, decideContactChange, undoDigestEntry, CHANGE_LABELS, EVENT_LABELS, errMsg } from '../studentEdit';
+import { listContactChanges, decideContactChange, breakGlassApprove, undoDigestEntry, CHANGE_LABELS, EVENT_LABELS, errMsg } from '../studentEdit';
 import { ScrollList } from './UIFeedback';
+import { regNo } from '../regNo';
 
 const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocaleString() : '—');
 
@@ -12,8 +13,10 @@ const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocale
  * Overseer / SuperAdmin (readOnly): read-only list of the requests (no decide buttons) — but the
  * digest is always loaded, and SuperAdmin / Chief / Deputy Chief also get an Undo control on it
  * (gated server-side by role, independent of this prop).
+ * breakGlass (superadmin only): when the org has switched break-glass on, pending requests get a red
+ * "Break-glass approve" button. It needs a written justification and is flagged in the ledger.
  */
-export default function ContactChangesQueue({ readOnly = false }) {
+export default function ContactChangesQueue({ readOnly = false, breakGlass = false }) {
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
@@ -23,6 +26,7 @@ export default function ContactChangesQueue({ readOnly = false }) {
   const [ack, setAck] = useState({});
   const [busy, setBusy] = useState('');
   const [undoBusy, setUndoBusy] = useState('');
+  const [bgEnabled, setBgEnabled] = useState(false);
 
   const loadDigest = useCallback(() => {
     api.get('/admin/contact-changes/digest').then(r => setDigest(r.data)).catch(() => {});
@@ -33,6 +37,10 @@ export default function ContactChangesQueue({ readOnly = false }) {
   }, [toast]);
   useEffect(() => { load(); const id = setInterval(load, 15000); return () => clearInterval(id); }, [load]);
   useEffect(() => { loadDigest(); }, [loadDigest]);
+  useEffect(() => {
+    if (!breakGlass) return;
+    api.get('/superadmin/security-settings').then(r => setBgEnabled(Boolean(r.data?.settings?.superadmin_breakglass))).catch(() => {});
+  }, [breakGlass]);
   if (!data) return <p style={{ opacity: 0.6 }}>Loading…</p>;
 
   const decide = async (c, decision) => {
@@ -53,9 +61,25 @@ export default function ContactChangesQueue({ readOnly = false }) {
     finally { setBusy(''); }
   };
 
+  const forceApprove = async (c) => {
+    if (c.warnings.length && !ack[c.id]) { toast('Tick “I have checked” to acknowledge the warnings first.', { kind: 'error' }); return; }
+    const note = (await prompt(
+      'Break-glass approval bypasses the commission and is flagged red in the ledger. Why is it necessary? (required, 10+ characters)',
+      { placeholder: 'Justification' })) || '';
+    if (note.trim().length < 10) { toast('Break-glass approval needs a written justification (10+ characters).', { kind: 'error' }); return; }
+    if (!(await confirm('Approve this change now, as superadmin? It takes effect immediately and is recorded against your name.', { confirmText: 'Break-glass approve' }))) return;
+    setBusy(c.id);
+    try {
+      await breakGlassApprove(c.id, { note: note.trim(), acknowledge_warnings: Boolean(ack[c.id]) });
+      toast('Approved and applied (break-glass).', { kind: 'success' });
+      load();
+    } catch (e) { toast(errMsg(e, 'Could not approve.'), { kind: 'error' }); load(); }
+    finally { setBusy(''); }
+  };
+
   const undoEntry = async (entry) => {
     const reason = (await prompt(
-      `Undo this ${EVENT_LABELS[entry.event] || entry.event.replace(/_/g, ' ')} for ${entry.student_id}? This applies immediately. Why are you undoing it? (required, 10+ characters)`,
+      `Undo this ${EVENT_LABELS[entry.event] || entry.event.replace(/_/g, ' ')} for ${regNo(entry.student_id)}? This applies immediately. Why are you undoing it? (required, 10+ characters)`,
       { placeholder: 'Reason for undoing this change' }
     )) || '';
     if (reason.trim().length < 10) { toast('Undoing a change needs a written reason (10+ characters).', { kind: 'error' }); return; }
@@ -87,7 +111,7 @@ export default function ContactChangesQueue({ readOnly = false }) {
       {items.map(c => (
         <div key={c.id} style={{ ...box, marginBottom: 10, borderColor: c.breakglass ? 'var(--danger)' : undefined }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <b style={{ fontSize: 14 }}>{CHANGE_LABELS[c.change_type]} — {c.full_name} <code style={{ fontSize: 11 }}>{c.student_id}</code></b>
+            <b style={{ fontSize: 14 }}>{CHANGE_LABELS[c.change_type]} — {c.full_name} <code style={{ fontSize: 11 }}>{regNo(c.student_id)}</code></b>
             <span style={{ fontSize: 11, fontWeight: 700 }}>{c.status.toUpperCase()}{c.breakglass ? ' · BREAK-GLASS' : ''}</span>
           </div>
           <p style={muted}>
@@ -100,6 +124,15 @@ export default function ContactChangesQueue({ readOnly = false }) {
           </p>
           {c.decided_by && <p style={muted}>Decided by <b>{c.decided_by}</b> · {fmt(c.decided_at)}{c.decision_note && <> — {c.decision_note}</>}{c.status === 'approved' && c.notice_status === 'failed' && <> · <b style={{ color: 'var(--danger)' }}>notice to old number failed (follow up)</b></>}</p>}
           {c.warnings.map(w => <Flag key={w.code}>{w.message}</Flag>)}
+          {c.status === 'pending' && breakGlass && bgEnabled && (
+            <>
+              {c.warnings.length > 0 && (
+                <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', margin: '6px 0' }}>
+                  <input type="checkbox" checked={Boolean(ack[c.id])} onChange={e => setAck({ ...ack, [c.id]: e.target.checked })} /> I have checked
+                </label>)}
+              <button disabled={busy === c.id} style={{ ...btn, background: '#e74c3c', marginTop: 6 }} onClick={() => forceApprove(c)}>Break-glass approve</button>
+            </>
+          )}
           {c.status === 'pending' && !readOnly && (
             <>
               {c.warnings.length > 0 && (
@@ -130,7 +163,7 @@ export default function ContactChangesQueue({ readOnly = false }) {
                   .map(([h, w]) => <th key={h} style={{ ...th, width: w }}>{h}</th>)}</tr></thead>
                 <tbody>{digest.entries.map((e) => (
                   <tr key={e.id}>
-                    <td style={td}>{fmt(e.at)}</td><td style={td}>{e.student_id}</td><td style={td}>{EVENT_LABELS[e.event] || e.event.replace(/_/g, ' ')}</td>
+                    <td style={td}>{fmt(e.at)}</td><td style={td}>{regNo(e.student_id)}</td><td style={td}>{EVENT_LABELS[e.event] || e.event.replace(/_/g, ' ')}</td>
                     <td style={td}>{e.old || '—'}</td><td style={td}>{e.new || '—'}</td><td style={td}>{e.actor}</td><td style={td}>{e.reason}</td>
                     {digest.can_undo && (
                       <td style={td}>

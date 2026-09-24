@@ -1,9 +1,15 @@
-// Voter-facing WhatsApp support link (design Appendix H). Uses the ORG's support_phone, never a hardcoded
-// number, and a prefilled message that never asks for the code.
-export function buildSupportLink(supportPhone, orgName, studentId, problem = '') {
-  if (!supportPhone) return undefined;
+// Voter-facing WhatsApp support link (design Appendix H). Uses the ORG's configured contact, never a
+// hardcoded number, and a prefilled message that never asks for the code.
+// `contact` is either a number (digits, country code) or a full https WhatsApp link (used as given:
+// group and channel links cannot carry a prefilled message).
+export function buildSupportLink(contact, orgName, studentId, problem = '') {
+  const c = String(contact || '').trim();
+  if (!c) return undefined;
+  if (/^https:\/\//i.test(c)) return c;
+  const digits = c.replace(/\D/g, '');
+  if (!digits) return undefined;
   const text = `Hello, I need help with the ${orgName || 'election'} portal. Student ID: ${studentId || ''}. Problem: ${problem || '...'}.`;
-  return `https://wa.me/${supportPhone}?text=${encodeURIComponent(text)}`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
 }
 
 // Resend deadline survives a page reload: the SERVER decides the wait, the browser only displays it.

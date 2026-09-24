@@ -19,37 +19,70 @@ const modalContentStyle = {
  * --bottom-bar-height CSS var (see useReportedHeight), so it never needs
  * to know which page it's on.
  */
-export default function HelpPanel({ supportPdfUrl, supportPhone, orgName = '', onShowGuide }) {
+export default function HelpPanel({ supportPhone, supportContacts = [], orgName = '', onShowGuide }) {
   const { open, close, showRegister, openRegister, closeRegister, showTimeline, openTimeline, closeTimeline } = useHelpMenu();
+  // Which reason's contact submenu is open (null = showing the main list). Reset whenever the
+  // main panel closes so re-opening Help never lands on a stale submenu.
+  const [subReason, setSubReason] = React.useState(null);
+  React.useEffect(() => { if (!open) setSubReason(null); }, [open]);
 
   const items = [
     { label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
     { label: 'Check Voter Register', onClick: openRegister },
     { label: 'Election Timeline', onClick: openTimeline },
-    ...(supportPdfUrl ? [{ label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
-    {
+    // General number first, then one entry per configured reason (Branding → Support contacts).
+    // A reason with exactly one contact behind it is a direct link; more than one opens a small
+    // submenu (below) listing each contact by name so the voter picks who to message.
+    ...(supportPhone ? [{
       label: 'Contact Support', color: '#25D366',
-      href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)')
-    },
-  ];
+      href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)'),
+    }] : []),
+    ...supportContacts.filter(g => g?.reason && (g?.contacts || []).some(c => c?.link)).map(g => {
+      const contacts = (g.contacts || []).filter(c => c?.link);
+      return contacts.length === 1
+        ? { label: g.reason, color: '#25D366', href: buildSupportLink(contacts[0].link, orgName, '', `${g.reason} (never send your code)`) }
+        : { label: g.reason, color: '#25D366', onClick: () => setSubReason(g) };
+    }),
+  ].filter(it => it.onClick || it.href);
+
+  const subContacts = subReason ? (subReason.contacts || []).filter(c => c?.link) : [];
 
   return (
     <>
       {open && (
         <div style={menuPanelStyle}>
-          <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
-            <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend — the same code is sent again while it is valid.
-            If you see “try again in…”, the wait ends by itself; nothing needs to be reset. Nobody can send or read out your code.
-          </div>
-          {items.map((it, i) => it.href ? (
-            <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
-              {it.label}
-            </a>
+          {subReason ? (
+            <>
+              <button onClick={() => setSubReason(null)} style={{ ...menuItemStyle, opacity: 0.7 }}>← Back</button>
+              <div style={{ padding: '4px 12px 8px', fontSize: '12px', opacity: 0.7 }}>{subReason.reason}</div>
+              {subContacts.map((c, i) => (
+                <a
+                  key={i}
+                  href={buildSupportLink(c.link, orgName, '', `${subReason.reason} (never send your code)`)}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ ...menuItemStyle, color: '#25D366' }}
+                >
+                  {c.name || `Contact ${i + 1}`}
+                </a>
+              ))}
+            </>
           ) : (
-            <button key={i} onClick={it.onClick} style={menuItemStyle}>
-              {it.label}
-            </button>
-          ))}
+            <>
+              <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
+                <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend — the same code is sent again while it is valid.
+                If you see “try again in…”, the wait ends by itself; nothing needs to be reset. Nobody can send or read out your code.
+              </div>
+              {items.map((it, i) => it.href ? (
+                <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
+                  {it.label}
+                </a>
+              ) : (
+                <button key={i} onClick={it.onClick} style={menuItemStyle}>
+                  {it.label}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
 

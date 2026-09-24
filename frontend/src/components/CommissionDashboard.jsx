@@ -5,10 +5,13 @@ import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import ContactChangesQueue from './ContactChangesQueue';
+import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import ReceiptLink from './ReceiptLink';
 import ManifestoText from './ManifestoText';
+import { regNo } from '../regNo';
+import AdminHeader, { useLastSynced } from './AdminHeader';
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
@@ -16,6 +19,7 @@ export default function CommissionDashboard({ onLogout }) {
   const [activeTab, setActiveTab]       = usePersistedTab('commission', 'pending');
   const [applications, setApplications] = useState([]);
   const [loading, setLoading]           = useState(false);
+  const [lastSynced, markSynced]        = useLastSynced();
   const [commissionerId, setCommissionerId] = useState('');
   const [totalCommissioners, setTotalCommissioners] = useState(0);
   const [approvalPolicy, setApprovalPolicy] = useState('majority_total');
@@ -64,10 +68,20 @@ export default function CommissionDashboard({ onLogout }) {
           c => String(c.student_id || '').toLowerCase()
             === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
         );
-        setIsChief(Boolean(me?.is_chief_commissioner));
-        setIsDeputyChief(Boolean(me?.is_deputy_chief_commissioner));
+        const chief = Boolean(me?.is_chief_commissioner);
+        const deputyChief = Boolean(me?.is_deputy_chief_commissioner);
+        setIsChief(chief);
+        setIsDeputyChief(deputyChief);
+        // A regular commissioner may still have 'reset_otp' as their persisted
+        // last-active tab from before this restriction existed (or from when
+        // they held the chief/deputy role). Bounce them off it so they don't
+        // land on a blank panel.
+        if (!chief && !deputyChief) {
+          setActiveTab(prev => (prev === 'reset_otp' ? 'pending' : prev));
+        }
         setStudentChanges(scRes.data);
         setLiveResults(resultsRes.data);
+        markSynced();
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
@@ -213,6 +227,7 @@ export default function CommissionDashboard({ onLogout }) {
     { id: 'removed',         label: 'Removed',         count: removed.length },
     { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
     { id: 'contact_changes', label: 'Contact Changes',  count: null },
+    ...((isChief || isDeputyChief) ? [{ id: 'reset_otp', label: 'Reset OTP', count: null }] : []),
     { id: 'results',         label: 'Live Results',    count: null },
     ...SHARED_TAB_DEFS,
     { id: 'official_doc',    label: <>Official Document</>, count: null },
@@ -225,21 +240,14 @@ export default function CommissionDashboard({ onLogout }) {
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex} className="no-print">
-          <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Election Commission</h2>
-            <span style={{ fontSize: '12px', opacity: 0.5 }}>
-              {totalCommissioners} commissioner{totalCommissioners !== 1 ? 's' : ''} total ·
-              {policyHeaderCopy}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <button style={ghostBtn} onClick={() => fetchAll()} disabled={loading}>
-              {loading ? 'Syncing…' : <>Refresh</>}
-            </button>
-            <button style={redBtn} onClick={onLogout}>Logout</button>
-          </div>
-        </div>
+        <AdminHeader
+          title="Election Commission"
+          subtitle={`${totalCommissioners} commissioner${totalCommissioners !== 1 ? 's' : ''} total · ${policyHeaderCopy}`}
+          lastSynced={lastSynced}
+          onRefresh={() => fetchAll()}
+          refreshing={loading}
+          onLogout={onLogout}
+        />
 
         {/* Identity is taken from the session the server issued at login —
             it is deliberately not editable here. A free-text field let the
@@ -334,7 +342,7 @@ export default function CommissionDashboard({ onLogout }) {
                     {app.position_title || app.position_id}
                   </p>
                   <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.55 }}>
-                    Student ID: {app.student_id}
+                    Student ID: {regNo(app.student_id)}
                   </p>
 
                   <ManifestoText text={app.manifesto} />
@@ -542,7 +550,7 @@ export default function CommissionDashboard({ onLogout }) {
                   </div>
 
                   <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
-                    <b>Student:</b> {change.full_name} — <code style={{ fontSize: '12px' }}>{change.student_id}</code>
+                    <b>Student:</b> {change.full_name} — <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
                   </p>
                   {change.change_type === 'add' && (change.phones?.length > 0 || change.phone) && (
                     <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.6 }}>
@@ -662,6 +670,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {activeTab === 'contact_changes' && <ContactChangesQueue />}
+        {activeTab === 'reset_otp' && (isChief || isDeputyChief) && <ResetOtpLimitsPanel canOverrideCaps />}
 
         <SharedTabPanels activeTab={activeTab} isChief={isChief || isDeputyChief} />
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
@@ -699,7 +708,6 @@ function myVoteRow(vote) {
 // ── Styles ──
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const headerFlex = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
 const tabBar     = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
 const tab        = { background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
 const countPill  = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };

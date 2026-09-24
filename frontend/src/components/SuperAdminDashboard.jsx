@@ -14,6 +14,9 @@ import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
 import ReceiptLink from './ReceiptLink';
 import ManifestoText from './ManifestoText';
 import ContactChangesQueue from './ContactChangesQueue';
+import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
+import { regNo } from '../regNo';
+import AdminHeader from './AdminHeader';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -58,7 +61,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [switchingOrg, setSwitchingOrg] = useState(false);
 
   // --- Branding state ---
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: 'var(--warning)', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [], signatories: [] });
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', support_phone: '', support_contacts: [], cc_list: [], signatories: [] });
   const [brandSaving, setBrandSaving] = useState(false);
 
   // --- Positions state ---
@@ -408,7 +411,7 @@ const refetchAll = () => {
   const handleToggleCommissioner = async (studentId) => {
     try {
       const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
-      toast(`${studentId} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`, { kind: 'success' });
+      toast(`${regNo(studentId)} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`, { kind: 'success' });
       fetchCommissioners();
       fetchVotersList();
     } catch (e) { toast(getErrorMessage(e, 'Failed to toggle commissioner.'), { kind: 'error' }); }
@@ -458,7 +461,7 @@ const handleClearFinanceCommissioner = async (studentId) => {
 const handleToggleFinancialController = async (studentId) => {
   try {
     const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/toggle`);
-    toast(`${studentId} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`, { kind: 'success' });
+    toast(`${regNo(studentId)} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`, { kind: 'success' });
     fetchFinancialControllers();
     fetchVotersList();
   } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
@@ -730,6 +733,7 @@ const handleSuperAdminRemoveStudent = async () => {
     { id: 'it_admins',  label: <>IT Admins</> },
     { id: 'student_changes', label: <>Student Changes</> },
     { id: 'contact_changes', label: <>Contact Changes</> },
+    { id: 'reset_otp', label: <>Reset OTP</> },
     { id: 'financial_controllers', label: <>Financial Controllers</> },
     { id: 'overseers',  label: <>Overseers</> },
     { id: 'organizations', label: <>Organizations</> },
@@ -745,14 +749,13 @@ const handleSuperAdminRemoveStudent = async () => {
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex} className="no-print">
-          <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Superadmin Panel</h2>
-            <span style={{ fontSize: '11px', opacity: 0.5 }}>
-              Sync: {lastRefreshed.toLocaleTimeString()}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: '10px' }}>
+        <AdminHeader
+          title="Superadmin Panel"
+          lastSynced={lastRefreshed}
+          onRefresh={refetchAll}
+          refreshing={loading}
+          onLogout={onLogout}
+          actions={<>
             <button
               onClick={handleToggleElection}
               aria-disabled={!isElectionOpen && isCertified}
@@ -778,9 +781,8 @@ const handleSuperAdminRemoveStudent = async () => {
             >
               {isCertified ? <>Certified</> : <>Certify Results</>}
             </button>
-            <button onClick={onLogout} style={{ ...btn, backgroundColor: 'var(--danger)' }}>Logout</button>
-          </div>
-        </div>
+          </>}
+        />
 
         {/* ── Org switcher ── */}
         <div style={orgSwitcherBar} className="no-print org-switcher-bar">
@@ -977,7 +979,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       Position: {app.position_title || app.position_id}
                     </p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
-                      ID: {app.student_id}
+                      ID: {regNo(app.student_id)}
                     </p>
                     <ManifestoText text={app.manifesto} />
                     {app.payment_method && (
@@ -1062,7 +1064,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         </span>
                       )}
                     </div>
-                    <small style={{ opacity: 0.6 }}>{c.student_id}</small>
+                    <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
                     <br />
                     <small style={{ color: 'var(--info)' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
                   </div>
@@ -1177,7 +1179,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   <div>
                     <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                     <br />
-                    <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                    <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                   </div>
                   <button style={greenBtn} onClick={() => handleToggleCommissioner(v.student_id)}>
                     + Make Commissioner
@@ -1248,7 +1250,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <tbody>
                   {filteredVoters.map(v => (
                     <tr key={v.student_id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={td}><code style={{ fontSize: '12px' }}>{v.student_id}</code></td>
+                      <td style={td}><code style={{ fontSize: '12px' }}>{regNo(v.student_id)}</code></td>
                       <td style={td}>{v.full_name}</td>
                       <td style={td}>
                         <span style={{
@@ -1429,7 +1431,6 @@ const handleSuperAdminRemoveStudent = async () => {
                     onChange={e => setBranding({ ...branding, accent_color: e.target.value })} />
                 </div>
         
-                {/* Live preview strip */}
                 <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>University / Institution Name</label>
                 <input
                   style={inp}
@@ -1513,21 +1514,87 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                 </div>
 
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>WhatsApp Support Number (digits only, with country code)</label>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>General WhatsApp support number (digits only, with country code)</label>
                 <input
                   style={inp}
                   placeholder="e.g. 256745707723"
                   value={branding.support_phone || ''}
                   onChange={e => setBranding({ ...branding, support_phone: e.target.value })}
                 />
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  Shown as “Contact Support” in the voter Help menu and on the code screen, and named in the notice SMS
+                  sent when a phone number is changed.
+                </small>
 
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Election Details PDF URL</label>
-                <input
-                  style={inp}
-                  placeholder="e.g. https://your-bucket.r2.dev/election-details.pdf"
-                  value={branding.support_pdf_url || ''}
-                  onChange={e => setBranding({ ...branding, support_pdf_url: e.target.value })}
-                />
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Support contacts by reason</label>
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  One card per reason, e.g. “Editing contact details”, “Reporting an issue”, “System guidance”. Add one
+                  or more named contacts under a reason — a voter who taps a reason with several contacts sees their
+                  names and picks who to message. Each reason appears as its own button in the voter Help menu.
+                </small>
+                {(branding.support_contacts || []).map((g, gi) => (
+                  <div key={gi} style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        style={{ ...inp, flex: '1 1 auto' }}
+                        placeholder="Reason"
+                        aria-label="Support contact reason"
+                        value={g.reason || ''}
+                        onChange={e => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, reason: e.target.value } : x) })}
+                      />
+                      <button
+                        type="button"
+                        aria-label="Remove reason"
+                        onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.filter((_, j) => j !== gi) })}
+                        style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: '#ff6b6b' }}
+                      >
+                        Remove reason
+                      </button>
+                    </div>
+                    {(g.contacts || []).map((c, ci) => (
+                      <div key={ci} style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', paddingLeft: '12px' }}>
+                        <input
+                          style={{ ...inp, flex: '1 1 120px' }}
+                          placeholder="Name (e.g. Aisha)"
+                          aria-label="Contact name"
+                          value={c.name || ''}
+                          onChange={e => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.map((y, k) => k === ci ? { ...y, name: e.target.value } : y) } : x) })}
+                        />
+                        <input
+                          style={{ ...inp, flex: '2 1 200px' }}
+                          placeholder="256745707723 or https://wa.me/…"
+                          aria-label="WhatsApp number or link"
+                          value={c.link || ''}
+                          onChange={e => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.map((y, k) => k === ci ? { ...y, link: e.target.value } : y) } : x) })}
+                        />
+                        <button
+                          type="button"
+                          aria-label="Remove contact"
+                          onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.filter((_, k) => k !== ci) } : x) })}
+                          style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: '#ff6b6b' }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      style={{ ...ghostBtn, width: 'fit-content', marginLeft: '12px' }}
+                      disabled={(g.contacts || []).length >= 6}
+                      onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: [...(x.contacts || []), { name: '', link: '' }] } : x) })}
+                    >
+                      + Add contact
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  style={{ ...ghostBtn, width: 'fit-content' }}
+                  disabled={(branding.support_contacts || []).length >= 12}
+                  onClick={() => setBranding({ ...branding, support_contacts: [...(branding.support_contacts || []), { reason: '', contacts: [{ name: '', link: '' }] }] })}
+                >
+                  + Add reason
+                </button>
 
                 <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Cc List (one per line)</label>
                 <textarea
@@ -1666,7 +1733,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     <div>
                       <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
                       <br />
-                      <small style={{ opacity: 0.6 }}>{a.student_id}</small>
+                      <small style={{ opacity: 0.6 }}>{regNo(a.student_id)}</small>
                       {a.it_admin_email && (
                         <>
                           <br />
@@ -1721,7 +1788,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       <div>
                         <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                         <br />
-                        <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                        <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                       </div>
                       <button style={greenBtn} onClick={() => handleToggleItAdmin(v.student_id)}>
                         + Make IT Admin
@@ -1737,7 +1804,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'student_changes' && (
           <div>
             <SuperAdminStudentEdit />
-            {rosterFrozen && <div style={{ ...card, margin: '16px 0', borderColor: 'var(--warning)' }}>{FROZEN_NOTE} Direct add / remove is disabled.</div>}
+            {rosterFrozen && <div style={{ ...card, margin: '16px 0', borderColor: 'var(--warning)' }}>Direct add / remove is disabled while the roster is frozen.</div>}
             {!rosterFrozen && <div style={twoCol}>
               <div style={card}>
                 <h4 style={cardTitle}>Add Student Directly</h4>
@@ -1783,11 +1850,11 @@ const handleSuperAdminRemoveStudent = async () => {
                               style={dropdownItem}
                               onClick={() => {
                                 setSaDirectRemove({ ...saDirectRemove, student_id: v.student_id });
-                                setRemoveSearch(`${v.full_name} (${v.student_id})`);
+                                setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`);
                                 setShowRemoveDropdown(false);
                               }}
                             >
-                              <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{v.student_id}</span>
+                              <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{regNo(v.student_id)}</span>
                             </div>
                           ))}
                         {voters.filter(v =>
@@ -1801,7 +1868,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </div>
                   {saDirectRemove.student_id && (
                     <p style={{ fontSize: '11px', color: 'var(--success)', margin: '2px 0 0' }}>
-                      <Icon name="check" /> Selected: {saDirectRemove.student_id}
+                      <Icon name="check" /> Selected: {regNo(saDirectRemove.student_id)}
                     </p>
                   )}
                   <input style={inp} placeholder="Reason" value={saDirectRemove.reason}
@@ -1840,7 +1907,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </small>
                 </div>
                 <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
-                  <b>{change.full_name}</b> — <code style={{ fontSize: '12px' }}>{change.student_id}</code>
+                  <b>{change.full_name}</b> — <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
                 </p>
                 <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                   Reason: {change.reason}
@@ -1878,7 +1945,10 @@ const handleSuperAdminRemoveStudent = async () => {
         {/* readOnly: decisions on pending requests stay commission-only, but SuperAdmin
             still gets the full pre-freeze digest and, as Chief/Deputy Chief also do, the
             Undo control on it — gated server-side, not by this prop. */}
-        {activeTab === 'contact_changes' && <ContactChangesQueue readOnly />}
+        {activeTab === 'contact_changes' && <ContactChangesQueue readOnly breakGlass />}
+
+        {/* ══════════════ RESET OTP LIMITS TAB ══════════════ */}
+        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel canOverrideCaps />}
 
         {/* ══════════════ FINANCIAL CONTROLLERS TAB ══════════════ */}
         {activeTab === 'financial_controllers' && (
@@ -1895,7 +1965,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     <div>
                       <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
                       <br />
-                      <small style={{ opacity: 0.6 }}>{a.student_id}</small>
+                      <small style={{ opacity: 0.6 }}>{regNo(a.student_id)}</small>
                       {a.financial_controller_email && (
                         <>
                           <br />
@@ -1950,7 +2020,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       <div>
                         <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                         <br />
-                        <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                        <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                       </div>
                       <button style={greenBtn} onClick={() => handleToggleFinancialController(v.student_id)}>
                         + Make Financial Controller
@@ -1977,7 +2047,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     <div>
                       <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
                       <br />
-                      <small style={{ opacity: 0.6 }}>{a.student_id}</small>
+                      <small style={{ opacity: 0.6 }}>{regNo(a.student_id)}</small>
                       {a.overseer_email && (
                         <>
                           <br />
@@ -2032,7 +2102,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       <div>
                         <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                         <br />
-                        <small style={{ opacity: 0.6 }}>{v.student_id}</small>
+                        <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                       </div>
                       <button style={greenBtn} onClick={() => handleToggleOverseer(v.student_id)}>
                         + Make Overseer
@@ -2124,7 +2194,6 @@ const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, bac
 const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const headerFlex  = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' };
 const orgSwitcherBar = { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px', padding: '10px 14px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '10px' };
 const tabBar      = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '24px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
 const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', whiteSpace: 'nowrap' };

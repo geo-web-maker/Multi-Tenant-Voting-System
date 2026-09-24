@@ -6,6 +6,8 @@ import ContactChangesQueue from './ContactChangesQueue';
 import { Icon } from './icons.jsx';
 import { ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
+import { regNo } from '../regNo';
+import AdminHeader, { useLastSynced } from './AdminHeader';
 
 
 export default function OverseerDashboard({ onLogout }) {
@@ -15,6 +17,7 @@ export default function OverseerDashboard({ onLogout }) {
   const [data, setData]       = useState(null);
   const [liveResults, setLiveResults] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [lastSynced, markSynced] = useLastSynced();
   const [tab, setTab]         = usePersistedTab('overseer', 'applications');
 
   useEffect(() => { fetchDashboard(); }, []);
@@ -29,6 +32,7 @@ export default function OverseerDashboard({ onLogout }) {
       ]);
       setData(dashRes.data);
       setLiveResults(resultsRes.data);
+      markSynced();
     } catch (e) {
       console.error('Failed to fetch overseer dashboard:', e);
     } finally {
@@ -50,15 +54,14 @@ export default function OverseerDashboard({ onLogout }) {
       <div style={container}  className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex}>
-          <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Overseer Panel</h2>
-            <span style={{ fontSize: '12px', opacity: 0.6 }}>
-              Logged in as <strong>{overseerName || overseerId}</strong> · read-only
-            </span>
-          </div>
-          <button style={redBtn} onClick={onLogout}>Logout</button>
-        </div>
+        <AdminHeader
+          title="Overseer Panel"
+          subtitle={<>Logged in as <strong>{overseerName || overseerId}</strong> · read-only</>}
+          lastSynced={lastSynced}
+          onRefresh={() => fetchDashboard()}
+          refreshing={loading}
+          onLogout={onLogout}
+        />
 
         {!overseerId && (
           <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
@@ -110,9 +113,6 @@ export default function OverseerDashboard({ onLogout }) {
                   {t.label}{t.count != null && ` (${t.count})`}
                 </button>
               ))}
-              <button style={{ ...ghostBtn, marginLeft: 'auto' }} onClick={() => fetchDashboard()} disabled={loading}>
-                {loading ? 'Syncing…' : <>Refresh</>}
-              </button>
             </div>
 
             {/* ── Applications (read-only) ── */}
@@ -150,7 +150,7 @@ export default function OverseerDashboard({ onLogout }) {
                           {c.change_type === 'add' ? <><Icon name="plus" /> ADD</> : <><Icon name="minus" /> REMOVE</>}
                         </span>
                         <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>
-                          {c.full_name} <code style={{ fontSize: '11px' }}>{c.student_id}</code>
+                          {c.full_name} <code style={{ fontSize: '11px' }}>{regNo(c.student_id)}</code>
                         </b>
                       </div>
                       <span style={statusBadge(c.status)}>{c.status.toUpperCase().replace('_', ' ')}</span>
@@ -281,15 +281,12 @@ function statusBadge(status) {
 // ── Styles ──
 const outerWrap    = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container    = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const headerFlex   = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
 const summaryGrid   = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '20px' };
 const summaryCard   = { padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '10px', backgroundColor: 'var(--bg-color)', display: 'flex', flexDirection: 'column', gap: '4px' };
 const summaryLabel  = { fontSize: '11px', opacity: 0.55, fontWeight: '600', textTransform: 'uppercase' };
 const summaryValue  = { fontSize: '15px', fontWeight: '700', color: 'var(--text-color)' };
 const tabBar        = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
 const tabBtn         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0' };
-const ghostBtn      = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
-const redBtn        = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', backgroundColor: '#e74c3c' };
 const appCard       = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
 const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const emptyState    = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };

@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Icon } from './icons.jsx';
+import { regNo } from '../regNo';
 
 // 1. Define the security "Look" for each stage
 const securityConfig = {
@@ -408,7 +409,7 @@ export default function FinalReport({
               <tbody>
                 {contactChanges.map((c, i) => (
                   <tr key={i}>
-                    <td style={tableCellStyle}>{c.student_id}</td>
+                    <td style={tableCellStyle}>{regNo(c.student_id)}</td>
                     <td style={tableCellStyle}>{String(c.type).replace(/_/g, ' ')}</td>
                     <td style={tableCellStyle}>{c.requested_by}</td>
                     <td style={tableCellStyle}>{c.decided_by || '—'}{c.breakglass ? ' (break-glass)' : ''}</td>

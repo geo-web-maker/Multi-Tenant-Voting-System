@@ -120,6 +120,9 @@ export const cancelContactChange = (id, reason = '') =>
   api.post(`/it-admin/contact-changes/${id}/cancel`, { reason }).then((r) => r.data);
 export const decideContactChange = (id, body) =>
   api.post(`/admin/contact-changes/${id}/decide`, body).then((r) => r.data);
+// Superadmin only, and only when "break-glass" is switched on in Security & SMS.
+export const breakGlassApprove = (id, body) =>
+  api.post(`/superadmin/contact-changes/${id}/force-approve`, { decision: 'approve', ...body }).then((r) => r.data);
 export const undoDigestEntry = (id, reason) =>
   api.post(`/admin/contact-changes/digest/${id}/undo`, { reason }).then((r) => r.data);
 

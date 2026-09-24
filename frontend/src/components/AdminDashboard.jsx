@@ -5,6 +5,8 @@ import { toggleElection, electionToggleFeedback } from '../electionControls';
 import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import usePolling from '../hooks/usePolling';
+import { regNo } from '../regNo';
+import AdminHeader from './AdminHeader';
 
 export default function AdminDashboard({ onLogout }) {
   const toast = useToast();
@@ -210,12 +212,13 @@ useEffect(() => { fetchData(); }, []);
     <div style={adminOuterWrapper} className="no-print outer-wrap">
       <div style={adminContainer} className="dashboard-shell">
         {/* HEADER */}
-        <div style={headerFlexStyle}>
-          <div>
-            <h2 style={{ margin: 0 }}>Admin Management</h2>
-            <span style={{ fontSize: '11px', opacity: 0.5 }}>Sync: {lastRefreshed.toLocaleTimeString()}</span>
-          </div>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+        <AdminHeader
+          title="Admin Management"
+          lastSynced={lastRefreshed}
+          onRefresh={() => fetchData()}
+          refreshing={loading}
+          onLogout={onLogout}
+          actions={<>
             <button onClick={() => setIsPreviewOpen(true)} style={previewBtnStyle}>Preview Ballot</button>
             
             <button
@@ -248,10 +251,8 @@ useEffect(() => { fetchData(); }, []);
             >
               {isCertified ? <>Certified (Final)</> : <>Certify Results</>}
             </button>
-
-            <button onClick={onLogout} style={logoutBtnStyle}>Logout</button>
-          </div>
-        </div>
+          </>}
+        />
 
         {/* ELECTION STATUS */}
         <div style={timerBoxStyle}>
@@ -333,7 +334,7 @@ useEffect(() => { fetchData(); }, []);
                   {filteredVoters.map((v) => (
                     <tr key={v.student_id} style={trStyle}>
                       <td style={{ ...tdStyle, padding: '10px 12px' }}>
-                        <code>{v.student_id}</code>
+                        <code>{regNo(v.student_id)}</code>
                       </td>
                       <td style={{ ...tdStyle, padding: '10px 12px' }}>
                         {v.full_name}
@@ -610,7 +611,6 @@ const orderBadgeStyle = {
   borderRadius: '4px' 
 };
 
-const headerFlexStyle = { display: 'flex', justifyContent: 'space-between', marginBottom: '25px', alignItems: 'center' };
 const timerBoxStyle = { backgroundColor: 'var(--bg-color)', padding: '20px', borderRadius: '12px', marginBottom: '25px', border: '1px solid var(--border-color)' };
 const funnelGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px', marginBottom: '25px' };
 const statCardStyle = { padding: '15px', border: '1px solid var(--border-color)', borderRadius: '12px', textAlign: 'center' };

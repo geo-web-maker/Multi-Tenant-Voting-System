@@ -7,6 +7,7 @@ import {
   lookupStudents, saveStudentEdit, fetchEditHistory,
   draftFromStudent, withNewPhoneRow, computeChanges, buildPayload, EVENT_LABELS, errMsg,
 } from '../studentEdit';
+import { regNo } from '../regNo';
 
 // Standalone IT admin screen: form on one side, live summary on the other.
 // Uses the same backend endpoint and audit logic as the superadmin screen; layout is its own.
@@ -68,7 +69,7 @@ export default function ITAdminStudentEdit() {
         </form>
         {results.map(s => (
           <button key={s.student_id} type="button" className="itadmin-pick" onClick={() => pick(s)}>
-            <b>{s.full_name}</b> <span style={{ opacity: 0.6, fontSize: 12 }}>{s.student_id}</span>
+            <b>{s.full_name}</b> <span style={{ opacity: 0.6, fontSize: 12 }}>{regNo(s.student_id)}</span>
           </button>
         ))}
         {searched && results.length === 0 && <p style={muted}>No matching students.</p>}
@@ -111,7 +112,7 @@ export default function ITAdminStudentEdit() {
       <aside className="itadmin-card itadmin-summary" aria-label="Live summary">
         <h4 style={title}>Summary</h4>
         <div className="itadmin-kv"><span>Student</span><b>{draft ? draft.original.full_name : '—'}</b></div>
-        <div className="itadmin-kv"><span>Registration no.</span><b>{draft ? draft.original.student_id : '—'}</b></div>
+        <div className="itadmin-kv"><span>Registration no.</span><b>{draft ? regNo(draft.original.student_id) : '—'}</b></div>
         <div className="itadmin-kv"><span>Reason</span><b>{reason.trim() || '—'}</b></div>
         <h5 style={{ margin: '14px 0 6px', fontSize: 12, opacity: 0.65 }}>CURRENT → NEW</h5>
         <div className="itadmin-changes">

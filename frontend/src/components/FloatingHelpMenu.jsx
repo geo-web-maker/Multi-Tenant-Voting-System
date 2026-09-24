@@ -10,7 +10,7 @@ const modalContentStyle = {
   boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', border: '1px solid var(--border-color)'
 };
 
-export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, orgName = '', onShowGuide, showSampleBallot = true }) {
+export default function FloatingHelpMenu({ supportPhone, orgName = '', onShowGuide, showSampleBallot = true }) {
   const [open, setOpen] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
 
@@ -21,7 +21,6 @@ export default function FloatingHelpMenu({ supportPdfUrl, supportPhone, orgName 
     // advertises something that's no longer possible.
     ...(showSampleBallot ? [{ label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); setOpen(false); } }] : []),
     { label: 'Check Voter Register', onClick: () => { setShowRegister(true); setOpen(false); } },
-    ...(supportPdfUrl ? [{ label: 'Official Register (PDF)', href: supportPdfUrl }] : []),
     {
       label: 'Contact Support', color: '#25D366',
       href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)')

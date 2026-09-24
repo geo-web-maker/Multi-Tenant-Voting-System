@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
+import { regNo } from '../regNo';
 
 export default function VoterRegisterSearch() {
   const [q, setQ] = useState('');
@@ -61,7 +62,7 @@ export default function VoterRegisterSearch() {
             {!loading && results.map((v, i) => (
               <div key={i} style={rowStyle}>
                 <span style={{ fontWeight: 600 }}>{v.full_name}</span>
-                <span style={{ opacity: 0.75, fontFamily: 'monospace', fontSize: '13px' }}>{v.student_id}</span>
+                <span style={{ opacity: 0.75, fontFamily: 'monospace', fontSize: '13px' }}>{regNo(v.student_id)}</span>
               </div>
             ))}
           </div>

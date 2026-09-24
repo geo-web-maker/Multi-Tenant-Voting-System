@@ -7,6 +7,7 @@ import {
   lookupStudents, fetchEditHistory, saveStudentEdit,
   draftFromStudent, withNewPhoneRow, computeChanges, buildPayload, EVENT_LABELS, errMsg,
 } from '../studentEdit';
+import { regNo } from '../regNo';
 
 // Edit-student UI that lives INSIDE the superadmin "Student Changes" tab.
 // Changes apply immediately (no approval, no notifications); the audit history below is the control.
@@ -98,13 +99,13 @@ export default function SuperAdminStudentEdit() {
         <div style={list}>
           {results.map(s => (
             <button key={s.student_id} type="button" style={listItem} onClick={() => pick(s)}>
-              <b>{s.full_name}</b> <span style={{ opacity: 0.6, fontSize: '12px' }}>{s.student_id}</span>
+              <b>{s.full_name}</b> <span style={{ opacity: 0.6, fontSize: '12px' }}>{regNo(s.student_id)}</span>
             </button>
           ))}
         </div>
       )}
 
-      {frozen && <ContactChangePanel student={draft?.original || null} />}
+      {frozen && <ContactChangePanel compact student={draft?.original || null} />}
       {draft && (
         <div style={{ marginTop: '16px' }}>
           <div style={fieldGrid}>

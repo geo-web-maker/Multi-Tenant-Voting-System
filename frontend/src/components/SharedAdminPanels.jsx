@@ -5,6 +5,7 @@ import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { askEarlyReason } from '../electionControls';
 import { Icon } from './icons.jsx';
 import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, fmtZoned, tzShort, utcOffsetLabel, zoneList } from '../tz';
+import { regNo } from '../regNo';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -23,6 +24,7 @@ import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, f
 
 const PHASE_LABELS = {
   applications: 'Applications',
+  vetting: 'Vetting',
   campaign: 'Campaign',
   voting: 'Voting',
   results: 'Results',
@@ -554,7 +556,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
               <tbody>
                 {grants.map(g => (
                   <tr key={g._id} style={{ opacity: g.revoked ? 0.4 : 1 }}>
-                    <td style={tdStyle}>{g.full_name || g.student_id}</td>
+                    <td style={tdStyle}>{g.full_name || regNo(g.student_id)}</td>
                     <td style={tdStyle}>{PHASE_LABELS[g.phase] || g.phase}</td>
                     <td style={tdStyle}>{g.reason}</td>
                     <td style={tdStyle}>{g.granted_by}</td>

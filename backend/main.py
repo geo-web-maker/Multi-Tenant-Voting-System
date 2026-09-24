@@ -10,6 +10,7 @@ import os
 import csv
 import io
 import re
+from urllib.parse import urlparse
 import httpx
 import logging
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,9 @@ import boto3
 from fastapi.concurrency import run_in_threadpool
 import backup
 from backup_routes import build_router as build_backup_router
+from name_utils import normalize_name
+from name_backfill import run_backfill as run_name_backfill
+from regno_audit import audit_reg_numbers
 import otp_limits as ol
 
 from auth import (
@@ -562,9 +566,8 @@ class BrandingUpdate(BaseModel):
     org_name:            str = ""
     university_name:     str = ""
     university_logo_url: str = ""
-    commissioner_name:   str = ""
     support_phone:       str = ""
-    support_pdf_url:     str = ""
+    support_contacts:    list[dict] = []   # [{reason, contacts: [{name, link}]}] — WhatsApp number or link per reason
     cc_list:             list[str] = []
     signatories:         list[dict] = []   # [{full_name, role}, ...] — manual override; see get_official_report
 
@@ -675,6 +678,8 @@ def _mask_name(name: str) -> str:
     return parts[0] + " " + " ".join(f"{p[0]}." for p in parts[1:])
 
 def _mask_student_id(sid: str) -> str:
+    # Display only: stored form is lowercase, people see registration numbers capitalised.
+    sid = (sid or "").upper()
     parts = sid.split("/")
     if len(parts) < 2:
         return sid[:3] + "***"
@@ -785,23 +790,17 @@ async def _safe_count_sms(org_id, kind: str):
         logger.error(f"sms usage count failed: {e}")
 
 
-async def send_sms_status(to_number: str, message_text: str, request: Request | None = None,
-                          kind: str = "otp", org_id: str | None = None) -> str:
-    """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
+# kind="otp" is the only time-priority category (a voter is actively waiting on the code).
+# Everything else (admin, notice, test, vetting, ...) is non-priority: MamboSMS is cheap but
+# slow, which is fine for messages nobody is staring at their phone for.
+PRIORITY_SMS_KINDS = {"otp"}
 
-    EgoSMS (primary) first; on a DEFINITE failure falls back to MamboSMS. On an AMBIGUOUS EgoSMS result
+
+async def _send_sms_priority(to_number: str, message_text: str, org, kind: str) -> str:
+    """EgoSMS (primary) first; on a DEFINITE failure falls back to MamboSMS. On an AMBIGUOUS EgoSMS result
     (timeout) it does NOT fall back unless the org's sms_fallback_on_timeout setting is on (per-org,
-    defaults from SMS_FALLBACK_ON_TIMEOUT), because the first send may have
-    been delivered and billed. Every provider send (Ego and Mambo) is counted toward the election budget.
+    defaults from SMS_FALLBACK_ON_TIMEOUT), because the first send may have been delivered and billed.
     """
-    org = request.state.org_id if request is not None else org_id
-    if DEBUG_MODE:
-        # Local/load-testing only: never hit either real API. Log the message (which contains the OTP)
-        # so Locust or a manual tester can read it back, and report success.
-        logger.info(f"[DEBUG_MODE] SMS to {to_number}: {message_text}")
-        await _safe_count_sms(org, kind)
-        return "ok"
-
     first = await send_sms_via_egosms(to_number, message_text)
     if first == "ok":
         await _safe_count_sms(org, kind)
@@ -819,6 +818,43 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
         await _safe_count_sms(org, kind)
         return "ok"
     return "failed"
+
+
+async def _send_sms_non_priority(to_number: str, message_text: str, org, kind: str) -> str:
+    """MamboSMS (primary) first — cheap, slow, fine for non-time-critical notices. On a Mambo
+    failure falls back to EgoSMS so the message still gets there, just at EgoSMS's cost.
+    """
+    if await send_sms_via_mambosms(to_number, message_text):
+        await _safe_count_sms(org, kind)
+        return "ok"
+
+    logger.warning(f"MamboSMS failed for {to_number}, falling back to EgoSMS.")
+    await log_action("sms_provider_fallback", "system", {"primary": "mambosms", "fallback": "egosms"}, org_id=org)
+    second = await send_sms_via_egosms(to_number, message_text)
+    if second in ("ok", "ambiguous"):
+        await _safe_count_sms(org, kind)        # ambiguous here too may have been billed
+        return "ok" if second == "ok" else "ambiguous"
+    return "failed"
+
+
+async def send_sms_status(to_number: str, message_text: str, request: Request | None = None,
+                          kind: str = "otp", org_id: str | None = None) -> str:
+    """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
+
+    Provider order depends on `kind`: see PRIORITY_SMS_KINDS, _send_sms_priority and
+    _send_sms_non_priority. Every provider send (Ego and Mambo) is counted toward the election budget.
+    """
+    org = request.state.org_id if request is not None else org_id
+    if DEBUG_MODE:
+        # Local/load-testing only: never hit either real API. Log the message (which contains the OTP)
+        # so Locust or a manual tester can read it back, and report success.
+        logger.info(f"[DEBUG_MODE] SMS to {to_number}: {message_text}")
+        await _safe_count_sms(org, kind)
+        return "ok"
+
+    if kind in PRIORITY_SMS_KINDS:
+        return await _send_sms_priority(to_number, message_text, org, kind)
+    return await _send_sms_non_priority(to_number, message_text, org, kind)
 
 
 async def send_sms(to_number: str, message_text: str, request: Request | None = None,
@@ -1539,7 +1575,7 @@ async def require_superadmin_state(request: Request) -> dict:
 # after voting closed. Phases are stored on a single settings document per org
 # so a phase read is one query, and each carries its own enforced flag.
 
-PHASE_NAMES = ("applications", "campaign", "voting", "results")
+PHASE_NAMES = ("applications", "vetting", "campaign", "voting", "results")
 DEFAULT_ROUND_ID = "round-1"
 # Times are STORED as UTC. The election timezone is the zone admins think in when they type a start/end,
 # and the one every screen shows them in — so a laptop set to another timezone can't start an election early/late.
@@ -1887,7 +1923,6 @@ _SEC_DEFAULTS = {
     "quota_alert_pct": ol.env_float("CONTACT_CHANGE_ALERT_PCT", 2),
     "quota_hard_cap_pct": ol.env_float("CONTACT_CHANGE_HARD_CAP_PCT", 5),
     "superadmin_breakglass": ol.env_bool("CONTACT_CHANGE_SUPERADMIN_BREAKGLASS", False),
-    "digest_days": ol.env_int("CONTACT_DIGEST_DAYS", 7),
     "reset_admin_hourly_alert": ol.env_int("OTP_RESET_PER_ADMIN_HOURLY_ALERT", 50),
     "reset_admin_hourly_hard_cap": ol.env_int(
         "OTP_RESET_PER_ADMIN_HOURLY_HARD_CAP", ol.env_int("ADMIN_RESET_HARD_CAP", 150)),
@@ -3050,6 +3085,8 @@ async def submit_application(data: ApplicationSubmit, request: Request):
             status_code=400,
             detail="The name entered doesn't match our records for this Student ID."
         )
+    data.full_name = normalize_name(data.full_name)
+    data.student_id = student["student_id"]     # canonical stored form, whatever the applicant typed
 
     existing = await db.applications.find_one(org_query(request, {
         "student_id": data.student_id,
@@ -3485,7 +3522,7 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
         row_num += 1
         # Handle both hyphen (student-id) and underscore (student_id) column names
         sid             = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
-        name            = (row.get('full_name')  or row.get('full-name')  or '').strip()
+        name            = normalize_name((row.get('full_name')  or row.get('full-name')  or '').strip())
         raw_phone_field = (row.get('phone') or '').strip()
 
         if not (sid and name):
@@ -3741,6 +3778,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 
 @app.post("/candidates")
 async def add_candidate(candidate: CandidateCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    candidate.name = normalize_name(candidate.name)
     result = await db.candidates.insert_one(org_stamp(request, candidate.dict()))
     await log_action("candidate_added", current_actor(request), {
         "name": candidate.name, "position": candidate.position
@@ -3752,7 +3790,7 @@ async def add_candidate(candidate: CandidateCreate, request: Request, admin: dic
 async def update_candidate(candidate_id: str, data: dict, request: Request, admin: dict = Depends(require_role("superadmin"))):
     oid = parse_oid(candidate_id, "candidate id")
     upd = {
-        "name":     data.get("name"),
+        "name":     normalize_name(data["name"]) if isinstance(data.get("name"), str) else data.get("name"),
         "position": data.get("position"),
         "order":    int(data.get("order", 0))
     }
@@ -3934,6 +3972,25 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     if result.matched_count == 0:
         raise HTTPException(400, "This application was already resolved or finance-cleared by someone else.")
     await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id}, org_id=request.state.org_id)
+
+    # Nomination/vetting date comes from the "vetting" phase on the admin Timeline, not a
+    # hardcoded string, so it always matches whatever dates are actually configured this round.
+    # Shown in the org's election timezone (same convention as assert_phase_open's _when()) —
+    # the raw UTC value alone can read as the wrong calendar day/time to the applicant.
+    schedule = await get_phase_schedule(request)
+    vetting_start = schedule["phases"]["vetting"]["start"]
+    when = None
+    if vetting_start:
+        tz_name = schedule.get("timezone") or DEFAULT_ELECTION_TZ
+        try:
+            z = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            z = ZoneInfo("UTC")
+        local = vetting_start.replace(tzinfo=timezone.utc).astimezone(z)
+        when = f"{local.day} {local:%b %Y}"
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
+        f"{org}: Your payment has been confirmed. You are invited for nomination/vetting for {pos}"
+        + (f" on {when}." if when else " — the date will be communicated once the Timeline is set.")))
     logger.info(f"Application {app_id} finance-cleared by {data.commissioner_id}.")
     return {"status": "finance_cleared"}
 
@@ -4179,9 +4236,8 @@ async def get_branding(request: Request):
             "org_name":            "",
             "university_name":     "",
             "university_logo_url": "",
-            "commissioner_name":   "",
             "support_phone":       "",
-            "support_pdf_url":     "",
+            "support_contacts":    [],
             "cc_list":             []
         }
         
@@ -4190,9 +4246,11 @@ async def get_branding(request: Request):
     # visitor. cc_list (officials' email addresses) and org_id have no business here.
     PUBLIC_BRANDING_FIELDS = (
         "logo_url", "primary_color", "accent_color", "org_name", "university_name",
-        "university_logo_url", "commissioner_name", "support_phone", "support_pdf_url",
+        "university_logo_url", "support_phone",
     )
-    return {k: doc.get(k, "") for k in PUBLIC_BRANDING_FIELDS}
+    out = {k: doc.get(k, "") for k in PUBLIC_BRANDING_FIELDS}
+    out["support_contacts"] = doc.get("support_contacts") or []
+    return out
 
 
 # The public endpoint above deliberately strips cc_list/signatories for
@@ -4204,17 +4262,56 @@ async def get_branding_full(request: Request, admin: dict = Depends(require_role
     defaults = {
         "logo_url": "", "primary_color": "#003366", "accent_color": "#f1c40f",
         "org_name": "", "university_name": "", "university_logo_url": "",
-        "commissioner_name": "", "support_phone": "", "support_pdf_url": "",
+        "support_phone": "", "support_contacts": [],
         "cc_list": [], "signatories": [],
     }
     return {**defaults, **{k: doc.get(k, v) for k, v in defaults.items()}}
 
 
+_WHATSAPP_HOSTS = {"wa.me", "api.whatsapp.com", "chat.whatsapp.com", "whatsapp.com", "www.whatsapp.com"}
+
+
+def _clean_support_contacts(groups: list[dict]) -> list[dict]:
+    """Each group is {reason, contacts: [{name, link}]}: link is a WhatsApp number (digits, country
+    code) or an https WhatsApp link. Anything else is rejected so the voter Help menu can never be
+    pointed elsewhere. A reason with one contact is a direct link in the Help menu; more than one
+    shows a small submenu of names for the voter to pick from — see HelpPanel.jsx."""
+    out = []
+    for g in (groups or [])[:12]:
+        reason = str((g or {}).get("reason", "")).strip()[:80]
+        contacts = []
+        for c in (g or {}).get("contacts", [])[:6]:
+            name = str((c or {}).get("name", "")).strip()[:60]
+            link = str((c or {}).get("link", "")).strip()[:300]
+            if not name and not link:
+                continue
+            if not link:
+                raise HTTPException(400, f"'{reason or '(reason)'}': every contact needs a WhatsApp number or link.")
+            if link.lower().startswith("https://"):
+                host = (urlparse(link).hostname or "").lower()
+                if host not in _WHATSAPP_HOSTS:
+                    raise HTTPException(400, f"'{reason or '(reason)'}': only WhatsApp links (wa.me, chat.whatsapp.com) are allowed.")
+            else:
+                digits = re.sub(r"\D", "", link)
+                if not 9 <= len(digits) <= 15:
+                    raise HTTPException(400, f"'{reason or '(reason)'}': enter digits with the country code (e.g. 256745707723) or a full WhatsApp link.")
+                link = digits
+            contacts.append({"name": name, "link": link})
+        if not reason and not contacts:
+            continue
+        if not reason or not contacts:
+            raise HTTPException(400, "Each support reason needs a label and at least one contact.")
+        out.append({"reason": reason, "contacts": contacts})
+    return out
+
+
 @app.post("/superadmin/branding")
 async def save_branding(data: BrandingUpdate, request: Request):
+    doc = data.dict()
+    doc["support_contacts"] = _clean_support_contacts(data.support_contacts)
     await db.settings.update_one(
         org_query(request, {"name": "branding"}),
-        {"$set": org_stamp(request, {**data.dict(), "name": "branding"})},
+        {"$set": org_stamp(request, {**doc, "name": "branding"})},
         upsert=True
     )
     # Branding drives the org name, the commissioner name printed on the
@@ -4222,7 +4319,6 @@ async def save_branding(data: BrandingUpdate, request: Request):
     # certified report. Changes to it belong in the audit trail.
     await log_action("branding_updated", current_actor(request), {
         "org_name": data.org_name,
-        "commissioner_name": data.commissioner_name,
         "cc_count": len(data.cc_list),
         "signatory_count": len(data.signatories),
     }, org_id=request.state.org_id)
@@ -4704,6 +4800,8 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
     # A request attributed to someone else would make the audit trail lie
     # about who asked for a voter to be added to the register.
     bind_identity(request, data.requested_by, "IT Admin account")
+    data.full_name = normalize_name(data.full_name)
+    data.student_id = normalize_student_id(data.student_id)
     # Prevent duplicate pending requests for same student
     existing = await db.student_changes.find_one(org_query(request, {
         "student_id":  data.student_id,
@@ -5252,6 +5350,10 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
 @app.post("/superadmin/students/add")
 async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
     await assert_roster_unfrozen(request)
+    data.full_name = normalize_name(data.full_name)
+    # Must match the canonical stored form: every lookup (login, search, votes) does an exact
+    # match on normalize_student_id(), so a reg no. saved as typed could never be found.
+    data.student_id = normalize_student_id(data.student_id)
     phones = []
     for raw in data.phones:
         if not str(raw or "").strip():
@@ -5282,6 +5384,47 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
         "reason":     data.reason
     }, org_id=request.state.org_id)
     return {"status": "added"}
+
+
+class NormalizeNamesRequest(BaseModel):
+    dry_run: bool = True
+
+
+@app.post("/superadmin/maintenance/normalize-names")
+async def superadmin_normalize_names(data: NormalizeNamesRequest, request: Request,
+                                     admin: dict = Depends(require_role("superadmin"))):
+    """Title-case every stored person name in THIS organisation (register, applications,
+    candidates, student-change requests). dry_run=True (the default) only reports what
+    would change. Case/whitespace only; audit history is left as originally written."""
+    org_id = request.state.org_id
+    report = await run_name_backfill(db, org_id=org_id, dry_run=data.dry_run)
+    if not data.dry_run and report["total_changed"]:
+        await log_action("names_normalized", current_actor(request),
+                         {"total_changed": report["total_changed"], "collections": report["collections"]},
+                         org_id=org_id)
+        await append_ledger(org_id, "names_normalized", "roster", current_actor(request), "superadmin",
+                            {"total_changed": report["total_changed"]})
+    return report
+
+
+class CheckRegNumbersRequest(BaseModel):
+    fix: bool = False
+
+
+@app.post("/superadmin/maintenance/check-reg-numbers")
+async def superadmin_check_reg_numbers(data: CheckRegNumbersRequest, request: Request,
+                                       admin: dict = Depends(require_role("superadmin"))):
+    """Find (and with fix=True repair) registration numbers not stored in canonical form
+    (lowercase, no spaces) — such voters are on the register but cannot be found at login.
+    Conflicts and voters who already voted are reported only, never modified."""
+    org_id = request.state.org_id
+    report = await audit_reg_numbers(db, org_id=org_id, fix=data.fix)
+    if data.fix and report["total_fixed"]:
+        await log_action("reg_numbers_normalized", current_actor(request),
+                         {"total_fixed": report["total_fixed"], "needs_review": report["needs_review"]}, org_id=org_id)
+        await append_ledger(org_id, "reg_numbers_normalized", "roster", current_actor(request), "superadmin",
+                            {"total_fixed": report["total_fixed"]})
+    return report
 
 
 @app.post("/superadmin/students/remove")
@@ -5376,7 +5519,7 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
     events: list[dict] = []          # {event, field, old, new}
 
     if full_name is not None:
-        candidate = " ".join(full_name.split())
+        candidate = normalize_name(full_name)
         if not candidate or len(candidate) > 120:
             raise HTTPException(400, "Name must be 1-120 characters.")
         if candidate != old_name:
@@ -6129,7 +6272,7 @@ async def get_official_report(request: Request):
     chief = next((c for c in commissioners if c.get("is_chief_commissioner")), None)
     commissioner_name = (
         (chief or {}).get("full_name")
-        or branding.get("commissioner_name")
+        or branding.get("commissioner_name")   # legacy value only; no longer editable in Branding
         or "The Electoral Commissioner"
     )
     org_name = branding.get("org_name", "the Organisation")
@@ -6318,7 +6461,6 @@ class SecuritySettingsUpdate(BaseModel):
     quota_hard_cap_pct: float | None = None
     superadmin_breakglass: bool | None = None
     sms_fallback_on_timeout: bool | None = None
-    digest_days: int | None = None
     reset_admin_hourly_alert: int | None = None
     reset_admin_hourly_hard_cap: int | None = None
     reset_per_voter_daily: int | None = None
@@ -6336,7 +6478,7 @@ class SmsBudgetUpdate(BaseModel):
 _SEC_RANGES = {
     "otp_target_risk": (1e-6, 0.01), "contact_change_ttl_hours": (1, 72), "contact_change_max_per_voter": (1, 10),
     "approver_daily_cap": (1, 1000), "quota_alert_pct": (0, 100), "quota_hard_cap_pct": (0, 100),
-    "digest_days": (1, 60), "reset_admin_hourly_alert": (1, 10000), "reset_admin_hourly_hard_cap": (1, 10000),
+    "reset_admin_hourly_alert": (1, 10000), "reset_admin_hourly_hard_cap": (1, 10000),
     "reset_per_voter_daily": (1, 50), "reset_per_voter_election": (1, 200),
 }
 
@@ -6707,7 +6849,9 @@ async def _notify_old_number(request: Request, c: dict, old_phones: list[str], n
             "phone_add": "A phone number was added to", "registration_number_change": "The registration number on"}[ch["type"]]
     tail = " was changed" if ch["type"] in ("phone_change", "registration_number_change") else (
         " was removed" if ch["type"] == "phone_remove" else "")
-    contact = f" If this was not you, contact {b['support_phone']}." if b.get("support_phone") else " If this was not you, contact the electoral commission."
+    reach = b.get("support_phone") or next(
+        (c.get("link") for g in (b.get("support_contacts") or []) for c in (g.get("contacts") or []) if c.get("link")), "")
+    contact = f" If this was not you, contact {reach}." if reach else " If this was not you, contact the electoral commission."
     text = f"{what} the {org} voting register{tail} at {when}.{contact}" if ch["type"] != "phone_add" else \
            f"{what} the {org} voting register at {when}.{contact}"
     return "sent" if await send_sms(old, text, request, kind="notice") else "failed"
@@ -6847,6 +6991,53 @@ async def override_cap(data: CapOverride, request: Request, admin: dict = Depend
     await log_action("cap_override", current_actor(request), {"kind": data.kind, "admin": data.admin_id, "cap": data.cap},
                      org_id=request.state.org_id)
     return {"status": "saved"}
+
+
+@app.get("/admin/otp/voter-search")
+async def search_voters_for_otp_reset(q: str, request: Request,
+                                       admin: dict = Depends(require_role("it_admin", "commission", "superadmin"))):
+    """Name/registration-number search for the Reset OTP panel only. Deliberately
+    separate from /admin/students/lookup (which is IT-admin/superadmin only and
+    exposes phone numbers for editing) — this returns just enough to pick the
+    right voter and never phone numbers."""
+    q = q.strip()
+    if len(q) < 2:
+        return []
+    rx = {"$regex": re.escape(q), "$options": "i"}
+    cur = db.voters.find(org_query(request, {"$or": [{"student_id": rx}, {"full_name": rx}]}),
+                          {"_id": 0, "student_id": 1, "full_name": 1}).limit(10)
+    return [{"student_id": v["student_id"], "full_name": v.get("full_name", "")} async for v in cur]
+
+
+@app.get("/admin/otp/admin-search")
+async def search_admins_for_cap_override(q: str, request: Request,
+                                          admin: dict = Depends(require_chief_commissioner)):
+    """Name/login-id search for 'Raise one person's cap'. Matches anyone holding
+    an admin role (commissioner, IT admin, financial controller, overseer) so
+    Chief/Deputy/superadmin don't have to know someone's exact login ID."""
+    q = q.strip()
+    if len(q) < 2:
+        return []
+    rx = {"$regex": re.escape(q), "$options": "i"}
+    role_labels = {
+        "is_chief_commissioner": "Chief Commissioner",
+        "is_deputy_chief_commissioner": "Deputy Chairperson",
+        "is_commissioner": "Commissioner",
+        "is_it_admin": "IT Admin",
+        "is_financial_controller": "Financial Controller",
+        "is_overseer": "Overseer",
+    }
+    cur = db.voters.find(org_query(request, {
+        "$and": [
+            {"$or": [{"student_id": rx}, {"full_name": rx}]},
+            {"$or": [{f: True} for f in STUDENT_ROLE_FLAGS]},
+        ]
+    }), {"_id": 0, "student_id": 1, "full_name": 1, **{f: 1 for f in role_labels}}).limit(10)
+    out = []
+    async for v in cur:
+        label = next((label for flag, label in role_labels.items() if v.get(flag)), "Admin")
+        out.append({"id": v["student_id"], "name": v.get("full_name", ""), "role": label})
+    return out
 
 
 # ── Part E: admin "Reset OTP limits" ────────────────────────────────────────

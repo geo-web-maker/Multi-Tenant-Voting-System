@@ -7,9 +7,12 @@ import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { Icon } from './icons.jsx';
 import ITAdminStudentEdit from './ITAdminStudentEdit';
+import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import useRosterStatus from '../hooks/useRosterStatus';
 import { previewPhone } from '../studentEdit';
 import './ITAdminDashboard.css';
+import { regNo } from '../regNo';
+import AdminHeader, { useLastSynced } from './AdminHeader';
 
 
 export default function ITAdminDashboard({ onLogout }) {
@@ -23,6 +26,7 @@ export default function ITAdminDashboard({ onLogout }) {
   const [activeTab, setActiveTab] = usePersistedTab('it_admin', 'overview');
   const [myRequests, setMyRequests] = useState([]);
   const [loading, setLoading]       = useState(false);
+  const [lastSynced, markSynced]    = useLastSynced();
   
   // --Payment states
   const [paymentMethod, setPaymentMethod] = useState('');
@@ -82,6 +86,7 @@ export default function ITAdminDashboard({ onLogout }) {
     try {
       const res = await api.get(`/it-admin/students/my-requests/${encodeURIComponent(itAdminId)}`);
       setMyRequests(res.data);
+      markSynced();
     } catch (e) {
       console.error('Failed to fetch requests:', e);
     } finally {
@@ -207,6 +212,7 @@ export default function ITAdminDashboard({ onLogout }) {
     { id: 'edit',     label: <>Edit Student</> },
     ...(rosterFrozen ? [] : [{ id: 'remove', label: <>Remove Student</> }]),
     { id: 'requests', label: <>My Requests</>, count: myRequests.length },
+    { id: 'reset_otp', label: <>Reset OTP</> },
     ...SHARED_TAB_DEFS,
   ];
 
@@ -215,16 +221,14 @@ export default function ITAdminDashboard({ onLogout }) {
       <div style={container} className="dashboard-shell">
 
         {/* ── Header ── */}
-        <div style={headerFlex}>
-          <div>
-            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>IT Admin Panel</h2>
-            <span style={{ fontSize: '12px', opacity: 0.6 }}>
-              Logged in as <strong>{itAdminName || itAdminId}</strong>
-              {pendingCount > 0 && ` · ${pendingCount} pending request${pendingCount !== 1 ? 's' : ''}`}
-            </span>
-          </div>
-          <button style={redBtn} onClick={onLogout}>Logout</button>
-        </div>
+        <AdminHeader
+          title="IT Admin Panel"
+          subtitle={<>Logged in as <strong>{itAdminName || itAdminId}</strong>{pendingCount > 0 && ` · ${pendingCount} pending request${pendingCount !== 1 ? 's' : ''}`}</>}
+          lastSynced={lastSynced}
+          onRefresh={() => { fetchMyRequests(); fetchVoters(); }}
+          refreshing={loading}
+          onLogout={onLogout}
+        />
 
         {!itAdminId && (
           <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
@@ -352,7 +356,7 @@ export default function ITAdminDashboard({ onLogout }) {
             <aside style={card} className="itadmin-summary" aria-label="Live summary">
               <h4 style={cardTitle}>Summary</h4>
               {[
-                ['Registration no.', addForm.student_id.trim()],
+                ['Registration no.', regNo(addForm.student_id.trim())],
                 ['Name', addForm.full_name.trim()],
                 ['Phone(s)', addForm.phones.map(p => p.trim()).filter(Boolean)
                   .map(p => previewPhone(p) || `${p} (invalid)`).join(', ')],
@@ -368,6 +372,9 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {/* ══════════════ EDIT STUDENT ══════════════ */}
         {activeTab === 'edit' && <ITAdminStudentEdit />}
+
+        {/* ══════════════ RESET OTP LIMITS ══════════════ */}
+        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel />}
 
         {/* ══════════════ REMOVE STUDENT ══════════════ */}
         {activeTab === 'remove' && !rosterFrozen && (
@@ -406,11 +413,11 @@ export default function ITAdminDashboard({ onLogout }) {
                             style={dropdownItem}
                             onClick={() => {
                               setRemoveForm({ ...removeForm, student_id: v.student_id });
-                              setRemoveSearch(`${v.full_name} (${v.student_id})`);
+                              setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`);
                               setShowRemoveDropdown(false);
                             }}
                           >
-                            <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{v.student_id}</span>
+                            <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{regNo(v.student_id)}</span>
                           </div>
                         ))}
                       {voters.filter(v =>
@@ -424,7 +431,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 </div>
                 {removeForm.student_id && (
                   <p style={{ fontSize: '11px', color: '#2ecc71', margin: '4px 0 0' }}>
-                    <Icon name="check" /> Selected: {removeForm.student_id}
+                    <Icon name="check" /> Selected: {regNo(removeForm.student_id)}
                   </p>
                 )}
 
@@ -446,7 +453,7 @@ export default function ITAdminDashboard({ onLogout }) {
               <h4 style={cardTitle}>Summary</h4>
               {[
                 ['Student', removeForm.student_id ? (voters.find(v => v.student_id === removeForm.student_id)?.full_name || '') : ''],
-                ['Registration no.', removeForm.student_id],
+                ['Registration no.', regNo(removeForm.student_id)],
                 ['Reason', removeForm.reason.trim()],
               ].map(([k, v]) => (
                 <div key={k} className="itadmin-kv"><span>{k}</span><b>{v || '—'}</b></div>
@@ -489,7 +496,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 </div>
 
                 <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
-                  <b>Student:</b> {req.full_name} — <code style={{ fontSize: '12px' }}>{req.student_id}</code>
+                  <b>Student:</b> {req.full_name} — <code style={{ fontSize: '12px' }}>{regNo(req.student_id)}</code>
                 </p>
                 {req.change_type === 'add' && (req.phones?.length > 0 || req.phone) && (
                   <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.6 }}>
@@ -584,7 +591,6 @@ const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, bac
 const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '100%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const headerFlex  = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
 const tabBar      = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
 const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
 const countPill   = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };

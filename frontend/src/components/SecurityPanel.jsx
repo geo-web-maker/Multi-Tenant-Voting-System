@@ -3,6 +3,7 @@ import api from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
+import { turnstileConfigured } from '../supportLink';
 import { DEFAULT_TZ, utcToZonedInput, zonedInputToUtcISO, utcOffsetLabel, fmtZoned } from '../tz';
 
 /** SMS usage tile (read-only; superadmin / overseer / commission). */
@@ -72,7 +73,7 @@ export default function SecurityPanel() {
     const body = { reason: reason.trim() };
     ['roster_freeze_enabled', 'contact_change_required', 'superadmin_breakglass', 'sms_fallback_on_timeout'].forEach(k => { body[k] = Boolean(f[k]); });
     ['otp_target_risk', 'quota_alert_pct', 'quota_hard_cap_pct'].forEach(k => { body[k] = Number(f[k]); });
-    ['contact_change_ttl_hours', 'contact_change_max_per_voter', 'approver_daily_cap', 'digest_days',
+    ['contact_change_ttl_hours', 'contact_change_max_per_voter', 'approver_daily_cap',
       'reset_admin_hourly_alert', 'reset_admin_hourly_hard_cap', 'reset_per_voter_daily', 'reset_per_voter_election'].forEach(k => { body[k] = Number(f[k]); });
     body.turnstile_mode = f.turnstile_mode;
     body.public_results_mode = f.public_results_mode;
@@ -130,7 +131,6 @@ export default function SecurityPanel() {
           {num('approver_daily_cap', 'Approvals per commissioner / day')}
           {num('quota_alert_pct', 'Alert at % of electorate', 0.5)}
           {num('quota_hard_cap_pct', 'Hard stop at % of electorate', 0.5)}
-          {num('digest_days', 'Pre-freeze digest (days)')}
         </div>
         {chk('roster_freeze_enabled', 'Roster freeze enabled')}
         {chk('contact_change_required', 'Contact changes require commissioner approval')}
@@ -177,6 +177,7 @@ export default function SecurityPanel() {
           <option value="off">Off</option><option value="adaptive">Adaptive (suspicious IPs / under attack)</option><option value="on">On (recommended for election day)</option>
         </select>
         {!dv.turnstile_secret_configured && f.turnstile_mode !== 'off' && <p style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> TURNSTILE_SECRET is not set on the server, so the check cannot be enforced.</p>}
+        {f.turnstile_mode !== 'off' && !turnstileConfigured && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> VITE_TURNSTILE_SITE_KEY is not set in this frontend build, so voters cannot see the check. Keep this Off until it is set and the site is redeployed.</p>}
       </div>
 
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
@@ -198,12 +199,115 @@ export default function SecurityPanel() {
         <button style={{ ...btn, marginTop: 8 }} onClick={saveBudget}>Save SMS budget</button>
       </div>
 
+      <NameNormalizerTile />
+
+      <RegNumberCheckTile />
+
       <div style={box}>
         <b style={{ fontSize: 14 }}>Roster ledger integrity</b>
         <button style={{ ...btn, background: '#3498db', marginLeft: 10 }} onClick={verifyLedger}>Verify chain</button>
         {ledger && <p style={{ ...note, color: ledger.valid ? 'var(--success)' : 'var(--danger)' }}>
           {ledger.valid ? `VERIFIED — ${ledger.entries} entries` : `MISMATCH at entry #${ledger.first_bad_seq}`}</p>}
       </div>
+    </div>
+  );
+}
+
+/** Superadmin maintenance: title-case every stored person name in the active organization. */
+function NameNormalizerTile() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState(null);
+
+  const run = async (dryRun) => {
+    if (!dryRun) {
+      const ok = await confirm(
+        'Rewrite the capitalisation of every name in the voter register, applications, candidates and change requests for this organization? Only letter case and spacing change (e.g. "john OKELLO" becomes "John Okello"). Preview first if you have not already.',
+        { confirmText: 'Apply to all names' });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      const r = (await api.post('/superadmin/maintenance/normalize-names', { dry_run: dryRun })).data;
+      setReport(r);
+      if (r.dry_run) toast(r.total_changed ? `${r.total_changed} name(s) would change.` : 'All names are already in the right format.');
+      else toast(`Updated ${r.total_changed} name(s).`, { kind: 'success' });
+    } catch (e) { toast(errMsg(e, 'Name clean-up failed.'), { kind: 'error' }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={box}>
+      <b style={{ fontSize: 14 }}>Name formatting clean-up</b>
+      <p style={note}>New names are capitalised automatically when saved. This fixes names that were stored before that (voter register, applications, candidates, change requests). It changes letter case and spacing only. IDs, phone numbers, votes and the audit history are not touched.</p>
+      <button style={{ ...btn, background: '#3498db' }} disabled={busy} onClick={() => run(true)}>Preview changes</button>
+      <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !report || !report.dry_run || report.total_changed === 0} onClick={() => run(false)}>Apply</button>
+      {report && (
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+          <div style={{ fontWeight: 700, color: report.dry_run ? 'inherit' : 'var(--success)' }}>
+            {report.dry_run ? `Preview: ${report.total_changed} name(s) would change` : `Done: ${report.total_changed} name(s) updated`}
+          </div>
+          <div style={note}>{Object.entries(report.collections).map(([k, v]) => `${k}: ${v.changed}/${v.scanned}`).join('  ·  ')}</div>
+          {report.samples.length > 0 && (
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
+              {report.samples.map((x, i) => <li key={i}>{x.old} &rarr; <b>{x.new}</b></li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Superadmin maintenance: find registration numbers stored in a form the app cannot look up. */
+function RegNumberCheckTile() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [r, setR] = useState(null);
+
+  const run = async (fix) => {
+    if (fix) {
+      const ok = await confirm(
+        'Rewrite the affected registration numbers to the standard stored form (lowercase, no spaces)? Students shown as conflicts, and students who have already voted, are NOT touched. They are listed for manual review.',
+        { confirmText: 'Fix registration numbers' });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      const res = (await api.post('/superadmin/maintenance/check-reg-numbers', { fix })).data;
+      setR(res);
+      if (fix) toast(`Fixed ${res.total_fixed} record(s).`, { kind: 'success' });
+      else toast(res.issues_found ? `${res.issues_found} record(s) need attention.` : 'All registration numbers are in the correct form.');
+    } catch (e) { toast(errMsg(e, 'Registration number check failed.'), { kind: 'error' }); }
+    finally { setBusy(false); }
+  };
+
+  const fixable = r ? r.voters.fixable + Object.values(r.other).reduce((n, c) => n + c.non_canonical, 0) : 0;
+  return (
+    <div style={box}>
+      <b style={{ fontSize: 14 }}>Registration number check</b>
+      <p style={note}>Registration numbers are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
+      <button style={{ ...btn, background: '#3498db' }} disabled={busy} onClick={() => run(false)}>Check database</button>
+      <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !r || r.fix || fixable === 0} onClick={() => run(true)}>Fix</button>
+      {r && (
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+          <div style={{ fontWeight: 700, color: r.issues_found === 0 || r.fix ? 'var(--success)' : 'var(--danger)' }}>
+            {r.fix ? `Fixed ${r.total_fixed} record(s)` : r.issues_found === 0 ? 'No problems found' : `${r.issues_found} record(s) stored incorrectly`}
+            {r.needs_review > 0 && ` · ${r.needs_review} need manual review`}
+          </div>
+          <div style={note}>
+            Voters: {r.voters.scanned} checked, {r.voters.non_canonical} wrong, {r.voters.conflicts} conflicts, {r.voters.voted_review} already voted.
+            {Object.entries(r.other).map(([k, c]) => `  ·  ${k}: ${c.non_canonical}/${c.scanned}`).join('')}
+          </div>
+          {r.samples.length > 0 && (
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
+              {r.samples.map((x, i) => <li key={i}>[{x.kind.replace('_', ' ')}] {x.collection}: {x.old} &rarr; <b>{x.new}</b></li>)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
