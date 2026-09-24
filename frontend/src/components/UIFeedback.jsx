@@ -227,3 +227,15 @@ const confirmBtnStyle = {
 const dangerBtnStyle = {
   backgroundColor: '#dc2626',
 };
+
+/**
+ * Bounded, scrollable container for lists that can grow without limit (requests, admins, logs…),
+ * so the menus below them stay reachable. Height is capped relative to the viewport.
+ */
+export function ScrollList({ children, maxHeight = '65vh', style }) {
+  return (
+    <div style={{ maxHeight, overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', paddingRight: 4, ...style }}>
+      {children}
+    </div>
+  );
+}

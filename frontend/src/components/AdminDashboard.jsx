@@ -3,6 +3,8 @@ import api, { getErrorMessage } from '../api';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { toggleElection, electionToggleFeedback } from '../electionControls';
 import { Icon } from './icons.jsx';
+import { faceCropUrl } from '../cloudinaryImage';
+import usePolling from '../hooks/usePolling';
 
 export default function AdminDashboard({ onLogout }) {
   const toast = useToast();
@@ -32,9 +34,9 @@ export default function AdminDashboard({ onLogout }) {
   const [editForm, setEditForm] = useState({ name: '', position: '', order: 0, newImage: null });
 
   // --- DATA FETCHING ---
-  const fetchData = async () => {
+  const fetchData = async ({ silent = false } = {}) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const [voterRes, statusRes, candidateRes, balanceRes] = await Promise.all([
         api.get(`/admin/voters`),
         api.get(`/election-status`),
@@ -53,7 +55,7 @@ export default function AdminDashboard({ onLogout }) {
     } catch (err) { 
       console.error("Sync Error:", err); 
     } finally { 
-      setLoading(false); 
+      if (!silent) setLoading(false); 
     }
   };
 
@@ -189,11 +191,8 @@ export default function AdminDashboard({ onLogout }) {
     }
   };
 
-useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 60000); 
-    return () => clearInterval(interval);
-  }, []);
+useEffect(() => { fetchData(); }, []);
+  usePolling(() => fetchData({ silent: true }), 30000);
 
   // --- CALCULATIONS ---
   const turnout = voters.length > 0 ? ((voters.filter(v => v.has_voted).length / voters.length) * 100).toFixed(1) : 0;
@@ -318,16 +317,16 @@ useEffect(() => {
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
               <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={adminInputStyle} />
-              <button onClick={fetchData} style={refreshBtnStyle}>{loading ? "Syncing..." : <>Refresh</>}</button>
+              <button onClick={() => fetchData()} style={refreshBtnStyle}>{loading ? "Syncing..." : <>Refresh</>}</button>
             </div>
 
             <div style={tableWrapperStyle}>
-              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, textAlign: 'left' }}>
+              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, textAlign: 'left', tableLayout: 'fixed' }}>
                 <thead style={stickyTheadStyle}>
                   <tr>
-                    <th style={thStyle}>ID</th>
-                    <th style={thStyle}>Name</th>
-                    <th style={thStyle}>Status</th>
+                    <th style={{ ...thStyle, width: '22%' }}>ID</th>
+                    <th style={{ ...thStyle, width: '56%' }}>Name</th>
+                    <th style={{ ...thStyle, width: '22%' }}>Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -403,7 +402,7 @@ useEffect(() => {
                   ) : (
                     <>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                        <img src={c.image_url} style={avatarStyle} alt="" />
+                        <img src={faceCropUrl(c.image_url, 45, 45)} style={avatarStyle} alt="" />
                         <div><b>{c.name}</b> <span style={orderBadgeStyle}>#{c.order || 0}</span><br /><small style={{ color: '#2ecc71' }}>{c.position}</small></div>
                       </div>
                       <div style={{ display: 'flex', gap: '10px' }}>
@@ -430,7 +429,7 @@ useEffect(() => {
                 {candidates.map((c, idx) => (
                   <div key={c._id} style={{ ...statCardStyle, textAlign: 'left', display: 'flex', gap: '10px', alignItems: 'center' }}>
                     <span style={{ fontWeight: 'bold', opacity: 0.3 }}>{idx + 1}</span>
-                    <img src={c.image_url} style={avatarStyle} alt="" />
+                    <img src={faceCropUrl(c.image_url, 45, 45)} style={avatarStyle} alt="" />
                     <div><div style={{ fontWeight: 'bold' }}>{c.name}</div><small>{c.position}</small></div>
                   </div>
                 ))}
@@ -491,7 +490,8 @@ const thStyle = {
   textTransform: 'uppercase',
   borderBottom: '2px solid #334155',
   position: 'sticky',
-  top: 0
+  top: 0,
+  whiteSpace: 'nowrap'
 };
 
 const tdStyle = { 

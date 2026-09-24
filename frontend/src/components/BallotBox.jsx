@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
 import { loadBallot, saveBallot, clearBallot } from '../session';
+import { faceCropUrl } from '../cloudinaryImage';
 
 export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
@@ -196,7 +197,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                 >
                   {/* 1. Image and Name (Grouped together on the left) */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <img src={c.image_url} alt="" style={horizontalImageStyle} />
+                    <img src={faceCropUrl(c.image_url, 55, 55)} alt="" style={horizontalImageStyle} />
                     <h4 style={{ color: 'var(--text-color)', margin: 0, fontSize: '16px', fontWeight: '600' }}>
                       {c.name}
                     </h4>
@@ -291,7 +292,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                             {selectedCandidate.name}
                           </span>
                           <img 
-                            src={selectedCandidate.image_url} 
+                            src={faceCropUrl(selectedCandidate.image_url, 35, 35)} 
                             alt="" 
                             style={{ 
                               width: '35px', 

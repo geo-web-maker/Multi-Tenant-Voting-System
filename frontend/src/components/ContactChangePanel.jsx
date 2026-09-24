@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useToast, useConfirm } from './UIFeedback';
+import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import {
   submitContactChange, listContactChanges, cancelContactChange,
@@ -88,6 +88,7 @@ export default function ContactChangePanel({ student = null }) {
 
       <h5 style={{ margin: '16px 0 6px', fontSize: 12, opacity: 0.65 }}>MY CONTACT-CHANGE REQUESTS</h5>
       {mine.length === 0 && <p style={muted}>No requests yet.</p>}
+      <ScrollList maxHeight="50vh">
       {mine.map(c => (
         <div key={c.id} style={{ ...box, marginTop: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
@@ -103,6 +104,7 @@ export default function ContactChangePanel({ student = null }) {
           {c.status === 'pending' && <button type="button" style={ghost} onClick={() => cancel(c.id)}>Withdraw</button>}
         </div>
       ))}
+      </ScrollList>
     </div>
   );
 }

@@ -1,10 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
-import { useToast } from './UIFeedback';
+import { useToast, ScrollList } from './UIFeedback';
+import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import ContactChangesQueue from './ContactChangesQueue';
 import { Icon } from './icons.jsx';
+import { faceCropUrl } from '../cloudinaryImage';
+import ReceiptLink from './ReceiptLink';
+import ManifestoText from './ManifestoText';
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
@@ -14,18 +18,23 @@ export default function CommissionDashboard({ onLogout }) {
   const [loading, setLoading]           = useState(false);
   const [commissionerId, setCommissionerId] = useState('');
   const [totalCommissioners, setTotalCommissioners] = useState(0);
+  const [approvalPolicy, setApprovalPolicy] = useState('majority_total');
   const [denyReasons, setDenyReasons]   = useState({});  // { app_id: string }
   const [showDenyBox, setShowDenyBox]   = useState({});  // { app_id: bool }
   const [voting, setVoting]             = useState({});  // { app_id: bool }
   const [studentChanges, setStudentChanges] = useState([]);
   const [commissioners, setCommissioners] = useState([]);
   const [financeClearing, setFinanceClearing] = useState({});
+  const [financeDenyReasons, setFinanceDenyReasons] = useState({});  // { app_id: string }
+  const [showFinanceDenyBox, setShowFinanceDenyBox] = useState({});  // { app_id: bool }
   const [searchQuery, setSearchQuery] = useState('');
   const [liveResults, setLiveResults] = useState(null);
-  // Chief-Commissioner-only controls (exception grants, certification) render
-  // off this flag. It is a UI affordance, not the access boundary — the
-  // backend re-checks is_chief_commissioner on every one of those endpoints.
+  // Chief/Deputy-Commissioner-only controls (exception grants, certification)
+  // render off this flag. It is a UI affordance, not the access boundary —
+  // the backend re-checks is_chief_commissioner/is_deputy_chief_commissioner
+  // on every one of those endpoints (see require_chief_commissioner).
   const [isChief, setIsChief] = useState(false);
+  const [isDeputyChief, setIsDeputyChief] = useState(false);
 
   // Identity comes from the login response, which the server issued against
   // the verified credentials. It is no longer typed in by hand: the backend
@@ -36,31 +45,38 @@ export default function CommissionDashboard({ onLogout }) {
     fetchAll();
   }, []);
 
-  const fetchAll = async () => {
-    setLoading(true);
+  // `silent` = background poll: no "Syncing…" flicker.
+  const fetchAll = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
-      const [appsRes, commRes, scRes, resultsRes] = await Promise.all([
+      const [appsRes, commRes, scRes, resultsRes, policyRes] = await Promise.all([
           api.get('/admin/applications').catch(() => ({ data: [] })),
           api.get('/admin/commissioners').catch(() => ({ data: [] })),
           api.get('/admin/student-changes').catch(() => ({ data: [] })),
           api.get('/commission/results/detailed').catch(() => ({ data: null })),
+          api.get('/admin/approval-policy').catch(() => ({ data: null })),
         ]);
         setApplications(appsRes.data);
         setCommissioners(commRes.data);
         setTotalCommissioners(commRes.data.length);
+        if (policyRes.data) setApprovalPolicy(policyRes.data.policy);
         const me = (commRes.data || []).find(
           c => String(c.student_id || '').toLowerCase()
             === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
         );
         setIsChief(Boolean(me?.is_chief_commissioner));
+        setIsDeputyChief(Boolean(me?.is_deputy_chief_commissioner));
         setStudentChanges(scRes.data);
         setLiveResults(resultsRes.data);
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
+
+  // New applications, votes and finance decisions made by others appear on their own.
+  usePolling(() => fetchAll({ silent: true }), 15000);
 
   // ── Voting ──
 
@@ -104,6 +120,30 @@ export default function CommissionDashboard({ onLogout }) {
     }
   };
 
+  const castFinanceReject = async (appId) => {
+    if (!commissionerId.trim()) {
+      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
+      return;
+    }
+    const reason = (financeDenyReasons[appId] || '').trim();
+    if (!reason) {
+      toast('Please enter a reason for rejection.', { kind: 'error' });
+      return;
+    }
+    setFinanceClearing(prev => ({ ...prev, [appId]: true }));
+    try {
+      await api.post(`/admin/applications/${appId}/finance-reject`, {
+        commissioner_id: commissionerId,
+        reason,
+      });
+      await fetchAll();
+    } catch (e) {
+      toast(e.response?.data?.detail || 'Finance rejection failed.', { kind: 'error' })
+    } finally {
+      setFinanceClearing(prev => ({ ...prev, [appId]: false }));
+    }
+  };
+
   // ── Helpers ──
 
   const safeKey = (id) => id.replace(/[./]/g, '_');
@@ -127,6 +167,18 @@ export default function CommissionDashboard({ onLogout }) {
   );
 
   const majorityRequired = (total) => Math.floor(total / 2) + 1;
+
+  const policyHeaderCopy = {
+    unanimous: 'Every commissioner must agree — unanimous approval required.',
+    majority_total: `Resolves once ${majorityRequired(totalCommissioners)} of ${totalCommissioners} commissioners agree (majority of total).`,
+    majority_cast: 'Resolves once every commissioner has voted — whichever side has more wins.',
+  }[approvalPolicy] || 'Full consensus required for approval or removal';
+
+  const policyTallyCopy = (vc) => {
+    if (approvalPolicy === 'unanimous') return `needs all ${totalCommissioners} to agree`;
+    if (approvalPolicy === 'majority_cast') return `${vc.total} of ${totalCommissioners} voted — resolves once everyone's weighed in`;
+    return `majority needs ${majorityRequired(totalCommissioners)}`;
+  };
 
   // ── Filtered lists ──
 
@@ -178,11 +230,11 @@ export default function CommissionDashboard({ onLogout }) {
             <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Election Commission</h2>
             <span style={{ fontSize: '12px', opacity: 0.5 }}>
               {totalCommissioners} commissioner{totalCommissioners !== 1 ? 's' : ''} total ·
-              Full consensus required for approval or removal
+              {policyHeaderCopy}
             </span>
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <button style={ghostBtn} onClick={fetchAll} disabled={loading}>
+            <button style={ghostBtn} onClick={() => fetchAll()} disabled={loading}>
               {loading ? 'Syncing…' : <>Refresh</>}
             </button>
             <button style={redBtn} onClick={onLogout}>Logout</button>
@@ -206,6 +258,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div style={infoPill}>
             Signed in as: <strong>{commissionerId}</strong>
             {isChief && <span style={chiefPill}>Chief Commissioner</span>}
+            {isDeputyChief && <span style={chiefPill}>Deputy Chairperson</span>}
           </div>
         )}
 
@@ -243,7 +296,9 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Application cards ── */}
-        {activeTab !== 'student_changes' && activeTab !== 'results' && currentList.map(app => {
+        {activeTab !== 'student_changes' && activeTab !== 'results' && (
+        <ScrollList>
+        {currentList.map(app => {
           const vc      = voteCount(app);
           const myVote  = myVoteFor(app);
           const isVotingNow        = voting[app._id];
@@ -254,7 +309,7 @@ export default function CommissionDashboard({ onLogout }) {
               {/* Top row — photo + info + status */}
               <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
                 {app.image_url ? (
-                  <img src={app.image_url} alt="" style={avatar} />
+                  <img src={faceCropUrl(app.image_url, 64, 64)} alt="" style={avatar} />
                 ) : (
                   <div style={{ ...avatar, backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>
                     <Icon name="user" />
@@ -282,27 +337,20 @@ export default function CommissionDashboard({ onLogout }) {
                     Student ID: {app.student_id}
                   </p>
 
-                  {app.manifesto && (
-                    <p style={{ margin: '10px 0 0', fontSize: '13px', opacity: 0.85, lineHeight: '1.6', whiteSpace: 'pre-line' }}>
-                      {app.manifesto}
-                    </p>
-                  )}
+                  <ManifestoText text={app.manifesto} />
                   
                   {app.payment_method && (
                     <div style={{ marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                       <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
                         Payment method: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
                       </p>
-                      {app.payment_proof_url && (
-                        <a
-                          href={app.payment_proof_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        >
-                          View Receipt
-                        </a>
-                      )}
+                      <p style={{ margin: '0 0 6px', fontSize: '13px' }}>
+                        Required amount:{' '}
+                        <strong style={{ color: 'var(--success)' }}>
+                          {app.fee_required ? `UGX ${Number(app.fee_required).toLocaleString('en-UG')}` : 'not set for this position'}
+                        </strong>
+                      </p>
+                      <ReceiptLink url={app.payment_proof_url} />
                     </div>
                   )}
                 </div>
@@ -321,8 +369,13 @@ export default function CommissionDashboard({ onLogout }) {
                     {vc.deny} deny
                   </span>
                   <span style={{ opacity: 0.45, fontSize: '12px' }}>
-                    · majority needs {majorityRequired(totalCommissioners)}
+                    · {policyTallyCopy(vc)}
                   </span>
+                  {app.tied_pending_chief && (
+                    <span style={{ opacity: 0.8, fontSize: '12px', color: '#e67e22', fontWeight: 600 }}>
+                      · Tied — awaiting Chief Commissioner tie-break
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -331,13 +384,51 @@ export default function CommissionDashboard({ onLogout }) {
                 <div style={{ marginTop: '14px' }}>
                   {!app.finance_cleared ? (
                     isFinanceCommissioner ? (
-                      <button
-                        style={{ ...greenBtn, width: '100%' }}
-                        disabled={financeClearing[app._id]}
-                        onClick={() => castFinanceClear(app._id)}
-                      >
-                        {financeClearing[app._id] ? 'Clearing…' : <>Clear for Finance</>}
-                      </button>
+                      <>
+                        {showFinanceDenyBox[app._id] && (
+                          <div style={{ marginBottom: '10px' }}>
+                            <textarea
+                              style={{ ...inp, height: '70px', resize: 'vertical' }}
+                              placeholder="Reason for rejection (required)…"
+                              value={financeDenyReasons[app._id] || ''}
+                              onChange={e => setFinanceDenyReasons(prev => ({ ...prev, [app._id]: e.target.value }))}
+                            />
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <button
+                            style={{ ...greenBtn, flex: 1 }}
+                            disabled={financeClearing[app._id]}
+                            onClick={() => castFinanceClear(app._id)}
+                          >
+                            {financeClearing[app._id] ? 'Clearing…' : <>Clear for Finance</>}
+                          </button>
+                          {showFinanceDenyBox[app._id] ? (
+                            <button
+                              style={{ ...redBtn, flex: 1 }}
+                              disabled={financeClearing[app._id]}
+                              onClick={() => castFinanceReject(app._id)}
+                            >
+                              {financeClearing[app._id] ? 'Rejecting…' : <>Confirm Reject</>}
+                            </button>
+                          ) : (
+                            <button
+                              style={{ ...ghostBtn, flex: 1, color: '#e74c3c', borderColor: '#e74c3c' }}
+                              onClick={() => setShowFinanceDenyBox(prev => ({ ...prev, [app._id]: true }))}
+                            >
+                              Reject
+                            </button>
+                          )}
+                          {showFinanceDenyBox[app._id] && (
+                            <button
+                              style={ghostBtn}
+                              onClick={() => setShowFinanceDenyBox(prev => ({ ...prev, [app._id]: false }))}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </div>
+                      </>
                     ) : (
                       <div style={lockedNote}>
                         Awaiting Finance Commissioner clearance before voting can open.
@@ -421,6 +512,8 @@ export default function CommissionDashboard({ onLogout }) {
             </div>
           );
         })}
+        </ScrollList>
+        )}
         
         {/* ── Student Changes tab ── */}
         {activeTab === 'student_changes' && (
@@ -430,6 +523,7 @@ export default function CommissionDashboard({ onLogout }) {
                 <p style={{ opacity: 0.5 }}>No student change requests.</p>
               </div>
             )}
+            <ScrollList>
             {studentChanges.map(change => {
               return (
                 <div key={change._id} style={appCard}>
@@ -468,10 +562,7 @@ export default function CommissionDashboard({ onLogout }) {
                         Payment: <strong style={{ color: 'var(--text-color)' }}>{change.payment_method}</strong>
                       </p>
                       {change.payment_proof_url && (
-                        <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
-                          style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
-                          View Receipt
-                        </a>
+                        <ReceiptLink url={change.payment_proof_url} />
                       )}
                     </div>
                   )}
@@ -489,6 +580,7 @@ export default function CommissionDashboard({ onLogout }) {
                 </div>
               );
             })}
+            </ScrollList>
           </div>
         )}
 
@@ -525,7 +617,7 @@ export default function CommissionDashboard({ onLogout }) {
 
                 {liveResults.positions.map(pos => (
                   <div key={pos.position} style={appCard}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                       <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{pos.position}</b>
                       <small style={{ opacity: 0.5 }}>
                         {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
@@ -537,22 +629,24 @@ export default function CommissionDashboard({ onLogout }) {
                         )}
                       </small>
                      </div>                     
-                    <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       {pos.candidates.map((c, idx) => (
-                        <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <span style={{ fontSize: '12px', opacity: 0.5, width: '18px' }}>{idx + 1}.</span>
-                          <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
-                            {c.name}
-                          </span>
-                          {c.unopposed && (
-                            <span style={{ fontSize: '10px', opacity: 0.5 }}>unopposed</span>
-                          )}
-                          <div style={{ width: '120px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                        <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                            <span style={{ fontSize: '12px', opacity: 0.5, width: '16px', flexShrink: 0 }}>{idx + 1}.</span>
+                            <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
+                              {c.name}
+                            </span>
+                            {c.unopposed && (
+                              <span style={{ fontSize: '10px', opacity: 0.5, flexShrink: 0 }}>unopposed</span>
+                            )}
+                            <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', flexShrink: 0 }}>
+                              {c.votes} ({c.pct_of_position}%)
+                            </span>
+                          </div>
+                          <div style={{ marginLeft: '24px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
                             <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
                           </div>
-                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', width: '70px', textAlign: 'right' }}>
-                            {c.votes} ({c.pct_of_position}%)
-                          </span>
                         </div>
                       ))}
                     </div>
@@ -569,7 +663,7 @@ export default function CommissionDashboard({ onLogout }) {
 
         {activeTab === 'contact_changes' && <ContactChangesQueue />}
 
-        <SharedTabPanels activeTab={activeTab} isChief={isChief} />
+        <SharedTabPanels activeTab={activeTab} isChief={isChief || isDeputyChief} />
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
       </div>
     </div>

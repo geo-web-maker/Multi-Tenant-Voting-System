@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useToast, useConfirm } from './UIFeedback';
+import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ContactChangePanel from './ContactChangePanel';
 import useRosterStatus from '../hooks/useRosterStatus';
@@ -128,11 +128,13 @@ export default function ITAdminStudentEdit() {
         {recent.length > 0 && (
           <>
             <h5 style={{ margin: '14px 0 6px', fontSize: 12, opacity: 0.65 }}>RECENT CHANGES TO THIS STUDENT</h5>
+            <ScrollList maxHeight="30vh">
             {recent.map(h => (
               <p key={h._id} style={{ margin: '4px 0', fontSize: 12 }}>
                 {EVENT_LABELS[h.event] || h.event} · {new Date(h.at + 'Z').toLocaleDateString()} · {h.actor}
               </p>
             ))}
+            </ScrollList>
           </>
         )}
       </aside>

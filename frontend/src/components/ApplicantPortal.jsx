@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
+import ClosedNotice, { applicationsNoticeText } from './ClosedNotice';
 import { loadDraft, saveDraft, clearDraft } from '../session';
+import usePolling from '../hooks/usePolling';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -15,7 +17,10 @@ async function uploadToCloudinary(file) {
   return res.data.secure_url;
 }
 
-export default function ApplicantPortal({ orgName = "the Organisation" }) {
+// Keep in sync with MANIFESTO_MAX_CHARS in backend/main.py.
+const MANIFESTO_MAX_CHARS = 3000;
+
+export default function ApplicantPortal() {
 
   // Text fields of an unfinished application survive a page reload. Files
   // (candidate photo, payment proof) can't be stored, so those need to be
@@ -38,6 +43,8 @@ export default function ApplicantPortal({ orgName = "the Organisation" }) {
   });
 
   const [preview, setPreview] = useState(null);
+  const [approvalPolicy, setApprovalPolicy] = useState('majority_total');
+  const [electionStatus, setElectionStatus] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState(savedDraft?.payment_method ?? '');
   const [paymentProof, setPaymentProof] = useState(null);
   const [paymentProofPreview, setPaymentProofPreview] = useState(null);
@@ -56,7 +63,34 @@ export default function ApplicantPortal({ orgName = "the Organisation" }) {
       })
       .catch(() => setPositions([]))
       .finally(() => setPosLoading(false));
+    api.get('/election-status')
+      .then(res => { setApprovalPolicy(res.data.approval_policy || 'majority_total'); setElectionStatus(res.data); })
+      .catch(() => {});
   }, []);
+
+  const selectedPosition = positions.find(p => p._id === form.position_id);
+  const requiredFee = Number(selectedPosition?.application_fee || 0);
+
+  // Keep the open/closed notice and the fees current while someone fills in a long form. Only the
+  // read-only status and position list are refreshed; nothing the applicant has typed is touched.
+  usePolling(async () => {
+    const [st, pos] = await Promise.all([
+      api.get('/election-status').catch(() => null),
+      api.get('/positions').catch(() => null),
+    ]);
+    if (st) { setApprovalPolicy(st.data.approval_policy || 'majority_total'); setElectionStatus(st.data); }
+    if (pos) {
+      setPositions(pos.data);
+      // If the chosen position was removed meanwhile, clear it (same rule as the initial load).
+      setForm(prev => (prev.position_id && !pos.data.some(p => p._id === prev.position_id) ? { ...prev, position_id: '' } : prev));
+    }
+  }, 20000, !submitted);
+
+  const approvalPolicyCopy = {
+    unanimous: 'Every commissioner must agree — unanimous approval required.',
+    majority_total: 'The commission reviews all applications before any candidate appears on the ballot. A majority of the commission must agree for approval.',
+    majority_cast: 'The commission reviews all applications before any candidate appears on the ballot. Resolves once every commissioner has voted — whichever side has more wins.',
+  }[approvalPolicy] || 'The commission reviews all applications before any candidate appears on the ballot.';
 
   useEffect(() => {
     if (submitted) { clearDraft('apply'); return; }
@@ -134,7 +168,13 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
     setSubmittedName(form.full_name.trim());
     setSubmitted(true);
   } catch (err) {       
-    setError(err.response?.data?.detail || 'Submission failed. Please try again.');
+    if (err.response?.status === 403 && /closed|not opened|has ended/i.test(String(err.response?.data?.detail || ''))) {
+      api.get('/election-status').then(r => setElectionStatus(r.data)).catch(() => {});
+    }
+    const d = err.response?.data?.detail;
+    setError(typeof d === 'string' ? d
+      : Array.isArray(d) ? d.map(x => x.msg).filter(Boolean).join(' ') || 'Please check your entries and try again.'
+      : 'Submission failed. Please try again.');
   } finally {
     setUploading(false);
   }
@@ -152,8 +192,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
           </p>
           <div style={infoBox}>
             <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
-              The commission reviews all applications before any candidate appears on the ballot.
-              Full consensus from all commissioners is required for approval.
+              {approvalPolicyCopy}
             </p>
           </div>
           <button
@@ -181,6 +220,8 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
             Apply for a Position
           </h2>
         </div>
+
+        <ClosedNotice text={applicationsNoticeText(electionStatus)} />
 
         {/* ── How it works ── */}
         <div style={{ ...infoBox, marginBottom: '24px' }}>
@@ -276,10 +317,11 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
               style={{ ...inp, height: '120px', resize: 'vertical' }}
               placeholder="I am running because…"
               value={form.manifesto}
+              maxLength={MANIFESTO_MAX_CHARS}
               onChange={e => setForm(prev => ({ ...prev, manifesto: e.target.value }))}
             />
-            <small style={{ opacity: 0.4, fontSize: '11px' }}>
-              {form.manifesto.trim().split(/\s+/).filter(Boolean).length} words
+            <small style={{ opacity: form.manifesto.length > MANIFESTO_MAX_CHARS * 0.9 ? 1 : 0.4, fontSize: '11px', color: form.manifesto.length >= MANIFESTO_MAX_CHARS ? 'var(--warning)' : undefined }}>
+              {form.manifesto.trim().split(/\s+/).filter(Boolean).length} words · {form.manifesto.length}/{MANIFESTO_MAX_CHARS} characters
             </small>
           </div>
 
@@ -289,6 +331,26 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
             <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 14px' }}>
               Select your payment method and upload a screenshot or photo of the payment receipt.
             </p>
+
+            {/* Fee for the chosen position + disclaimer */}
+            {!selectedPosition ? (
+              <div style={{ ...infoBox, marginBottom: '16px' }}>
+                <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
+                  Select a position above to see the nomination fee you must pay.
+                </p>
+              </div>
+            ) : requiredFee > 0 ? (
+              <div style={{ ...infoBox, marginBottom: '16px', borderColor: 'var(--success)' }} role="note">
+                <p style={{ margin: 0, fontSize: '13px', opacity: 0.85 }}>Nomination fee for <strong>{selectedPosition.title}</strong></p>
+                <p style={{ margin: '4px 0 8px', fontSize: '22px', fontWeight: 700, color: 'var(--text-color)' }}>
+                  UGX {requiredFee.toLocaleString('en-UG')}
+                </p>
+                <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, opacity: 0.85 }}>
+                  <strong>Important:</strong> your receipt must show a payment of this full amount. Applications with
+                  an incomplete or incorrect payment amount will be rejected.
+                </p>
+              </div>
+            ) : null}
           
             {/* Payment method selector */}
             <label style={lbl}>Payment Method *</label>

@@ -3,10 +3,11 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import { RosterStats, RecentActivity } from './SharedAdminPanels';
-import { useToast, useConfirm, usePrompt } from './UIFeedback';
+import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
+import usePolling from '../hooks/usePolling';
 import { Icon } from './icons.jsx';
 import ITAdminStudentEdit from './ITAdminStudentEdit';
-import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
+import useRosterStatus from '../hooks/useRosterStatus';
 import { previewPhone } from '../studentEdit';
 import './ITAdminDashboard.css';
 
@@ -62,11 +63,11 @@ export default function ITAdminDashboard({ onLogout }) {
   useEffect(() => {
     fetchMyRequests();
     fetchVoters();
-    const interval = setInterval(fetchMyRequests, 20000);
-    return () => clearInterval(interval);
-  // Mount-only: the polling interval must not be recreated on every render.
+  // Mount-only.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Decisions on my requests (approved / denied) appear without a manual refresh.
+  usePolling(() => fetchMyRequests({ silent: true }), 15000);
   
   const fetchVoters = async () => {
     try {
@@ -75,16 +76,16 @@ export default function ITAdminDashboard({ onLogout }) {
     } catch { /* non-critical: ignore */ }
   };
 
-  const fetchMyRequests = async () => {
+  const fetchMyRequests = async ({ silent = false } = {}) => {
     if (!itAdminId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const res = await api.get(`/it-admin/students/my-requests/${encodeURIComponent(itAdminId)}`);
       setMyRequests(res.data);
     } catch (e) {
       console.error('Failed to fetch requests:', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -129,7 +130,7 @@ export default function ITAdminDashboard({ onLogout }) {
         payment_method:    paymentMethod,
         payment_proof_url,
       });
-      setAddSuccess('Request submitted. Waiting for commission approval.');
+      setAddSuccess('Request submitted.');
       setAddForm({ student_id: '', full_name: '', phones: [''], reason: '' });
       setPaymentMethod('');
       setPaymentProof(null);
@@ -160,7 +161,7 @@ export default function ITAdminDashboard({ onLogout }) {
         reason:       removeForm.reason.trim(),
         requested_by: itAdminId,
       });
-      setRemoveSuccess('Request submitted. Waiting for commission approval.');
+      setRemoveSuccess('Request submitted.');
       setRemoveForm({ student_id: '', reason: '' });
       setRemoveSearch('');
       fetchMyRequests();
@@ -235,7 +236,9 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {rosterFrozen && (
           <div style={{ ...infoBox, borderColor: 'var(--warning)', marginBottom: '16px' }}>
-            <p style={{ margin: 0, fontSize: '13px' }}>{FROZEN_NOTE}</p>
+            <p style={{ margin: 0, fontSize: '13px' }}>
+              Roster frozen: voters cannot be added, removed or imported. Phone and registration-number changes need approval.
+            </p>
           </div>
         )}
 
@@ -255,10 +258,6 @@ export default function ITAdminDashboard({ onLogout }) {
           <div className="itadmin-split">
             <div style={card}>
               <h4 style={cardTitle}>Request to Add a Student</h4>
-              <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 16px' }}>
-                This request will be sent to the Election Commission for approval before the student
-                is added to the voter register. Full commission consensus is required.
-              </p>
 
               <form onSubmit={handleAddSubmit} style={formCol}>
                 <label style={lbl}>Student Registration Number *</label>
@@ -363,9 +362,6 @@ export default function ITAdminDashboard({ onLogout }) {
               ].map(([k, v]) => (
                 <div key={k} className="itadmin-kv"><span>{k}</span><b>{v || '—'}</b></div>
               ))}
-              <p style={{ fontSize: '12px', opacity: 0.6, marginTop: '12px' }}>
-                Sent to the Financial Controller for approval once submitted.
-              </p>
             </aside>
           </div>
         )}
@@ -380,7 +376,6 @@ export default function ITAdminDashboard({ onLogout }) {
               <h4 style={cardTitle}>Request to Remove a Student</h4>
               <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 16px' }}>
                 Typically used when a student has not paid fees or is no longer eligible to vote.
-                This request also requires full commission approval.
               </p>
 
               <form onSubmit={handleRemoveSubmit} style={formCol}>
@@ -464,7 +459,7 @@ export default function ITAdminDashboard({ onLogout }) {
         {activeTab === 'requests' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '14px' }}>
-              <button style={ghostBtn} onClick={fetchMyRequests} disabled={loading}>
+              <button style={ghostBtn} onClick={() => fetchMyRequests()} disabled={loading}>
                 {loading ? 'Syncing…' : <>Refresh</>}
               </button>
             </div>
@@ -475,6 +470,7 @@ export default function ITAdminDashboard({ onLogout }) {
               </div>
             )}
 
+            <ScrollList>
             {myRequests.map(req => (
               <div key={req._id} style={appCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
@@ -506,7 +502,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
                 {req.status === 'pending' && (
                   <p style={{ margin: '6px 0 0', fontSize: '12px', opacity: 0.5 }}>
-                    <Icon name="loading" /> Awaiting the Financial Controller's review.
+                    <Icon name="loading" /> Awaiting review.
                   </p>
                 )}
 
@@ -534,6 +530,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 )}
               </div>
             ))}
+            </ScrollList>
           </div>
         )}
 

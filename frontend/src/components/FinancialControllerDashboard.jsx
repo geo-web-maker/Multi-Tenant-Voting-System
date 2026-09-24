@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
-import { useToast } from './UIFeedback';
+import { useToast, ScrollList } from './UIFeedback';
+import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import ReceiptLink from './ReceiptLink';
 
 
 export default function FinancialControllerDashboard({ onLogout }) {
@@ -23,17 +25,20 @@ export default function FinancialControllerDashboard({ onLogout }) {
     fetchAll();
   }, []);
 
-  const fetchAll = async () => {
-    setLoading(true);
+  const fetchAll = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const res = await api.get('/admin/student-changes');
       setChanges(res.data);
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
+
+  // New requests appear on their own.
+  usePolling(() => fetchAll({ silent: true }), 15000);
 
   // ── Decisions ──
 
@@ -93,7 +98,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
             </span>
           </div>
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <button style={ghostBtn} onClick={fetchAll} disabled={loading}>
+            <button style={ghostBtn} onClick={() => fetchAll()} disabled={loading}>
               {loading ? 'Syncing…' : <>Refresh</>}
             </button>
             <button style={redBtn} onClick={onLogout}>Logout</button>
@@ -165,6 +170,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         )}
 
         {/* ── Request cards ── */}
+        <ScrollList>
         {currentList.map(change => {
           const isDecidingNow = deciding[change._id];
 
@@ -205,12 +211,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
                     Payment: <strong style={{ color: 'var(--text-color)' }}>{change.payment_method}</strong>
                   </p>
-                  {change.payment_proof_url && (
-                    <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
-                      style={{ fontSize: '12px', color: '#3498db', textDecoration: 'none' }}>
-                      View Receipt
-                    </a>
-                  )}
+                  <ReceiptLink url={change.payment_proof_url} />
                 </div>
               )}
 
@@ -259,6 +260,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
             </div>
           );
         })}
+        </ScrollList>
 
         <SharedTabPanels activeTab={activeTab} />
       </div>

@@ -240,12 +240,12 @@ export default function FinalReport({
           <h3 className="print-color-keep" style={{ borderBottom: `2px solid ${config.color}`, color: config.color, paddingBottom: '5px', fontSize: '16px' }}>
             Executive Summary: Elected Officials
           </h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '10px' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '10px', tableLayout: 'fixed' }}>
             <thead>
               <tr style={{ backgroundColor: config.color, color: '#fff' }}>
-                <th style={summaryHeaderStyle}>Position</th>
-                <th style={summaryHeaderStyle}>Elected Official</th>
-                <th style={summaryHeaderStyle}>Final Votes</th>
+                <th style={{ ...summaryHeaderStyle, width: '34%' }}>Position</th>
+                <th style={{ ...summaryHeaderStyle, width: '44%' }}>Elected Official</th>
+                <th style={{ ...summaryHeaderStyle, width: '22%' }}>Final Votes</th>
               </tr>
             </thead>
             <tbody>
@@ -313,13 +313,13 @@ export default function FinalReport({
         return (
           <div key={pos.name} style={{ marginBottom: '25px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
             <h4 style={posHeaderStyle}>Position: {pos.name}</h4>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
               <thead>
                 <tr style={{ backgroundColor: '#fafafa' }}>
-                  <th style={tableHeaderStyle}>Candidate</th>
-                  <th style={tableHeaderStyle}>Votes</th>
-                  <th style={tableHeaderStyle}>Share</th>
-                  <th style={tableHeaderStyle}>Status</th>
+                  <th style={{ ...tableHeaderStyle, width: '46%' }}>Candidate</th>
+                  <th style={{ ...tableHeaderStyle, width: '18%' }}>Votes</th>
+                  <th style={{ ...tableHeaderStyle, width: '18%' }}>Share</th>
+                  <th style={{ ...tableHeaderStyle, width: '18%' }}>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -376,9 +376,9 @@ export default function FinalReport({
           <div style={signatureGridStyle} className="signature-grid">
             {signatories.map((s, i) => (
               <div key={`${s.full_name}-${i}`}>
+                <div style={{ borderTop: '1px solid currentColor', marginBottom: '6px', height: '40px' }} />
                 <p style={{ fontWeight: 'bold', margin: 0, fontSize: '13px' }}>{s.full_name || '\u00a0'}</p>
                 <p style={{ fontSize: '11px', margin: 0, fontStyle: 'italic', opacity: 0.8 }}>{s.role}</p>
-                <div style={{ borderTop: '1px solid currentColor', marginTop: '26px' }} />
               </div>
             ))}
           </div>
@@ -402,8 +402,9 @@ export default function FinalReport({
           {contactChanges.length === 0 ? (
             <p style={{ fontSize: '11px' }}>No contact changes were requested during this election.</p>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr>{['Voter (masked)', 'Change', 'Requested by', 'Decided by', 'Requested', 'Decided', 'Evidence', 'Result', 'Notice'].map(h => <th key={h} style={tableHeaderStyle}>{h}</th>)}</tr></thead>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+              <thead><tr>{[['Voter (masked)', '10%'], ['Change', '10%'], ['Requested by', '10%'], ['Decided by', '10%'], ['Requested', '14%'], ['Decided', '14%'], ['Evidence', '12%'], ['Result', '10%'], ['Notice', '10%']]
+                .map(([h, w]) => <th key={h} style={{ ...tableHeaderStyle, width: w }}>{h}</th>)}</tr></thead>
               <tbody>
                 {contactChanges.map((c, i) => (
                   <tr key={i}>

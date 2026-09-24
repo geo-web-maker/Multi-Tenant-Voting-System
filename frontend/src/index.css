@@ -101,6 +101,9 @@ button {
   font-weight: 500;
   font-family: inherit;
   background-color: transparent;
+  /* Buttons that don't set their own colour (outline/ghost styles) fell back to the browser
+     default, which is near-invisible in light mode. Inline colours still win. */
+  color: var(--text-color);
   cursor: pointer;
   transition: all 0.25s;
 }
@@ -178,7 +181,7 @@ button:hover {
   .candidate-name, 
   .vote-count, 
   .share-percentage,
-  h1, h2, p, span:not(.cand-badge):not(.cand-live):not(.cand-pct), 
+  h1, h2, p, span:not(.cand-badge):not(.cand-live):not(.cand-pct):not(.help-fab-label), 
   h3:not(.position-header) { /* <--- This tells CSS: "Every h3 EXCEPT the headers" */
     color: var(--text-color) !important;
     opacity: 1 !important;
@@ -509,4 +512,20 @@ td, th {
 .roll-search-input:focus {
   outline: 2px solid var(--brand-accent, #f1c40f);
   outline-offset: -2px;
+}
+
+/* --- Superadmin: commissioner cards + "Grant ... Access" lists on phones ---
+   The commissioner card's action row had no wrap, so "Revoke" spilled outside the
+   card; the voter rows squeezed name + a wide button side by side, breaking IDs
+   mid-string. Here: the role buttons share the width evenly, the role select spans
+   the card, and each voter row stacks name-then-button. */
+@media (max-width: 600px) {
+  .comm-actions > button { flex: 1 1 96px; }
+  .comm-select { width: 100% !important; align-self: stretch !important; }
+  .grant-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .grant-row > button { width: 100%; }
+  .grant-row > div { min-width: 0; overflow-wrap: anywhere; }
 }

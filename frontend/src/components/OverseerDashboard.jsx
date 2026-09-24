@@ -4,6 +4,8 @@ import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import ContactChangesQueue from './ContactChangesQueue';
 import { Icon } from './icons.jsx';
+import { ScrollList } from './UIFeedback';
+import usePolling from '../hooks/usePolling';
 
 
 export default function OverseerDashboard({ onLogout }) {
@@ -15,14 +17,11 @@ export default function OverseerDashboard({ onLogout }) {
   const [loading, setLoading] = useState(false);
   const [tab, setTab]         = usePersistedTab('overseer', 'applications');
 
-  useEffect(() => {
-    fetchDashboard();
-    const interval = setInterval(fetchDashboard, 20000);
-    return () => clearInterval(interval);
-  }, []);
+  useEffect(() => { fetchDashboard(); }, []);
+  usePolling(() => fetchDashboard({ silent: true }), 15000);
 
-  const fetchDashboard = async () => {
-    setLoading(true);
+  const fetchDashboard = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const [dashRes, resultsRes] = await Promise.all([
         api.get('/overseer/dashboard'),
@@ -33,7 +32,7 @@ export default function OverseerDashboard({ onLogout }) {
     } catch (e) {
       console.error('Failed to fetch overseer dashboard:', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -111,7 +110,7 @@ export default function OverseerDashboard({ onLogout }) {
                   {t.label}{t.count != null && ` (${t.count})`}
                 </button>
               ))}
-              <button style={{ ...ghostBtn, marginLeft: 'auto' }} onClick={fetchDashboard} disabled={loading}>
+              <button style={{ ...ghostBtn, marginLeft: 'auto' }} onClick={() => fetchDashboard()} disabled={loading}>
                 {loading ? 'Syncing…' : <>Refresh</>}
               </button>
             </div>
@@ -120,6 +119,7 @@ export default function OverseerDashboard({ onLogout }) {
             {tab === 'applications' && (
               <div>
                 {data.applications.length === 0 && <div style={emptyState}><p style={{ opacity: 0.5 }}>No applications yet.</p></div>}
+                <ScrollList>
                 {data.applications.map(a => (
                   <div key={a.id} style={appCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
@@ -133,6 +133,7 @@ export default function OverseerDashboard({ onLogout }) {
                     </p>
                   </div>
                 ))}
+                </ScrollList>
               </div>
             )}
 
@@ -140,19 +141,34 @@ export default function OverseerDashboard({ onLogout }) {
             {tab === 'changes' && (
               <div>
                 {data.student_changes.length === 0 && <div style={emptyState}><p style={{ opacity: 0.5 }}>No student changes yet.</p></div>}
+                <ScrollList>
                 {data.student_changes.map(c => (
                   <div key={c.id} style={appCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                      <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>
-                        {c.change_type === 'add' ? <Icon name="plus" /> : <Icon name="minus" />} {c.full_name} <code style={{ fontSize: '11px' }}>{c.student_id}</code>
-                      </b>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={changeTypeBadge(c.change_type)}>
+                          {c.change_type === 'add' ? <><Icon name="plus" /> ADD</> : <><Icon name="minus" /> REMOVE</>}
+                        </span>
+                        <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>
+                          {c.full_name} <code style={{ fontSize: '11px' }}>{c.student_id}</code>
+                        </b>
+                      </div>
                       <span style={statusBadge(c.status)}>{c.status.toUpperCase().replace('_', ' ')}</span>
                     </div>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                       Requested by {c.requested_by}{c.decided_by && ` · decided by ${c.decided_by}`}
                     </p>
+                    {c.reason && (
+                      <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.55 }}>Reason: {c.reason}</p>
+                    )}
+                    {c.requested_at && (
+                      <p style={{ margin: '4px 0', fontSize: '11px', opacity: 0.4 }}>
+                        {new Date(c.requested_at).toLocaleString()}
+                      </p>
+                    )}
                   </div>
                 ))}
+                </ScrollList>
               </div>
             )}
 
@@ -180,7 +196,7 @@ export default function OverseerDashboard({ onLogout }) {
 
                     {liveResults.positions.map(pos => (
                       <div key={pos.position} style={appCard}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                           <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{pos.position}</b>
                           <small style={{ opacity: 0.5 }}>
                             {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
@@ -192,20 +208,22 @@ export default function OverseerDashboard({ onLogout }) {
                             )}
                           </small>
                         </div>
-                        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                           {pos.candidates.map((c, idx) => (
-                            <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                              <span style={{ fontSize: '12px', opacity: 0.5, width: '18px' }}>{idx + 1}.</span>
-                              <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
-                                {c.name}
-                              </span>
-                              {c.unopposed && <span style={{ fontSize: '10px', opacity: 0.5 }}>unopposed</span>}
-                              <div style={{ width: '120px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                            <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                                <span style={{ fontSize: '12px', opacity: 0.5, width: '16px', flexShrink: 0 }}>{idx + 1}.</span>
+                                <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
+                                  {c.name}
+                                </span>
+                                {c.unopposed && <span style={{ fontSize: '10px', opacity: 0.5, flexShrink: 0 }}>unopposed</span>}
+                                <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', flexShrink: 0 }}>
+                                  {c.votes} ({c.pct_of_position}%)
+                                </span>
+                              </div>
+                              <div style={{ marginLeft: '24px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
                                 <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
                               </div>
-                              <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', width: '70px', textAlign: 'right' }}>
-                                {c.votes} ({c.pct_of_position}%)
-                              </span>
                             </div>
                           ))}
                         </div>
@@ -231,6 +249,20 @@ export default function OverseerDashboard({ onLogout }) {
 }
 
 // ── Helpers ──
+// Deliberately uses blue/grey, not green/red, so it can never be mistaken
+// for the approved/denied status badge next to it.
+function changeTypeBadge(changeType) {
+  const isAdd = changeType === 'add';
+  return {
+    fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
+    display: 'inline-flex', alignItems: 'center', gap: '3px',
+    background: isAdd
+      ? 'color-mix(in srgb, var(--info) 20%, transparent)'
+      : '#95a5a620',
+    color: isAdd ? 'var(--info)' : '#7f8c8d',
+  };
+}
+
 function statusBadge(status) {
   const map = {
     pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },

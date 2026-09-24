@@ -566,18 +566,29 @@ class BrandingUpdate(BaseModel):
     support_phone:       str = ""
     support_pdf_url:     str = ""
     cc_list:             list[str] = []
+    signatories:         list[dict] = []   # [{full_name, role}, ...] — manual override; see get_official_report
 
 class PositionCreate(BaseModel):
     title: str
     description: str = ""
     order: int = 0
+    # Nomination fee in UGX shown to applicants next to the proof-of-payment upload. 0 = no fee stated.
+    application_fee: int = Field(0, ge=0, le=100_000_000)
+
+class PositionUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    order: int | None = None
+    application_fee: int | None = Field(None, ge=0, le=100_000_000)
 
 # --- Applications ---
+MANIFESTO_MAX_CHARS = 3000  # ~500 words; keep in sync with the frontend constant
+
 class ApplicationSubmit(BaseModel):
     student_id:        str
     full_name:         str
     position_id:       str
-    manifesto:         str = ""
+    manifesto:         str = Field("", max_length=MANIFESTO_MAX_CHARS)
     image_url:         str = ""
     payment_method:    str = ""     
     payment_proof_url: str = ""      
@@ -589,6 +600,10 @@ class CommissionerVote(BaseModel):
 
 class FinanceClear(BaseModel):
     commissioner_id: str   # must belong to the voter flagged is_finance_commissioner
+
+class FinanceReject(BaseModel):
+    commissioner_id: str   # must belong to the voter flagged is_finance_commissioner
+    reason: str
     
 
 class ITAdminStudentAdd(BaseModel):
@@ -671,6 +686,31 @@ def _mask_phone(phone: str) -> str:
     if len(phone) <= 8:
         return "*" * len(phone)
     return f"{phone[:6]}****{phone[-2:]}"
+
+def _mask_email(email: str) -> str:
+    """For activity-log entries visible to every admin role (full-transparency
+    design) — keeps enough to recognize which account, without broadcasting
+    a usable address to roles that have no reason to email that person."""
+    local, _, domain = (email or "").partition("@")
+    if not domain:
+        return email
+    shown = local[:2] if len(local) > 2 else local[:1]
+    return f"{shown}{'*' * max(len(local) - len(shown), 1)}@{domain}"
+
+def _mask_ip(ip: str) -> str:
+    """Same rationale as _mask_email — this shows up in the activity log for
+    every admin role, not just whoever handles security incidents. Keeps the
+    network enough to spot repeated attempts from the same source without
+    broadcasting an exact host address."""
+    if not ip:
+        return ip
+    if ":" in ip:  # IPv6 — keep the routed prefix, drop the host portion
+        parts = ip.split(":")
+        return ":".join(parts[:4]) + ":****"
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.***"
+    return ip
 
 def names_match(registered_name: str, input_name: str) -> bool:
     reg_parts   = set(registered_name.strip().lower().split())
@@ -1100,6 +1140,21 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
 
 # --- Application consensus helpers ---
 
+@app.get("/admin/approval-policy")
+async def get_approval_policy(request: Request,
+                               admin: dict = Depends(require_role("commission"))):
+    """Read-only view of the active policy, for commissioners only — IT Admin
+    and Overseer have no need to know it, and superadmin already sees it via
+    GET /superadmin/security-settings."""
+    sec = await security_settings_for(request.state.org_id)
+    total = await get_commissioner_count(request.state.org_id)
+    return {
+        "policy": sec["approval_policy"],
+        "total_commissioners": total,
+        "required_for_majority_total": (total // 2) + 1,
+    }
+
+
 async def get_commissioner_count(org_id: str = None) -> int:
     q = {"is_commissioner": True}
     if org_id:
@@ -1131,6 +1186,40 @@ async def _create_candidate_from_application(app_doc: dict, org_id: str = None):
         "org_id": org_id
     })
 
+async def _position_fee(position_id: str, org_id: str = None) -> int:
+    """Nomination fee (UGX) configured on a position; 0 when none/unknown."""
+    try:
+        q = {"_id": ObjectId(position_id)}
+        if org_id:
+            q["org_id"] = org_id
+        pos = await db.positions.find_one(q)
+        return int((pos or {}).get("application_fee") or 0)
+    except Exception:
+        return 0
+
+
+def fmt_ugx(n) -> str:
+    return f"UGX {int(n or 0):,}"
+
+
+async def _notify_applicant(app_doc: dict, org_id: str, text_for) -> str:
+    """Best-effort SMS to the applicant's first registered number. `text_for(org_name, position_title)` -> str.
+    Never raises and never blocks the decision that triggered it. Returns 'sent' | 'failed' | 'no_phone'."""
+    try:
+        voter = await db.voters.find_one({**get_forgiving_filter(app_doc.get("student_id", "")), "org_id": org_id})
+        phones = (voter or {}).get("phone_numbers") or []
+        if not phones:
+            return "no_phone"
+        b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
+        title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
+        text = text_for(b.get("org_name") or "the election", title)
+        ok = await send_sms(phones[0], text, None, kind="notice", org_id=org_id)
+        return "sent" if ok else "failed"
+    except Exception as e:
+        logger.error(f"applicant SMS failed: {e}")
+        return "failed"
+
+
 def _vote_key(student_id: str) -> str:
     """One canonical key per commissioner (bind_identity normalizes, the old key did not)."""
     return normalize_student_id(student_id).replace(".", "_").replace("/", "_").replace("$", "_")
@@ -1140,26 +1229,65 @@ def _dedupe_votes(votes: dict) -> dict:
     return {_vote_key(k): v for k, v in (votes or {}).items()}
 
 
+def _tally_outcome(policy: str, total: int, approve: int, deny: int) -> str | None:
+    """Returns 'approve', 'deny', or None (still undecided) for the given
+    policy and vote counts. Pure function — no DB access — so it's easy to
+    unit-test independently of the Mongo write/atomic-guard dance around it."""
+    if total == 0:
+        return None
+    cast = approve + deny
+
+    if policy == "unanimous":
+        if approve == total:
+            return "approve"
+        if deny == total:
+            return "deny"
+        return None
+
+    if policy == "majority_cast":
+        if cast < total:
+            return None  # not everyone has voted yet
+        if approve > deny:
+            return "approve"
+        if deny > approve:
+            return "deny"
+        return None  # exact tie — left pending, see _flag_tie_for_chief
+
+    # default / "majority_total"
+    required = (total // 2) + 1
+    if approve >= required:
+        return "approve"
+    if deny >= required:
+        return "deny"
+    return None
+
+
+async def _flag_tie_for_chief(app_id: str, org_id: str):
+    await db.applications.update_one(
+        {"_id": ObjectId(app_id)},
+        {"$set": {"tied_pending_chief": True}}
+    )
+    await log_action("application_vote_tied", "commission", {"app_id": app_id}, org_id=org_id)
+
+
 async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
     """
-    Called after every commissioner vote.
-    Resolves as soon as either side reaches a majority of the TOTAL commissioner
-    count (floor(total/2) + 1) — not full consensus, and not just majority of
-    votes cast. Works the same way whether the EC has 5 commissioners or 50.
+    Called after every commissioner vote. Resolution rule (unanimous /
+    majority-of-total / majority-of-votes-cast) is read per-org from
+    security_settings.approval_policy — see _tally_outcome.
     """
     total = await get_commissioner_count(org_id)
     if total == 0:
         return
-
-    required = (total // 2) + 1  # majority of total commissioner count
+    policy = (await security_settings_for(org_id))["approval_policy"]
 
     votes = _dedupe_votes(app_doc.get("votes", {}))
     approve_count = sum(1 for v in votes.values() if v == "approve")
     deny_count    = sum(1 for v in votes.values() if v == "deny")
 
-    if approve_count >= required:
-        # Majority reached — create candidate and mark approved.
-        #
+    outcome = _tally_outcome(policy, total, approve_count, deny_count)
+
+    if outcome == "approve":
         # SECURITY/CONCURRENCY: two commissioners casting the deciding vote
         # within milliseconds of each other could both reach this branch for
         # the same application before either had written "approved" yet,
@@ -1171,52 +1299,60 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         # way, so no vote is lost, only the duplicate side effect.
         result = await db.applications.update_one(
             {"_id": ObjectId(app_id), "status": {"$nin": ["approved", "denied", "removed"]}},
-            {"$set": {"status": "approved"}}
+            {"$set": {"status": "approved"}, "$unset": {"tied_pending_chief": ""}}
         )
         if result.matched_count == 0:
             return
         await _create_candidate_from_application(app_doc, org_id)
         await log_action("application_approved", "commission", {
-            "app_id": app_id, "approve_count": approve_count, "total_commissioners": total
+            "app_id": app_id, "approve_count": approve_count, "total_commissioners": total, "policy": policy,
         }, org_id=org_id)
-        logger.info(f"Application {app_id} approved by commission majority ({approve_count}/{total}).")
-    elif deny_count >= required:
-        # Majority reached against — application denied. Same atomic guard:
-        # only the winning caller logs/proceeds.
+        await _notify_applicant(app_doc, org_id, lambda org, pos: (
+            f"{org}: Congratulations! Your nomination for {pos} has been approved. "
+            f"Your name will appear on the ballot."))
+        logger.info(f"Application {app_id} approved by commission ({approve_count}/{total}, policy={policy}).")
+    elif outcome == "deny":
+        # Same atomic guard: only the winning caller logs/proceeds.
         result = await db.applications.update_one(
             {"_id": ObjectId(app_id), "status": {"$nin": ["approved", "denied", "removed"]}},
-            {"$set": {"status": "denied"}}
+            {"$set": {"status": "denied"}, "$unset": {"tied_pending_chief": ""}}
         )
         if result.matched_count == 0:
             return
         await log_action("application_denied", "commission", {
-            "app_id": app_id, "deny_count": deny_count, "total_commissioners": total
+            "app_id": app_id, "deny_count": deny_count, "total_commissioners": total, "policy": policy,
         }, org_id=org_id)
-        logger.info(f"Application {app_id} denied by commission majority ({deny_count}/{total}).")
+        await _notify_applicant(app_doc, org_id, lambda org, pos: (
+            f"{org}: Your nomination for {pos} was not approved by the Electoral Commission."))
+        logger.info(f"Application {app_id} denied by commission ({deny_count}/{total}, policy={policy}).")
+    elif policy == "majority_cast" and (approve_count + deny_count) == total and approve_count == deny_count:
+        await _flag_tie_for_chief(app_id, org_id)
 
 async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
     """
-    Called after every removal vote.
-    Removes the candidate once a majority of the TOTAL commissioner count votes
-    to remove — same threshold rule as application approval.
+    Called after every removal vote. Same per-org approval_policy governs
+    whether the candidate is removed — see _tally_outcome. A "deny" outcome
+    (or no outcome yet) just means the candidate stays, same as before.
     """
     total = await get_commissioner_count(org_id)
     if total == 0:
         return
-
-    required = (total // 2) + 1  # majority of total commissioner count
+    policy = (await security_settings_for(org_id))["approval_policy"]
 
     removal_votes = _dedupe_votes(app_doc.get("removal_votes", {}))
     approve_removals = sum(1 for v in removal_votes.values() if v == "approve")
+    deny_removals    = sum(1 for v in removal_votes.values() if v == "deny")
 
-    if approve_removals >= required:
+    outcome = _tally_outcome(policy, total, approve_removals, deny_removals)
+
+    if outcome == "approve":
         # Same atomic-guard pattern as _resolve_application: only the caller
         # whose update actually flips status to "removed" proceeds to delete
         # the candidate and log it, so two commissioners racing to cast the
         # deciding removal vote can't both fire the delete/log side effects.
         result = await db.applications.update_one(
             {"_id": ObjectId(app_id), "status": "approved"},
-            {"$set": {"status": "removed", "removal_votes": {}}}
+            {"$set": {"status": "removed", "removal_votes": {}}, "$unset": {"tied_pending_chief": ""}}
         )
         if result.matched_count == 0:
             return
@@ -1229,9 +1365,36 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
         # did it.
         await log_action("candidate_removed", "commission", {
             "name": (cand or {}).get("name"), "position": (cand or {}).get("position"),
-            "approve_removals": approve_removals, "total_commissioners": total,
+            "approve_removals": approve_removals, "total_commissioners": total, "policy": policy,
         }, org_id=org_id)
-        logger.info(f"Candidate from application {app_id} removed by commission majority ({approve_removals}/{total}).")
+        logger.info(f"Candidate from application {app_id} removed by commission ({approve_removals}/{total}, policy={policy}).")
+    elif outcome == "deny":
+        # "deny" here means "keep" — no status change needed, but clear a
+        # stale tie flag if this vote broke a previous tie the other way.
+        await db.applications.update_one({"_id": ObjectId(app_id)}, {"$unset": {"tied_pending_chief": ""}})
+    elif policy == "majority_cast" and (approve_removals + deny_removals) == total and approve_removals == deny_removals:
+        await _flag_tie_for_chief(app_id, org_id)
+
+
+async def _resweep_pending_after_policy_change(org_id: str):
+    """
+    Called right after approval_policy changes. Re-evaluates every
+    still-open application/removal against the NEW policy immediately,
+    instead of waiting for the next vote to land on each one — so a
+    switch to a stricter or looser policy takes effect at once, even for
+    applications that would already have resolved under the new rule.
+
+    Deliberately opt-in (§9 of the original guide left this out): a
+    tighten-mid-round change can flip an outcome with no new commissioner
+    action, which is a real behavior change worth being explicit about.
+    """
+    async for app_doc in db.applications.find(_oq(org_id, {"status": "pending"})):
+        await _resolve_application(str(app_doc["_id"]), app_doc, org_id)
+
+    async for app_doc in db.applications.find(_oq(org_id, {
+        "status": "approved", "removal_votes": {"$exists": True, "$ne": {}},
+    })):
+        await _resolve_removal(str(app_doc["_id"]), app_doc, org_id)
 
 #--IT Administration Helpers---
 
@@ -1336,19 +1499,27 @@ def bind_identity(request: Request, claimed_id: str, label: str = "account") -> 
     return claimed_id
 
 
-async def require_chief_commissioner(request: Request) -> dict:
-    """Superadmin, or the single commissioner flagged is_chief_commissioner."""
-    admin = getattr(request.state, "admin", None) or {}
+async def _is_chief_or_deputy(request: Request, admin: dict) -> bool:
+    """Superadmin, or the commissioner flagged is_chief_commissioner or is_deputy_chief_commissioner."""
     if admin.get("role") == "superadmin":
-        return admin
+        return True
     if admin.get("role") != "commission":
-        raise HTTPException(403, "Chief Commissioner access required.")
+        return False
     voter = await db.voters.find_one(org_query(request, {
         **get_forgiving_filter(admin.get("sub", "")),
         "is_commissioner": True,
-        "is_chief_commissioner": True,
+        "$or": [{"is_chief_commissioner": True}, {"is_deputy_chief_commissioner": True}],
     }))
-    if not voter:
+    return bool(voter)
+
+
+async def require_chief_commissioner(request: Request) -> dict:
+    """Superadmin, or the commissioner flagged is_chief_commissioner or
+    is_deputy_chief_commissioner. The Deputy Chairperson stands in for the
+    Chief on every action gated behind this check (exception grants,
+    certification) — there's no separate, narrower deputy tier."""
+    admin = getattr(request.state, "admin", None) or {}
+    if not await _is_chief_or_deputy(request, admin):
         raise HTTPException(403, "Chief Commissioner access required.")
     return admin
 
@@ -1544,10 +1715,26 @@ async def assert_phase_open(request: Request, phase: str, student_id: str | None
             }, org_id=request.state.org_id)
             return
     label = phase.replace("_", " ")
-    raise HTTPException(
-        status_code=403,
-        detail=f"The {label} period is closed. Contact the Electoral Commission if you believe this is an error.",
-    )
+    now = datetime.utcnow()
+    tz_name = schedule.get("timezone") or DEFAULT_ELECTION_TZ
+
+    def _when(dt: datetime) -> str:
+        try:
+            z = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            z = ZoneInfo("UTC")
+        local = dt.replace(tzinfo=timezone.utc).astimezone(z)
+        return f"{local.day} {local:%b %Y}, {local:%H:%M} {local.tzname()}"
+
+    start, end = window.get("start"), window.get("end")
+    if start and now < start:
+        detail = f"The {label} period has not opened yet. It opens on {_when(start)}."
+    elif end and now > end:
+        detail = (f"The {label} period has ended. It closed on {_when(end)}. "
+                  "Contact the Electoral Commission if you believe this is an error.")
+    else:
+        detail = f"The {label} period is currently closed. Contact the Electoral Commission if you believe this is an error."
+    raise HTTPException(status_code=403, detail=detail)
 
 
 async def current_round_id(request: Request) -> str:
@@ -1709,7 +1896,11 @@ _SEC_DEFAULTS = {
     "freeze_lifted_at": None,   # set by reset-election / new round
     "epoch_at": None,           # counters (caps, quotas) only look at events after this
     "cap_overrides": {},        # {"approver_daily": {sid: cap}, "reset_hourly": {sid: cap}} (chief commissioner)
+    "approval_policy": os.getenv("DEFAULT_APPROVAL_POLICY", "majority_total"),
+    # one of: "unanimous" | "majority_total" | "majority_cast"
 }
+
+VALID_APPROVAL_POLICIES = {"unanimous", "majority_total", "majority_cast"}
 
 
 def _oq(org_id, extra: dict | None = None) -> dict:
@@ -2168,13 +2359,43 @@ async def get_status(request: Request):
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
     schedule = await get_phase_schedule(request)
     voting_phase_open = _phase_is_open(schedule["phases"]["voting"], datetime.utcnow())
-    turnstile_mode = (await get_security_settings(request))["turnstile_mode"]   # off | adaptive | on
+    sec = await get_security_settings(request)
+    turnstile_mode = sec["turnstile_mode"]   # off | adaptive | on
+    approval_policy = sec["approval_policy"]  # unanimous | majority_total | majority_cast — public copy only, no vote counts here
+
+    # Extra, additive fields so every screen can show the SAME "closed" notice for the same
+    # situation (master switch off vs. scheduled window) instead of a notice in one place and an
+    # error dialog in another. Existing fields below are unchanged.
+    now = datetime.utcnow()
+
+    def _position(window: dict) -> str:
+        """'open' | 'not_started' | 'ended' — tells "too early" apart from "too late"."""
+        if _phase_is_open(window, now):
+            return "open"
+        start = window.get("start")
+        return "not_started" if start and now < start else "ended"
+
+    vwin, awin = schedule["phases"]["voting"], schedule["phases"]["applications"]
+    voting_phase, applications_phase = _position(vwin), _position(awin)
+    phase_info = {
+        "voting_phase": voting_phase,
+        "voting_opens_at": vwin["start"].isoformat() if voting_phase == "not_started" else None,
+        "applications_phase": applications_phase,
+        "applications_opens_at": awin["start"].isoformat() if applications_phase == "not_started" else None,
+        "applications_closes_at": awin["end"].isoformat() if awin.get("end") else None,
+        "voting_closes_at": vwin["end"].isoformat() if vwin.get("end") else None,
+        "applications_phase_open": applications_phase == "open",
+        "timezone": schedule["timezone"],
+    }
 
     if not status_doc:
         return {"is_open": True, "is_certified": False, "start": None, "end": None,
-                "voting_phase_open": voting_phase_open, "turnstile_mode": turnstile_mode}
+                "voting_phase_open": voting_phase_open, "turnstile_mode": turnstile_mode,
+                "approval_policy": approval_policy, **phase_info}
     return {
+        **phase_info,
         "turnstile_mode": turnstile_mode,
+        "approval_policy": approval_policy,
         "is_open": status_doc.get("is_open", True),
         "is_certified": status_doc.get("is_certified", False),
         "start": status_doc.get("start_time"),
@@ -2845,6 +3066,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
         "status": "pending",
         "votes": {},          # { commissioner_student_id: "approve" | "deny" }
         "removal_votes": {},  # same structure, used after approval
+        "fee_required": await _position_fee(data.position_id, request.state.org_id),  # what the applicant was told to pay
         "finance_cleared": False,      # gate: Finance Commissioner must clear before voting opens
         "finance_cleared_by": None,
         "finance_cleared_at": None,
@@ -3386,8 +3608,18 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
         logger.error(f"Cloudinary admin upload failed: {e}")
         raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
 
+    # Deliberately not logging the URL here. This upload is used for candidate
+    # photos and payment-proof evidence, and the resulting link already gets
+    # surfaced properly — via ReceiptLink — on the specific application/
+    # roster-change record, to only the roles that review it (Commission,
+    # Financial Controller, SuperAdmin). The activity log, by contrast, is
+    # visible to every admin role via /admin/audit-log with no per-record
+    # gating — logging the raw link there would let any role (e.g. Overseer,
+    # IT Admin) open someone else's payment proof straight from the log,
+    # bypassing that access control. Keep provenance (who, when, how big)
+    # without the direct link.
     await log_action("admin_image_uploaded", current_actor(request), {
-        "url": result["secure_url"], "bytes": len(content)
+        "bytes": len(content)
     }, org_id=request.state.org_id)
     return {"secure_url": result["secure_url"]}
 
@@ -3706,6 +3938,67 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     return {"status": "finance_cleared"}
 
 
+@app.post("/admin/applications/{app_id}/finance-reject")
+async def finance_reject_application(app_id: str, data: FinanceReject, request: Request):
+    """
+    The Finance Commissioner rejects the candidate's payment/receipt with a
+    required reason. This resolves the application as denied, mirroring the
+    commission's deny flow but for the finance gate specifically.
+    """
+    if not data.reason.strip():
+        raise HTTPException(400, "A reason is required to reject an application.")
+
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") in ("approved", "denied", "removed"):
+        raise HTTPException(400, "This application is already resolved.")
+    if app_doc.get("finance_cleared"):
+        raise HTTPException(400, "This application has already been finance-cleared and can no longer be finance-rejected.")
+
+    bind_identity(request, data.commissioner_id, "commissioner account")
+
+    finance_commissioner = await db.voters.find_one(org_query(request, {
+        **get_forgiving_filter(data.commissioner_id),
+        "is_commissioner": True,
+        "is_finance_commissioner": True
+    }))
+    if not finance_commissioner:
+        raise HTTPException(403, "Only the designated Finance Commissioner can reject applications.")
+
+    # Same atomic-guard pattern as finance_clear_application: fold the
+    # "not already cleared / not already resolved" check into the update
+    # filter itself so a double-click or race can't double-write.
+    result = await db.applications.update_one(
+        org_query(request, {
+            "_id": oid,
+            "finance_cleared": {"$ne": True},
+            "status": {"$nin": ["approved", "denied", "removed"]},
+        }),
+        {"$set": {
+            "status": "denied",
+            "finance_rejected": True,
+            "finance_rejected_by": data.commissioner_id,
+            "finance_rejected_at": datetime.utcnow(),
+            "finance_rejection_reason": data.reason.strip(),
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(400, "This application was already resolved or cleared by someone else.")
+
+    await log_action("application_finance_rejected", data.commissioner_id,
+                      {"app_id": app_id, "reason": data.reason.strip()}, org_id=request.state.org_id)
+    fee = app_doc.get("fee_required") or 0
+    reason = data.reason.strip()[:80]
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
+        f"{org}: Your nomination for {pos} was rejected because of your payment: {reason}."
+        + (f" The required amount is {fmt_ugx(fee)}; incomplete payments are not accepted." if fee else "")
+        + " Contact the Electoral Commission."))
+    logger.info(f"Application {app_id} finance-rejected by {data.commissioner_id}.")
+    return {"status": "denied"}
+
+
 @app.get("/admin/commissioners")
 async def list_commissioners_for_admins(request: Request):
     """
@@ -3721,7 +4014,7 @@ async def list_commissioners_for_admins(request: Request):
     async for v in db.voters.find(
         org_query(request, {"is_commissioner": True}),
         {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1,
-         "is_finance_commissioner": 1, "commissioner_role": 1},
+         "is_deputy_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1},
     ):
         result.append(v)
     return result
@@ -3902,6 +4195,21 @@ async def get_branding(request: Request):
     return {k: doc.get(k, "") for k in PUBLIC_BRANDING_FIELDS}
 
 
+# The public endpoint above deliberately strips cc_list/signatories for
+# unauthenticated visitors. The SuperAdmin settings form needs those back to
+# edit them without wiping them on every save, hence this authenticated twin.
+@app.get("/superadmin/branding-full")
+async def get_branding_full(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    doc = await db.settings.find_one(org_query(request, {"name": "branding"})) or {}
+    defaults = {
+        "logo_url": "", "primary_color": "#003366", "accent_color": "#f1c40f",
+        "org_name": "", "university_name": "", "university_logo_url": "",
+        "commissioner_name": "", "support_phone": "", "support_pdf_url": "",
+        "cc_list": [], "signatories": [],
+    }
+    return {**defaults, **{k: doc.get(k, v) for k, v in defaults.items()}}
+
+
 @app.post("/superadmin/branding")
 async def save_branding(data: BrandingUpdate, request: Request):
     await db.settings.update_one(
@@ -3916,6 +4224,7 @@ async def save_branding(data: BrandingUpdate, request: Request):
         "org_name": data.org_name,
         "commissioner_name": data.commissioner_name,
         "cc_count": len(data.cc_list),
+        "signatory_count": len(data.signatories),
     }, org_id=request.state.org_id)
     return {"status": "saved"}
 
@@ -3929,6 +4238,25 @@ async def add_position(data: PositionCreate, request: Request, admin: dict = Dep
     result = await db.positions.insert_one(org_stamp(request, data.dict()))
     await log_action("position_added", current_actor(request), {"title": data.title}, org_id=request.state.org_id)
     return {"id": str(result.inserted_id)}
+
+
+@app.patch("/positions/{position_id}")
+async def update_position(position_id: str, data: PositionUpdate, request: Request,
+                          admin: dict = Depends(require_role("superadmin"))):
+    oid = parse_oid(position_id, "position id")
+    changes = {k: v for k, v in data.dict().items() if v is not None}
+    if "title" in changes:
+        changes["title"] = changes["title"].strip()
+        if not changes["title"]:
+            raise HTTPException(400, "Position title cannot be empty.")
+    if not changes:
+        raise HTTPException(400, "Nothing to update.")
+    res = await db.positions.update_one(org_query(request, {"_id": oid}), {"$set": changes})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Position not found.")
+    await log_action("position_updated", current_actor(request), {"position_id": position_id, **changes},
+                     org_id=request.state.org_id)
+    return {"status": "updated"}
 
 
 @app.delete("/positions/{position_id}")
@@ -3949,7 +4277,7 @@ async def list_commissioners(request: Request):
     result = []
     async for v in db.voters.find(
         org_query(request, {"is_commissioner": True}),
-        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_deputy_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
     ):
         result.append(v)
     return result
@@ -3984,6 +4312,39 @@ async def clear_chief_commissioner(student_id: str, request: Request):
         "student_id": normalize_student_id(student_id)
     }, org_id=request.state.org_id)
     return {"student_id": student_id, "is_chief_commissioner": False}
+
+
+@app.post("/superadmin/commissioners/{student_id:path}/set-deputy-chief")
+async def set_deputy_chief_commissioner(student_id: str, request: Request):
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    if not voter:
+        raise HTTPException(404, "Voter not found.")
+    if not voter.get("is_commissioner"):
+        raise HTTPException(400, "This person is not a commissioner.")
+    await db.voters.update_many(org_query(request), {"$set": {"is_deputy_chief_commissioner": False}})
+    await db.voters.update_one(
+        {"_id": voter["_id"]},
+        {"$set": {"is_deputy_chief_commissioner": True}}
+    )
+    # Deputy has the same standing as the Chief for exception grants and
+    # signing — see isChief usage on the frontend, which now checks either
+    # flag. Logged for the same reason set-chief is logged.
+    await log_action("deputy_chief_commissioner_set", current_actor(request), {
+        "student_id": voter["student_id"], "full_name": voter.get("full_name", "")
+    }, org_id=request.state.org_id)
+    return {"student_id": student_id, "is_deputy_chief_commissioner": True}
+
+
+@app.post("/superadmin/commissioners/{student_id:path}/clear-deputy-chief")
+async def clear_deputy_chief_commissioner(student_id: str, request: Request):
+    await db.voters.update_one(
+        org_query(request, get_forgiving_filter(student_id)),
+        {"$set": {"is_deputy_chief_commissioner": False}}
+    )
+    await log_action("deputy_chief_commissioner_cleared", current_actor(request), {
+        "student_id": normalize_student_id(student_id)
+    }, org_id=request.state.org_id)
+    return {"student_id": student_id, "is_deputy_chief_commissioner": False}
 
 
 @app.get("/superadmin/chief-commissioner")
@@ -4122,6 +4483,9 @@ async def superadmin_force_approve(app_id: str, request: Request):
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just approved by someone else. Please refresh.")
     await _create_candidate_from_application(app_doc, request.state.org_id)
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
+        f"{org}: Congratulations! Your nomination for {pos} has been approved. "
+        f"Your name will appear on the ballot."))
     await log_action("application_force_approved", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-approved application {app_id}.")
     return {"status": "force_approved"}
@@ -4301,7 +4665,8 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
             "status":        c.get("status", "pending"),
             "requested_by":  c.get("requested_by", ""),
             "decided_by":    c.get("decided_by"),
-            "requested_at":  c.get("requested_at")
+            "requested_at":  c.get("requested_at"),
+            "reason":        c.get("reason")
         })
 
     vote_counts = await get_vote_counts(request)
@@ -5504,6 +5869,15 @@ async def revoke_exception_grant(grant_id: str, request: Request,
 @app.get("/admin/audit-log")
 async def get_admin_audit_log(request: Request, limit: int = 200, action: str = None,
                               actor: str = None, skip: int = 0):
+    """Shared across all five admin roles (the RecentActivity design's explicit
+    full-transparency decision). /superadmin/audit-log below is the
+    superadmin-only twin of this and returns entries unredacted — for
+    security review (e.g. tracing a login-lockout IP) that needs the real
+    value. This endpoint redacts the two detail fields that carry PII with
+    no transparency benefit to a role that isn't superadmin: an admin's own
+    email address (already visible to them on their own account) and a
+    failed-login IP address (only ever useful for someone doing security
+    review, not for "what happened" transparency)."""
     query = org_query(request)
     if action:
         query["action"] = {"$regex": re.escape(action.strip()[:60]), "$options": "i"}
@@ -5512,9 +5886,18 @@ async def get_admin_audit_log(request: Request, limit: int = 200, action: str = 
     limit = min(max(limit, 1), 500)
     skip = max(skip, 0)
     total = await db.audit_log.count_documents(query)
+    privileged = current_role(request) == "superadmin"
     logs = []
     async for entry in db.audit_log.find(query).sort("timestamp", -1).skip(skip).limit(limit):
         entry["_id"] = str(entry["_id"])
+        if not privileged:
+            details = entry.get("details") or {}
+            if "email" in details:
+                details["email"] = _mask_email(details["email"])
+            if "ip" in details:
+                details["ip"] = _mask_ip(details["ip"])
+            if entry.get("action") == "admin_login_locked":
+                entry["actor"] = _mask_email(entry.get("actor", ""))
         logs.append(entry)
     return {"total": total, "limit": limit, "skip": skip, "entries": logs}
 
@@ -5667,9 +6050,22 @@ async def analytics_anomalies(request: Request, limit: int = 100):
         "chief_commissioner_set", "chief_commissioner_cleared",
     ]
     query = org_query(request, {"action": {"$in": watched}})
+    # Mounted in Analytics for every admin role (same as /admin/audit-log),
+    # so it needs the same email/IP redaction for non-superadmin readers —
+    # this queries audit_log directly rather than going through that
+    # endpoint, so the redaction has to be repeated here rather than shared.
+    privileged = current_role(request) == "superadmin"
     events = []
     async for entry in db.audit_log.find(query).sort("timestamp", -1).limit(limit):
         entry["_id"] = str(entry["_id"])
+        if not privileged:
+            details = entry.get("details") or {}
+            if "email" in details:
+                details["email"] = _mask_email(details["email"])
+            if "ip" in details:
+                details["ip"] = _mask_ip(details["ip"])
+            if entry.get("action") == "admin_login_locked":
+                entry["actor"] = _mask_email(entry.get("actor", ""))
         events.append(entry)
 
     since = datetime.utcnow() - timedelta(hours=24)
@@ -5722,10 +6118,13 @@ async def get_official_report(request: Request):
     commissioners = []
     async for c in db.voters.find(
         org_query(request, {"is_commissioner": True}),
-        {"_id": 0, "full_name": 1, "commissioner_role": 1, "is_chief_commissioner": 1},
+        {"_id": 0, "full_name": 1, "commissioner_role": 1, "is_chief_commissioner": 1,
+         "is_deputy_chief_commissioner": 1},
     ):
         commissioners.append(c)
-    commissioners.sort(key=lambda c: (not c.get("is_chief_commissioner"), c.get("full_name", "")))
+    commissioners.sort(key=lambda c: (
+        not c.get("is_chief_commissioner"), not c.get("is_deputy_chief_commissioner"), c.get("full_name", "")
+    ))
 
     chief = next((c for c in commissioners if c.get("is_chief_commissioner")), None)
     commissioner_name = (
@@ -5800,8 +6199,12 @@ async def get_official_report(request: Request):
         "results": results,
         "commissioner_name": commissioner_name,
         "declaration": declaration,
-        "signatories": [
-            {"full_name": c.get("full_name", ""), "role": c.get("commissioner_role") or "Commissioner"}
+        "signatories": branding.get("signatories") or [
+            {"full_name": c.get("full_name", ""), "role": c.get("commissioner_role") or (
+                "Chairperson EC" if c.get("is_chief_commissioner")
+                else "Deputy Chairperson EC" if c.get("is_deputy_chief_commissioner")
+                else "Commissioner"
+            )}
             for c in commissioners
         ] or [
             {"full_name": "", "role": r}
@@ -5920,6 +6323,7 @@ class SecuritySettingsUpdate(BaseModel):
     reset_admin_hourly_hard_cap: int | None = None
     reset_per_voter_daily: int | None = None
     reset_per_voter_election: int | None = None
+    approval_policy: str | None = None
 
 
 class SmsBudgetUpdate(BaseModel):
@@ -6174,25 +6578,120 @@ async def list_contact_changes(request: Request, status: str | None = None,
 @app.get("/admin/contact-changes/digest")
 async def contact_changes_digest(request: Request,
                                  admin: dict = Depends(require_role("commission", "overseer", "superadmin"))):
-    """Read-only list of every contact edit made in the N days before the freeze (masked)."""
+    """Read-only list of every direct contact edit an IT admin has ever made (masked, unless the
+    viewer can also undo one — see below). Not windowed to the days-before-freeze any more: an IT
+    admin can edit at any time before the freeze, so limiting this to the last N days could hide
+    edits made earlier in the election and let quiet misuse go unnoticed."""
     sec = await get_security_settings(request)
     st = await roster_status(request, sec)
-    if not st["freeze_at"]:
-        return {"freeze_at": None, "days": sec["digest_days"], "entries": []}
-    until = min(datetime.utcnow(), st["freeze_at"])
-    since = until - timedelta(days=sec["digest_days"])
+    until = min(datetime.utcnow(), st["freeze_at"]) if st["freeze_at"] else datetime.utcnow()
+    privileged = await _can_undo_digest(request, admin)
     entries = []
     async for r in db.student_edit_audit.find(org_query(request, {
-            "at": {"$gte": since, "$lte": until},
-            "event": {"$in": ["phone_added", "phone_removed", "phone_changed", "student_registration_number_changed"]},
+            "at": {"$lte": until},
+            "event": {"$in": ["phone_added", "phone_removed", "phone_changed",
+                              "student_registration_number_changed", "student_name_changed"]},
     })).sort("at", -1).limit(1000):
-        is_sid = r["event"] == "student_registration_number_changed"
-        mk = _mask_student_id if is_sid else _mask_phone
-        entries.append({"at": r["at"], "event": r["event"], "student_id": _mask_student_id(r.get("student_id_after", "")),
-                        "old": mk(r["old_value"]) if r.get("old_value") else None,
-                        "new": mk(r["new_value"]) if r.get("new_value") else None,
-                        "actor": r.get("actor"), "reason": r.get("reason")})
-    return {"freeze_at": st["freeze_at"], "days": sec["digest_days"], "entries": entries}
+        mk = ({"student_registration_number_changed": _mask_student_id,
+               "student_name_changed": _mask_name}.get(r["event"], _mask_phone))
+        entries.append({
+            "id": str(r["_id"]), "at": r["at"], "event": r["event"],
+            "student_id": r.get("student_id_after", "") if privileged else _mask_student_id(r.get("student_id_after", "")),
+            "old": (r.get("old_value") if privileged else (mk(r["old_value"]) if r.get("old_value") else None)),
+            "new": (r.get("new_value") if privileged else (mk(r["new_value"]) if r.get("new_value") else None)),
+            "actor": r.get("actor"), "reason": r.get("reason"),
+            "undone_at": r.get("undone_at"), "undone_by": r.get("undone_by"), "undo_reason": r.get("undo_reason"),
+            "can_undo": privileged and not r.get("undone_at") and not r.get("undoes"),
+        })
+    return {"freeze_at": st["freeze_at"], "entries": entries, "can_undo": privileged}
+
+
+async def _can_undo_digest(request: Request, admin: dict) -> bool:
+    return await _is_chief_or_deputy(request, admin)
+
+
+class UndoDigestEntry(BaseModel):
+    reason: str
+
+
+@app.post("/admin/contact-changes/digest/{entry_id}/undo")
+async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Request,
+                            admin: dict = Depends(require_chief_commissioner)):
+    """Reverse a single direct IT-admin edit (phone, registration-number, or name change) found in
+    the pre-freeze digest. SuperAdmin, Chief Commissioner or Deputy Chief Commissioner only. Always
+    requires a written reason, and the reversal itself is written back into the same audit trail
+    so the undo is just as visible as the original edit was."""
+    reason = data.reason.strip()
+    if len(reason) < 10:
+        raise HTTPException(400, "Undoing a change needs a written reason (10+ characters).")
+
+    org_id = request.state.org_id
+    oid = parse_oid(entry_id, "entry id")
+    rec = await db.student_edit_audit.find_one({"org_id": org_id, "_id": oid})
+    if not rec:
+        raise HTTPException(404, "Audit entry not found.")
+    if rec.get("event") not in ("phone_added", "phone_removed", "phone_changed",
+                                "student_registration_number_changed", "student_name_changed"):
+        raise HTTPException(400, "This kind of entry can't be undone here.")
+    if rec.get("undone_at"):
+        raise HTTPException(409, "This change was already undone.")
+    if rec.get("undoes"):
+        raise HTTPException(400, "This entry is itself an undo and can't be undone again here.")
+
+    voter = await db.voters.find_one({"org_id": org_id, "_id": ObjectId(rec["student_key"])})
+    if not voter:
+        raise HTTPException(404, "The student this change applied to no longer exists.")
+
+    field = rec["field"]
+    old_value, new_value = rec.get("old_value"), rec.get("new_value")
+    actor, role = current_actor(request), current_role(request)
+    new_voter_sid = voter["student_id"]
+
+    if field == "student_id":
+        if voter["student_id"] != new_value:
+            raise HTTPException(409, "The registration number has changed again since this edit; review manually.")
+        if await db.voters.find_one({"org_id": org_id, "student_id": old_value, "_id": {"$ne": voter["_id"]}}):
+            raise HTTPException(409, "Another student now holds that registration number; can't restore it automatically.")
+        await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"student_id": old_value}})
+        for coll in (db.applications, db.exception_grants, db.contact_changes):
+            await coll.update_many({"org_id": org_id, "student_id": new_value}, {"$set": {"student_id": old_value}})
+        new_voter_sid = old_value
+    elif field == "phone_numbers":
+        phones = list(voter.get("phone_numbers", []))
+        if rec["event"] == "phone_added":
+            if new_value not in phones:
+                raise HTTPException(409, "That phone number is no longer on this student; nothing to undo.")
+            phones.remove(new_value)
+        elif rec["event"] == "phone_removed":
+            if old_value in phones:
+                raise HTTPException(409, "That phone number is already back on this student.")
+            phones.append(old_value)
+        else:  # phone_changed
+            if new_value not in phones:
+                raise HTTPException(409, "The phone number has changed again since this edit; review manually.")
+            phones[phones.index(new_value)] = old_value
+        await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"phone_numbers": phones}})
+    elif field == "full_name":
+        if voter.get("full_name", "") != new_value:
+            raise HTTPException(409, "The name has changed again since this edit; review manually.")
+        await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"full_name": old_value}})
+    else:
+        raise HTTPException(400, "This kind of entry can't be undone here.")
+
+    now = datetime.utcnow()
+    await db.student_edit_audit.update_one({"_id": rec["_id"]}, {"$set": {
+        "undone_at": now, "undone_by": actor, "undo_reason": reason}})
+    await db.student_edit_audit.insert_one({
+        "org_id": org_id, "student_key": rec["student_key"], "batch": secrets.token_hex(8),
+        "event": f"{rec['event']}_undone", "field": field, "old_value": new_value, "new_value": old_value,
+        "reason": reason, "actor": actor, "actor_role": role, "at": now,
+        "student_id_before": voter["student_id"], "student_id_after": new_voter_sid,
+        "search_terms": [], "undoes": str(rec["_id"]),
+    })
+    await log_action(f"{rec['event']}_undone", actor, {
+        "student_id": new_voter_sid, "role": role, "reason": reason, "field": field,
+    }, org_id=org_id)
+    return {"status": "undone"}
 
 
 async def _notify_old_number(request: Request, c: dict, old_phones: list[str], new_sid: str) -> str:
@@ -6498,6 +6997,10 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
         if data.public_results_mode not in ("live", "closed", "certified"):
             raise HTTPException(400, "public_results_mode must be live, closed or certified.")
         updates["public_results_mode"] = data.public_results_mode
+    if data.approval_policy is not None:
+        if data.approval_policy not in VALID_APPROVAL_POLICIES:
+            raise HTTPException(400, f"approval_policy must be one of: {', '.join(sorted(VALID_APPROVAL_POLICIES))}.")
+        updates["approval_policy"] = data.approval_policy
     if data.clear_roster_freeze_at:
         updates["roster_freeze_at"] = None
     elif data.roster_freeze_at is not None:
@@ -6510,9 +7013,19 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
     if not updates:
         raise HTTPException(400, "Nothing to change.")
     await _save_security(request, updates)
-    diff = {k: {"old": str(sec.get(k)), "new": str(v)} for k, v in updates.items()}
+    # Only log fields that actually changed value — `updates` includes every
+    # field the client sent, even ones resubmitted unchanged (e.g. a form that
+    # posts its whole state), which was flooding the activity log with
+    # "old: X, new: X" noise for every save.
+    diff = {k: {"old": str(sec.get(k)), "new": str(v)} for k, v in updates.items() if str(sec.get(k)) != str(v)}
     actor = current_actor(request)
-    await log_action("security_settings_changed", actor, {"reason": reason, "changes": diff}, org_id=request.state.org_id)
-    await append_ledger(request.state.org_id, "security_settings_changed", "election", actor, "superadmin",
-                        {"reason": reason, **{k: v["new"] for k, v in diff.items()}})
+    if diff:
+        await log_action("security_settings_changed", actor, {"reason": reason, "changes": diff}, org_id=request.state.org_id)
+        await append_ledger(request.state.org_id, "security_settings_changed", "election", actor, "superadmin",
+                            {"reason": reason, **{k: v["new"] for k, v in diff.items()}})
+    if "approval_policy" in updates:
+        await _resweep_pending_after_policy_change(request.state.org_id)
+        await log_action("approval_policy_resweep", actor, {
+            "reason": reason, "new_policy": updates["approval_policy"],
+        }, org_id=request.state.org_id)
     return await superadmin_get_security_settings(request)

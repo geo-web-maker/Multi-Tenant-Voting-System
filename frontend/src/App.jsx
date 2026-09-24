@@ -7,12 +7,55 @@ import AdminDashboard from './components/AdminDashboard';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import CommissionDashboard from './components/CommissionDashboard';
 import ApplicantPortal from './components/ApplicantPortal';
+import ClosedNotice, { votingNoticeText } from './components/ClosedNotice';
 import ITAdminDashboard from './components/ITAdminDashboard';
 import FinancialControllerDashboard from './components/FinancialControllerDashboard';
 import OverseerDashboard from './components/OverseerDashboard';
 import { HelpMenuProvider } from './context/HelpMenuContext';
 import HelpPanel from './components/HelpPanel';
+
+// Detects whether a logo image is mostly dark (e.g. dark linework on a
+// transparent PNG) so it can be inverted to stay visible against the dark
+// theme's dark page background. Falls back to "don't invert" whenever the
+// image can't be sampled (not loaded yet, or a CORS-tainted canvas), which
+// is the safe default for arbitrary org-uploaded logos.
+function useLogoNeedsInvert(logoUrl, theme) {
+  // Result is keyed by the logo it was measured for, so a stale result for an old logo/theme is
+  // ignored without resetting state synchronously inside the effect.
+  const [result, setResult] = useState({ url: null, invert: false });
+  useEffect(() => {
+    if (!logoUrl || theme !== 'dark') return;
+    let cancelled = false;
+    const done = (invert) => { if (!cancelled) setResult({ url: logoUrl, invert }); };
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let total = 0, count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] < 10) continue; // skip transparent pixels
+          total += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          count++;
+        }
+        done(count > 0 && total / count < 100); // mostly dark ink
+      } catch {
+        done(false); // CORS-tainted or unreadable — fail safe
+      }
+    };
+    img.onerror = () => done(false);
+    img.src = logoUrl;
+    return () => { cancelled = true; };
+  }, [logoUrl, theme]);
+  return Boolean(logoUrl) && theme === 'dark' && result.url === logoUrl && result.invert;
+}
 import { FabTrigger } from './components/HelpTriggers';
+import usePolling from './hooks/usePolling';
 import { Icon } from './components/icons.jsx';
 import {
   restoreAdminView, loadPublicView, savePublicView,
@@ -68,8 +111,9 @@ function App() {
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
+  const [electionStatus, setElectionStatus] = useState(null);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
-  const [orgName, setOrgName] = useState("");
+  const [orgName, setOrgName] = useState(import.meta.env.VITE_ELECTION_NAME || "");
   const [timer, setTimer] = useState(() => (restored.step === 2 ? loadResendSeconds() : 0));
   const [selectedPhone, setSelectedPhone] = useState(restored.selectedPhone || "");
   const [isVerifying, setIsVerifying] = useState(false);
@@ -84,7 +128,28 @@ function App() {
   const [newPasswordForm, setNewPasswordForm]         = useState({ old_password: '', new_password: '', confirm_password: '' });
   const [passwordChangeError, setPasswordChangeError] = useState('');
   const [passwordChangeSubmitting, setPasswordChangeSubmitting] = useState(false);
-  const [logoUrl, setLogoUrl] = useState("");
+  // Instant, zero-network fallback for the splash: baked into the build per
+  // org (same pattern as VITE_ORG_SLUG in api.js), so the very first paint
+  // already has the right name/logo instead of a generic placeholder while
+  // /superadmin/branding is still in flight. The Mongo-backed branding call
+  // still runs and can override these (colors, an updated logo, etc.) — env
+  // vars just mean there's nothing to wait on for the first frame.
+  const [logoUrl, setLogoUrl] = useState(import.meta.env.VITE_LOGO_URL || "");
+  // Gates the very first paint of the real app. "Ready" here means two
+  // things are both true: the backend is actually reachable (checked via
+  // /health, not /superadmin/branding — a plain ping, unauthenticated,
+  // org-exempt, so it's the fastest true signal that "this tenant's backend
+  // is up" without pulling in branding/auth concerns), AND a short minimum
+  // floor has elapsed so the splash never flashes on/off in one frame on a
+  // fast connection. It does NOT wait a fixed period regardless of state —
+  // that would add fake latency for fast users and false confidence for
+  // slow ones. See bootExiting below for the animated hand-off.
+  const [bootReady, setBootReady] = useState(false);
+  const [bootExiting, setBootExiting] = useState(false);
+  // Flips true once the wait has run past what a warm backend would ever
+  // take — only then does the splash admit it might be a cold start, so a
+  // normal warm load never sees this copy at all.
+  const [bootSlow, setBootSlow] = useState(false);
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
@@ -96,11 +161,66 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  const logoNeedsInvert = useLogoNeedsInvert(logoUrl, theme);
+  const logoStyle = {
+    height: '120px',
+    width: 'auto',
+    objectFit: 'contain',
+    margin: '0 10px',
+    filter: logoNeedsInvert
+      ? 'invert(1) hue-rotate(180deg) drop-shadow(0px 0px 4px rgba(241, 196, 15, 0.3))'
+      : 'drop-shadow(0px 0px 4px rgba(241, 196, 15, 0.3))',
+  };
+
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
 
   
 // --- USEEFFECTS ---
 useEffect(() => {
+  // Render's free tier spins the backend down when idle and can take 30-50+
+  // seconds to cold-start on the next request. That makes a fixed timeout
+  // actively harmful here: releasing the splash before the backend is truly
+  // up doesn't make the wait shorter, it just drops the visitor into a
+  // normal-looking login screen that then fails every request for the next
+  // 40 seconds — which reads as far more broken than staying on the splash.
+  // So this polls /health for real success instead of giving up on a clock,
+  // and the copy is honest about *why* it's slow past the point where a
+  // warm backend would have already answered.
+  const BOOT_MIN_MS = 500;       // floor so a warm/cached response never flickers
+  const POLL_INTERVAL_MS = 2500; // spacing between retries while cold-starting
+  const SLOW_HINT_MS = 6000;     // past this, a warm backend would've answered — say so
+  const EXIT_ANIM_MS = 350;      // must match the CSS transition on the splash
+
+  const bootStart = Date.now();
+  let cancelled = false;
+  let pollTimer = null;
+
+  const slowHintTimer = setTimeout(() => {
+    if (!cancelled) setBootSlow(true);
+  }, SLOW_HINT_MS);
+
+  const finish = () => {
+    if (cancelled) return;
+    cancelled = true;
+    clearTimeout(slowHintTimer);
+    clearTimeout(pollTimer);
+    const elapsed = Date.now() - bootStart;
+    const wait = Math.max(0, BOOT_MIN_MS - elapsed);
+    setTimeout(() => {
+      // Animate out rather than unmounting straight away, so "ready" reads
+      // as a deliberate hand-off instead of a jump-cut.
+      setBootExiting(true);
+      setTimeout(() => setBootReady(true), EXIT_ANIM_MS);
+    }, wait);
+  };
+
+  const poll = () => {
+    api.get('/health').then(finish).catch(() => {
+      if (!cancelled) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+    });
+  };
+  poll();
+
   api.get('/superadmin/branding').then(res => {
     if (res.data.logo_url) {
       setLogoUrl(res.data.logo_url);
@@ -122,7 +242,12 @@ useEffect(() => {
 
     // Update browser tab title dynamically
     if (res.data.org_name) document.title = `${res.data.org_name} Election Portal`;
-  }).catch(() => {});
+  }).catch(() => {
+    // Branding is enrichment, not a boot gate — the env fallback (already
+    // showing) is enough if this fails. Silent by design.
+  });
+
+  return () => { cancelled = true; clearTimeout(slowHintTimer); clearTimeout(pollTimer); };
 }, []);
   
   useEffect(() => {
@@ -176,12 +301,20 @@ useEffect(() => {
       try {
         const res = await api.get('/election-status');
         setIsElectionOpen(res.data.is_open);
+        setElectionStatus(res.data);
       } catch {
         console.error("Could not fetch election status");
       }
     };
     checkStatus();
   }, []);
+
+  // Voting/applications can open or close while a page is open; keep the button and notice current.
+  usePolling(async () => {
+    const res = await api.get('/election-status');
+    setIsElectionOpen(res.data.is_open);
+    setElectionStatus(res.data);
+  }, 30000);
 
   useEffect(() => {
     let interval = null;
@@ -328,6 +461,11 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           return;
         }
         const errorData = err.response?.data?.detail || "Verification Failed";
+        // The schedule changed after this page loaded: re-read the status so the notice says
+        // the right thing (not started yet vs. ended) instead of guessing from the error text.
+        if (!isAdminPath && err.response?.status === 403 && /closed|has ended/i.test(String(errorData))) {
+          api.get('/election-status').then(r => { setIsElectionOpen(r.data.is_open); setElectionStatus(r.data); }).catch(() => {});
+        }
         setStatusModal({
           show: true,
           title: "Login Error",
@@ -469,6 +607,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     savePublicView(null);
   };
 
+  if (!bootReady) {
+    return <BootSplash orgName={orgName} logoUrl={logoUrl} exiting={bootExiting} slow={bootSlow} />;
+  }
+
   return (
     <HelpMenuProvider>
     <div style={containerStyle}>
@@ -556,7 +698,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {view === "results" && <Results apiBase={API_BASE} />}
         {view === "superadmin" && <SuperAdminDashboard onLogout={resetFlow} />}
         {view === "commission" && <CommissionDashboard onLogout={resetFlow} />}
-        {view === "apply" && <ApplicantPortal apiBase={API_BASE} orgName={orgName} />}
+        {view === "apply" && <ApplicantPortal />}
         {view === "it_admin" && <ITAdminDashboard onLogout={resetFlow} />}
         {view === "financial_controller" && <FinancialControllerDashboard onLogout={resetFlow} />}
         {view === "overseer" && <OverseerDashboard onLogout={resetFlow} />}
@@ -569,11 +711,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <h1 style={{ textAlign: 'center', color: 'var(--text-color)' }}>
                 {isAdminPath ? "Admin Login" : "Voter Login"}
               </h1>
-              {!isElectionOpen && !isAdminPath && (
-                <div style={noticeStyle}>
-                  <strong>Notice:</strong> The election is currently closed.
-                </div>
-              )}
+              {!isAdminPath && <ClosedNotice text={votingNoticeText(electionStatus)} />}
               
               {isAdminPath ? (
                 <>
@@ -822,11 +960,103 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 }
 
 // --- STYLES ---
+// A boot-time splash, shown until /health confirms this tenant's backend is
+// actually up (see the effect above). The name/logo come from build-time env
+// vars (VITE_ELECTION_NAME / VITE_LOGO_URL) so they're present on the very
+// first frame — no network round-trip to wait on for those. If the Mongo-
+// backed /superadmin/branding call later returns a different name/logo,
+// App.jsx updates the props in place; since the splash is still showing the
+// same *kind* of content (a name, a mark), that swap doesn't need its own
+// transition. "exiting" drives the hand-off animation to the real app once
+// /health resolves — same pattern as eregistry.ursb.go.ug's
+// "Initializing secure session" screen.
+function BootSplash({ orgName, logoUrl, exiting, slow }) {
+  const known = Boolean(orgName || logoUrl);
+  return (
+    <div style={{ ...bootWrapStyle, ...(exiting ? bootWrapExitStyle : null) }}>
+      <div style={bootCardStyle}>
+        <div style={bootSpinnerStyle}>
+          {logoUrl
+            ? <img src={logoUrl} alt="" style={{ width: '46px', height: '46px', objectFit: 'contain', borderRadius: '8px' }} />
+            : <span style={bootSpinnerRingStyle} />}
+        </div>
+        <h1 style={bootTitleStyle}>{orgName || 'Election Portal'}</h1>
+        <p style={bootSubtitleStyle}>
+          {slow
+            ? 'The server is starting up after a period of inactivity — this can take up to a minute. Thanks for your patience.'
+            : known
+              ? 'Central register for this election\u2019s voters and results'
+              : 'Loading election details…'}
+        </p>
+        <div style={bootStatusRowStyle}>
+          <span style={{ ...bootDotStyle, background: slow ? 'var(--warning, #eab308)' : known ? 'var(--success, #22c55e)' : 'var(--warning, #eab308)' }} />
+          {slow ? 'STARTING SERVER' : known ? 'INITIALIZING SECURE SESSION' : 'CONNECTING'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const bootWrapStyle = {
+  position: 'fixed', inset: 0, zIndex: 9999,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  background: 'var(--bg-color, #f4f6fb)', padding: '20px', boxSizing: 'border-box',
+  opacity: 1, transform: 'scale(1)',
+  transition: 'opacity 0.35s ease, transform 0.35s ease',
+};
+
+// Applied for the final 350ms (EXIT_ANIM_MS in the boot effect, above) once
+// /health has resolved — a soft fade + scale rather than a hard unmount, so
+// the real app appears as a deliberate hand-off instead of a jump-cut.
+const bootWrapExitStyle = {
+  opacity: 0, transform: 'scale(1.02)',
+  pointerEvents: 'none',
+};
+const bootCardStyle = {
+  width: '100%', maxWidth: '380px', textAlign: 'center',
+  background: 'var(--card-bg, #fff)', borderRadius: '20px',
+  padding: '48px 32px', boxShadow: '0 10px 40px rgba(0,0,0,0.08)',
+  border: '1px solid var(--border-color, #e5e9f2)',
+};
+const bootSpinnerStyle = {
+  width: '64px', height: '64px', margin: '0 auto 22px',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+};
+const bootSpinnerRingStyle = {
+  display: 'block', width: '56px', height: '56px', borderRadius: '50%',
+  border: '3px solid transparent',
+  borderTopColor: 'var(--brand-primary, #2563eb)',
+  borderBottomColor: 'var(--brand-primary, #2563eb)',
+  animation: 'boot-spin 0.9s linear infinite',
+};
+const bootTitleStyle = {
+  margin: '0 0 10px', fontSize: '26px', fontWeight: 800,
+  color: 'var(--brand-primary, #1d4ed8)', letterSpacing: '0.3px',
+};
+const bootSubtitleStyle = {
+  margin: '0 0 22px', fontSize: '14px', lineHeight: 1.5,
+  color: 'var(--text-muted, #64748b)',
+};
+const bootStatusRowStyle = {
+  display: 'inline-flex', alignItems: 'center', gap: '8px',
+  fontSize: '11px', fontWeight: 700, letterSpacing: '1px',
+  color: 'var(--text-muted, #64748b)',
+};
+const bootDotStyle = { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 };
+
+// The keyframes are injected once, globally — App.jsx has no CSS module of
+// its own, and this animation is only ever used by BootSplash.
+if (typeof document !== 'undefined' && !document.getElementById('boot-spin-keyframes')) {
+  const style = document.createElement('style');
+  style.id = 'boot-spin-keyframes';
+  style.textContent = '@keyframes boot-spin { to { transform: rotate(360deg); } }';
+  document.head.appendChild(style);
+}
+
 const containerStyle = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: 'var(--bg-color)', padding: '20px', boxSizing: 'border-box' };
 
 const navBarStyle = { marginBottom: '30px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '16px', padding: '15px 0', width: '100%', borderBottom: '1px solid var(--border-color)' };
 
-const logoStyle = { height: '120px', width: 'auto', objectFit: 'contain', margin: '0 10px', filter: 'drop-shadow(0px 0px 4px rgba(241, 196, 15, 0.3))' };
 
 const navBtnStyle = {
   padding: '10px 24px',
@@ -870,7 +1100,6 @@ const inputStyle = { display: 'block', width: '100%', marginBottom: '15px', padd
 
 const primaryBtnStyle = { width: '100%', padding: '12px', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', transition: 'transform 0.1s' };
 
-const noticeStyle = { backgroundColor: '#fff3cd', color: '#856404', padding: '10px', borderRadius: '6px', marginBottom: '15px', textAlign: 'center', fontSize: '14px', border: '1px solid #ffeeba' };
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.9)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
 

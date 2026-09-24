@@ -120,6 +120,8 @@ export const cancelContactChange = (id, reason = '') =>
   api.post(`/it-admin/contact-changes/${id}/cancel`, { reason }).then((r) => r.data);
 export const decideContactChange = (id, body) =>
   api.post(`/admin/contact-changes/${id}/decide`, body).then((r) => r.data);
+export const undoDigestEntry = (id, reason) =>
+  api.post(`/admin/contact-changes/digest/${id}/undo`, { reason }).then((r) => r.data);
 
 export const EVIDENCE_TYPES = [
   ['id_card_in_person', 'Student ID card checked in person'],

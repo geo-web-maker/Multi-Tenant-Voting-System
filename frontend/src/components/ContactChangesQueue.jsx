@@ -2,14 +2,16 @@ import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { Icon } from './icons.jsx';
-import { listContactChanges, decideContactChange, CHANGE_LABELS, errMsg } from '../studentEdit';
-import { SmsUsageTile } from './SecurityPanel';
+import { listContactChanges, decideContactChange, undoDigestEntry, CHANGE_LABELS, EVENT_LABELS, errMsg } from '../studentEdit';
+import { ScrollList } from './UIFeedback';
 
 const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocaleString() : '—');
 
 /**
  * Commission: pending queue with Approve / Deny (any ONE commissioner decides) + the pre-freeze digest.
- * Overseer (readOnly): live feed with approver names, quotas, alerts and duplicate-number flags.
+ * Overseer / SuperAdmin (readOnly): read-only list of the requests (no decide buttons) — but the
+ * digest is always loaded, and SuperAdmin / Chief / Deputy Chief also get an Undo control on it
+ * (gated server-side by role, independent of this prop).
  */
 export default function ContactChangesQueue({ readOnly = false }) {
   const toast = useToast();
@@ -20,12 +22,17 @@ export default function ContactChangesQueue({ readOnly = false }) {
   const [filter, setFilter] = useState(readOnly ? 'all' : 'pending');
   const [ack, setAck] = useState({});
   const [busy, setBusy] = useState('');
+  const [undoBusy, setUndoBusy] = useState('');
+
+  const loadDigest = useCallback(() => {
+    api.get('/admin/contact-changes/digest').then(r => setDigest(r.data)).catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     try { setData(await listContactChanges()); } catch (e) { toast(errMsg(e, 'Could not load contact changes.'), { kind: 'error' }); }
   }, [toast]);
   useEffect(() => { load(); const id = setInterval(load, 15000); return () => clearInterval(id); }, [load]);
-  useEffect(() => { api.get('/admin/contact-changes/digest').then(r => setDigest(r.data)).catch(() => {}); }, []);
+  useEffect(() => { loadDigest(); }, [loadDigest]);
   if (!data) return <p style={{ opacity: 0.6 }}>Loading…</p>;
 
   const decide = async (c, decision) => {
@@ -46,38 +53,37 @@ export default function ContactChangesQueue({ readOnly = false }) {
     finally { setBusy(''); }
   };
 
+  const undoEntry = async (entry) => {
+    const reason = (await prompt(
+      `Undo this ${EVENT_LABELS[entry.event] || entry.event.replace(/_/g, ' ')} for ${entry.student_id}? This applies immediately. Why are you undoing it? (required, 10+ characters)`,
+      { placeholder: 'Reason for undoing this change' }
+    )) || '';
+    if (reason.trim().length < 10) { toast('Undoing a change needs a written reason (10+ characters).', { kind: 'error' }); return; }
+    if (!(await confirm('Reverse this change now? This is recorded against your name.', { confirmText: 'Undo change' }))) return;
+    setUndoBusy(entry.id);
+    try {
+      await undoDigestEntry(entry.id, reason.trim());
+      toast('Change undone.', { kind: 'success' });
+      loadDigest();
+    } catch (e) { toast(errMsg(e, 'Could not undo this change.'), { kind: 'error' }); }
+    finally { setUndoBusy(''); }
+  };
+
   const items = filter === 'all' ? data.items : data.items.filter(c => c.status === filter);
-  const st = data.stats;
 
   return (
     <div>
-      {data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}>The roster is not frozen yet — IT admins still edit directly. Requests appear here from the freeze onward.</div>}
-      {readOnly && <SmsUsageTile />}
-      {readOnly && st && (
-        <div style={{ ...box, margin: '12px 0' }}>
-          <b style={{ fontSize: 13 }}>Live signals</b>
-          <p style={muted}>
-            Approved {st.approved_total} of {st.electorate} voters (<b>{st.pct_of_electorate}%</b>; alert {st.limits.alert_pct}%, hard stop {st.limits.hard_cap_pct}%) · pending {st.pending_total} · notice failed {st.notice_failed}
-          </p>
-          {st.alerts.quota && <Flag>Contact changes above {st.limits.alert_pct}% of the electorate — ask the chief commissioner to review.</Flag>}
-          {st.alerts.hard_stop && <Flag>Hard stop reached: only the chief commissioner can approve more.</Flag>}
-          {st.alerts.approver_concentration && <Flag>One approver made {Math.round(st.top_approver_share * 100)}% of approvals — ask the chief commissioner to spread the load.</Flag>}
-          {st.alerts.duplicate_number && <Flag>The same new number appears in several requests ({st.duplicate_new_numbers.join(', ')}) — possible redirection. Alert the chief commissioner.</Flag>}
-          {st.otp_reset_alerts.length > 0 && <Flag>{st.otp_reset_alerts.length} admin “reset OTP limits” alert(s) in the last 24 h (an unusually busy account; not a block by itself).</Flag>}
-          {Object.keys(st.approvals_by_approver).length > 0 && (
-            <p style={muted}>Approvals by approver: {Object.entries(st.approvals_by_approver).map(([k, v]) => `${k}: ${v}`).join(' · ')}</p>)}
-        </div>
-      )}
-
+      {!readOnly && data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}>The roster is not frozen yet — IT admins still edit directly. Requests appear here from the freeze onward.</div>}
       <div style={{ display: 'flex', gap: 8, margin: '12px 0', flexWrap: 'wrap' }}>
         {['pending', 'approved', 'denied', 'expired', 'all'].map(f => (
-          <button key={f} onClick={() => setFilter(f)} style={{ ...ghost, borderColor: filter === f ? 'var(--success)' : undefined, color: filter === f ? 'var(--success)' : undefined }}>
+          <button key={f} onClick={() => setFilter(f)} style={{ ...ghost, ...(filter === f && { borderColor: 'var(--success)', color: 'var(--success)' }) }}>
             {f} ({f === 'all' ? data.items.length : data.items.filter(c => c.status === f).length})
           </button>
         ))}
       </div>
 
       {items.length === 0 && <p style={{ opacity: 0.55 }}>No {filter === 'all' ? '' : filter} contact changes.</p>}
+      <ScrollList>
       {items.map(c => (
         <div key={c.id} style={{ ...box, marginBottom: 10, borderColor: c.breakglass ? 'var(--danger)' : undefined }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -109,17 +115,33 @@ export default function ContactChangesQueue({ readOnly = false }) {
           )}
         </div>
       ))}
+      </ScrollList>
 
-      {digest?.freeze_at && (
+      {digest && (
         <details style={{ ...box, marginTop: 16 }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Pre-freeze digest: contact edits in the {digest.days} days before {fmt(digest.freeze_at)} ({digest.entries.length})</summary>
-          {digest.entries.length === 0 ? <p style={muted}>No contact edits in that period.</p> : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', marginTop: 8 }}>
-                <thead><tr>{['When', 'Voter', 'Change', 'Old', 'New', 'By', 'Reason'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
-                <tbody>{digest.entries.map((e, i) => (
-                  <tr key={i}><td style={td}>{fmt(e.at)}</td><td style={td}>{e.student_id}</td><td style={td}>{e.event.replace(/_/g, ' ')}</td>
-                    <td style={td}>{e.old || '—'}</td><td style={td}>{e.new || '—'}</td><td style={td}>{e.actor}</td><td style={td}>{e.reason}</td></tr>))}</tbody>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+            Pre-freeze digest: every direct contact edit an IT admin has made{digest.freeze_at ? <> before {fmt(digest.freeze_at)}</> : <> so far</>} ({digest.entries.length})
+          </summary>
+          <p style={muted}>Covers the full history, not just a recent window — an IT admin can edit a voter at any point before the freeze.</p>
+          {digest.entries.length === 0 ? <p style={muted}>No direct contact edits recorded.</p> : (
+            <div style={{ overflow: 'auto', maxHeight: '45vh' }}>
+              <table style={{ width: '100%', minWidth: digest.can_undo ? '760px' : '640px', fontSize: 12, borderCollapse: 'collapse', marginTop: 8, tableLayout: 'fixed' }}>
+                <thead><tr>{[['When', '11%'], ['Voter', '13%'], ['Change', '13%'], ['Old', '15%'], ['New', '15%'], ['By', '11%'], ['Reason', '12%'], ...(digest.can_undo ? [['', '10%']] : [])]
+                  .map(([h, w]) => <th key={h} style={{ ...th, width: w }}>{h}</th>)}</tr></thead>
+                <tbody>{digest.entries.map((e) => (
+                  <tr key={e.id}>
+                    <td style={td}>{fmt(e.at)}</td><td style={td}>{e.student_id}</td><td style={td}>{EVENT_LABELS[e.event] || e.event.replace(/_/g, ' ')}</td>
+                    <td style={td}>{e.old || '—'}</td><td style={td}>{e.new || '—'}</td><td style={td}>{e.actor}</td><td style={td}>{e.reason}</td>
+                    {digest.can_undo && (
+                      <td style={td}>
+                        {e.undone_at ? (
+                          <span style={{ opacity: 0.6 }} title={`Undone by ${e.undone_by || '—'} · ${fmt(e.undone_at)} — ${e.undo_reason || ''}`}>Undone</span>
+                        ) : e.can_undo ? (
+                          <button disabled={undoBusy === e.id} style={{ ...ghost, padding: '4px 8px', fontSize: 11, borderColor: 'var(--danger)', color: 'var(--danger)' }} onClick={() => undoEntry(e)}>Undo</button>
+                        ) : null}
+                      </td>
+                    )}
+                  </tr>))}</tbody>
               </table>
             </div>)}
         </details>
@@ -136,5 +158,5 @@ const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding
 const muted = { fontSize: 12, opacity: 0.75, margin: '4px 0' };
 const ghost = { padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontSize: 12 };
 const btn = { padding: '10px 14px', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
-const th = { textAlign: 'left', padding: 6, borderBottom: '1px solid var(--border-color)' };
+const th = { textAlign: 'left', padding: 6, borderBottom: '1px solid var(--border-color)', whiteSpace: 'nowrap' };
 const td = { padding: 6, borderBottom: '1px solid var(--border-color)' };

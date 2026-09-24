@@ -1,14 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
-import { useToast, useConfirm, usePrompt } from './UIFeedback';
+import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import { toggleElection, electionToggleFeedback } from '../electionControls';
 import {
   SHARED_TAB_DEFS, ROADMAP_TAB_DEF, SharedTabPanels, OfficialCertificationBlock,
 } from './SharedAdminPanels';
 import { Icon } from './icons.jsx';
+import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import SecurityPanel from './SecurityPanel';
+import usePolling from '../hooks/usePolling';
 import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
+import ReceiptLink from './ReceiptLink';
+import ManifestoText from './ManifestoText';
+import ContactChangesQueue from './ContactChangesQueue';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -53,12 +58,12 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [switchingOrg, setSwitchingOrg] = useState(false);
 
   // --- Branding state ---
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: 'var(--warning)', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [] });
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: 'var(--warning)', org_name: '', university_name: '', university_logo_url: '', commissioner_name: '', support_phone: '', support_pdf_url: '', cc_list: [], signatories: [] });
   const [brandSaving, setBrandSaving] = useState(false);
 
   // --- Positions state ---
   const [positions, setPositions]   = useState([]);
-  const [newPosition, setNewPosition] = useState({ title: '', description: '', order: 0 });
+  const [newPosition, setNewPosition] = useState({ title: '', description: '', order: 0, application_fee: '' });
   const [posLoading, setPosLoading]   = useState(false);
 
   // --- Candidates state (mirrored from AdminDashboard) ---
@@ -151,7 +156,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   
   const fetchBranding = async () => {
     try {
-      const res = await api.get(`/superadmin/branding`);
+      const res = await api.get(`/superadmin/branding-full`);
       setBranding(res.data);
     } catch { /* use defaults */ }
   };
@@ -170,13 +175,13 @@ export default function SuperAdminDashboard({ onLogout }) {
     } catch { /* non-critical: ignore */ }
   };
 
-  const fetchApplications = async () => {
-    setAppsLoading(true);
+  const fetchApplications = async ({ silent = false } = {}) => {
+    if (!silent) setAppsLoading(true);
     try {
       const res = await api.get(`/admin/applications`);
       setApplications(res.data);
     } catch { /* non-critical: ignore */ }
-    finally { setAppsLoading(false); }
+    finally { if (!silent) setAppsLoading(false); }
   };
 
   const fetchCommissioners = async () => {
@@ -186,8 +191,8 @@ export default function SuperAdminDashboard({ onLogout }) {
     } catch { /* non-critical: ignore */ }
   };
 
-  const fetchElectionData = async () => {
-    setLoading(true);
+  const fetchElectionData = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const [voterRes, statusRes] = await Promise.all([
         api.get(`/admin/voters`),
@@ -198,7 +203,7 @@ export default function SuperAdminDashboard({ onLogout }) {
       setIsCertified(statusRes.data.is_certified || false);
       setLastRefreshed(new Date());
     } catch { /* non-critical: ignore */ }
-    finally { setLoading(false); }
+    finally { if (!silent) setLoading(false); }
   };
 
 const fetchVotersList = async () => {
@@ -267,15 +272,25 @@ const refetchAll = () => {
   useEffect(() => {
     refetchAll();
     fetchOrganizations();
-    const interval = setInterval(() => {
-      fetchCandidates();
-      fetchApplications();
-      fetchElectionData();
-    }, 30000);
-    return () => clearInterval(interval);
   // Mount-only: fetchers are recreated each render and must not retrigger this effect.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live refresh of whatever the superadmin is looking at, plus the always-visible election state.
+  // Only the open tab's data is re-fetched (cheap), and nothing here touches forms being edited.
+  usePolling(() => {
+    fetchElectionData({ silent: true });
+    switch (activeTab) {
+      case 'candidates':             return fetchCandidates();
+      case 'applications':           return Promise.all([fetchApplications({ silent: true }), fetchCandidates()]);
+      case 'commissioners':          return fetchCommissioners();
+      case 'it_admins':              return fetchItAdmins();
+      case 'student_changes':        return fetchStudentChanges();
+      case 'financial_controllers':  return fetchFinancialControllers();
+      case 'overseers':              return fetchOverseers();
+      default:                       return undefined;
+    }
+  }, 15000);
   
   // ── Branding ──
 
@@ -297,11 +312,22 @@ const refetchAll = () => {
     if (!newPosition.title.trim()) return toast('Position title required.');
     setPosLoading(true);
     try {
-      await api.post(`/positions`, newPosition);
-      setNewPosition({ title: '', description: '', order: 0 });
+      await api.post(`/positions`, { ...newPosition, application_fee: parseInt(newPosition.application_fee, 10) || 0 });
+      setNewPosition({ title: '', description: '', order: 0, application_fee: '' });
       fetchPositions();
     } catch (e) { toast(getErrorMessage(e, 'Failed to add position.'), { kind: 'error' }); }
     finally { setPosLoading(false); }
+  };
+
+  const handleEditFee = async (p) => {
+    const raw = await prompt(`Nomination fee for ${p.title} in UGX (0 = none):`, { placeholder: 'e.g. 50000', defaultValue: String(p.application_fee || 0) });
+    if (raw === null || raw === undefined) return;
+    const fee = parseInt(String(raw).replace(/[^\d]/g, ''), 10);
+    if (Number.isNaN(fee)) return toast('Enter a whole number.', { kind: 'error' });
+    try {
+      await api.patch(`/positions/${p._id}`, { application_fee: fee });
+      fetchPositions();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to update fee.'), { kind: 'error' }); }
   };
 
   const handleDeletePosition = async (id) => {
@@ -395,6 +421,16 @@ const refetchAll = () => {
 
 const handleClearChief = async (studentId) => {
   await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-chief`);
+  fetchCommissioners();
+};
+
+const handleSetDeputyChief = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-deputy-chief`);
+  fetchCommissioners();
+};
+
+const handleClearDeputyChief = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-deputy-chief`);
   fetchCommissioners();
 };
 
@@ -693,6 +729,7 @@ const handleSuperAdminRemoveStudent = async () => {
     { id: 'security',     label: <>Security &amp; SMS</> },
     { id: 'it_admins',  label: <>IT Admins</> },
     { id: 'student_changes', label: <>Student Changes</> },
+    { id: 'contact_changes', label: <>Contact Changes</> },
     { id: 'financial_controllers', label: <>Financial Controllers</> },
     { id: 'overseers',  label: <>Overseers</> },
     { id: 'organizations', label: <>Organizations</> },
@@ -820,6 +857,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 </h4>
                 <button style={ghostBtn} onClick={() => setIsPreviewOpen(true)}>Preview Ballot</button>
               </div>
+              <ScrollList>
               {candidates.map(c => (
                 <div key={c._id} style={rowCard}>
                   {editingId === c._id ? (
@@ -847,7 +885,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   ) : (
                     <>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <img src={c.image_url} alt="" style={avatar} />
+                        <img src={faceCropUrl(c.image_url, 44, 44)} alt="" style={avatar} />
                         <div>
                           <b style={{ color: 'var(--text-color)' }}>{c.name}</b>
                           <br />
@@ -870,6 +908,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                 </div>
               ))}
+              </ScrollList>
             </div>
           </div>
         )}
@@ -886,7 +925,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 {candidates.map((c, idx) => (
                   <div key={c._id} style={{ ...statCard, textAlign: 'left', display: 'flex', gap: '10px', alignItems: 'center' }}>
                     <span style={{ fontWeight: 'bold', opacity: 0.3 }}>{idx + 1}</span>
-                    <img src={c.image_url} style={avatar} alt="" />
+                    <img src={faceCropUrl(c.image_url, 44, 44)} style={avatar} alt="" />
                     <div><div style={{ fontWeight: 'bold', color: 'var(--text-color)' }}>{c.name}</div><small style={{ color: 'var(--success)' }}>{c.position}</small></div>
                   </div>
                 ))}
@@ -901,7 +940,7 @@ const handleSuperAdminRemoveStudent = async () => {
             <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
               {['all','pending','approved','denied','removed'].map(f => (
                 <button key={f} onClick={() => setAppFilter(f)}
-                  style={{ ...ghostBtn, borderColor: appFilter === f ? '#2ecc71' : undefined, color: appFilter === f ? '#2ecc71' : undefined }}>
+                  style={{ ...ghostBtn, ...(appFilter === f && { borderColor: '#2ecc71', color: '#2ecc71' }) }}>
                   {f.charAt(0).toUpperCase() + f.slice(1)}
                   {' '}({f === 'all' ? applications.length : applications.filter(a => a.status === f).length})
                 </button>
@@ -914,11 +953,12 @@ const handleSuperAdminRemoveStudent = async () => {
               <p style={{ opacity: 0.5, textAlign: 'center', marginTop: '40px' }}>No applications in this category.</p>
             )}
 
+            <ScrollList>
             {filteredApps.map(app => (
               <div key={app._id} style={appCard}>
                 <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
                   {app.image_url && (
-                    <img src={app.image_url} alt="" style={{ ...avatar, width: '60px', height: '60px', flexShrink: 0 }} />
+                    <img src={faceCropUrl(app.image_url, 60, 60)} alt="" style={{ ...avatar, width: '60px', height: '60px', flexShrink: 0 }} />
                   )}
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
@@ -939,10 +979,17 @@ const handleSuperAdminRemoveStudent = async () => {
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                       ID: {app.student_id}
                     </p>
-                    {app.manifesto && (
-                      <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.8, lineHeight: '1.5' }}>
-                        {app.manifesto}
-                      </p>
+                    <ManifestoText text={app.manifesto} />
+                    {app.payment_method && (
+                      <div style={{ marginTop: '8px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                        <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
+                          Payment: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
+                          {' · '}Required: <strong style={{ color: 'var(--success)' }}>
+                            {app.fee_required ? `UGX ${Number(app.fee_required).toLocaleString('en-UG')}` : 'not set'}
+                          </strong>
+                        </p>
+                        <ReceiptLink url={app.payment_proof_url} />
+                      </div>
                     )}
                     {app.votes && Object.keys(app.votes).length > 0 && (
                       <p style={{ margin: '6px 0 0', fontSize: '11px', opacity: 0.5 }}>
@@ -979,24 +1026,34 @@ const handleSuperAdminRemoveStudent = async () => {
                 </div>
               </div>
             ))}
+            </ScrollList>
           </div>
         )}
 
         {/* ══════════════ COMMISSIONERS TAB ══════════════ */}
         {activeTab === 'commissioners' && (
           <div>
-            <div style={{ ...card, marginBottom: '20px' }}>
+            <div style={{ ...card, marginBottom: '20px' }} className="card-pad">
               <h4 style={cardTitle}>Current Commissioners ({commissioners.length})</h4>
               {commissioners.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No commissioners assigned yet. Find voters below and toggle them.</p>
               )}
+              <ScrollList maxHeight="50vh">
               {commissioners.map(c => (
-                <div key={c.student_id} style={{ ...rowCard, marginBottom: '8px', flexWrap: 'wrap', gap: '10px' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div key={c.student_id} style={{ ...rowCard, marginBottom: '8px', flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  {/* Header: identity on the left, Revoke pinned top-right (same layout as the IT Admin / Finance / Overseer cards) */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                       <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
                       {c.is_chief_commissioner && (
                        <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Chief
+                        </span>
+                      )}
+                      {c.is_deputy_chief_commissioner && (
+                       <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Deputy Chief
                         </span>
                       )}
                       {c.is_finance_commissioner && (
@@ -1009,11 +1066,16 @@ const handleSuperAdminRemoveStudent = async () => {
                     <br />
                     <small style={{ color: 'var(--info)' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
                   </div>
-              
+                    <button style={{ ...redLink, flexShrink: 0 }} onClick={() => handleToggleCommissioner(c.student_id)}>
+                      Revoke
+                    </button>
+                  </div>
+
                   <select
+                    className="comm-select"
                     value={c.commissioner_role || 'Commissioner'}
                     onChange={e => handleSetRole(c.student_id, e.target.value)}
-                    style={{ ...inp, width: 'auto', fontSize: '12px', padding: '6px 8px' }}
+                    style={{ ...inp, width: 'auto', fontSize: '12px', padding: '6px 8px', alignSelf: 'flex-start' }}
                   >
                     <option value="Chairperson EC">Chairperson EC</option>
                     <option value="Secretary EC">Secretary EC</option>
@@ -1025,11 +1087,11 @@ const handleSuperAdminRemoveStudent = async () => {
                     <option value="Presiding Officer">Presiding Officer</option>
                   </select>
               
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div className="comm-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     {c.is_chief_commissioner ? (
                       <button
                         onClick={() => handleClearChief(c.student_id)}
-                        style={{ ...ghostBtn, color: 'var(--warning)', bordercolor: 'var(--warning)', fontSize: '12px' }}>
+                        style={{ ...ghostBtn, color: 'var(--warning)', borderColor: 'var(--warning)', fontSize: '12px' }}>
                         Clear Chief
                       </button>
                     ) : (
@@ -1039,10 +1101,23 @@ const handleSuperAdminRemoveStudent = async () => {
                         Set Chief
                       </button>
                     )}
+                    {c.is_deputy_chief_commissioner ? (
+                      <button
+                        onClick={() => handleClearDeputyChief(c.student_id)}
+                        style={{ ...ghostBtn, color: 'var(--info)', borderColor: 'var(--info)', fontSize: '12px' }}>
+                        Clear Deputy
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleSetDeputyChief(c.student_id)}
+                        style={{ ...ghostBtn, fontSize: '12px' }}>
+                        Set Deputy
+                      </button>
+                    )}
                     {c.is_finance_commissioner ? (
                       <button
                         onClick={() => handleClearFinanceCommissioner(c.student_id)}
-                        style={{ ...ghostBtn, color: 'var(--success)', bordercolor: 'var(--success)', fontSize: '12px' }}>
+                        style={{ ...ghostBtn, color: 'var(--success)', borderColor: 'var(--success)', fontSize: '12px' }}>
                         Clear Finance
                       </button>
                     ) : (
@@ -1052,9 +1127,6 @@ const handleSuperAdminRemoveStudent = async () => {
                         Set Finance
                       </button>
                     )}
-                    <button style={redLink} onClick={() => handleToggleCommissioner(c.student_id)}>
-                      Revoke
-                    </button>
                   </div>
 
                   {/* Credentials section */}
@@ -1066,7 +1138,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     </small>
                     <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
                       <input
-                        style={{ ...inp, flex: 1, fontSize: '12px', padding: '6px 8px' }}
+                        style={{ ...inp, flex: 1, minWidth: '180px', fontSize: '12px', padding: '6px 8px' }}
                         placeholder="Email e.g. comm@example.com"
                         type="email"
                         value={commCredEmail[c.student_id] ?? c.commissioner_email ?? ''}
@@ -1091,6 +1163,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </div>
                 </div>
               ))}
+              </ScrollList>
             </div>
             
             <h4 style={cardTitle}>Grant Commissioner Access</h4>
@@ -1100,7 +1173,7 @@ const handleSuperAdminRemoveStudent = async () => {
               onChange={e => setVoterSearch(e.target.value)} />
             <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
               {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).map(v => (
-                <div key={v.student_id} style={rowCard}>
+                <div key={v.student_id} style={rowCard} className="grant-row">
                   <div>
                     <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                     <br />
@@ -1153,7 +1226,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   : <><span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters CSV</span>
                     <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} /></>}
               </div>
-              <button style={ghostBtn} onClick={fetchElectionData} disabled={loading}>
+              <button style={ghostBtn} onClick={() => fetchElectionData()} disabled={loading}>
                 {loading ? 'Syncing…' : <>Refresh</>}
               </button>
             </div>
@@ -1206,6 +1279,9 @@ const handleSuperAdminRemoveStudent = async () => {
                 <input style={inp} placeholder="Description (optional)"
                   value={newPosition.description}
                   onChange={e => setNewPosition({ ...newPosition, description: e.target.value })} />
+                <input style={inp} type="number" min="0" placeholder="Nomination fee in UGX (optional, e.g. 50000)"
+                  value={newPosition.application_fee}
+                  onChange={e => setNewPosition({ ...newPosition, application_fee: e.target.value })} />
                 <input style={inp} type="number" placeholder="Ballot order (0 = first)"
                   value={newPosition.order}
                   onChange={e => setNewPosition({ ...newPosition, order: parseInt(e.target.value) || 0 })} />
@@ -1219,6 +1295,7 @@ const handleSuperAdminRemoveStudent = async () => {
               {positions.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No positions yet. Add one to allow applicants to apply.</p>
               )}
+              <ScrollList maxHeight="50vh">
               {positions.map(p => (
                 <div key={p._id} style={rowCard}>
                   <div>
@@ -1226,10 +1303,17 @@ const handleSuperAdminRemoveStudent = async () => {
                     {p.description && <><br /><small style={{ opacity: 0.6 }}>{p.description}</small></>}
                     <br />
                     <small style={{ color: 'var(--info)' }}>Order: {p.order}</small>
+                    <small style={{ marginLeft: 10, color: 'var(--success)' }}>
+                      Fee: {p.application_fee ? `UGX ${Number(p.application_fee).toLocaleString('en-UG')}` : 'none'}
+                    </small>
                   </div>
-                  <button style={redLink} onClick={() => handleDeletePosition(p._id)}>Delete</button>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <button style={{ ...redLink, color: 'var(--info)' }} onClick={() => handleEditFee(p)}>Edit fee</button>
+                    <button style={redLink} onClick={() => handleDeletePosition(p._id)}>Delete</button>
+                  </div>
                 </div>
               ))}
+              </ScrollList>
             </div>
           </div>
         )}
@@ -1459,6 +1543,27 @@ const handleSuperAdminRemoveStudent = async () => {
                 <small style={{ color: '#64748b', fontSize: '11px' }}>
                   {(branding.cc_list || []).length} entries — these appear at the bottom of the official printed report
                 </small>
+
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Signatories (one per line, "Name — Role")</label>
+                <textarea
+                  placeholder={`e.g.\nJane Doe — Chairperson EC\nJohn Smith — Deputy Chairperson EC\n— Dean of Students`}
+                  value={(branding.signatories || []).map(s => [s.full_name, s.role].filter(Boolean).join(' — ')).join('\n')}
+                  onChange={e => setBranding({
+                    ...branding,
+                    signatories: e.target.value.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+                      const [full_name = '', role = ''] = line.split('—').map(p => p.trim());
+                      return { full_name, role };
+                    })
+                  })}
+                  rows={5}
+                  style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  {(branding.signatories || []).length} entries — these appear on the signature grid of the official
+                  certified report, in this exact order. Leave the name blank for someone who signs by hand
+                  (e.g. "— Dean of Students") — they don't need an account in this system. Leave the whole list
+                  empty to fall back to every commissioner on record, listed automatically.
+                </small>
                 <div style={{
                   marginTop: '14px', padding: '12px 16px', borderRadius: '8px',
                   backgroundColor: branding.primary_color, display: 'flex', gap: '10px', alignItems: 'center'
@@ -1554,6 +1659,7 @@ const handleSuperAdminRemoveStudent = async () => {
               {itAdmins.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No IT admins assigned yet. Find voters below and toggle them.</p>
               )}
+              <ScrollList maxHeight="50vh">
               {itAdmins.map(a => (
                 <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1594,6 +1700,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </div>
                 </div>
               ))}
+              </ScrollList>
             </div>
 
             <div>
@@ -1610,7 +1717,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     v.student_id?.toLowerCase().includes(itAdminSearch.toLowerCase())
                   )
                   .map(v => (
-                    <div key={v.student_id} style={rowCard}>
+                    <div key={v.student_id} style={rowCard} className="grant-row">
                       <div>
                         <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                         <br />
@@ -1709,13 +1816,14 @@ const handleSuperAdminRemoveStudent = async () => {
             <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
               {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
                 <button key={f} onClick={() => setScFilter(f)}
-                  style={{ ...ghostBtn, borderColor: scFilter === f ? 'var(--success)' : undefined, color: scFilter === f ? 'var(--success)' : undefined }}>
+                  style={{ ...ghostBtn, ...(scFilter === f && { borderColor: 'var(--success)', color: 'var(--success)' }) }}>
                   {f.replace('_', ' ')}
                   {' '}({f === 'all' ? studentChanges.length : studentChanges.filter(c => c.status === f).length})
                 </button>
               ))}
             </div>
 
+            <ScrollList>
             {(scFilter === 'all' ? studentChanges : studentChanges.filter(c => c.status === scFilter)).map(change => (
               <div key={change._id} style={appCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
@@ -1746,12 +1854,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
                       Payment: <strong style={{ color: 'var(--text-color)' }}>{change.payment_method}</strong>
                     </p>
-                    {change.payment_proof_url && (
-                      <a href={change.payment_proof_url} target="_blank" rel="noopener noreferrer"
-                        style={{ fontSize: '12px', color: 'var(--info)', textDecoration: 'none' }}>
-                        View Receipt
-                      </a>
-                    )}
+                    <ReceiptLink url={change.payment_proof_url} />
                   </div>
                 )}
 
@@ -1767,8 +1870,15 @@ const handleSuperAdminRemoveStudent = async () => {
                 )}
               </div>
             ))}
+            </ScrollList>
           </div>
         )}
+
+        {/* ══════════════ CONTACT CHANGES TAB ══════════════ */}
+        {/* readOnly: decisions on pending requests stay commission-only, but SuperAdmin
+            still gets the full pre-freeze digest and, as Chief/Deputy Chief also do, the
+            Undo control on it — gated server-side, not by this prop. */}
+        {activeTab === 'contact_changes' && <ContactChangesQueue readOnly />}
 
         {/* ══════════════ FINANCIAL CONTROLLERS TAB ══════════════ */}
         {activeTab === 'financial_controllers' && (
@@ -1778,6 +1888,7 @@ const handleSuperAdminRemoveStudent = async () => {
               {financialControllers.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No Financial Controllers assigned yet. Find voters below and toggle them.</p>
               )}
+              <ScrollList maxHeight="50vh">
               {financialControllers.map(a => (
                 <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1818,6 +1929,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </div>
                 </div>
               ))}
+              </ScrollList>
             </div>
 
             <div>
@@ -1834,7 +1946,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     v.student_id?.toLowerCase().includes(fcSearch.toLowerCase())
                   )
                   .map(v => (
-                    <div key={v.student_id} style={rowCard}>
+                    <div key={v.student_id} style={rowCard} className="grant-row">
                       <div>
                         <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                         <br />
@@ -1858,6 +1970,7 @@ const handleSuperAdminRemoveStudent = async () => {
               {overseers.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No Overseers assigned yet. Find voters below and toggle them.</p>
               )}
+              <ScrollList maxHeight="50vh">
               {overseers.map(a => (
                 <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1898,6 +2011,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </div>
                 </div>
               ))}
+              </ScrollList>
             </div>
 
             <div>
@@ -1914,7 +2028,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     v.student_id?.toLowerCase().includes(ovSearch.toLowerCase())
                   )
                   .map(v => (
-                    <div key={v.student_id} style={rowCard}>
+                    <div key={v.student_id} style={rowCard} className="grant-row">
                       <div>
                         <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
                         <br />
@@ -1962,6 +2076,7 @@ const handleSuperAdminRemoveStudent = async () => {
               {organizations.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No organizations provisioned yet.</p>
               )}
+              <ScrollList maxHeight="50vh">
               {organizations.map(o => (
                 <div key={o._id} style={rowCard}>
                   <div>
@@ -1974,6 +2089,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   </small>
                 </div>
               ))}
+              </ScrollList>
             </div>
           </div>
         )}

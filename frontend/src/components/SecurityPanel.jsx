@@ -76,6 +76,7 @@ export default function SecurityPanel() {
       'reset_admin_hourly_alert', 'reset_admin_hourly_hard_cap', 'reset_per_voter_daily', 'reset_per_voter_election'].forEach(k => { body[k] = Number(f[k]); });
     body.turnstile_mode = f.turnstile_mode;
     body.public_results_mode = f.public_results_mode;
+    body.approval_policy = f.approval_policy;
     if (f.roster_freeze_at) body.roster_freeze_at = zonedInputToUtcISO(f.roster_freeze_at, tz);
     else body.clear_roster_freeze_at = true;
     try { await api.put('/superadmin/security-settings', body); toast('Security settings saved.', { kind: 'success' }); setReason(''); load(); }
@@ -148,6 +149,16 @@ export default function SecurityPanel() {
         <b style={{ fontSize: 14 }}>SMS delivery</b>
         <p style={note}>When EgoSMS times out (result unknown — it may still have been delivered and billed), fall back to MamboSMS automatically. Off by default to avoid double-sending a voter's OTP.</p>
         {chk('sms_fallback_on_timeout', 'Fall back to MamboSMS on an ambiguous EgoSMS timeout')}
+      </div>
+
+      <div style={box}>
+        <b style={{ fontSize: 14 }}>Candidate approval policy</b>
+        <p style={note}>How the commission's votes on candidate applications and removals resolve. Changing this immediately re-checks every pending application and pending removal vote against the new rule — it can flip an outcome without a new vote being cast.</p>
+        <select style={inp} value={f.approval_policy} onChange={e => setF({ ...f, approval_policy: e.target.value })}>
+          <option value="majority_total">Majority of total commissioners (original behavior)</option>
+          <option value="unanimous">Unanimous — every commissioner must agree</option>
+          <option value="majority_cast">Majority of votes cast — resolves once everyone has voted</option>
+        </select>
       </div>
 
       <div style={box}>

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useToast, useConfirm } from './UIFeedback';
+import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ContactChangePanel from './ContactChangePanel';
 import useRosterStatus from '../hooks/useRosterStatus';
@@ -146,7 +146,7 @@ export default function SuperAdminStudentEdit() {
             {changes.rows.length > 0 && (
               <div style={{ overflowX: 'auto' }}>
                 <table style={tbl}>
-                  <thead><tr><th style={th}>Field</th><th style={th}>Current</th><th style={th}>New</th></tr></thead>
+                  <thead><tr><th style={{ ...th, width: '24%' }}>Field</th><th style={{ ...th, width: '38%' }}>Current</th><th style={{ ...th, width: '38%' }}>New</th></tr></thead>
                   <tbody>
                     {changes.rows.map(r => (
                       <tr key={r.id}>
@@ -184,6 +184,7 @@ export default function SuperAdminStudentEdit() {
         <button type="submit" style={ghostBtn} disabled={histLoading}>{histLoading ? 'Searching…' : 'Search'}</button>
       </form>
       {history.length === 0 && !histLoading && <p style={muted}>No changes recorded.</p>}
+      <ScrollList maxHeight="60vh">
       {history.map(h => (
         <div key={h._id} style={histCard}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
@@ -202,6 +203,7 @@ export default function SuperAdminStudentEdit() {
           <p style={{ ...histLine, opacity: 0.55 }}>By {h.actor} ({h.actor_role === 'it_admin' ? 'IT admin' : h.actor_role})</p>
         </div>
       ))}
+      </ScrollList>
     </div>
   );
 }
@@ -219,8 +221,8 @@ const ghostBtn = { padding: '9px 14px', background: 'none', border: '1px solid v
 const list = { border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '8px', overflow: 'hidden' };
 const listItem = { display: 'block', width: '100%', textAlign: 'left', padding: '12px', background: 'var(--card-bg)', border: 'none', borderBottom: '1px solid var(--border-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', minHeight: '44px' };
 const review = { marginTop: '16px', padding: '12px', border: '1px dashed var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--card-bg)' };
-const tbl = { width: '100%', borderCollapse: 'collapse', marginTop: '8px', fontSize: '13px' };
-const th = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', fontSize: '11px', opacity: 0.6 };
+const tbl = { width: '100%', borderCollapse: 'collapse', marginTop: '8px', fontSize: '13px', tableLayout: 'fixed' };
+const th = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', fontSize: '11px', opacity: 0.6, whiteSpace: 'nowrap' };
 const td = { padding: '6px 8px', borderBottom: '1px solid var(--border-color)', wordBreak: 'break-word' };
 const errText = { color: 'var(--danger)', fontSize: '12px', fontWeight: 600, margin: '8px 0 0' };
 const histCard = { border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', marginTop: '10px', backgroundColor: 'var(--card-bg)' };

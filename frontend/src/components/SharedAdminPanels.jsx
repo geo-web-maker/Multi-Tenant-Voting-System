@@ -231,6 +231,13 @@ const DETAIL_DESCRIBERS = {
   sms_test_sent: d => d.phone ? `Sent to ${d.phone}` : 'Test message sent',
   election_reset: () => 'Election data wiped back to a fresh state',
   vote_cast: d => d.positions ? `Ballot cast (${d.positions} position${d.positions === 1 ? '' : 's'})` : 'Ballot cast',
+  // The URL is intentionally not logged (see backend) — this describer only
+  // ever needs to handle the byte count now, but stays defensive in case an
+  // older log entry from before this fix still has a url on it.
+  admin_image_uploaded: d => {
+    const kb = d.bytes ? `${(d.bytes / 1024).toFixed(1)} KB` : null;
+    return kb ? `Image uploaded (${kb})` : 'Image uploaded';
+  },
   phases_scheduled: d => {
     const phases = d.phases || {};
     const names = Object.keys(phases);
@@ -239,6 +246,17 @@ const DETAIL_DESCRIBERS = {
       .map(name => `${PHASE_LABELS[name] || name}: ${phases[name]?.enforced ? 'enforced' : 'not enforced'}`)
       .join(' · ');
     return d.early_end ? `Voting window closed EARLY by this change — reason: ${d.reason} (${summary})` : summary;
+  },
+  // Was dumping every changed field's full old→new pair (and, before the
+  // backend was fixed to only log real changes, unchanged fields too) —
+  // unreadable once more than a couple of settings changed at once. Just
+  // name what changed; the security-settings screen is where you'd go to
+  // see the actual before/after values.
+  security_settings_changed: d => {
+    const keys = Object.keys(d.changes || {});
+    if (!keys.length) return d.reason ? `No effective change — reason: ${d.reason}` : 'No effective change';
+    const list = keys.map(k => k.replace(/_/g, ' ')).join(', ');
+    return `${keys.length} setting${keys.length === 1 ? '' : 's'} changed (${list})${d.reason ? ` — reason: ${d.reason}` : ''}`;
   },
 };
 
@@ -264,7 +282,7 @@ function prettyDetailValue(v) {
   return String(v);
 }
 
-export function describeDetails(action, details) {
+function describeDetails(action, details) {
   const special = DETAIL_DESCRIBERS[action];
   if (special) return special(details || {});
   const entries = Object.entries(details || {}).filter(([k]) => !DETAIL_NOISE_KEYS.has(k));
@@ -274,7 +292,7 @@ export function describeDetails(action, details) {
     .join(' · ');
 }
 
-export function describeAction(action) {
+function describeAction(action) {
   return ACTION_TITLES[action] || String(action).replace(/_/g, ' ');
 }
 
@@ -527,7 +545,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
       {grants.length > 0 && (
         <div style={{ ...panel, marginTop: '16px' }} className="card-pad">
           <h4 style={panelTitle}>Exception Grants ({grants.length})</h4>
-          <div className="table-scroll">
+          <div className="table-scroll" style={{ maxHeight: '50vh', overflowY: 'auto' }}>
             <table style={tableStyle}>
               <thead>
                 <tr>{[['Student', '18%'], ['Phase', '12%'], ['Reason', '32%'], ['By', '16%'], ['Expires', '16%'], ['', '6%']]
@@ -793,13 +811,13 @@ export function ActivityLog() {
       <div style={scrollBox} className="table-scroll">
         <table style={tableStyle}>
           <thead>
-            <tr>{[['When', '14%'], ['Action', '22%'], ['Actor', '18%'], ['Details', '46%']]
+            <tr>{[['When', '17%'], ['Action', '20%'], ['Actor', '18%'], ['Details', '45%']]
               .map(([h, w]) => <th key={h} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {entries.map(e => (
               <tr key={e._id} style={rowStyle}>
-                <td style={{ ...tdStyle, whiteSpace: 'nowrap', fontSize: '11px', opacity: 0.7 }}>
+                <td style={{ ...tdStyle, fontSize: '11px', opacity: 0.7 }}>
                   {(parseUtc(e.timestamp) || new Date(0)).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
                 </td>
                 <td style={{ ...tdStyle, fontWeight: 600 }}>{describeAction(e.action)}</td>
@@ -951,8 +969,30 @@ function bucketLabel(bucket, bucketType, includeDate) {
 // markup works on a phone and a desktop panel — no separate mobile layout,
 // no horizontal scroll, and the x-axis never shows more than ~5 labels
 // regardless of how many buckets are in the series.
+// A single fixed viewBox ratio is a compromise for every screen size at
+// once — 600x220 was only modestly taller on a phone and barely changed on
+// desktop. Watching viewport width and picking a genuinely taller ratio
+// below 480px means the mobile chart is actually noticeably bigger, not
+// just a few px taller, while desktop keeps the wider ratio.
+function useIsNarrowViewport(breakpoint = 480) {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < breakpoint
+  );
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < breakpoint);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [breakpoint]);
+  return narrow;
+}
+
 function TurnoutSparkline({ series, bucketType }) {
-  const W = 600, H = 170;
+  const narrow = useIsNarrowViewport();
+  // Taller viewBox ratio on phones (600x340 ≈ 1.76:1) vs desktop/tablet
+  // (600x220 ≈ 2.73:1) — width:100%/height:auto below derives the actual
+  // rendered height straight from this ratio, so this is a real size
+  // change, not letterboxing inside a fixed-height box.
+  const W = 600, H = narrow ? 340 : 220;
   const padL = 34, padR = 10, padT = 10, padB = 26;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
@@ -1000,9 +1040,15 @@ function TurnoutSparkline({ series, bucketType }) {
         </circle>
       ))}
 
-      {/* X-axis: thinned time labels */}
+      {/* X-axis: thinned time labels. The first/last labels anchor to
+          start/end instead of middle so their text stays inside the
+          viewBox — a middle-anchored label at x=590 (near W=600) had half
+          its width running past the edge and getting clipped by the
+          panel's overflow. */}
       {series.map((p, i) => labelIdx.has(i) && (
-        <text key={p.bucket} x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="var(--text-muted)">
+        <text key={p.bucket} x={x(i)} y={H - 8}
+          textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}
+          fontSize="10" fill="var(--text-muted)">
           {bucketLabel(p.bucket, bucketType, spansMultipleDays)}
         </text>
       ))}
@@ -1178,13 +1224,13 @@ export function Analytics() {
         <div style={scrollBox} className="table-scroll">
           <table style={tableStyle}>
             <thead>
-              <tr>{[['When', '14%'], ['Event', '22%'], ['Actor', '18%'], ['Details', '46%']]
+              <tr>{[['When', '17%'], ['Event', '20%'], ['Actor', '18%'], ['Details', '45%']]
                 .map(([h, w]) => <th key={h} style={{ ...thStyle, width: w }}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {anomalies?.events?.map(e => (
                 <tr key={e._id} style={rowStyle}>
-                  <td style={{ ...tdStyle, whiteSpace: 'nowrap', fontSize: '11px' }}>
+                  <td style={{ ...tdStyle, fontSize: '11px' }}>
                     {(parseUtc(e.timestamp) || new Date(0)).toLocaleString('en-UG', { dateStyle: 'short', timeStyle: 'short' })}
                   </td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}>{describeAction(e.action)}</td>
@@ -1292,7 +1338,7 @@ export function RecentActivity({ limit = 6 }) {
       {!error && entries === null && <p style={mutedStyle}>Loading…</p>}
       {!error && entries?.length === 0 && <p style={mutedStyle}>Nothing has happened yet.</p>}
       {!error && entries?.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '65vh', overflowY: 'auto', overscrollBehavior: 'contain' }}>
           {entries.map(e => (
             <div key={e._id} style={{
               display: 'flex', justifyContent: 'space-between', gap: '10px',
