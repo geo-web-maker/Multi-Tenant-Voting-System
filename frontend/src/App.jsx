@@ -632,7 +632,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   return (
     <HelpMenuProvider>
     <div style={containerStyle}>
-      {view === "voter" && (
+      {(view === "voter" || view === "apply") && (
         <>
           <HelpPanel
             supportPhone={supportPhone}
@@ -642,8 +642,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           />
           {/* Ballot page (step 3) puts Help inside its own footer bar via
               <InlineHelpButton /> — see BallotBox.jsx — so the floating
-              trigger only renders when nothing else owns that space. */}
-          {step !== 3 && <FabTrigger />}
+              trigger only renders when nothing else owns that space.
+              On the Apply page there's no ballot footer, but the applicant
+              flow has its own inline "check every position's fee first"
+              link (see ApplicantPortal.jsx) rather than this FAB, so it's
+              still skipped there. */}
+          {view === "voter" && step !== 3 && <FabTrigger />}
         </>
       )}
       <div style={{ 
