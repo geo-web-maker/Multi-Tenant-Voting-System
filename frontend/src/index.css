@@ -480,6 +480,39 @@ td, th {
 .icon-spin { animation: icon-spin 0.9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .icon-spin { animation-duration: 2.5s; } }
 
+/* Shared fade+slide entrance for modals and menus (help panel, fee/register/
+   timeline modals). Kept short (180ms) so it reads as responsive, not showy.
+   Reduced-motion users get the instant version via the global rule above. */
+@keyframes panel-fade-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.panel-fade-in { animation: panel-fade-in 180ms ease-out; }
+
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.overlay-fade-in { animation: overlay-fade-in 150ms ease-out; }
+
+/* Inline message reveal (OTP lockout/error text) — fades in without a hard
+   layout snap. */
+@keyframes msg-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.msg-fade-in { animation: msg-fade-in 160ms ease-out; }
+
+/* Vote-cast success checkmark: circle draws in, then the check strokes in. */
+@keyframes vote-circle-draw { to { stroke-dashoffset: 0; } }
+@keyframes vote-check-draw { to { stroke-dashoffset: 0; } }
+
+/* Toasts: slide in from the right + fade; slide out + fade on dismiss. */
+@keyframes toast-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toast-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
+.toast-in { animation: toast-in 200ms ease-out; }
+.toast-out { animation: toast-out 180ms ease-in forwards; }
+
 
 /* ---- Results page: candidate rows (screen only) ------------------------- */
 @media screen {

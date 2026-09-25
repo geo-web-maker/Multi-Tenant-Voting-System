@@ -853,7 +853,14 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             )}
             
             {step === 4 && (
-              <div style={{ ...cardStyle, textAlign: 'center' }}>
+              <div style={{ ...cardStyle, textAlign: 'center' }} className="panel-fade-in">
+                <svg width="72" height="72" viewBox="0 0 72 72" style={{ margin: '0 auto 12px' }}>
+                  <circle cx="36" cy="36" r="34" fill="none" stroke="var(--success)" strokeWidth="3"
+                    strokeDasharray="214" strokeDashoffset="214" style={{ animation: 'vote-circle-draw 0.5s ease-out forwards' }} />
+                  <path d="M20 37 L31 47 L52 24" fill="none" stroke="var(--success)" strokeWidth="4"
+                    strokeLinecap="round" strokeLinejoin="round" strokeDasharray="42" strokeDashoffset="42"
+                    style={{ animation: 'vote-check-draw 0.35s ease-out 0.4s forwards' }} />
+                </svg>
                 <h2 style={{ color: 'var(--success)' }}>Vote Cast Successfully!</h2>
                 <button onClick={resetFlow} style={{ ...primaryBtnStyle, backgroundColor: '#2ecc71' }}>Return Home</button>
               </div>
@@ -862,8 +869,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         )}
 
         {mustChangePassword && (
-          <div style={modalOverlayStyle}>
-            <div className="modal-content" style={{ ...modalContentStyle, maxWidth: '420px' }}>
+          <div className="overlay-fade-in" style={modalOverlayStyle}>
+            <div className="modal-content panel-fade-in" style={{ ...modalContentStyle, maxWidth: '420px' }}>
               <h2 style={{ textAlign: 'center', marginTop: 0, color: 'var(--text-color)' }}>Set a New Password</h2>
               <p style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
                 For your security, you must set a new password before continuing.
@@ -911,8 +918,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         )}
         
         {statusModal.show && (
-          <div style={modalOverlayStyle}>
-            <div className="modal-content" style={modalContentStyle}>
+          <div className="overlay-fade-in" style={modalOverlayStyle}>
+            <div className="modal-content panel-fade-in" style={modalContentStyle}>
               <div style={{ fontSize: '50px', marginBottom: '10px', textAlign: 'center' }}>
                 {statusModal.type === 'success' ? <Icon name="success" /> : <Icon name="warning" />}
               </div>

@@ -107,9 +107,9 @@ export default function SecurityPanel() {
   const dv = d.derived;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 720 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
       <SmsUsageTile />
-      {d.banner && <div style={{ ...box, borderColor: 'var(--warning)' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
+      {d.banner && <div style={{ ...box, borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>Lock strength (derived from the voting window)</b>

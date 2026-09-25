@@ -30,7 +30,7 @@ export default function FloatingHelpMenu({ supportPhone, orgName = '', onShowGui
   return (
     <>
       {open && (
-        <div style={menuPanelStyle}>
+        <div style={menuPanelStyle} className="panel-fade-in">
           <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
             <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend. The same code is sent again while it is valid.
             Still stuck, or need a detail changed? Use Contact Support below. Never send your code.
@@ -52,8 +52,8 @@ export default function FloatingHelpMenu({ supportPhone, orgName = '', onShowGui
       </button>
 
       {showRegister && (
-        <div style={modalOverlayStyle} onClick={() => setShowRegister(false)}>
-          <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
+        <div style={modalOverlayStyle} className="overlay-fade-in" onClick={() => setShowRegister(false)}>
+          <div style={modalContentStyle} className="panel-fade-in" onClick={e => e.stopPropagation()}>
             <VoterRegisterSearch />
             <button onClick={() => setShowRegister(false)} style={closeBtnStyle}>Close</button>
           </div>

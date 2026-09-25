@@ -397,7 +397,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
             <label style={lbl}>Payment Receipt / Screenshot *</label>
             <label style={{ ...photoUploadArea, minHeight: '120px' }}>
               {paymentProofPreview ? (
-                <img src={paymentProofPreview} alt="Payment proof preview"
+                <img src={paymentProofPreview} alt="Payment proof preview" className="panel-fade-in"
                   style={{ maxWidth: '100%', maxHeight: '200px', objectFit: 'contain', borderRadius: '8px' }} />
               ) : (
                 <div style={{ textAlign: 'center', opacity: 0.5 }}>
@@ -434,7 +434,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
             </p>
             <label style={photoUploadArea}>
               {preview ? (
-                <img src={preview} alt="Preview" style={photoPreview} />
+                <img src={preview} alt="Preview" className="panel-fade-in" style={photoPreview} />
               ) : (
                 <div style={{ textAlign: 'center', opacity: 0.5 }}>
                   <div style={{ fontSize: '32px', marginBottom: '6px' }}><Icon name="camera" /></div>
@@ -500,7 +500,7 @@ const positionOption = { padding: '14px', borderRadius: '10px', cursor: 'pointer
 const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const linkBtn     = { background: 'none', border: 'none', padding: 0, margin: 0, font: 'inherit', fontWeight: 700, color: 'var(--success)', textDecoration: 'underline', cursor: 'pointer' };
 const errorBox    = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--danger) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--danger) 40%, transparent)', color: 'var(--danger)', fontSize: '12px', fontWeight: '600', marginTop: '10px' };
-const photoUploadArea = { display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed var(--border-color)', borderRadius: '10px', padding: '20px', cursor: 'pointer', minHeight: '100px' };
+const photoUploadArea = { display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed var(--border-color)', borderRadius: '10px', padding: '20px', cursor: 'pointer', minHeight: '100px', transition: 'border-color 0.15s, background-color 0.15s' };
 const photoPreview  = { width: '100px', height: '100px', objectFit: 'cover', borderRadius: '8px' };
 const btn           = { padding: '10px 18px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', color: '#fff' };
 const greenBtn      = { ...btn, backgroundColor: 'var(--success)' };

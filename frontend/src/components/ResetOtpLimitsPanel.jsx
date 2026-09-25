@@ -134,7 +134,7 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 640 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 16, alignItems: 'start' }}>
       <div style={box}>
         <b style={{ fontSize: 15 }}>Reset a voter's code limits</b>
         <p style={muted}>

@@ -40,6 +40,8 @@ export function useConfirm() {
 
 let toastIdCounter = 0;
 
+const TOAST_EXIT_MS = 180; // must match .toast-out duration in index.css
+
 export function UIFeedbackProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const [dialog, setDialog] = useState(null); // { mode: 'confirm'|'prompt', message, danger, confirmText, cancelText, requireText, inputValue }
@@ -48,17 +50,20 @@ export function UIFeedbackProvider({ children }) {
   const toast = useCallback((message, opts = {}) => {
     const id = ++toastIdCounter;
     const kind = opts.kind || 'info'; // 'info' | 'success' | 'error'
-    setToasts(prev => [...prev, { id, message, kind }]);
+    setToasts(prev => [...prev, { id, message, kind, exiting: false }]);
     const duration = opts.duration ?? 5000;
     if (duration > 0) {
-      setTimeout(() => {
-        setToasts(prev => prev.filter(t => t.id !== id));
-      }, duration);
+      setTimeout(() => dismissToast(id), duration);
     }
   }, []);
 
+  // Marks the toast as exiting (triggers the slide/fade-out), then removes
+  // it from state once that animation has had time to finish.
   const dismissToast = useCallback((id) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
+    setToasts(prev => prev.map(t => (t.id === id ? { ...t, exiting: true } : t)));
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, TOAST_EXIT_MS);
   }, []);
 
   // confirm(message, { danger, confirmText, cancelText, requireText }) -> Promise<boolean>
@@ -120,7 +125,8 @@ export function UIFeedbackProvider({ children }) {
       {/* Toasts */}
       <div style={toastContainerStyle}>
         {toasts.map(t => (
-          <div key={t.id} style={{ ...toastStyle, ...toastKindStyle[t.kind] }} onClick={() => dismissToast(t.id)}>
+          <div key={t.id} style={{ ...toastStyle, ...toastKindStyle[t.kind] }}
+            className={t.exiting ? 'toast-out' : 'toast-in'} onClick={() => dismissToast(t.id)}>
             {t.message}
           </div>
         ))}
@@ -128,8 +134,8 @@ export function UIFeedbackProvider({ children }) {
 
       {/* Confirm / prompt dialog */}
       {dialog && (
-        <div style={overlayStyle} onClick={() => resolveDialog(dialog.mode === 'prompt' ? null : false)}>
-          <div style={dialogStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={overlayStyle} className="overlay-fade-in" onClick={() => resolveDialog(dialog.mode === 'prompt' ? null : false)}>
+          <div style={dialogStyle} className="panel-fade-in" onClick={(e) => e.stopPropagation()}>
             <div style={{ whiteSpace: 'pre-wrap', marginBottom: (dialog.requireText || dialog.mode === 'prompt') ? '16px' : '24px', color: 'var(--text-color)', fontSize: '15px', lineHeight: 1.5 }}>
               {dialog.message}
             </div>

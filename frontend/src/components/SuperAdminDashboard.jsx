@@ -917,8 +917,8 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* Ported from AdminDashboard: ballot preview modal */}
         {isPreviewOpen && (
-          <div style={modalOverlay}>
-            <div style={modalContent}>
+          <div className="overlay-fade-in" style={modalOverlay}>
+            <div className="panel-fade-in" style={modalContent}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
                 <h3 style={{ margin: 0, color: 'var(--text-color)' }}>Ballot Preview</h3>
                 <button onClick={() => setIsPreviewOpen(false)} style={redLink}>Close</button>
@@ -1322,7 +1322,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ BRANDING TAB ══════════════ */}
         {activeTab === 'branding' && (
-          <div style={{ maxWidth: '500px' }}>
+          <div style={twoCol}>
             <div style={card}>
               <h4 style={cardTitle}>Logo & Colour Scheme</h4>
               <div style={formCol}>
@@ -1513,7 +1513,12 @@ const handleSuperAdminRemoveStudent = async () => {
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
 
+            <div style={card}>
+              <h4 style={cardTitle}>Support & Sign-off</h4>
+              <div style={formCol}>
                 <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>General WhatsApp support number (digits only, with country code)</label>
                 <input
                   style={inp}
@@ -1652,7 +1657,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ ELECTION TAB ══════════════ */}
         {activeTab === 'election' && (
-          <div style={{ maxWidth: '600px' }}>
+          <div style={twoCol}>
             <div style={card}>
               <h4 style={cardTitle}>Election Status</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -2116,8 +2121,8 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ ORGANIZATIONS TAB (multi-tenancy) ══════════════ */}
         {activeTab === 'organizations' && (
-          <div>
-            <div style={{ ...card, marginBottom: '20px', maxWidth: '480px' }}>
+          <div style={twoCol}>
+            <div style={card}>
               <h4 style={cardTitle}>Provision New Organization</h4>
               <form onSubmit={handleCreateOrg} style={formCol}>
                 <input

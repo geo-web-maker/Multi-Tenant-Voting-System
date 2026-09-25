@@ -420,8 +420,8 @@ useEffect(() => { fetchData(); }, []);
 
         {/* PREVIEW BALLOT MODAL */}
         {isPreviewOpen && (
-          <div style={modalOverlayStyle}>
-            <div style={modalContentStyle}>
+          <div className="overlay-fade-in" style={modalOverlayStyle}>
+            <div className="panel-fade-in" style={modalContentStyle}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
                 <h3>Ballot Preview</h3>
                 <button onClick={() => setIsPreviewOpen(false)} style={deleteLinkStyle}>Close</button>

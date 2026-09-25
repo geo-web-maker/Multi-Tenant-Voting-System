@@ -36,6 +36,7 @@ export default function ReceiptLink({ url, label = 'View Receipt', style }) {
         <div
           role="dialog" aria-modal="true" aria-label="Payment receipt"
           onClick={() => setOpen(false)}
+          className="overlay-fade-in"
           style={{
             position: 'fixed', inset: 0, zIndex: 10000, backgroundColor: 'rgba(0,0,0,0.8)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px',
@@ -43,6 +44,7 @@ export default function ReceiptLink({ url, label = 'View Receipt', style }) {
         >
           <div
             onClick={e => e.stopPropagation()}
+            className="panel-fade-in"
             style={{
               backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', borderRadius: '14px',
               padding: '14px', width: '100%', maxWidth: '640px', maxHeight: '92vh',

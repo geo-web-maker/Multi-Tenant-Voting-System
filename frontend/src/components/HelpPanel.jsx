@@ -52,7 +52,7 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
   return (
     <>
       {open && (
-        <div style={menuPanelStyle}>
+        <div style={menuPanelStyle} className="panel-fade-in">
           {subReason ? (
             <>
               <button onClick={() => setSubReason(null)} style={{ ...menuItemStyle, opacity: 0.7 }}>← Back</button>
@@ -89,8 +89,8 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
       )}
 
       {showRegister && (
-        <div style={modalOverlayStyle} onClick={closeRegister}>
-          <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
+        <div style={modalOverlayStyle} className="overlay-fade-in" onClick={closeRegister}>
+          <div style={modalContentStyle} className="panel-fade-in" onClick={e => e.stopPropagation()}>
             <VoterRegisterSearch />
             <button onClick={closeRegister} style={closeBtnStyle}>Close</button>
           </div>
@@ -98,8 +98,8 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
       )}
 
       {showTimeline && (
-        <div style={modalOverlayStyle} onClick={closeTimeline}>
-          <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
+        <div style={modalOverlayStyle} className="overlay-fade-in" onClick={closeTimeline}>
+          <div style={modalContentStyle} className="panel-fade-in" onClick={e => e.stopPropagation()}>
             <ElectionTimeline />
             <button onClick={closeTimeline} style={closeBtnStyle}>Close</button>
           </div>
@@ -107,8 +107,8 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
       )}
 
       {showFees && (
-        <div style={modalOverlayStyle} onClick={closeFees}>
-          <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
+        <div style={modalOverlayStyle} className="overlay-fade-in" onClick={closeFees}>
+          <div style={modalContentStyle} className="panel-fade-in" onClick={e => e.stopPropagation()}>
             <FeeSchedule />
             <button onClick={closeFees} style={closeBtnStyle}>Close</button>
           </div>

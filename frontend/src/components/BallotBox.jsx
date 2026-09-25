@@ -243,9 +243,8 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
 
       {/* CLEAR ALL CONFIRMATION MODAL */}
       {!isPreview && showClearConfirm && (
-        <div style={modalOverlayStyle}>
-          <div className="modal-content" style={{...modalContentStyle, textAlign: 'center'}}>
-            
+        <div className="overlay-fade-in" style={modalOverlayStyle}>
+          <div className="modal-content panel-fade-in" style={{...modalContentStyle, textAlign: 'center'}}>
             <h2 style={{ color: '#e11d48', marginTop: 0, fontWeight: '800' }}>
               Reset Entire Ballot?
             </h2>
@@ -260,8 +259,8 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
 
       {/* SUMMARY MODAL */}
       {!isPreview && showSummary && (
-        <div style={modalOverlayStyle}>
-          <div className="modal-content" style={modalContentStyle}>
+        <div style={modalOverlayStyle} className="overlay-fade-in">
+          <div className="modal-content panel-fade-in" style={modalContentStyle}>
             <h2 style={{marginTop: 0 }}>Review Your Ballot</h2>
             <p style={{fontSize: '14px', marginBottom: '10px' }}>Verify your selections. Once submitted, you cannot change your vote.</p>
             
@@ -334,8 +333,8 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
 
      {/* ONLY SHOW MODAL FOR ERRORS NOW */}
         {statusModal.show && statusModal.type === 'error' && (
-          <div style={modalOverlayStyle}>
-            <div className="modal-content" style={{...modalContentStyle, textAlign: 'center'}}>
+          <div className="overlay-fade-in" style={modalOverlayStyle}>
+            <div className="modal-content panel-fade-in" style={{...modalContentStyle, textAlign: 'center'}}>
               <div style={{ fontSize: '50px', marginBottom: '10px' }}><Icon name="warning" /></div>
               
               <h2 style={{ color: '#e11d48' }}>{statusModal.title}</h2>
@@ -407,5 +406,6 @@ const tickBoxStyle = {
   borderRadius: '8px',
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'center'
+  justifyContent: 'center',
+  transition: 'background-color 0.2s ease, border-color 0.2s ease'
 };

@@ -46,15 +46,17 @@ export default function OtpInput({
       />
 
       {locked && (
-        <p role="alert" style={{ color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}>
+        // key stays fixed for the life of this lockout, so the fade-in plays once when the
+        // message first appears and does NOT replay every second as lockLeft ticks down.
+        <p key="locked" role="alert" className="msg-fade-in" style={{ color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}>
           Too many incorrect codes. You can try again in <b>{fmtWait(lockLeft)}</b>. You do not need to do anything.
         </p>
       )}
       {hasError && (
-        <p role="alert" style={{ color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}>{feedback.message}</p>
+        <p key="error" role="alert" className="msg-fade-in" style={{ color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}>{feedback.message}</p>
       )}
       {feedback?.reason === 'no_live_code' && (
-        <p role="alert" style={{ color: 'var(--warning)', fontSize: '14px', marginTop: '10px' }}>{feedback.message}</p>
+        <p key="no-code" role="alert" className="msg-fade-in" style={{ color: 'var(--warning)', fontSize: '14px', marginTop: '10px' }}>{feedback.message}</p>
       )}
 
       <div style={{ marginTop: '30px', display: 'flex', gap: '15px', justifyContent: 'center' }}>
