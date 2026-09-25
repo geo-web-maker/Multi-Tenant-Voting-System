@@ -995,7 +995,7 @@ function BootSplash({ orgName, logoUrl, exiting, slow }) {
       <div style={bootCardStyle}>
         <div style={bootSpinnerStyle}>
           {logoUrl
-            ? <img src={logoUrl} alt="" style={{ width: '46px', height: '46px', objectFit: 'contain', borderRadius: '8px' }} />
+            ? <img src={logoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: '8px' }} />
             : <span style={bootSpinnerRingStyle} />}
         </div>
         <h1 style={bootTitleStyle}>{orgName || 'Election Portal'}</h1>
@@ -1037,7 +1037,7 @@ const bootCardStyle = {
   border: '1px solid var(--border-color, #e5e9f2)',
 };
 const bootSpinnerStyle = {
-  width: '64px', height: '64px', margin: '0 auto 22px',
+  width: '84px', height: '84px', margin: '0 auto 22px',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 const bootSpinnerRingStyle = {

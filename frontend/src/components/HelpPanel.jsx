@@ -72,7 +72,7 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
             <>
               <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
                 <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend — the same code is sent again while it is valid.
-                If you see “try again in…”, the wait ends by itself; nothing needs to be reset. Nobody can send or read out your code.
+                Still stuck, or need a detail changed? Use Contact Support below — never send your code.
               </div>
               {items.map((it, i) => it.href ? (
                 <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
