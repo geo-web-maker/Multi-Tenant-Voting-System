@@ -132,29 +132,13 @@ def _ts(dt: datetime | None = None) -> str:
 # --------------------------------------------------------------------------
 # Alerts (email to superadmin) and run log
 # --------------------------------------------------------------------------
-async def send_alert(subject: str, body: str) -> bool:
-    """Email the superadmin via Resend's HTTPS API (Render's free tier blocks SMTP
-    ports). Never raises: an alert failure is logged loudly instead."""
-    api_key = os.getenv("RESEND_API_KEY")
-    to = os.getenv("BACKUP_ALERT_EMAIL") or os.getenv("SUPER_ADMIN_ID", "")
-    sender = os.getenv("ALERT_FROM_EMAIL", "BallotBox Backups <onboarding@resend.dev>")
-    if not api_key or "@" not in to:
-        logger.error("BACKUP ALERT NOT EMAILED (RESEND_API_KEY or recipient missing): %s | %s", subject, body)
-        return False
-    try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            r = await http.post(
-                "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"from": sender, "to": [to], "subject": subject, "text": body},
-            )
-        if r.status_code >= 300:
-            logger.error("Backup alert email rejected (%s): %s", r.status_code, r.text[:300])
-            return False
-        return True
-    except httpx.HTTPError as e:
-        logger.error("Backup alert email failed: %s | original alert: %s", e, subject)
-        return False
+# The sender itself now lives in alerts.py so every critical system in the app
+# (not just backups) can use the same Resend-based emailer, with per-subject
+# cooldown so a flapping failure doesn't flood the inbox. `send_alert` is kept
+# as a name here, thin-wrapped at "critical" level, so every existing call
+# site in this file (and in backup_routes.py / main.py) keeps working
+# unchanged.
+from alerts import alert_critical as send_alert  # noqa: E402  (kept after module docstring/constants)
 
 
 async def _log_run(db, tenant: str, kind: str, ok: bool, size: int = 0,

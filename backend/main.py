@@ -31,6 +31,7 @@ import boto3
 from fastapi.concurrency import run_in_threadpool
 import backup
 from backup_routes import build_router as build_backup_router
+from alerts import alert_critical, alert_warning, send_alert
 from name_utils import normalize_name
 from name_backfill import run_backfill as run_name_backfill
 from regno_audit import audit_reg_numbers
@@ -178,8 +179,47 @@ async def lifespan(app: FastAPI):
     # Turnout-velocity aggregation scans cast_at.
     await db.vote_events.create_index([("org_id", 1), ("cast_at", 1)])
     set_revocation_check(_is_token_revoked)
+    await _check_config_on_boot()
     yield
     client.close()
+
+
+async def _check_config_on_boot() -> None:
+    """One-time check of every optional service integration's credentials.
+    A missing env var for these doesn't crash boot (each degrades at the
+    point of use instead — e.g. Turnstile returns None and fails open,
+    B2 backups raise BackupError only when a backup actually runs), which
+    is the right call operationally, but it means a bad deploy can go
+    unnoticed until election day. This surfaces it immediately instead.
+    """
+    missing = []
+    if not os.getenv("RESEND_API_KEY"):
+        missing.append("RESEND_API_KEY (alert emails will only be logged, never sent)")
+    if not (os.getenv("BACKUP_ALERT_EMAIL") or os.getenv("SUPER_ADMIN_ID")):
+        missing.append("BACKUP_ALERT_EMAIL / SUPER_ADMIN_ID (no alert recipient configured)")
+    if not (B2_ENDPOINT and B2_KEY_ID and B2_APPLICATION_KEY and B2_BUCKET_NAME):
+        missing.append("B2_* backup credentials (backups will fail on first run)")
+    if not (os.getenv("CLOUDINARY_CLOUD_NAME") and os.getenv("CLOUDINARY_API_KEY")
+            and os.getenv("CLOUDINARY_API_SECRET")):
+        missing.append("CLOUDINARY_* credentials (image uploads will fail)")
+    if not EGOSMS_USER:
+        missing.append("EGOSMS_USERNAME (primary OTP provider unavailable)")
+    if not MAMBOSMS_API_KEY:
+        missing.append("MAMBOSMS_API_KEY (fallback OTP provider unavailable)")
+    if not TURNSTILE_SECRET:
+        missing.append("TURNSTILE_SECRET (captcha disabled; informational only if intentional)")
+
+    if not missing:
+        logger.info("Boot config check: all optional service credentials present.")
+        return
+
+    body = "Missing or unset on this deploy:\n- " + "\n- ".join(missing)
+    logger.warning("Boot config check found gaps:\n%s", body)
+    # If Resend itself isn't configured, this alert can only ever be logged —
+    # still worth calling send_alert so that gap is spelled out in the log
+    # the same way every other missing credential is, rather than silently
+    # skipping it.
+    await send_alert("Boot config check found missing credentials", body, level="warning", cooldown_s=0)
 
 # =============================================================================
 # API DOCS (Swagger/ReDoc) — locked down by default
@@ -817,6 +857,16 @@ async def _send_sms_priority(to_number: str, message_text: str, org, kind: str) 
     if await send_sms_via_mambosms(to_number, message_text):
         await _safe_count_sms(org, kind)
         return "ok"
+    # Both providers down. This is the exact silent-failure case: a voter is
+    # sitting on the OTP screen and nothing ever arrives, with no error shown
+    # anywhere but the server log. Tier 1 for "otp" (a voter is blocked right
+    # now); warning for other priority kinds.
+    level = "critical" if kind == "otp" else "warning"
+    await send_alert(
+        f"Both SMS providers failed ({kind})",
+        f"EgoSMS and MamboSMS both failed sending to {to_number}. Org: {org}. Kind: {kind}.",
+        level=level,
+    )
     return "failed"
 
 
@@ -834,6 +884,12 @@ async def _send_sms_non_priority(to_number: str, message_text: str, org, kind: s
     if second in ("ok", "ambiguous"):
         await _safe_count_sms(org, kind)        # ambiguous here too may have been billed
         return "ok" if second == "ok" else "ambiguous"
+    level = "critical" if kind == "otp" else "warning"
+    await send_alert(
+        f"Both SMS providers failed ({kind})",
+        f"MamboSMS and EgoSMS both failed sending to {to_number}. Org: {org}. Kind: {kind}.",
+        level=level,
+    )
     return "failed"
 
 
@@ -1967,6 +2023,35 @@ async def api_error_handler(request: Request, exc: ApiError):
     return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
 
 
+# Tier 1 catch-all: any unhandled exception on a write/critical path becomes an
+# immediate email instead of a silent 500 that only shows up in Render logs.
+# HTTPException/ApiError are handled above and never reach here, so this only
+# fires for genuine bugs/outages (DB down, unexpected driver errors, etc).
+CRITICAL_ALERT_PATHS = (
+    "/vote", "/vote-bulk", "/verify-identity", "/admin/reset-election",
+    "/admin/certify", "/apply", "/admin/schedule",
+)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    path = request.url.path
+    if any(path.startswith(p) for p in CRITICAL_ALERT_PATHS):
+        await alert_critical(
+            f"Unhandled error on {path}",
+            f"{type(exc).__name__}: {exc}\n\nMethod: {request.method}\n"
+            f"Org: {getattr(request.state, 'org_id', None)}",
+        )
+    else:
+        await alert_warning(
+            f"Unhandled error on {path}",
+            f"{type(exc).__name__}: {exc}\n\nMethod: {request.method}\n"
+            f"Org: {getattr(request.state, 'org_id', None)}",
+        )
+    logger.exception("Unhandled exception on %s %s", request.method, path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
 async def security_settings_for(org_id) -> dict:
     doc = await db.settings.find_one(_oq(org_id, {"name": "security_settings"})) or {}
     out = dict(_SEC_DEFAULTS)
@@ -2146,6 +2231,16 @@ async def _budget_alerts(org_id, usage: dict):
                 await log_action("sms_budget_alert", "system", {
                     "threshold_pct": int(threshold * 100), "sent": usage.get("sent_total", 0),
                     "budget": total}, org_id=org_id)
+                # 10% left is the one that can actually block voters mid-election
+                # (see sms_budget_gate below), so it's critical; 50/25% are early
+                # warnings to top up before that happens.
+                level = "critical" if threshold <= 0.10 else "warning"
+                await send_alert(
+                    f"SMS budget at {int(threshold * 100)}% remaining",
+                    f"Org: {org_id or 'default'}. Sent {usage.get('sent_total', 0)} of {total} "
+                    f"budgeted SMS. Top up or raise sms_budget_total before voters start being blocked.",
+                    level=level,
+                )
 
 
 async def count_sms(org_id, kind: str = "otp"):
@@ -2213,27 +2308,9 @@ async def ip_flagged(request: Request) -> bool:
     return ol.ip_needs_captcha(d.get("sends", []), d.get("verifies", []), d.get("fails", []), datetime.utcnow())
 
 
-_last_turnstile_alert = 0.0
-
-
-async def _turnstile_verify(token: str, ip: str) -> bool | None:
-    """True/False = Cloudflare answered; None = not configured or unreachable."""
-    if not TURNSTILE_SECRET:
-        return None
-    try:
-        async with httpx.AsyncClient() as c:
-            r = await c.post("https://challenges.cloudflare.com/turnstile/v0/siteverify",
-                             data={"secret": TURNSTILE_SECRET, "response": token, "remoteip": ip}, timeout=6.0)
-            return bool(r.json().get("success"))
-    except Exception as e:
-        logger.error(f"Turnstile verify failed: {e}")
-        return None
-
-
 async def enforce_turnstile(request: Request, token: str | None, sec: dict, mode_now: str, flagged: bool):
     """Modes: off | adaptive (challenge flagged IPs / under attack) | on. Fails OPEN if Cloudflare is
     unreachable (voters first), except under_attack, which fails closed."""
-    global _last_turnstile_alert
     mode, attack = sec["turnstile_mode"], mode_now == "under_attack"
     if not (mode == "on" or attack or (mode == "adaptive" and flagged)):
         return
@@ -2244,11 +2321,19 @@ async def enforce_turnstile(request: Request, token: str | None, sec: dict, mode
         return
     if ok is False:
         raise ApiError(429, "The security check failed. Please try again.", "captcha_required")
-    if time.time() - _last_turnstile_alert > 60:
-        _last_turnstile_alert = time.time()
-        await log_action("turnstile_unavailable", "system", {
-            "configured": bool(TURNSTILE_SECRET), "mode": mode, "failing_closed": attack and bool(TURNSTILE_SECRET),
-        }, org_id=request.state.org_id)
+    # Turnstile unreachable: outside under_attack this fails OPEN, i.e. captcha
+    # protection silently stops working with nothing visible to a voter — the
+    # exact kind of failure that's invisible unless someone's watching logs.
+    # 60s cooldown matches the previous log-only behavior's own throttle.
+    await alert_warning(
+        "Turnstile (Cloudflare captcha) unreachable",
+        f"configured={bool(TURNSTILE_SECRET)} mode={mode} failing_closed={attack and bool(TURNSTILE_SECRET)} "
+        f"org={request.state.org_id}",
+        cooldown_s=60,
+    )
+    await log_action("turnstile_unavailable", "system", {
+        "configured": bool(TURNSTILE_SECRET), "mode": mode, "failing_closed": attack and bool(TURNSTILE_SECRET),
+    }, org_id=request.state.org_id)
     if attack and TURNSTILE_SECRET:
         raise ApiError(503, "The security check is temporarily unavailable. Please try again shortly.",
                        "captcha_required", 30)
@@ -2386,7 +2471,13 @@ async def health_check():
     try:
         await db.command("ping")
         return {"status": "healthy", "database": "connected"}
-    except Exception:
+    except Exception as e:
+        # DB loss is Tier 1 by definition (nothing else works if this fails),
+        # but this endpoint gets polled often (uptime monitors, the external
+        # backup scheduler), so alert_critical's cooldown is what keeps a
+        # sustained outage to one email every few minutes instead of one per
+        # poll.
+        await alert_critical("Database health check failing", f"{type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed")
 
 @app.get("/election-status")
@@ -2776,8 +2867,18 @@ async def cast_vote(data: VoteRequest, request: Request):
             session=session
         )
 
-    async with await client.start_session() as session:
-        await session.with_transaction(_do_vote)
+    try:
+        async with await client.start_session() as session:
+            await session.with_transaction(_do_vote)
+    except HTTPException:
+        raise  # expected rejections (ineligible, wrong phase, etc.) — not an alert
+    except Exception as e:
+        await alert_critical(
+            "Vote transaction failed",
+            f"A vote transaction raised {type(e).__name__}: {e}\n"
+            f"Org: {request.state.org_id} | candidate: {data.candidate_id}",
+        )
+        raise
 
     # Logged under the voter's own id, with no candidate/choice attached —
     # same secrecy boundary vote_events already keeps (see comment above).
@@ -2859,8 +2960,18 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             session=session
         )
 
-    async with await client.start_session() as session:
-        await session.with_transaction(_do_bulk_vote)
+    try:
+        async with await client.start_session() as session:
+            await session.with_transaction(_do_bulk_vote)
+    except HTTPException:
+        raise  # expected rejections — not an alert
+    except Exception as e:
+        await alert_critical(
+            "Bulk vote transaction failed",
+            f"A bulk vote transaction raised {type(e).__name__}: {e}\n"
+            f"Org: {request.state.org_id} | candidates: {data.candidate_ids}",
+        )
+        raise
 
     await log_action("vote_cast", normalize_student_id(data.student_id), {"positions": len(candidate_oids)}, org_id=request.state.org_id)
 
@@ -3056,6 +3167,10 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
         result = cloudinary.uploader.upload(content, folder="ballotbox/applicants", resource_type="image")
     except Exception as e:
         logger.error(f"Cloudinary applicant upload failed: {e}")
+        await alert_critical(
+            "Cloudinary upload failing (applicant)",
+            f"{type(e).__name__}: {e}\nOrg: {getattr(request.state, 'org_id', None)}",
+        )
         raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
 
     return {"secure_url": result["secure_url"]}
@@ -3651,6 +3766,10 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
         result = cloudinary.uploader.upload(content, folder="ballotbox/admin", resource_type="image")
     except Exception as e:
         logger.error(f"Cloudinary admin upload failed: {e}")
+        await alert_warning(
+            "Cloudinary upload failing (admin)",
+            f"{type(e).__name__}: {e}\nOrg: {getattr(request.state, 'org_id', None)}",
+        )
         raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
 
     # Deliberately not logging the URL here. This upload is used for candidate
