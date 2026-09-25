@@ -134,7 +134,7 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(360px, 100%), 1fr))', gap: 16, alignItems: 'start' }}>
       <div style={box}>
         <b style={{ fontSize: 15 }}>Reset a voter's code limits</b>
         <p style={muted}>
@@ -143,8 +143,8 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
         </p>
 
         {voter ? (
-          <p style={{ ...muted, color: 'var(--success)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span><Icon name="check" /> Selected: {voter.full_name} ({regNo(voter.student_id)})</span>
+          <p style={{ ...muted, ...selectedRow, color: 'var(--success)' }}>
+            <span style={selectedText}><Icon name="check" /> Selected: {voter.full_name} ({regNo(voter.student_id)})</span>
             <button type="button" style={linkBtn} onClick={() => setVoter(null)}>Change</button>
           </p>
         ) : (
@@ -180,8 +180,8 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
           </select>
 
           {cap.target ? (
-            <p style={{ ...muted, color: 'var(--success)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span><Icon name="check" /> {cap.target.name || cap.target.id} {cap.target.role ? `— ${cap.target.role}` : ''} ({cap.target.id})</span>
+            <p style={{ ...muted, ...selectedRow, color: 'var(--success)' }}>
+              <span style={selectedText}><Icon name="check" /> {cap.target.name || cap.target.id} {cap.target.role ? `— ${cap.target.role}` : ''} ({cap.target.id})</span>
               <button type="button" style={linkBtn} onClick={() => setCap({ ...cap, target: null })}>Change</button>
             </p>
           ) : (
@@ -207,8 +207,10 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
   );
 }
 
-const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 16, background: 'var(--bg-color)' };
+const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 16, background: 'var(--bg-color)', minWidth: 0, boxSizing: 'border-box' };
 const muted = { fontSize: 12, opacity: 0.7, margin: '4px 0 10px' };
+const selectedRow = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 };
+const selectedText = { minWidth: 0, overflowWrap: 'anywhere' };
 const inp = { width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13 };
 const btn = { marginTop: 12, padding: '10px 18px', borderRadius: 8, border: 'none', background: '#2ecc71', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 13 };
 const linkBtn = { padding: '4px 8px', background: 'none', border: 'none', color: 'var(--accent, #2ecc71)', cursor: 'pointer', fontSize: 12, fontWeight: 600, textDecoration: 'underline' };
