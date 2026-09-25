@@ -310,6 +310,10 @@ export function Timeline({ canEdit = false, isChief = false }) {
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState({});
   const [tzDraft, setTzDraft] = useState(DEFAULT_TZ);
+  // True the moment the admin touches a field below, so the background poll (every 30s) never
+  // yanks a date, checkbox or timezone out from under them mid-edit. Cleared on save/discard,
+  // or when the form hasn't been touched yet (so the very first load still populates it).
+  const [dirty, setDirty] = useState(false);
   const [grants, setGrants] = useState([]);
   const [grantForm, setGrantForm] = useState({ student_id: '', phase: 'applications', reason: '', expires_at: '' });
 
@@ -317,11 +321,19 @@ export function Timeline({ canEdit = false, isChief = false }) {
     try {
       const res = await api.get('/admin/schedule');
       setData(res.data);
-      const tz = res.data.timezone || DEFAULT_TZ;
-      setTzDraft(tz);
-      setDraft(Object.fromEntries(res.data.phases.map(p => [
-        p.name, { start: utcToZonedInput(p.start, tz), end: utcToZonedInput(p.end, tz), enforced: p.enforced },
-      ])));
+      // The live countdown/status above always refreshes. The editable fields only get
+      // reseeded when there's nothing unsaved to lose — otherwise a background poll would
+      // silently discard whatever the admin is in the middle of typing or ticking.
+      setDirty(prevDirty => {
+        if (!prevDirty) {
+          const tz = res.data.timezone || DEFAULT_TZ;
+          setTzDraft(tz);
+          setDraft(Object.fromEntries(res.data.phases.map(p => [
+            p.name, { start: utcToZonedInput(p.start, tz), end: utcToZonedInput(p.end, tz), enforced: p.enforced },
+          ])));
+        }
+        return prevDirty;
+      });
       setError('');
     } catch (e) {
       setError(errText(e, 'Could not load the schedule.'));
@@ -382,6 +394,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
         if (reason == null) return;   // cancelled — nothing saved
         await api.post('/admin/schedule/phases', { ...payload, reason });
       }
+      setDirty(false);   // saved — the next poll may now resync the form, e.g. after a co-admin's edit
       await load();
       setError('');
     } catch (e) {
@@ -462,6 +475,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
               onChange={e => {
                 // Same instants, re-expressed in the new zone, so switching zones never silently moves the election.
                 const next = e.target.value;
+                setDirty(true);
                 setDraft(Object.fromEntries(Object.entries(draft).map(([n, w]) => [n, {
                   ...w, start: utcToZonedInput(zonedInputToUtcISO(w.start, tzDraft), next),
                   end: utcToZonedInput(zonedInputToUtcISO(w.end, tzDraft), next),
@@ -478,7 +492,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '14px' }}>
             {data.phases.map(p => {
-              const setField = (k, v) => setDraft({ ...draft, [p.name]: { ...draft[p.name], [k]: v } });
+              const setField = (k, v) => { setDirty(true); setDraft({ ...draft, [p.name]: { ...draft[p.name], [k]: v } }); };
               return (
                 <div key={p.name} style={phaseCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
@@ -508,9 +522,22 @@ export function Timeline({ canEdit = false, isChief = false }) {
               );
             })}
           </div>
-          <button style={primaryBtn} onClick={saveSchedule} disabled={saving}>
-            {saving ? 'Saving…' : 'Save Schedule'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <button style={primaryBtn} onClick={saveSchedule} disabled={saving}>
+              {saving ? 'Saving…' : 'Save Schedule'}
+            </button>
+            {dirty && (
+              <>
+                <span style={{ fontSize: '12px', color: 'var(--warning)' }}>
+                  Unsaved changes — not overwritten by the automatic refresh
+                </span>
+                <button type="button" style={{ ...ghostBtn, fontSize: '12px', padding: '6px 12px' }}
+                  onClick={() => { setDirty(false); load(); }}>
+                  Discard &amp; reload
+                </button>
+              </>
+            )}
+          </div>
           {error && <p style={errStyle}>{error}</p>}
         </div>
       )}

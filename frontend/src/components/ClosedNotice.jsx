@@ -32,6 +32,23 @@ export function votingNoticeText(status) {
   return null;
 }
 
+/** Text for the commissioner vetting notice, or null when the vetting window is open. */
+export function vettingNoticeText(status) {
+  if (!status) return null;
+  if (status.vetting_phase === 'not_started') {
+    return status.vetting_opens_at
+      ? `Vetting has not started yet. Commissioners can vote from ${fmtZoned(status.vetting_opens_at, status.timezone)}.`
+      : 'Vetting has not started yet.';
+  }
+  if (status.vetting_phase === 'ended') {
+    return status.vetting_closes_at
+      ? `The vetting period has ended. It closed ${fmtZoned(status.vetting_closes_at, status.timezone)}.`
+      : 'The vetting period has ended.';
+  }
+  if (status.vetting_phase_open === false) return 'Vetting is not currently open.';
+  return null;
+}
+
 /** Text for the applications notice, or null when applications are open. */
 export function applicationsNoticeText(status) {
   if (!status) return null;

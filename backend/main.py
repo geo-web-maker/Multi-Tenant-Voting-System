@@ -2410,8 +2410,8 @@ async def get_status(request: Request):
         start = window.get("start")
         return "not_started" if start and now < start else "ended"
 
-    vwin, awin = schedule["phases"]["voting"], schedule["phases"]["applications"]
-    voting_phase, applications_phase = _position(vwin), _position(awin)
+    vwin, awin, vetwin = schedule["phases"]["voting"], schedule["phases"]["applications"], schedule["phases"]["vetting"]
+    voting_phase, applications_phase, vetting_phase = _position(vwin), _position(awin), _position(vetwin)
     phase_info = {
         "voting_phase": voting_phase,
         "voting_opens_at": vwin["start"].isoformat() if voting_phase == "not_started" else None,
@@ -2420,6 +2420,14 @@ async def get_status(request: Request):
         "applications_closes_at": awin["end"].isoformat() if awin.get("end") else None,
         "voting_closes_at": vwin["end"].isoformat() if vwin.get("end") else None,
         "applications_phase_open": applications_phase == "open",
+        # Vetting = when commissioners may cast an approve/deny vote on an application (see
+        # /admin/applications/{id}/vote). Finance clearance is deliberately NOT gated by this —
+        # the Finance Commissioner can clear payment status any time, so clearance backs up ready
+        # to go the moment the vetting window opens.
+        "vetting_phase": vetting_phase,
+        "vetting_phase_open": vetting_phase == "open",
+        "vetting_opens_at": vetwin["start"].isoformat() if vetting_phase == "not_started" else None,
+        "vetting_closes_at": vetwin["end"].isoformat() if vetwin.get("end") else None,
         "timezone": schedule["timezone"],
     }
 
@@ -3854,6 +3862,9 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
         raise HTTPException(400, "This application is already resolved.")
     if not app_doc.get("finance_cleared"):
         raise HTTPException(400, "Awaiting Finance Commissioner clearance before voting can open.")
+    # Commissioners may only cast approve/deny votes inside the scheduled vetting window
+    # (set on the Timeline tab); Finance clearance above is deliberately exempt from this.
+    await assert_phase_open(request, "vetting")
 
     # SECURITY: the body-supplied commissioner_id used to be trusted on its
     # own, so any valid admin token (an Overseer's, an IT Admin's) could cast
@@ -3887,7 +3898,13 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
 
 @app.post("/admin/applications/{app_id}/vote-remove")
 async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request: Request):
-    """A commissioner votes to remove an already-approved candidate."""
+    """A commissioner votes to remove an already-approved candidate.
+
+    ON HOLD: deliberately not wired into any frontend (no button in CommissionDashboard
+    calls this route). It was pulled from the UI earlier because it confused commissioners,
+    and we're still deciding whether it's worth bringing back before re-exposing it. Leave
+    this endpoint as-is until that's settled — don't add UI for it without checking first.
+    """
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "vote must be 'approve' (remove) or 'deny' (keep).")
 

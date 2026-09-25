@@ -6,6 +6,7 @@ export function HelpMenuProvider({ children }) {
   const [open, setOpen] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [showFees, setShowFees] = useState(false);
 
   const value = {
     open,
@@ -17,6 +18,9 @@ export function HelpMenuProvider({ children }) {
     showTimeline,
     openTimeline: () => { setShowTimeline(true); setOpen(false); },
     closeTimeline: () => setShowTimeline(false),
+    showFees,
+    openFees: () => { setShowFees(true); setOpen(false); },
+    closeFees: () => setShowFees(false),
   };
 
   return (

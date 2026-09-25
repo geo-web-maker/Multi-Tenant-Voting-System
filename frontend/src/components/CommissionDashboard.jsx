@@ -12,6 +12,7 @@ import ReceiptLink from './ReceiptLink';
 import ManifestoText from './ManifestoText';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
+import ClosedNotice, { vettingNoticeText } from './ClosedNotice';
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
@@ -28,6 +29,7 @@ export default function CommissionDashboard({ onLogout }) {
   const [voting, setVoting]             = useState({});  // { app_id: bool }
   const [studentChanges, setStudentChanges] = useState([]);
   const [commissioners, setCommissioners] = useState([]);
+  const [electionStatus, setElectionStatus] = useState(null);
   const [financeClearing, setFinanceClearing] = useState({});
   const [financeDenyReasons, setFinanceDenyReasons] = useState({});  // { app_id: string }
   const [showFinanceDenyBox, setShowFinanceDenyBox] = useState({});  // { app_id: bool }
@@ -53,17 +55,19 @@ export default function CommissionDashboard({ onLogout }) {
   const fetchAll = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const [appsRes, commRes, scRes, resultsRes, policyRes] = await Promise.all([
+      const [appsRes, commRes, scRes, resultsRes, policyRes, statusRes] = await Promise.all([
           api.get('/admin/applications').catch(() => ({ data: [] })),
           api.get('/admin/commissioners').catch(() => ({ data: [] })),
           api.get('/admin/student-changes').catch(() => ({ data: [] })),
           api.get('/commission/results/detailed').catch(() => ({ data: null })),
           api.get('/admin/approval-policy').catch(() => ({ data: null })),
+          api.get('/election-status').catch(() => ({ data: null })),
         ]);
         setApplications(appsRes.data);
         setCommissioners(commRes.data);
         setTotalCommissioners(commRes.data.length);
         if (policyRes.data) setApprovalPolicy(policyRes.data.policy);
+        setElectionStatus(statusRes.data);
         const me = (commRes.data || []).find(
           c => String(c.student_id || '').toLowerCase()
             === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
@@ -159,6 +163,12 @@ export default function CommissionDashboard({ onLogout }) {
   };
 
   // ── Helpers ──
+
+  // The vetting window (set on the admin Timeline tab) is when commissioners may cast an
+  // approve/deny vote. Finance clearance is separate and not gated by it, so the Finance
+  // Commissioner can clear applications any time and they'll be ready the moment vetting opens.
+  const vettingOpen = electionStatus ? electionStatus.vetting_phase_open !== false : true;
+  const vettingNotice = vettingNoticeText(electionStatus);
 
   const safeKey = (id) => id.replace(/[./]/g, '_');
 
@@ -292,6 +302,8 @@ export default function CommissionDashboard({ onLogout }) {
             </button>
           ))}
         </div>
+
+        {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'} />}
 
         {/* ── Empty state ── */}
         {['pending', 'approved', 'denied', 'removed'].includes(activeTab) && currentList.length === 0 && !loading && (
@@ -450,6 +462,10 @@ export default function CommissionDashboard({ onLogout }) {
                       <span style={{ opacity: 0.6, fontSize: '12px', marginLeft: '8px' }}>
                         Resolves once a majority is reached.
                       </span>
+                    </div>
+                  ) : !vettingOpen ? (
+                    <div style={lockedNote}>
+                      {vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'}
                     </div>
                   ) : (
                     <>

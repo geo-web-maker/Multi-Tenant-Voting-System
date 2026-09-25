@@ -1,6 +1,7 @@
 import React from 'react';
 import VoterRegisterSearch from './VoterRegisterSearch';
 import ElectionTimeline from './ElectionTimeline';
+import FeeSchedule from './FeeSchedule';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import { buildSupportLink } from '../supportLink';
 
@@ -20,7 +21,7 @@ const modalContentStyle = {
  * to know which page it's on.
  */
 export default function HelpPanel({ supportPhone, supportContacts = [], orgName = '', onShowGuide }) {
-  const { open, close, showRegister, openRegister, closeRegister, showTimeline, openTimeline, closeTimeline } = useHelpMenu();
+  const { open, close, showRegister, openRegister, closeRegister, showTimeline, openTimeline, closeTimeline, showFees, openFees, closeFees } = useHelpMenu();
   // Which reason's contact submenu is open (null = showing the main list). Reset whenever the
   // main panel closes so re-opening Help never lands on a stale submenu.
   const [subReason, setSubReason] = React.useState(null);
@@ -30,6 +31,7 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
     { label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
     { label: 'Check Voter Register', onClick: openRegister },
     { label: 'Election Timeline', onClick: openTimeline },
+    { label: 'Nomination Fees', onClick: openFees },
     // General number first, then one entry per configured reason (Branding → Support contacts).
     // A reason with exactly one contact behind it is a direct link; more than one opens a small
     // submenu (below) listing each contact by name so the voter picks who to message.
@@ -100,6 +102,15 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
           <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
             <ElectionTimeline />
             <button onClick={closeTimeline} style={closeBtnStyle}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {showFees && (
+        <div style={modalOverlayStyle} onClick={closeFees}>
+          <div style={modalContentStyle} onClick={e => e.stopPropagation()}>
+            <FeeSchedule />
+            <button onClick={closeFees} style={closeBtnStyle}>Close</button>
           </div>
         </div>
       )}

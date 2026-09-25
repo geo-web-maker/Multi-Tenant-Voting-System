@@ -4,6 +4,7 @@ import { Icon } from './icons.jsx';
 import ClosedNotice, { applicationsNoticeText } from './ClosedNotice';
 import { loadDraft, saveDraft, clearDraft } from '../session';
 import usePolling from '../hooks/usePolling';
+import { useHelpMenu } from '../context/HelpMenuContext';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -21,6 +22,7 @@ async function uploadToCloudinary(file) {
 const MANIFESTO_MAX_CHARS = 3000;
 
 export default function ApplicantPortal() {
+  const { openFees } = useHelpMenu();
 
   // Text fields of an unfinished application survive a page reload. Files
   // (candidate photo, payment proof) can't be stored, so those need to be
@@ -336,7 +338,8 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
             {!selectedPosition ? (
               <div style={{ ...infoBox, marginBottom: '16px' }}>
                 <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
-                  Select a position above to see the nomination fee you must pay.
+                  Select a position above to see the nomination fee you must pay, or{' '}
+                  <button type="button" onClick={openFees} style={linkBtn}>check every position's fee first</button>.
                 </p>
               </div>
             ) : requiredFee > 0 ? (
@@ -349,6 +352,9 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
                   <strong>Important:</strong> your receipt must show a payment of this full amount. Applications with
                   an incomplete or incorrect payment amount will be rejected.
                 </p>
+                <button type="button" onClick={openFees} style={{ ...linkBtn, display: 'block', marginTop: '8px' }}>
+                  See fees for other positions
+                </button>
               </div>
             ) : null}
           
@@ -492,6 +498,7 @@ const lbl           = { display: 'block', fontSize: '12px', opacity: 0.65, margi
 const inp           = { padding: '11px 13px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-color)', fontSize: '14px', width: '100%', boxSizing: 'border-box' };
 const positionOption = { padding: '14px', borderRadius: '10px', cursor: 'pointer', transition: 'all 0.15s' };
 const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
+const linkBtn     = { background: 'none', border: 'none', padding: 0, margin: 0, font: 'inherit', fontWeight: 700, color: 'var(--brand-primary)', textDecoration: 'underline', cursor: 'pointer' };
 const errorBox    = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--danger) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--danger) 40%, transparent)', color: 'var(--danger)', fontSize: '12px', fontWeight: '600', marginTop: '10px' };
 const photoUploadArea = { display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed var(--border-color)', borderRadius: '10px', padding: '20px', cursor: 'pointer', minHeight: '100px' };
 const photoPreview  = { width: '100px', height: '100px', objectFit: 'cover', borderRadius: '8px' };
