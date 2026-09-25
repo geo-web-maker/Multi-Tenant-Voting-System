@@ -247,7 +247,11 @@ useEffect(() => {
       document.documentElement.style.setProperty('--brand-primary', res.data.primary_color);
     if (res.data.accent_color)
       document.documentElement.style.setProperty('--brand-accent', res.data.accent_color);
-    if (res.data.org_name) 
+    // Don't let the server's org_name override the static build-time name
+    // once we already have one — swapping it mid-load (or later) is what
+    // made the splash/header look broken. Only fall back to the server
+    // value when no static VITE_ELECTION_NAME was baked in.
+    if (res.data.org_name && !import.meta.env.VITE_ELECTION_NAME)
       setOrgName(res.data.org_name);
 
     // Update browser tab title dynamically
