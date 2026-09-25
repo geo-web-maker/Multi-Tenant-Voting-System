@@ -32,8 +32,8 @@ export default function FloatingHelpMenu({ supportPhone, orgName = '', onShowGui
       {open && (
         <div style={menuPanelStyle}>
           <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
-            <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend — the same code is sent again while it is valid.
-            Still stuck, or need a detail changed? Use Contact Support below — never send your code.
+            <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend. The same code is sent again while it is valid.
+            Still stuck, or need a detail changed? Use Contact Support below. Never send your code.
           </div>
           {items.map((it, i) => it.href ? (
             <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
