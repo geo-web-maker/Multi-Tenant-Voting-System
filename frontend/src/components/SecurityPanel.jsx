@@ -121,7 +121,7 @@ export default function SecurityPanel() {
         <div style={grid}>{num('otp_target_risk', 'Target risk ε (per voter)', 0.00001)}</div>
       </div>
 
-      <div style={box}>
+      <div style={{ ...box, gridColumn: '1 / -1' }}>
         <b style={{ fontSize: 14 }}>Roster freeze &amp; contact changes</b>
         <p style={note}>Current phase: <b>{d.roster.phase.replace('_', ' ')}</b>. Freeze moment: <b>{fmtZoned(d.roster.freeze_at, tz)}</b> (default = voting start).</p>
         <div style={grid}>
@@ -185,7 +185,7 @@ export default function SecurityPanel() {
         <input style={inp} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. election-day hardening" /></label>
       <button style={btn} onClick={saveSecurity}>Save security settings</button>
 
-      <div style={box}>
+      <div style={{ ...box, gridColumn: '1 / -1' }}>
         <b style={{ fontSize: 14 }}>SMS budget</b>
         <p style={note}>Suggested: <b>{dv.suggested_sms_budget}</b> (voters × 2.5). Raising the budget re-arms the 50/25/10 % alerts.</p>
         <div style={grid}>

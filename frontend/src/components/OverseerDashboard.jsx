@@ -268,7 +268,7 @@ function statusBadge(status) {
 
 // ── Styles ──
 const outerWrap    = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
-const container    = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const container    = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const summaryGrid   = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '20px' };
 const summaryCard   = { padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '10px', backgroundColor: 'var(--bg-color)', display: 'flex', flexDirection: 'column', gap: '4px' };
 const summaryLabel  = { fontSize: '11px', opacity: 0.55, fontWeight: '600', textTransform: 'uppercase' };

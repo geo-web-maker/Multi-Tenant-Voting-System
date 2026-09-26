@@ -234,6 +234,7 @@ export default function CommissionDashboard({ onLogout }) {
   const tabGroups = [
     {
       label: 'Applications & Results',
+      icon: 'inbox',
       tabs: [
         { id: 'pending',  label: 'Pending',      count: pending.length },
         { id: 'approved', label: 'Approved',     count: approved.length },
@@ -244,6 +245,7 @@ export default function CommissionDashboard({ onLogout }) {
     },
     {
       label: 'Requests & Access',
+      icon: 'users',
       tabs: [
         { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
         { id: 'contact_changes', label: 'Contact Changes',  count: null },
@@ -252,21 +254,24 @@ export default function CommissionDashboard({ onLogout }) {
     },
     {
       label: 'Platform',
+      icon: 'settings',
       tabs: [
         ...SHARED_TAB_DEFS,
         { id: 'official_doc', label: <>Official Document</>, count: null },
       ],
     },
   ];
-  const tabs = tabGroups.flatMap(g => g.tabs);
 
   const currentList = listFor(activeTab);
 
   return (
     <div style={outerWrap} className="outer-wrap">
-      <div style={container} className="dashboard-shell">
 
-        {/* ── Header ── */}
+        {/* ── Header ──
+            Lives outside the content card, like SuperAdmin's — the card
+            (.dashboard-shell) now wraps only the rail's content pane via
+            .dash-main below, not the header/identity/search chrome above
+            the rail. */}
         <AdminHeader
           title="Election Commission"
           subtitle={`${totalCommissioners} commissioner${totalCommissioners !== 1 ? 's' : ''} total · ${policyHeaderCopy}`}
@@ -315,8 +320,9 @@ export default function CommissionDashboard({ onLogout }) {
             on desktop and stack it above on mobile, off the same 768px
             breakpoint TabBar itself uses. */}
         <div className="dash-body">
+        {/* ── Rail: independent of the content card, not nested inside it ── */}
         <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
-        <div className="dash-main">
+        <div style={container} className="dashboard-shell dash-main">
 
         {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'} />}
 
@@ -708,7 +714,6 @@ export default function CommissionDashboard({ onLogout }) {
 
         </div>
         </div>
-      </div>
     </div>
   );
 }
@@ -740,8 +745,8 @@ function myVoteRow(vote) {
 }
 
 // ── Styles ──
-const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
-const container  = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'flex-start', backgroundColor: 'var(--bg-color)', padding: '20px' };
+const container  = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const avatar     = { width: '64px', height: '64px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0 };
 const tallyRow   = { display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', marginTop: '12px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };

@@ -656,7 +656,14 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       )}
       <div style={{ 
           width: '100%', 
-          maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '1200px' : '500px',
+          // Admin-type dashboards manage their own width (rail + content
+          // card, see SuperAdminDashboard's outerWrap/.dash-body) and need
+          // the full viewport to do it — capping this wrapper at 1200px
+          // silently overrode all of that from one level up, which is why
+          // widening the dashboard's own CSS never actually reached the
+          // screen. Only the voter/apply flow still wants a narrow, centered
+          // column here.
+          maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '100%' : '500px',
           margin: '0 auto',
           transition: 'max-width 0.3s ease' 
         }}>
@@ -676,7 +683,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               {theme === 'dark' ? <>Light</> : <>Dark</>}
             </button>
           </div>
-          <img src={logoUrl} alt="Logo" style={logoStyle} />
+          {logoUrl && <img src={logoUrl} alt="Logo" style={logoStyle} />}
           <span style={{
             color: 'var(--text-color)',
             fontSize: '13px',

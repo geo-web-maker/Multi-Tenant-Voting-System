@@ -6,6 +6,7 @@ import {
   Star, Palette, Settings, Building2, Monitor, MessageCircle, BookOpen, Users, User, Search,
   Trash2, FileText, Send, Camera, ClipboardList, Mail, Eye, Pause, Play, RefreshCw, Sun, Moon,
   Lock, ArrowLeft, ArrowRight, Check, X, Plus, Minus, Circle, TrendingUp,
+  ChevronDown, ChevronUp,
 } from 'lucide-react';
 
 // ICON POLICY — use an icon only when it does a job text alone can't:
@@ -28,7 +29,7 @@ const ICONS = {
   file: [FileText], send: [Send], camera: [Camera], clipboard: [ClipboardList], mail: [Mail],
   eye: [Eye], pause: [Pause], play: [Play], refresh: [RefreshCw], sun: [Sun], moon: [Moon],
   lock: [Lock], back: [ArrowLeft], next: [ArrowRight], check: [Check], close: [X], plus: [Plus],
-  minus: [Minus], trend: [TrendingUp],
+  minus: [Minus], trend: [TrendingUp], chevronDown: [ChevronDown], chevronUp: [ChevronUp],
   dot: [Circle, { fill: 'currentColor', strokeWidth: 0, style: { width: '0.55em', height: '0.55em' } }],
   dotGreen: [Circle, { fill: '#10b981', color: '#10b981', strokeWidth: 0, style: { width: '0.6em', height: '0.6em' } }],
   dotRed: [Circle, { fill: '#ef4444', color: '#ef4444', strokeWidth: 0, style: { width: '0.6em', height: '0.6em' } }],
@@ -59,7 +60,20 @@ export function Icon({ name, size = '1.1em', style, ...rest }) {
       size={size}
       {...base}
       {...rest}
-      style={{ verticalAlign: '-0.18em', flexShrink: 0, ...(base.style || {}), ...style }}
+      // Explicit inline width/height/max-width/max-height, not just
+      // lucide's size-derived SVG attributes: the global `img, video,
+      // canvas, svg { max-width: 100%; height: auto; }` rule (index.css,
+      // meant for real <img>/<video>/<canvas> responsiveness) also matches
+      // every icon's <svg>. Setting width/height alone wasn't enough —
+      // max-width always clamps width afterward regardless of how it's
+      // computed, and inside a flex container (e.g. .tabbar-rail-icon)
+      // with no definite basis, that inherited `max-width: 100%` resolves
+      // against an indefinite containing block and collapses to 0, capping
+      // even an explicit width right back down to nothing. Pinning
+      // max-width/max-height to 'none' here removes that clamp entirely,
+      // so the explicit width/height actually wins — fixed once, for
+      // every icon, everywhere this rule reaches.
+      style={{ verticalAlign: '-0.18em', flexShrink: 0, width: size, height: size, maxWidth: 'none', maxHeight: 'none', ...(base.style || {}), ...style }}
     />
   );
 }

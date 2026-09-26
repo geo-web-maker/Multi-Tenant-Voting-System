@@ -249,6 +249,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {/* ── Tabs ── */}
         <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+        <div style={{ marginBottom: '20px' }} />
 
         {/* ══════════════ ADD STUDENT ══════════════ */}
         {activeTab === 'add' && !rosterFrozen && (
@@ -583,7 +584,7 @@ function statusBadge(status) {
 const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto', zIndex: 20 };
 const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
-const container   = { width: '100%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const container   = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const card        = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--bg-color)' };
 const cardTitle   = { margin: '0 0 6px', color: 'var(--text-color)', fontSize: '15px', fontWeight: '600' };
 const formCol     = { display: 'flex', flexDirection: 'column', gap: '4px' };

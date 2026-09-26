@@ -1028,7 +1028,32 @@ function TurnoutSparkline({ series, bucketType }) {
 
   const max = Math.max(1, ...series.map(p => p.votes));
   const n = series.length;
-  const x = i => padL + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
+  // x was previously index-based — evenly spacing every bucket along the
+  // axis regardless of how much real time separated them. Sparse series
+  // (a handful of buckets weeks apart, e.g. after a gap in voting activity)
+  // then rendered as one smooth, evenly-spaced curve, indistinguishable
+  // from a dense one-hour span — the classic "why does this graph look so
+  // expanded" result. Position x by actual elapsed time instead, so a
+  // multi-week gap visibly reads as a long flat stretch, not the same
+  // width as an hour.
+  const bucketTime = b => {
+    // Hourly buckets ("2026-09-17T19:00") and daily buckets
+    // ("2026-09-17") are both valid Date-constructor input; Date always
+    // parses them in some single consistent way, so relative spacing
+    // between points comes out right even if the absolute time is off by
+    // a fixed timezone offset that cancels out across the series.
+    const t = new Date(b).getTime();
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const times = series.map(p => bucketTime(p.bucket));
+  const tMin = times.length ? Math.min(...times) : 0;
+  const tMax = times.length ? Math.max(...times) : 0;
+  const tSpan = tMax - tMin;
+  const x = i => {
+    if (n <= 1) return padL + plotW / 2;
+    if (tSpan <= 0) return padL + (i / (n - 1)) * plotW; // no usable timestamps — fall back to even spacing
+    return padL + ((times[i] - tMin) / tSpan) * plotW;
+  };
   const y = v => padT + plotH - (v / max) * plotH;
 
   // Detect a multi-day hourly series so labels below can disambiguate —
@@ -1486,14 +1511,14 @@ export function OfficialCertificationBlock() {
 // schedule wholesale, not just view it.
 // eslint-disable-next-line react-refresh/only-export-components
 export const SHARED_TAB_DEFS = [
-  { id: 'shared_timeline', label: <>Timeline</> },
-  { id: 'shared_analytics', label: <>Analytics</> },
-  { id: 'shared_activity', label: <>Activity Log</> },
-  { id: 'shared_chain', label: <>Chain Verify</> },
+  { id: 'shared_timeline', label: <>Timeline</>, icon: 'calendar' },
+  { id: 'shared_analytics', label: <>Analytics</>, icon: 'chart' },
+  { id: 'shared_activity', label: <>Activity Log</>, icon: 'log' },
+  { id: 'shared_chain', label: <>Chain Verify</>, icon: 'lock' },
 ];
 
 // eslint-disable-next-line react-refresh/only-export-components
-export const ROADMAP_TAB_DEF = { id: 'shared_roadmap', label: <>Roadmap</> };
+export const ROADMAP_TAB_DEF = { id: 'shared_roadmap', label: <>Roadmap</>, icon: 'pin' };
 
 export function SharedTabPanels({ activeTab, canEditSchedule = false, isChief = false }) {
   if (activeTab === 'shared_timeline') return <Timeline canEdit={canEditSchedule} isChief={isChief} />;

@@ -320,6 +320,10 @@ button:hover {
   top: 16px;
   max-height: calc(100vh - 32px);
   overflow-y: auto;
+  /* Collapsed <-> expanded swaps the same <nav> element's width/padding
+     (see .tabbar-rail-collapsed below) — animate that instead of letting
+     the whole rail (and the content beside it) jump instantly. */
+  transition: width 0.22s ease, padding 0.22s ease;
 }
 .tabbar-rail-group-label {
   font-size: 10px;
@@ -329,6 +333,61 @@ button:hover {
   color: var(--text-muted);
   padding: 0 14px;
   margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Rail collapse toggle — sits above the group list either way. */
+.tabbar-rail-toggle {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  align-self: flex-end;
+  margin: 0 10px;
+  padding: 4px;
+  display: flex;
+}
+.tabbar-rail-toggle:hover {
+  color: var(--text-color);
+}
+
+/* Collapsed rail: a narrow strip of per-section icons instead of the full
+   label list, so it stays out of the content's way until asked for.
+   44px buttons (up from 36) so the icons — rendered at size 20 in JS,
+   not the default 1.1em text-size icon — have real room; the old size
+   read as a handful of near-invisible specks at a glance. */
+.tabbar-rail-collapsed {
+  width: 60px;
+  align-items: center;
+  padding: 12px 0;
+  gap: 8px;
+}
+.tabbar-rail-icon {
+  border: none;
+  background: var(--card-bg);
+  color: var(--text-color);
+  opacity: 0.75;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 18px;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.tabbar-rail-icon:hover {
+  opacity: 1;
+  background: var(--surface-2);
+}
+.tabbar-rail-icon.is-active {
+  background: var(--surface-2);
+  color: var(--success);
+  opacity: 1;
 }
 
 /* Shared between the desktop rail's items and the mobile vertical tab
@@ -354,6 +413,12 @@ button:hover {
   background: var(--surface-2);
   color: var(--text-color);
 }
+/* Deliberately NOT a second scroll axis: only the group-pill row above
+   this scrolls horizontally. This list just sizes to its content and
+   takes part in normal page flow — a long group's tabs simply make the
+   page taller, the same way the desktop rail's list would if it weren't
+   sticky. A capped, internally-scrolling box here would just trade one
+   cropped-content problem for another. */
 .tabbar-mobile-list {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
@@ -363,15 +428,55 @@ button:hover {
   flex-direction: column;
 }
 
+/* Mobile "top part": the group-pill row lives inside its own bordered,
+   fixed-width box and scrolls internally — the box itself never grows
+   past its container, only the row inside it moves. */
+.tabbar-group-row-box {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Toggle bar for the mobile sub-tab list ("the second menu") — shows the
+   current selection and lets it be hidden to reclaim screen space. */
+.tabbar-mobile-list-toggle {
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-color);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  width: 100%;
+}
+
 /* --- Two-column dashboard body: rail beside content on desktop, stacked
    on mobile. One breakpoint, defined once, that both the layout and
    TabBar's own isMobile check key off — the earlier mismatch (TabBar's
    JS switching at 768px while related CSS lived at other breakpoints)
-   is exactly what let the two levels drift out of sync. --- */
+   is exactly what let the two levels drift out of sync.
+
+   The rail is a sibling of the content card here, not nested inside it —
+   two independent boxes sitting side by side, each with its own border/
+   background, rather than the rail living inside the card's padding.
+   The 2000px cap (rail width + gap + the card's own former 1800px) moves
+   here so it bounds the whole row instead of just the card, since the
+   card no longer knows the rail exists. --- */
 .dash-body {
   display: flex;
   gap: 24px;
   align-items: flex-start;
+  width: 100%;
+  max-width: 2000px;
+  margin: 0 auto;
 }
 .dash-body > .dash-main {
   min-width: 0;
@@ -380,6 +485,22 @@ button:hover {
 @media (max-width: 768px) {
   .dash-body {
     flex-direction: column;
+    /* align-items: flex-start (above) is a row-axis rule meant to keep the
+       rail and content top-aligned without stretching either to match the
+       other's height on desktop. Once flex-direction flips to column here,
+       align-items switches to controlling the CROSS axis instead — now
+       horizontal — so flex-start silently made every direct child (the
+       TabBar container, .dash-main) shrink-wrap to its own content width
+       instead of stretching to fill the screen. With no width constraint,
+       TabBar's horizontally-scrolling pill row had nothing to actually
+       overflow within — the row just grew wider than the viewport and got
+       silently clipped by html/body's overflow-x: hidden, with no
+       scrollbar, no drag, no fade: items past the edge simply vanished.
+       Financial's flat dashboards never hit this because their TabBar
+       sits directly in .dashboard-shell, an ordinary block element that's
+       full-width by default. Grouped dashboards route TabBar through this
+       flex container instead, so it needs its own explicit stretch. */
+    align-items: stretch;
   }
 }
 

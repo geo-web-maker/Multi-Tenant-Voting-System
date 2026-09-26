@@ -761,126 +761,125 @@ const handleSuperAdminRemoveStudent = async () => {
   const tabGroups = [
     {
       label: 'Election Setup',
+      icon: 'vote',
       tabs: [
-        { id: 'candidates',   label: <>Candidates</> },
-        { id: 'positions',    label: <>Positions</> },
-        { id: 'applications', label: <>Applications</> },
-        { id: 'branding',     label: <>Branding</> },
-        { id: 'election',     label: <>Election</> },
+        { id: 'candidates',   label: <>Candidates</>,   icon: 'award' },
+        { id: 'positions',    label: <>Positions</>,    icon: 'clipboard' },
+        { id: 'applications', label: <>Applications</>, icon: 'file' },
+        { id: 'branding',     label: <>Branding</>,     icon: 'palette' },
+        { id: 'election',     label: <>Election</>,     icon: 'calendar' },
       ],
     },
     {
       label: 'People & Roles',
+      icon: 'users',
       tabs: [
-        { id: 'commissioners', label: <>Commission</> },
-        { id: 'voters',        label: <>Voters</> },
-        { id: 'it_admins',     label: <>IT Admins</> },
-        { id: 'financial_controllers', label: <>Financial Controllers</> },
-        { id: 'overseers',     label: <>Overseers</> },
-        { id: 'organizations', label: <>Organizations</> },
+        { id: 'commissioners', label: <>Commission</>, icon: 'institution' },
+        { id: 'voters',        label: <>Voters</>, icon: 'user' },
+        { id: 'it_admins',     label: <>IT Admins</>, icon: 'monitor' },
+        { id: 'financial_controllers', label: <>Financial Controllers</>, icon: 'wallet' },
+        { id: 'overseers',     label: <>Overseers</>, icon: 'eye' },
+        { id: 'organizations', label: <>Organizations</>, icon: 'building' },
       ],
     },
     {
       label: 'Requests & Access',
+      icon: 'inbox',
       tabs: [
-        { id: 'student_changes', label: <>Student Changes</> },
-        { id: 'contact_changes', label: <>Contact Changes</> },
-        { id: 'reset_otp',       label: <>Reset OTP</> },
+        { id: 'student_changes', label: <>Student Changes</>, icon: 'log' },
+        { id: 'contact_changes', label: <>Contact Changes</>, icon: 'phone' },
+        { id: 'reset_otp',       label: <>Reset OTP</>, icon: 'refresh' },
       ],
     },
     {
       label: 'Security',
+      icon: 'shield',
       tabs: [
-        { id: 'security', label: <>Security &amp; SMS</> },
+        { id: 'security', label: <>Security &amp; SMS</>, icon: 'secure' },
         sharedChain,
       ],
     },
     {
       label: 'Platform',
+      icon: 'settings',
       tabs: [
         ...sharedRest,
         ROADMAP_TAB_DEF,
-        { id: 'official_doc', label: <>Official Document</> },
+        { id: 'official_doc', label: <>Official Document</>, icon: 'file' },
       ],
     },
   ];
-  const tabs = tabGroups.flatMap(g => g.tabs);
 
   return (
     <div style={outerWrap} className="outer-wrap">
-      <div style={container} className="dashboard-shell">
-
-        {/* ── Header ── */}
-        <AdminHeader
-          title="Superadmin Panel"
-          lastSynced={lastRefreshed}
-          onRefresh={refetchAll}
-          refreshing={loading}
-          onLogout={onLogout}
-          actions={<>
-            <button
-              onClick={handleToggleElection}
-              aria-disabled={!isElectionOpen && isCertified}
-              title={!isElectionOpen && isCertified ? 'Revoke certification before starting the election' : undefined}
-              style={{
-                ...btn,
-                backgroundColor: isElectionOpen ? '#e67e22' : 'var(--success)',
-                opacity: !isElectionOpen && isCertified ? 0.5 : 1,
-                cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {isElectionOpen ? <>Stop Election</> : <>Start Election</>}
-            </button>
-            <button
-              onClick={handleToggleCertification}
-              disabled={isElectionOpen}
-              style={{
-                ...btn,
-                backgroundColor: isCertified ? '#10b981' : '#f59e0b',
-                opacity: isElectionOpen ? 0.5 : 1,
-                cursor: isElectionOpen ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {isCertified ? <>Certified</> : <>Certify Results</>}
-            </button>
-          </>}
-        />
-
-        {/* ── Org switcher ── */}
-        <div style={orgSwitcherBar} className="no-print org-switcher-bar">
-          <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
-            Managing:
-          </span>
-          <select
-            style={{ ...inp, width: 'auto', minWidth: '220px', fontSize: '13px' }}
-            value={activeOrgSlug}
-            onChange={e => handleSwitchOrg(e.target.value)}
-            disabled={switchingOrg}
+      {/* ── Header ── */}
+      <AdminHeader
+        title="Superadmin Panel"
+        lastSynced={lastRefreshed}
+        onRefresh={refetchAll}
+        refreshing={loading}
+        onLogout={onLogout}
+        actions={<>
+          <button
+            onClick={handleToggleElection}
+            aria-disabled={!isElectionOpen && isCertified}
+            title={!isElectionOpen && isCertified ? 'Revoke certification before starting the election' : undefined}
+            style={{
+              ...btn,
+              backgroundColor: isElectionOpen ? '#e67e22' : 'var(--success)',
+              opacity: !isElectionOpen && isCertified ? 0.5 : 1,
+              cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
+            }}
           >
-            <option value="">— All / Legacy (unscoped) —</option>
-            {organizations.map(o => (
-              <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>
-            ))}
-          </select>
-          {activeOrgSlug ? (
-            <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
-              <Icon name="check" /> Viewing only this organization's data
-            </span>
-          ) : (
-            <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
-              <Icon name="warning" /> Unscoped — showing data across all organizations combined
-            </span>
-          )}
-        </div>
+            {isElectionOpen ? <>Stop Election</> : <>Start Election</>}
+          </button>
+          <button
+            onClick={handleToggleCertification}
+            disabled={isElectionOpen}
+            style={{
+              ...btn,
+              backgroundColor: isCertified ? '#10b981' : '#f59e0b',
+              opacity: isElectionOpen ? 0.5 : 1,
+              cursor: isElectionOpen ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {isCertified ? <>Certified</> : <>Certify Results</>}
+          </button>
+        </>}
+      />
 
-        {/* ── Tabs ──
-            TabBar renders a sticky rail on desktop and a group-pill row
-            on mobile; .dash-body/.dash-main lay it out beside the content
-            on desktop and stack it above on mobile, off the same 768px
-            breakpoint TabBar itself uses. */}
-        <div className="dash-body">
+      {/* ── Org switcher ── */}
+      <div style={orgSwitcherBar} className="no-print org-switcher-bar">
+        <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
+          Managing:
+        </span>
+        <select
+          style={{ ...inp, width: 'auto', minWidth: '220px', fontSize: '13px' }}
+          value={activeOrgSlug}
+          onChange={e => handleSwitchOrg(e.target.value)}
+          disabled={switchingOrg}
+        >
+          <option value="">— All / Legacy (unscoped) —</option>
+          {organizations.map(o => (
+            <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>
+          ))}
+        </select>
+        {activeOrgSlug ? (
+          <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
+            <Icon name="check" /> Viewing only this organization's data
+          </span>
+        ) : (
+          <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
+            <Icon name="warning" /> Unscoped — showing data across all organizations combined
+          </span>
+        )}
+      </div>
+
+      <div className="dash-body">
+        {/* ── Rail: independent of the content card, not nested inside it ── */}
         <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
-        <div className="dash-main">
+
+        <div style={container} className="dashboard-shell dash-main">
 
         {/* ══════════════ CANDIDATES TAB ══════════════ */}
         {activeTab === 'candidates' && (
@@ -1092,8 +1091,8 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ COMMISSIONERS TAB ══════════════ */}
         {activeTab === 'commissioners' && (
-          <div>
-            <div style={{ ...card, marginBottom: '20px' }} className="card-pad">
+          <div style={twoCol}>
+            <div style={card} className="card-pad">
               <h4 style={cardTitle}>Current Commissioners ({commissioners.length})</h4>
               {commissioners.length === 0 && (
                 <p style={{ opacity: 0.5 }}>No commissioners assigned yet. Find voters below and toggle them.</p>
@@ -1225,30 +1224,32 @@ const handleSuperAdminRemoveStudent = async () => {
               ))}
               </ScrollList>
             </div>
-            
-            <h4 style={cardTitle}>Grant Commissioner Access</h4>
-            <input style={{ ...inp, marginBottom: '12px' }}
-              placeholder="Search voters by name or ID…"
-              value={voterSearch}
-              onChange={e => setVoterSearch(e.target.value)} />
-            <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
-              {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).map(v => (
-                <div key={v.student_id} style={rowCard} className="grant-row">
-                  <div>
-                    <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
-                    <br />
-                    <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant Commissioner Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={voterSearch}
+                onChange={e => setVoterSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).map(v => (
+                  <div key={v.student_id} style={rowCard} className="grant-row">
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
+                    </div>
+                    <button style={greenBtn} onClick={() => handleToggleCommissioner(v.student_id)}>
+                      + Make Commissioner
+                    </button>
                   </div>
-                  <button style={greenBtn} onClick={() => handleToggleCommissioner(v.student_id)}>
-                    + Make Commissioner
-                  </button>
-                </div>
-              ))}
-              {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).length === 0 && (
-                <p style={{ textAlign: 'center', opacity: 0.4, padding: '20px' }}>
-                  {voterSearch ? 'No matching voters.' : 'All voters are already commissioners or no voters imported yet.'}
-                </p>
-              )}
+                ))}
+                {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).length === 0 && (
+                  <p style={{ textAlign: 'center', opacity: 0.4, padding: '20px' }}>
+                    {voterSearch ? 'No matching voters.' : 'All voters are already commissioners or no voters imported yet.'}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -2265,7 +2266,6 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
 
         </div>
-        </div>
       </div>
     </div>
   );
@@ -2288,8 +2288,14 @@ function statusBadge(status) {
 // ── Styles ──
 const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto', zIndex: 20 };
 const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
-const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
-const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'flex-start', backgroundColor: 'var(--bg-color)', padding: '20px' };
+// The rail (TabBar) now lives outside the content card as its own
+// independent box (see .dash-body in index.css) instead of being nested
+// inside it, so the "sane ultrawide cap" belongs on that whole row — rail
+// + card together — not on the card alone. Capping only the card left the
+// rail floating independently with no matching limit, and doesn't reflect
+// that the two are meant to read as one layout.
+const container   = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const orgSwitcherBar = { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px', padding: '10px 14px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '10px' };
 const twoCol      = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' };
 const card        = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--bg-color)' };
