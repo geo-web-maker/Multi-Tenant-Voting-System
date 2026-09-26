@@ -5,6 +5,7 @@ import { toggleElection, electionToggleFeedback } from '../electionControls';
 import {
   SHARED_TAB_DEFS, ROADMAP_TAB_DEF, SharedTabPanels, OfficialCertificationBlock,
 } from './SharedAdminPanels';
+import TabBar from './TabBar';
 import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
@@ -752,28 +753,58 @@ const handleSuperAdminRemoveStudent = async () => {
     .map(v => v.student_id)
     .filter((id, index, array) => array.indexOf(id) !== index);
 
-  const tabs = [
-    { id: 'candidates',   label: <>Candidates</> },
-    { id: 'applications', label: <>Applications</> },
-    { id: 'commissioners',label: <>Commission</> },
-    { id: 'voters',       label: <>Voters</> },
-    { id: 'positions',    label: <>Positions</> },
-    { id: 'branding',     label: <>Branding</> },
-    { id: 'election',     label: <>Election</> },
-    { id: 'security',     label: <>Security &amp; SMS</> },
-    { id: 'it_admins',  label: <>IT Admins</> },
-    { id: 'student_changes', label: <>Student Changes</> },
-    { id: 'contact_changes', label: <>Contact Changes</> },
-    { id: 'reset_otp', label: <>Reset OTP</> },
-    { id: 'financial_controllers', label: <>Financial Controllers</> },
-    { id: 'overseers',  label: <>Overseers</> },
-    { id: 'organizations', label: <>Organizations</> },
-    // The old inline 'audit_log' tab is superseded by the shared Activity Log
-    // panel, which every dashboard now mounts from one implementation.
-    ...SHARED_TAB_DEFS,
-    ROADMAP_TAB_DEF,
-    { id: 'official_doc', label: <>Official Document</> },
+  // The old inline 'audit_log' tab is superseded by the shared Activity Log
+  // panel, which every dashboard now mounts from one implementation.
+  const sharedChain = SHARED_TAB_DEFS.find(t => t.id === 'shared_chain');
+  const sharedRest = SHARED_TAB_DEFS.filter(t => t.id !== 'shared_chain');
+
+  const tabGroups = [
+    {
+      label: 'Election Setup',
+      tabs: [
+        { id: 'candidates',   label: <>Candidates</> },
+        { id: 'positions',    label: <>Positions</> },
+        { id: 'applications', label: <>Applications</> },
+        { id: 'branding',     label: <>Branding</> },
+        { id: 'election',     label: <>Election</> },
+      ],
+    },
+    {
+      label: 'People & Roles',
+      tabs: [
+        { id: 'commissioners', label: <>Commission</> },
+        { id: 'voters',        label: <>Voters</> },
+        { id: 'it_admins',     label: <>IT Admins</> },
+        { id: 'financial_controllers', label: <>Financial Controllers</> },
+        { id: 'overseers',     label: <>Overseers</> },
+        { id: 'organizations', label: <>Organizations</> },
+      ],
+    },
+    {
+      label: 'Requests & Access',
+      tabs: [
+        { id: 'student_changes', label: <>Student Changes</> },
+        { id: 'contact_changes', label: <>Contact Changes</> },
+        { id: 'reset_otp',       label: <>Reset OTP</> },
+      ],
+    },
+    {
+      label: 'Security',
+      tabs: [
+        { id: 'security', label: <>Security &amp; SMS</> },
+        sharedChain,
+      ],
+    },
+    {
+      label: 'Platform',
+      tabs: [
+        ...sharedRest,
+        ROADMAP_TAB_DEF,
+        { id: 'official_doc', label: <>Official Document</> },
+      ],
+    },
   ];
+  const tabs = tabGroups.flatMap(g => g.tabs);
 
   return (
     <div style={outerWrap} className="outer-wrap">
@@ -843,17 +874,7 @@ const handleSuperAdminRemoveStudent = async () => {
         </div>
 
         {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll no-print">
-          {tabs.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
 
         {/* ══════════════ CANDIDATES TAB ══════════════ */}
         {activeTab === 'candidates' && (
@@ -2261,8 +2282,6 @@ const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--tex
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const orgSwitcherBar = { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px', padding: '10px 14px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '10px' };
-const tabBar      = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '24px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
-const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', whiteSpace: 'nowrap' };
 const twoCol      = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' };
 const card        = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--bg-color)' };
 const cardTitle   = { margin: '0 0 14px', color: 'var(--text-color)', fontSize: '15px', fontWeight: '600' };

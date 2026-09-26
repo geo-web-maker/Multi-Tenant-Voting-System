@@ -4,6 +4,7 @@ import { usePersistedTab } from '../session';
 import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
+import TabBar from './TabBar';
 import ContactChangesQueue from './ContactChangesQueue';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import { Icon } from './icons.jsx';
@@ -230,18 +231,34 @@ export default function CommissionDashboard({ onLogout }) {
     return list.filter(matchesSearch);
   };
 
-  const tabs = [
-    { id: 'pending',         label: 'Pending',         count: pending.length },
-    { id: 'approved',        label: 'Approved',        count: approved.length },
-    { id: 'denied',          label: 'Denied',          count: denied.length },
-    { id: 'removed',         label: 'Removed',         count: removed.length },
-    { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
-    { id: 'contact_changes', label: 'Contact Changes',  count: null },
-    ...((isChief || isDeputyChief) ? [{ id: 'reset_otp', label: 'Reset OTP', count: null }] : []),
-    { id: 'results',         label: 'Live Results',    count: null },
-    ...SHARED_TAB_DEFS,
-    { id: 'official_doc',    label: <>Official Document</>, count: null },
+  const tabGroups = [
+    {
+      label: 'Applications & Results',
+      tabs: [
+        { id: 'pending',  label: 'Pending',      count: pending.length },
+        { id: 'approved', label: 'Approved',     count: approved.length },
+        { id: 'denied',   label: 'Denied',       count: denied.length },
+        { id: 'removed',  label: 'Removed',      count: removed.length },
+        { id: 'results',  label: 'Live Results', count: null },
+      ],
+    },
+    {
+      label: 'Requests & Access',
+      tabs: [
+        { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
+        { id: 'contact_changes', label: 'Contact Changes',  count: null },
+        ...((isChief || isDeputyChief) ? [{ id: 'reset_otp', label: 'Reset OTP', count: null }] : []),
+      ],
+    },
+    {
+      label: 'Platform',
+      tabs: [
+        ...SHARED_TAB_DEFS,
+        { id: 'official_doc', label: <>Official Document</>, count: null },
+      ],
+    },
   ];
+  const tabs = tabGroups.flatMap(g => g.tabs);
 
   const currentList = listFor(activeTab);
 
@@ -293,15 +310,7 @@ export default function CommissionDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll no-print">
-          {tabs.map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)}
-              style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
-              {t.label}
-              {t.count !== null && <span style={countPill}>{t.count}</span>}
-            </button>
-          ))}
-        </div>
+        <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
 
         {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'} />}
 
@@ -724,9 +733,6 @@ function myVoteRow(vote) {
 // ── Styles ──
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const tabBar     = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
-const tab        = { background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
-const countPill  = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const avatar     = { width: '64px', height: '64px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0 };
 const tallyRow   = { display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', marginTop: '12px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };

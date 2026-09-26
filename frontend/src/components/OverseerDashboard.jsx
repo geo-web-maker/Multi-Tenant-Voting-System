@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import TabBar from './TabBar';
 import ContactChangesQueue from './ContactChangesQueue';
 import { Icon } from './icons.jsx';
 import { ScrollList } from './UIFeedback';
@@ -99,21 +100,8 @@ export default function OverseerDashboard({ onLogout }) {
             </div>
 
             {/* ── Tabs ── */}
-            <div style={tabBar} className="tab-scroll">
-              {tabs.map(t => (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  style={{
-                    ...tabBtn,
-                    borderBottom: tab === t.id ? '2px solid #3498db' : '2px solid transparent',
-                    opacity: tab === t.id ? 1 : 0.6,
-                  }}
-                >
-                  {t.label}{t.count != null && ` (${t.count})`}
-                </button>
-              ))}
-            </div>
+            <TabBar tabs={tabs} activeTab={tab} onChange={setTab} />
+            <div style={{ marginBottom: '20px' }} />
 
             {/* ── Applications (read-only) ── */}
             {tab === 'applications' && (
@@ -285,8 +273,6 @@ const summaryGrid   = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, 
 const summaryCard   = { padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '10px', backgroundColor: 'var(--bg-color)', display: 'flex', flexDirection: 'column', gap: '4px' };
 const summaryLabel  = { fontSize: '11px', opacity: 0.55, fontWeight: '600', textTransform: 'uppercase' };
 const summaryValue  = { fontSize: '15px', fontWeight: '700', color: 'var(--text-color)' };
-const tabBar        = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
-const tabBtn         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0' };
 const appCard       = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
 const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const emptyState    = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };

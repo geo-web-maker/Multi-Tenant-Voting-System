@@ -4,6 +4,7 @@ import { usePersistedTab } from '../session';
 import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import TabBar from './TabBar';
 import ReceiptLink from './ReceiptLink';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
@@ -146,15 +147,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll">
-          {tabs.map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)}
-              style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
-              {t.label}
-              <span style={countPill}>{t.count}</span>
-            </button>
-          ))}
-        </div>
+        <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
         {/* ── Empty state ── */}
         {/* Only for the request-queue tabs — shared tabs (Analytics/Activity Log/Chain Verify)
@@ -282,9 +275,6 @@ function statusBadge(status) {
 // ── Styles (mirrors CommissionDashboard.jsx) ──
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '95%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const tabBar     = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
-const tab        = { background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
-const countPill  = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const inp        = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
 const btn        = { padding: '9px 16px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };

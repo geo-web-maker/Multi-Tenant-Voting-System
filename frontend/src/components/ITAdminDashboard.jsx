@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import TabBar from './TabBar';
 import { RosterStats, RecentActivity } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
@@ -247,15 +248,7 @@ export default function ITAdminDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <div style={tabBar} className="tab-scroll">
-          {tabs.map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)}
-              style={{ ...tab, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}>
-              {t.label}
-              {t.count !== undefined && <span style={countPill}>{t.count}</span>}
-            </button>
-          ))}
-        </div>
+        <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
 
         {/* ══════════════ ADD STUDENT ══════════════ */}
         {activeTab === 'add' && !rosterFrozen && (
@@ -591,9 +584,6 @@ const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, bac
 const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
 const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container   = { width: '100%', maxWidth: '1200px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
-const tabBar      = { display: 'flex', rowGap: '10px', columnGap: '4px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', alignItems: 'stretch' };
-const tab         = { background: 'none', border: 'none', padding: '10px 16px', cursor: 'pointer', fontWeight: '600', color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0', display: 'flex', alignItems: 'center', gap: '6px' };
-const countPill   = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };
 const card        = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--bg-color)' };
 const cardTitle   = { margin: '0 0 6px', color: 'var(--text-color)', fontSize: '15px', fontWeight: '600' };
 const formCol     = { display: 'flex', flexDirection: 'column', gap: '4px' };
