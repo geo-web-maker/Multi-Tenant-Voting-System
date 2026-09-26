@@ -7342,6 +7342,7 @@ async def get_sms_usage(request: Request, admin: dict = Depends(require_role("su
         "budget_pct_left": round(100 * (total - usage.get("sent_total", 0)) / total, 1) if total else None,
         "mode": current_sms_mode(sec, usage), "budget_enforced": sec["sms_budget_enforce"],
         "alerts_fired": sorted(usage.get("alerts_fired", []), reverse=True),
+        "balance_floor_ugx": sec.get("sms_balance_floor_ugx"),
         "voters": voters, "suggested_budget": math.ceil(voters * SMS_BUDGET_DEFAULT_MULTIPLIER),
         "turnstile_mode": sec["turnstile_mode"],
     }

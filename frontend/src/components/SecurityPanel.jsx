@@ -47,7 +47,7 @@ export default function SecurityPanel() {
   const confirm = useConfirm();
   const [d, setD] = useState(null);
   const [f, setF] = useState({});
-  const [budget, setBudget] = useState({ total: '', mode: 'normal', enforce: false });
+  const [budget, setBudget] = useState({ total: '', mode: 'normal', enforce: false, floor: '' });
   const [reason, setReason] = useState('');
   const [ledger, setLedger] = useState(null);
   const [tz, setTz] = useState(DEFAULT_TZ);   // election timezone (set on the Timeline tab)
@@ -60,7 +60,7 @@ export default function SecurityPanel() {
       setTz(zone);
       setD(r);
       setF({ ...r.settings, roster_freeze_at: utcToZonedInput(r.settings.roster_freeze_at, zone) });
-      setBudget({ total: u.budget_total ?? '', mode: u.mode === 'conservation' ? 'conservation' : 'normal', enforce: u.budget_enforced });
+      setBudget({ total: u.budget_total ?? '', mode: u.mode === 'conservation' ? 'conservation' : 'normal', enforce: u.budget_enforced, floor: u.balance_floor_ugx ?? '' });
     } catch (e) { toast(errMsg(e, 'Could not load security settings.'), { kind: 'error' }); }
   }, [toast]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
@@ -89,6 +89,7 @@ export default function SecurityPanel() {
       await api.put('/superadmin/sms-budget', {
         reason: reason.trim(), sms_budget_total: budget.total === '' ? undefined : Number(budget.total),
         sms_mode: budget.mode, sms_budget_enforce: budget.enforce,
+        sms_balance_floor_ugx: budget.floor === '' ? 0 : Number(budget.floor),
       });
       toast('SMS budget saved.', { kind: 'success' }); setReason(''); load();
     } catch (e) { toast(errMsg(e, 'Save failed.'), { kind: 'error' }); }
@@ -192,7 +193,10 @@ export default function SecurityPanel() {
           <label style={fld}><span style={lbl}>Mode</span>
             <select style={inp} value={budget.mode} onChange={e => setBudget({ ...budget, mode: e.target.value })}>
               <option value="normal">Normal</option><option value="conservation">Conservation (last resort: first codes only)</option></select></label>
+          <label style={fld}><span style={lbl}>Live balance floor (UGX, blank = off)</span>
+            <input style={inp} type="number" value={budget.floor} onChange={e => setBudget({ ...budget, floor: e.target.value })} /></label>
         </div>
+        <p style={note}>If set, periodically checks EgoSMS + MamboSMS combined live balance and alerts if it drops below this — a safety net in case the SMS count above is stale or wrong.</p>
         <label style={{ ...fld, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={budget.enforce} onChange={e => setBudget({ ...budget, enforce: e.target.checked })} />
           <span style={{ fontSize: 13 }}>Enforce (leave off / monitor-only until the dry run passes)</span></label>
