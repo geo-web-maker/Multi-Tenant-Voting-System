@@ -1973,6 +1973,7 @@ _SEC_DEFAULTS = {
     "sms_fallback_on_timeout": ol.env_bool("SMS_FALLBACK_ON_TIMEOUT", False),
     "sms_budget_total": None,
     "sms_budget_enforce": ol.env_bool("SMS_BUDGET_ENFORCE", False),  # monitor-only until the dry run passes
+    "sms_balance_floor_ugx": ol.env_int("SMS_BALANCE_FLOOR_UGX", 0) or None,
     "sms_mode": "normal",                                             # normal | conservation
     "contact_change_ttl_hours": ol.env_int("CONTACT_CHANGE_TTL_HOURS", 6),
     "contact_change_max_per_voter": ol.env_int("CONTACT_CHANGE_MAX_PER_VOTER", 2),
@@ -2220,28 +2221,31 @@ async def sms_usage_doc(org_id) -> dict:
 async def _budget_alerts(org_id, usage: dict):
     sec = await security_settings_for(org_id)
     total = sec["sms_budget_total"]
-    if not total:
-        return
-    left_frac = (total - usage.get("sent_total", 0)) / total
-    for threshold in (0.5, 0.25, 0.10):
-        if left_frac <= threshold:
-            r = await db.sms_usage.update_one(
-                {"org_key": org_id or "default", "alerts_fired": {"$ne": threshold}},
-                {"$addToSet": {"alerts_fired": threshold}})
-            if r.modified_count:
-                await log_action("sms_budget_alert", "system", {
-                    "threshold_pct": int(threshold * 100), "sent": usage.get("sent_total", 0),
-                    "budget": total}, org_id=org_id)
-                # 10% left is the one that can actually block voters mid-election
-                # (see sms_budget_gate below), so it's critical; 50/25% are early
-                # warnings to top up before that happens.
-                level = "critical" if threshold <= 0.10 else "warning"
-                await send_alert(
-                    f"SMS budget at {int(threshold * 100)}% remaining",
-                    f"Org: {org_id or 'default'}. Sent {usage.get('sent_total', 0)} of {total} "
-                    f"budgeted SMS. Top up or raise sms_budget_total before voters start being blocked.",
-                    level=level,
-                )
+    if total:
+        left_frac = (total - usage.get("sent_total", 0)) / total
+        for threshold in (0.5, 0.25, 0.10):
+            if left_frac <= threshold:
+                r = await db.sms_usage.update_one(
+                    {"org_key": org_id or "default", "alerts_fired": {"$ne": threshold}},
+                    {"$addToSet": {"alerts_fired": threshold}})
+                if r.modified_count:
+                    await log_action("sms_budget_alert", "system", {
+                        "threshold_pct": int(threshold * 100), "sent": usage.get("sent_total", 0),
+                        "budget": total}, org_id=org_id)
+                    # 10% left is the one that can actually block voters mid-election
+                    # (see sms_budget_gate below), so it's critical; 50/25% are early
+                    # warnings to top up before that happens.
+                    level = "critical" if threshold <= 0.10 else "warning"
+                    await send_alert(
+                        f"SMS budget at {int(threshold * 100)}% remaining",
+                        f"Org: {org_id or 'default'}. Sent {usage.get('sent_total', 0)} of {total} "
+                        f"budgeted SMS. Top up or raise sms_budget_total before voters start being blocked.",
+                        level=level,
+                    )
+    # Independent of whether a unit budget is even configured — the floor is
+    # a currency check, and this is the safety net over sms_budget_total's
+    # own accuracy, so it shouldn't be gated behind that setting existing.
+    await _cross_check_live_balance(org_id, sec, usage)
 
 
 async def count_sms(org_id, kind: str = "otp"):
@@ -3577,45 +3581,100 @@ async def toggle_certification(request: Request, admin: dict = Depends(require_c
 
 async def get_egosms_balance() -> dict:
     """EgoSMS's balance check lives on a different, JSON-only endpoint than
-    the plain-text one used for sending (comms.egosms.co/api/v1/plain/) —
-    that's presumably why it looked unsupported. Confirmed against EgoSMS's
-    JSON API: POST to egosms.co/api/v1/json/ with method="Balance"."""
+    the plain-text one used for sending. Sending already works against
+    comms.egosms.co, so that's tried first — www.egosms.co appears to be a
+    separate account provisioning and can 400 with "user does not exist"
+    even for a username that's valid on comms.egosms.co."""
     if not (EGOSMS_USER and EGOSMS_PASS):
         return {"balance": None, "currency": "UGX", "error": "EGOSMS_USERNAME/PASSWORD not configured."}
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://www.egosms.co/api/v1/json/",
-                json={"method": "Balance", "userdata": {"username": EGOSMS_USER, "password": EGOSMS_PASS}},
-                timeout=15.0,
-            )
-            body = response.json()
-            # EgoSMS's own field casing (Status/Balance) rather than Mambo's
-            # (success/data.balance) — kept separate rather than normalized
-            # so each provider's raw error message stays intact for debugging.
+    payload = {"method": "Balance", "userdata": {"username": EGOSMS_USER, "password": EGOSMS_PASS}}
+    last_error = None
+    for host in ("https://comms.egosms.co/api/v1/json/", "https://www.egosms.co/api/v1/json/"):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(host, json=payload, timeout=15.0)
+                body = response.json()
             if str(body.get("Status", "")).upper() == "OK":
                 return {"balance": body.get("Balance"), "currency": "UGX", "provider": "egosms"}
-            return {"balance": None, "currency": "UGX",
-                    "error": body.get("Message") or "Unknown error"}
-    except Exception as e:
-        logger.error(f"EgoSMS balance check failed: {e}")
-        return {"balance": None, "currency": "UGX", "error": "Could not reach EgoSMS."}
+            # "user does not exist" on one host just means try the other
+            # host's account — only report the error once both are tried.
+            last_error = body.get("Message") or "Unknown error"
+        except Exception as e:
+            logger.error(f"EgoSMS balance check failed against {host}: {e}")
+            last_error = "Could not reach EgoSMS."
+    return {"balance": None, "currency": "UGX", "error": last_error}
+
+
+async def _fetch_and_check_provider_balances() -> dict:
+    """Shared by /admin/sms-balance and the periodic cross-check below: fetch
+    both providers concurrently, and alert if either can't be read at all."""
+    egosms, mambosms = await asyncio.gather(get_egosms_balance(), _get_mambosms_balance())
+    # Either provider silently running dry mid-election is a Tier-1-adjacent
+    # risk (it just degrades to "the other provider carries all traffic"
+    # rather than an outright outage), so this doubles as the check: a
+    # superadmin manually hitting the endpoint, or the periodic cross-check,
+    # gets an alert the moment either balance can't be read at all.
+    for name, result in (("EgoSMS", egosms), ("MamboSMS", mambosms)):
+        if result.get("error"):
+            await alert_warning(f"{name} balance check failed", result["error"], cooldown_s=3600)
+    return {"egosms": egosms, "mambosms": mambosms}
 
 
 @app.get("/admin/sms-balance")
 async def get_sms_balance(admin: dict = Depends(require_role("superadmin"))):
     """Live balance for both SMS providers — restricted to superadmin since
     both calls hit billable third-party accounts."""
-    egosms, mambosms = await asyncio.gather(get_egosms_balance(), _get_mambosms_balance())
-    # Either provider silently running dry mid-election is a Tier-1-adjacent
-    # risk (it just degrades to "the other provider carries all traffic"
-    # rather than an outright outage), so this endpoint doubles as the check:
-    # a superadmin manually hitting it, or a future scheduled ping, gets an
-    # alert the moment either balance can't be read at all.
-    for name, result in (("EgoSMS", egosms), ("MamboSMS", mambosms)):
-        if result.get("error"):
-            await alert_warning(f"{name} balance check failed", result["error"], cooldown_s=3600)
-    return {"egosms": egosms, "mambosms": mambosms}
+    return await _fetch_and_check_provider_balances()
+
+
+# Cross-check safety net: sms_budget_total/sms_usage is an admin-set *unit*
+# counter, tracked internally and never verified against what's actually
+# funded on either provider's account. This periodically pulls the real
+# currency balance and warns if it's low even though the internal counter
+# thinks there's plenty left — catches a stale/wrong sms_budget_total rather
+# than replacing it (that's the simpler, lower-risk option vs. switching
+# gating itself to live currency, which would need a cost-per-SMS figure and
+# a caching layer to avoid a provider call on every vote).
+_LAST_BALANCE_CROSSCHECK: dict[str, float] = {}
+_BALANCE_CROSSCHECK_INTERVAL_S = 15 * 60
+
+
+async def _cross_check_live_balance(org_id, sec: dict, usage: dict) -> None:
+    floor = sec.get("sms_balance_floor_ugx")
+    if not floor:
+        return
+    key = org_id or "default"
+    now = time.time()
+    if now - _LAST_BALANCE_CROSSCHECK.get(key, 0) < _BALANCE_CROSSCHECK_INTERVAL_S:
+        return
+    _LAST_BALANCE_CROSSCHECK[key] = now
+
+    balances = await _fetch_and_check_provider_balances()
+    numeric = []
+    for result in balances.values():
+        try:
+            numeric.append(float(result["balance"]))
+        except (TypeError, ValueError, KeyError):
+            pass  # provider errored or returned a non-numeric balance; already alerted above
+    if not numeric:
+        return  # both providers unreadable right now — already covered by the per-provider alert
+    total_live = sum(numeric)
+    if total_live >= floor:
+        return
+
+    budget_total = sec.get("sms_budget_total")
+    counter_left = (budget_total - usage.get("sent_total", 0)) if budget_total else None
+    await send_alert(
+        "Live SMS balance below configured floor",
+        f"Org: {key}. Combined live balance across providers is {total_live:.0f} UGX, "
+        f"below the configured floor of {floor} UGX.\n"
+        f"EgoSMS: {balances['egosms'].get('balance')} | MamboSMS: {balances['mambosms'].get('balance')}\n"
+        + (f"Internal budget counter currently shows {counter_left} SMS remaining of {budget_total} — "
+           f"that number may be stale or based on the wrong per-SMS cost."
+           if counter_left is not None else
+           "No internal sms_budget_total is set, so this is the only signal you have on remaining runway."),
+        level="critical" if total_live <= floor * 0.5 else "warning",
+    )
 
 
 async def _get_mambosms_balance() -> dict:
@@ -6647,6 +6706,7 @@ class SmsBudgetUpdate(BaseModel):
     sms_budget_total: int | None = None
     sms_mode: str | None = None
     sms_budget_enforce: bool | None = None
+    sms_balance_floor_ugx: int | None = None
 
 
 _SEC_RANGES = {
@@ -7307,6 +7367,10 @@ async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
         updates["sms_mode"] = data.sms_mode
     if data.sms_budget_enforce is not None:
         updates["sms_budget_enforce"] = data.sms_budget_enforce
+    if data.sms_balance_floor_ugx is not None:
+        if data.sms_balance_floor_ugx < 0:
+            raise HTTPException(400, "Balance floor cannot be negative.")
+        updates["sms_balance_floor_ugx"] = data.sms_balance_floor_ugx or None
     if not updates:
         raise HTTPException(400, "Nothing to change.")
     await _save_security(request, updates)
