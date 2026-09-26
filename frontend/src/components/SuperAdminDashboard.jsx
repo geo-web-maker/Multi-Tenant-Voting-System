@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
-import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
+import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { toggleElection, electionToggleFeedback } from '../electionControls';
 import {
   SHARED_TAB_DEFS, ROADMAP_TAB_DEF, SharedTabPanels, OfficialCertificationBlock,
@@ -48,7 +48,6 @@ function getErrorMessage(e, fallback = 'Failed.') {
 export default function SuperAdminDashboard({ onLogout }) {
   const toast = useToast();
   const confirm = useConfirm();
-  const prompt = usePrompt();
 
   const [activeTab, setActiveTab] = useState('candidates');
   const roster = useRosterStatus();
@@ -68,6 +67,9 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [positions, setPositions]   = useState([]);
   const [newPosition, setNewPosition] = useState({ title: '', description: '', order: 0, application_fee: '' });
   const [posLoading, setPosLoading]   = useState(false);
+  const [editingPositionId, setEditingPositionId] = useState(null);
+  const [editPositionForm, setEditPositionForm] = useState({ title: '', description: '', order: 0, application_fee: '' });
+  const [editPosSaving, setEditPosSaving] = useState(false);
 
   // --- Candidates state (mirrored from AdminDashboard) ---
   const [candidates, setCandidates] = useState([]);
@@ -330,15 +332,36 @@ const refetchAll = () => {
     finally { setPosLoading(false); }
   };
 
-  const handleEditFee = async (p) => {
-    const raw = await prompt(`Nomination fee for ${p.title} in UGX (0 = none):`, { placeholder: 'e.g. 50000', defaultValue: String(p.application_fee || 0) });
-    if (raw === null || raw === undefined) return;
-    const fee = parseInt(String(raw).replace(/[^\d]/g, ''), 10);
-    if (Number.isNaN(fee)) return toast('Enter a whole number.', { kind: 'error' });
+  const handleStartEditPosition = (p) => {
+    setEditingPositionId(p._id);
+    setEditPositionForm({
+      title: p.title || '',
+      description: p.description || '',
+      order: p.order ?? 0,
+      application_fee: String(p.application_fee ?? 0),
+    });
+  };
+
+  const handleCancelEditPosition = () => {
+    setEditingPositionId(null);
+  };
+
+  const handleSaveEditPosition = async (id) => {
+    if (!editPositionForm.title.trim()) return toast('Position title required.');
+    const fee = parseInt(String(editPositionForm.application_fee).replace(/[^\d]/g, ''), 10) || 0;
+    setEditPosSaving(true);
     try {
-      await api.patch(`/positions/${p._id}`, { application_fee: fee });
+      await api.patch(`/positions/${id}`, {
+        title: editPositionForm.title.trim(),
+        description: editPositionForm.description,
+        order: parseInt(editPositionForm.order, 10) || 0,
+        application_fee: fee,
+      });
+      setEditingPositionId(null);
       fetchPositions();
-    } catch (e) { toast(getErrorMessage(e, 'Failed to update fee.'), { kind: 'error' }); }
+      toast('Position updated!', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to update position.'), { kind: 'error' }); }
+    finally { setEditPosSaving(false); }
   };
 
   const handleDeletePosition = async (id) => {
@@ -1314,21 +1337,44 @@ const handleSuperAdminRemoveStudent = async () => {
               )}
               <ScrollList maxHeight="50vh">
               {positions.map(p => (
-                <div key={p._id} style={rowCard}>
-                  <div>
-                    <b style={{ color: 'var(--text-color)' }}>{p.title}</b>
-                    {p.description && <><br /><small style={{ opacity: 0.6 }}>{p.description}</small></>}
-                    <br />
-                    <small style={{ color: 'var(--info)' }}>Order: {p.order}</small>
-                    <small style={{ marginLeft: 10, color: 'var(--success)' }}>
-                      Fee: {p.application_fee ? `UGX ${Number(p.application_fee).toLocaleString('en-UG')}` : 'none'}
-                    </small>
+                editingPositionId === p._id ? (
+                  <div key={p._id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                    <input style={inp} placeholder="Position title"
+                      value={editPositionForm.title}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, title: e.target.value })} />
+                    <input style={inp} placeholder="Description (optional)"
+                      value={editPositionForm.description}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, description: e.target.value })} />
+                    <input style={inp} type="number" min="0" placeholder="Nomination fee in UGX (0 = none)"
+                      value={editPositionForm.application_fee}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, application_fee: e.target.value })} />
+                    <input style={inp} type="number" placeholder="Ballot order (0 = first)"
+                      value={editPositionForm.order}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, order: e.target.value })} />
+                    <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+                      <button style={redLink} onClick={handleCancelEditPosition}>Cancel</button>
+                      <button style={greenBtn} onClick={() => handleSaveEditPosition(p._id)} disabled={editPosSaving}>
+                        {editPosSaving ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <button style={{ ...redLink, color: 'var(--info)' }} onClick={() => handleEditFee(p)}>Edit fee</button>
-                    <button style={redLink} onClick={() => handleDeletePosition(p._id)}>Delete</button>
+                ) : (
+                  <div key={p._id} style={rowCard}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{p.title}</b>
+                      {p.description && <><br /><small style={{ opacity: 0.6 }}>{p.description}</small></>}
+                      <br />
+                      <small style={{ color: 'var(--info)' }}>Order: {p.order}</small>
+                      <small style={{ marginLeft: 10, color: 'var(--success)' }}>
+                        Fee: {p.application_fee ? `UGX ${Number(p.application_fee).toLocaleString('en-UG')}` : 'none'}
+                      </small>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                      <button style={{ ...redLink, color: 'var(--info)' }} onClick={() => handleStartEditPosition(p)}>Edit</button>
+                      <button style={redLink} onClick={() => handleDeletePosition(p._id)}>Delete</button>
+                    </div>
                   </div>
-                </div>
+                )
               ))}
               </ScrollList>
             </div>
