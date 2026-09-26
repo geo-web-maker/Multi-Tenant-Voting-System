@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 import secrets
+import asyncio
 import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
 from pymongo import UpdateOne
@@ -3574,13 +3575,50 @@ async def toggle_certification(request: Request, admin: dict = Depends(require_c
     return {"is_certified": new_status}
 
 
+async def get_egosms_balance() -> dict:
+    """EgoSMS's balance check lives on a different, JSON-only endpoint than
+    the plain-text one used for sending (comms.egosms.co/api/v1/plain/) —
+    that's presumably why it looked unsupported. Confirmed against EgoSMS's
+    JSON API: POST to egosms.co/api/v1/json/ with method="Balance"."""
+    if not (EGOSMS_USER and EGOSMS_PASS):
+        return {"balance": None, "currency": "UGX", "error": "EGOSMS_USERNAME/PASSWORD not configured."}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://www.egosms.co/api/v1/json/",
+                json={"method": "Balance", "userdata": {"username": EGOSMS_USER, "password": EGOSMS_PASS}},
+                timeout=15.0,
+            )
+            body = response.json()
+            # EgoSMS's own field casing (Status/Balance) rather than Mambo's
+            # (success/data.balance) — kept separate rather than normalized
+            # so each provider's raw error message stays intact for debugging.
+            if str(body.get("Status", "")).upper() == "OK":
+                return {"balance": body.get("Balance"), "currency": "UGX", "provider": "egosms"}
+            return {"balance": None, "currency": "UGX",
+                    "error": body.get("Message") or "Unknown error"}
+    except Exception as e:
+        logger.error(f"EgoSMS balance check failed: {e}")
+        return {"balance": None, "currency": "UGX", "error": "Could not reach EgoSMS."}
+
+
 @app.get("/admin/sms-balance")
 async def get_sms_balance(admin: dict = Depends(require_role("superadmin"))):
-    """Live MamboSMS balance — restricted to superadmin since it calls out
-    to a billable third-party account. EgoSMS has no equivalent balance API
-    exposed in its docs, so this only ever reflects the fallback provider;
-    the primary's (EgoSMS) balance needs checking on EgoSMS's own portal.
-    """
+    """Live balance for both SMS providers — restricted to superadmin since
+    both calls hit billable third-party accounts."""
+    egosms, mambosms = await asyncio.gather(get_egosms_balance(), _get_mambosms_balance())
+    # Either provider silently running dry mid-election is a Tier-1-adjacent
+    # risk (it just degrades to "the other provider carries all traffic"
+    # rather than an outright outage), so this endpoint doubles as the check:
+    # a superadmin manually hitting it, or a future scheduled ping, gets an
+    # alert the moment either balance can't be read at all.
+    for name, result in (("EgoSMS", egosms), ("MamboSMS", mambosms)):
+        if result.get("error"):
+            await alert_warning(f"{name} balance check failed", result["error"], cooldown_s=3600)
+    return {"egosms": egosms, "mambosms": mambosms}
+
+
+async def _get_mambosms_balance() -> dict:
     if not MAMBOSMS_API_KEY:
         return {"balance": None, "currency": "UGX", "error": "MAMBOSMS_API_KEY not configured."}
     try:

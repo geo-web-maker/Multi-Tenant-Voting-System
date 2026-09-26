@@ -15,7 +15,10 @@ export default function AdminDashboard({ onLogout }) {
   // --- STATE MANAGEMENT ---
   const [voters, setVoters] = useState([]);
   const [candidates, setCandidates] = useState([]);
-  const [smsBalance, setSmsBalance] = useState({ balance: 0, currency: 'UGX' });
+  const [smsBalance, setSmsBalance] = useState({
+    egosms: { balance: null, currency: 'UGX' },
+    mambosms: { balance: null, currency: 'UGX' },
+  });
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [isElectionOpen, setIsElectionOpen] = useState(true);
@@ -43,7 +46,12 @@ export default function AdminDashboard({ onLogout }) {
         api.get(`/admin/voters`),
         api.get(`/election-status`),
         api.get(`/candidates`),
-        api.get(`/admin/sms-balance`).catch(() => ({ data: { balance: "N/A", currency: "" } }))
+        api.get(`/admin/sms-balance`).catch(() => ({
+          data: {
+            egosms: { balance: 'N/A', currency: '', error: 'Could not load' },
+            mambosms: { balance: 'N/A', currency: '', error: 'Could not load' },
+          },
+        }))
       ]);
       
       setVoters(voterRes.data);
@@ -301,19 +309,8 @@ useEffect(() => { fetchData(); }, []);
               <div style={statCardStyle}><small>Step 2: Authed</small><h3>{stage2}</h3></div>
               <div style={statCardStyle}><small>Step 3: Voted</small><h3 style={{ color: '#2ecc71' }}>{stage3}</h3></div>
               <div style={statCardStyle}><small>Turnout</small><h3>{turnout}%</h3></div>
-              
-              {/* SMS BALANCE CARD */}
-              <div style={{
-                ...statCardStyle,
-                border: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '1px solid #e74c3c' : '1px solid var(--border-color)',
-                backgroundColor: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '#e74c3c08' : 'transparent'
-              }}>
-                <small style={{ color: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '#e74c3c' : 'inherit' }}>SMS Credits</small>
-                <h3 style={{ color: (typeof smsBalance.balance === 'number' && smsBalance.balance < 1000) ? '#e74c3c' : 'inherit' }}>
-                  {smsBalance.error ? '—' : <>{smsBalance.balance} <small style={{fontSize: '10px'}}>{smsBalance.currency}</small></>}
-                </h3>
-                {smsBalance.error && <small style={{ opacity: 0.6 }}>{smsBalance.error}</small>}
-              </div>
+              <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />
+              <SmsProviderCard label="MamboSMS" sub="fallback" data={smsBalance.mambosms} />
             </div>
 
             <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
@@ -614,6 +611,28 @@ const orderBadgeStyle = {
 const timerBoxStyle = { backgroundColor: 'var(--bg-color)', padding: '20px', borderRadius: '12px', marginBottom: '25px', border: '1px solid var(--border-color)' };
 const funnelGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '15px', marginBottom: '25px' };
 const statCardStyle = { padding: '15px', border: '1px solid var(--border-color)', borderRadius: '12px', textAlign: 'center' };
+
+// One card per SMS provider, clearly labeled which is which (EgoSMS =
+// primary sender, MamboSMS = paid fallback) — a single unlabeled "SMS
+// Credits" number used to hide which account actually needed topping up.
+const SmsProviderCard = ({ label, sub, data }) => {
+  const low = typeof data?.balance === 'number' && data.balance < 1000;
+  return (
+    <div style={{
+      ...statCardStyle,
+      border: low ? '1px solid #e74c3c' : '1px solid var(--border-color)',
+      backgroundColor: low ? '#e74c3c08' : 'transparent',
+    }}>
+      <small style={{ color: low ? '#e74c3c' : 'inherit' }}>
+        {label} <span style={{ opacity: 0.55 }}>({sub})</span>
+      </small>
+      <h3 style={{ color: low ? '#e74c3c' : 'inherit' }}>
+        {data?.error ? '—' : <>{data?.balance ?? '—'} <small style={{ fontSize: '10px' }}>{data?.currency}</small></>}
+      </h3>
+      {data?.error && <small style={{ opacity: 0.6 }}>{data.error}</small>}
+    </div>
+  );
+};
 const primaryBtnStyle = { padding: '10px 20px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' };
 const logoutBtnStyle = { padding: '8px 16px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' };
 const refreshBtnStyle = { padding: '10px 20px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer' };

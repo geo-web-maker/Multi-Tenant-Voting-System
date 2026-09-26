@@ -78,7 +78,10 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
   // --- Ported from AdminDashboard ---
-  const [smsBalance, setSmsBalance] = useState({ balance: 0, currency: 'UGX' });
+  const [smsBalance, setSmsBalance] = useState({
+    egosms: { balance: null, currency: 'UGX' },
+    mambosms: { balance: null, currency: 'UGX' },
+  });
   
   // --- Applications state ---
   const [applications, setApplications] = useState([]);
@@ -241,7 +244,12 @@ const fetchVotersList = async () => {
     try {
       const res = await api.get('/admin/sms-balance');
       setSmsBalance(res.data);
-    } catch { setSmsBalance({ balance: 'N/A', currency: '' }); }
+    } catch {
+      setSmsBalance({
+        egosms: { balance: 'N/A', currency: '', error: 'Could not load' },
+        mambosms: { balance: 'N/A', currency: '', error: 'Could not load' },
+      });
+    }
   };
 
 const refetchAll = () => {
@@ -1204,8 +1212,15 @@ const handleSuperAdminRemoveStudent = async () => {
                 <div style={statCard}><small>Voted</small><h3 style={{ color: 'var(--success)' }}>{electionVoters.filter(v => v.has_voted).length}</h3></div>
                 <div style={statCard}><small>Turnout</small><h3>{turnout}%</h3></div>
                 <div style={statCard}><small>Pending</small><h3 style={{ color: 'var(--warning)' }}>{electionVoters.filter(v => !v.has_voted).length}</h3></div>
-                <div style={statCard}><small>SMS Balance</small><h3>{smsBalance.error ? '—' : `${smsBalance.balance} ${smsBalance.currency}`}</h3>{smsBalance.error && <small style={{ opacity: 0.6 }}>{smsBalance.error}</small>}</div>
               </div>
+            </div>
+
+            {/* One card per SMS provider — see SmsProviderCard: labeling
+                which provider a balance belongs to matters since only one
+                (EgoSMS) sends first and Mambo is the paid fallback. */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%', marginTop: '12px' }}>
+              <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />
+              <SmsProviderCard label="MamboSMS" sub="fallback" data={smsBalance.mambosms} />
             </div>
 
             {/* Ported from AdminDashboard: voter funnel by last_status */}
@@ -2219,6 +2234,17 @@ const redLink     = { background: 'none', border: 'none', color: '#e74c3c', curs
 const badge       = { marginLeft: '8px', fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 6px', borderRadius: '4px' };
 const avatar      = { width: '44px', height: '44px', borderRadius: '6px', objectFit: 'cover' };
 const statCard    = { padding: '14px', border: '1px solid var(--border-color)', borderRadius: '10px', textAlign: 'center', color: 'var(--text-color)' };
+
+// Two SMS providers (EgoSMS = primary, MamboSMS = fallback) each get their
+// own card, clearly labeled, instead of one ambiguous "SMS Balance" number —
+// admins topping up need to know which account to actually fund.
+const SmsProviderCard = ({ label, sub, data }) => (
+  <div style={statCard}>
+    <small>{label}<span style={{ opacity: 0.55 }}> ({sub})</span></small>
+    <h3>{data?.error ? '—' : `${data?.balance ?? '—'} ${data?.currency || ''}`}</h3>
+    {data?.error && <small style={{ opacity: 0.6 }}>{data.error}</small>}
+  </div>
+);
 const th          = { padding: '10px 14px', textAlign: 'left', color: '#fff', fontSize: '11px', textTransform: 'uppercase' };
 const td          = { padding: '10px 14px', color: 'var(--text-color)', fontSize: '13px' };
 const modalOverlay = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
