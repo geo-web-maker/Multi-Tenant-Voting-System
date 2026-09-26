@@ -873,8 +873,14 @@ const handleSuperAdminRemoveStudent = async () => {
           )}
         </div>
 
-        {/* ── Tabs ── */}
+        {/* ── Tabs ──
+            TabBar renders a sticky rail on desktop and a group-pill row
+            on mobile; .dash-body/.dash-main lay it out beside the content
+            on desktop and stack it above on mobile, off the same 768px
+            breakpoint TabBar itself uses. */}
+        <div className="dash-body">
         <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
+        <div className="dash-main">
 
         {/* ══════════════ CANDIDATES TAB ══════════════ */}
         {activeTab === 'candidates' && (
@@ -2257,6 +2263,9 @@ const handleSuperAdminRemoveStudent = async () => {
             superadmin-only route. */}
         <SharedTabPanels activeTab={activeTab} canEditSchedule isChief />
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
+
+        </div>
+        </div>
       </div>
     </div>
   );

@@ -6,14 +6,21 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 //   <TabBar tabs={flatTabs} activeTab={activeTab} onChange={setActiveTab} />
 //   <TabBar groups={groupedTabs} activeTab={activeTab} onChange={setActiveTab} />
 //
-// `tabs`   — flat list of { id, label, count? }. Renders exactly like the old
-//            per-dashboard tab bar (desktop wraps, mobile scrolls), just with
-//            drag-to-scroll + edge fades thrown in for free.
-// `groups` — [{ label, tabs: [...] }]. On desktop, each group renders as a
-//            section header above its own row of tabs (everything visible).
-//            On mobile, a row of group names is shown; tapping one reveals
-//            that group's tabs in a second row below. Whichever group holds
-//            the current activeTab is auto-selected and scrolled into view.
+// `tabs`   — flat list of { id, label, count? }. Desktop wraps onto extra
+//            rows, mobile scrolls horizontally with a real edge-fade on
+//            whichever side still has more content.
+// `groups` — [{ label, tabs: [...] }]. Desktop renders a single sticky
+//            rail: one section header per group, a vertical list of its
+//            tabs underneath — nothing to wrap, nothing to crop. Mobile
+//            renders one scrollable row of group pills, and below it a
+//            plain vertical list of the selected group's tabs (same list
+//            item as the desktop rail) — only the group row ever scrolls
+//            horizontally.
+//
+// Grouped + desktop returns a self-contained <nav> meant to sit beside
+// the page's content, not above it — wrap both in a `.dash-body` flex
+// row (`.dash-main` on the content column) so it lays out as a rail on
+// desktop and stacks on mobile without any JS breakpoint duplication.
 
 const MOBILE_QUERY = '(max-width: 768px)';
 
@@ -30,10 +37,11 @@ function useIsMobile() {
   return isMobile;
 }
 
-// A horizontally-scrollable row: click-and-drag to scroll, edge fades that
-// only show when there's actually more content that way, and (optionally)
-// arrow buttons at each end. Shift + mouse-wheel scrolling needs no JS at
-// all — browsers do that for free on any overflow-x: auto element.
+// A horizontally-scrollable row: click-and-drag to scroll, and real
+// edge-fades (via the .fade-left / .fade-right classes in index.css)
+// that only show when there's actually more content that way. Shift +
+// mouse-wheel scrolling needs no JS at all — browsers do that for free
+// on any overflow-x: auto element.
 function ScrollRow({ children, rowClassName = '', showArrows = false, innerRef }) {
   const localRef = useRef(null);
   const ref = innerRef || localRef;
@@ -126,6 +134,34 @@ function ScrollRow({ children, rowClassName = '', showArrows = false, innerRef }
   );
 }
 
+function PillButton({ t, isActive, onChange, tabRef }) {
+  return (
+    <button
+      key={t.id}
+      ref={tabRef}
+      onClick={() => onChange(t.id)}
+      className={`tabbar-pill${isActive ? ' is-active' : ''}`}
+    >
+      {t.label}
+      {t.count !== undefined && t.count !== null && <span style={countPillStyle}>{t.count}</span>}
+    </button>
+  );
+}
+
+function ListItem({ t, isActive, onChange, tabRef }) {
+  return (
+    <button
+      key={t.id}
+      ref={tabRef}
+      onClick={() => onChange(t.id)}
+      className={`tabbar-list-item${isActive ? ' is-active' : ''}`}
+    >
+      <span>{t.label}</span>
+      {t.count !== undefined && t.count !== null && <span style={countPillStyle}>{t.count}</span>}
+    </button>
+  );
+}
+
 export default function TabBar({ tabs, groups, activeTab, onChange, className = '' }) {
   const isMobile = useIsMobile();
   const flatMode = !groups || groups.length === 0;
@@ -140,7 +176,7 @@ export default function TabBar({ tabs, groups, activeTab, onChange, className = 
   const tabRefs = useRef({});
   const groupRefs = useRef({});
 
-  // Auto-scroll the active tab (and, on mobile, its group button) into view
+  // Auto-scroll the active tab (and, on mobile, its group pill) into view
   // whenever activeTab changes — including on first load.
   useEffect(() => {
     tabRefs.current[activeTab]?.scrollIntoView?.({ behavior: 'smooth', inline: 'center', block: 'nearest' });
@@ -151,88 +187,85 @@ export default function TabBar({ tabs, groups, activeTab, onChange, className = 
     }
   }, [selectedGroupIdx, isMobile]);
 
-  function renderTabButton(t) {
-    return (
-      <button
-        key={t.id}
-        ref={el => { tabRefs.current[t.id] = el; }}
-        onClick={() => onChange(t.id)}
-        style={{ ...tabBtnStyle, borderBottom: activeTab === t.id ? '3px solid #2ecc71' : '3px solid transparent' }}
-      >
-        {t.label}
-        {t.count !== undefined && t.count !== null && <span style={countPillStyle}>{t.count}</span>}
-      </button>
-    );
-  }
-
+  // ── Flat mode: one row, wraps on desktop, scrolls on mobile ──
   if (flatMode) {
     return (
       <ScrollRow rowClassName={`tab-scroll no-print ${className}`} showArrows={!isMobile}>
-        {effectiveGroups[0].tabs.map(renderTabButton)}
+        {effectiveGroups[0].tabs.map(t => (
+          <PillButton
+            key={t.id}
+            t={t}
+            isActive={activeTab === t.id}
+            onChange={onChange}
+            tabRef={el => { tabRefs.current[t.id] = el; }}
+          />
+        ))}
       </ScrollRow>
     );
   }
 
+  // ── Grouped, desktop: a sticky rail meant to sit beside the content ──
   if (!isMobile) {
     return (
-      <div className={`tabbar-desktop-groups no-print ${className}`} style={desktopGroupsWrap}>
+      <nav className={`tabbar-rail no-print ${className}`} aria-label="Sections">
         {effectiveGroups.map(g => (
-          <div key={g.label} style={desktopGroupBlock}>
-            <div style={desktopGroupHeader}>{g.label}</div>
-            <div style={desktopGroupTabs}>
-              {g.tabs.map(renderTabButton)}
-            </div>
+          <div key={g.label}>
+            <div className="tabbar-rail-group-label">{g.label}</div>
+            {g.tabs.map(t => (
+              <ListItem
+                key={t.id}
+                t={t}
+                isActive={activeTab === t.id}
+                onChange={onChange}
+                tabRef={el => { tabRefs.current[t.id] = el; }}
+              />
+            ))}
           </div>
         ))}
-      </div>
+      </nav>
     );
   }
 
+  // ── Grouped, mobile: one scrollable row of group pills, then a plain
+  //    vertical list of that group's tabs — only the group row scrolls. ──
   const selectedGroup = effectiveGroups[selectedGroupIdx] || effectiveGroups[0];
   return (
-    <div className={`tabbar-mobile-groups no-print ${className}`}>
-      <ScrollRow rowClassName="tabbar-group-row">
+    <div className={`tabbar-mobile-groups no-print ${className}`} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <ScrollRow rowClassName="tab-scroll tabbar-group-row">
         {effectiveGroups.map((g, i) => (
           <button
             key={g.label}
             ref={el => { groupRefs.current[i] = el; }}
             onClick={() => setSelectedGroupIdx(i)}
-            style={{ ...groupBtnStyle, ...(i === selectedGroupIdx ? groupBtnActiveStyle : null) }}
+            className={`tabbar-pill${i === selectedGroupIdx ? ' is-active' : ''}`}
           >
             {g.label}
           </button>
         ))}
       </ScrollRow>
-      <ScrollRow rowClassName="tab-scroll">
-        {selectedGroup.tabs.map(renderTabButton)}
-      </ScrollRow>
+      <div className="tabbar-mobile-list">
+        {selectedGroup.tabs.map(t => (
+          <ListItem
+            key={t.id}
+            t={t}
+            isActive={activeTab === t.id}
+            onChange={onChange}
+            tabRef={el => { tabRefs.current[t.id] = el; }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-/* ── styles ── */
+/* ── styles (layout-only; visual language lives in index.css so both
+     breakpoints and both nav shapes share one definition) ── */
 
 const scrollRowOuter = { position: 'relative', display: 'flex', alignItems: 'stretch', minWidth: 0 };
-const scrollRowInner = { display: 'flex', flexWrap: 'wrap', rowGap: '10px', columnGap: '4px', alignItems: 'stretch', minWidth: 0, flex: 1 };
+const scrollRowInner = { display: 'flex', flexWrap: 'wrap', rowGap: '10px', columnGap: '6px', alignItems: 'stretch', minWidth: 0, flex: 1 };
 const arrowBtn = {
   position: 'absolute', top: 0, bottom: 0, zIndex: 2, width: '26px', border: 'none',
   background: 'linear-gradient(to right, var(--bg-color) 60%, transparent)',
   color: 'var(--text-color)', cursor: 'pointer', fontSize: '18px', fontWeight: 700, lineHeight: 1,
 };
-const tabBtnStyle = {
-  background: 'none', border: 'none', padding: '10px 14px', cursor: 'pointer', fontWeight: '600',
-  color: 'var(--text-color)', fontSize: '13px', lineHeight: '1.3', borderRadius: '6px 6px 0 0',
-  display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
-};
 const countPillStyle = { fontSize: '11px', backgroundColor: 'var(--border-color)', borderRadius: '10px', padding: '1px 7px', fontWeight: '700' };
-
-const desktopGroupsWrap = { display: 'flex', flexWrap: 'wrap', gap: '20px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px' };
-const desktopGroupBlock = { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 };
-const desktopGroupHeader = { fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--text-muted)', padding: '0 2px 4px' };
-const desktopGroupTabs = { display: 'flex', flexWrap: 'wrap', rowGap: '6px', columnGap: '4px' };
-
-const groupBtnStyle = {
-  background: 'var(--surface-2)', border: 'none', padding: '6px 13px', borderRadius: '14px', cursor: 'pointer',
-  fontWeight: '700', fontSize: '11px', color: 'var(--text-color)', whiteSpace: 'nowrap', opacity: 0.7,
-};
-const groupBtnActiveStyle = { background: 'var(--success)', color: '#fff', opacity: 1 };

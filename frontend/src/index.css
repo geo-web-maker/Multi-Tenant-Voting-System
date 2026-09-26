@@ -225,42 +225,154 @@ button:hover {
 }
 
 
-/* --- Horizontally-scrolling tab bars (dashboards) --- */
-/* Above 768px the tab bar wraps onto multiple lines instead of scrolling
+/* --- Shared pill language: every horizontally-scrollable tab/group row
+   (flat dashboards, and the mobile group selector in grouped ones) uses
+   this same shape, so a "group" chip and a "tab" chip never read as two
+   unrelated components again. --- */
+.tabbar-pill {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.tabbar-pill.is-active {
+  background: var(--success);
+  color: #04231a;
+}
+
+/* Above 768px these rows wrap onto multiple lines instead of scrolling
    (there's room to). Each row needs real vertical breathing space — the
    inline style objects set rowGap for this, but this is the CSS-level
-   backstop so a wrapped tab bar never renders with rows closer than 8px,
+   backstop so a wrapped row never renders with rows closer than 8px,
    regardless of which dashboard's inline styles are in play. */
 .tab-scroll {
   row-gap: 10px;
 }
 
-/* Prevents tabs from wrapping into a tall vertical stack on narrow screens.
+/* Prevents rows from wrapping into a tall vertical stack on narrow screens.
    Scoped to mobile widths only — on desktop there's enough room to just
-   wrap onto a second line, and forcing nowrap+hidden-scrollbar there was
-   silently clipping tabs (Positions/Branding/Election/etc past the fold)
-   with no visible indication more tabs existed. */
+   wrap onto a second line. */
 @media (max-width: 768px) {
   .tab-scroll {
     flex-wrap: nowrap !important;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    /* The row itself scrolls fine, but with no scrollbar and a tab cut off
-       mid-word at the edge, it reads as clipped/broken rather than
-       scrollable — nothing told the user more tabs existed off-screen.
-       This fades the last visible tab out instead of hard-cutting it,
-       which is a much stronger "there's more this way" signal than a
-       clean edge, without needing extra markup or JS scroll listeners. */
-    -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
-    mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
   }
   .tab-scroll::-webkit-scrollbar {
     display: none;
   }
-  .tab-scroll > button {
+  .tab-scroll > * {
     flex-shrink: 0;
     white-space: nowrap;
+  }
+
+  /* Real two-sided scroll cue. TabBar's ScrollRow tracks actual scroll
+     position and toggles these two classes accordingly, so a cropped
+     pill always means "scroll this way" — on EITHER edge — instead of
+     the old fixed right-only mask that read as broken once you'd
+     scrolled past the start. */
+  .tab-scroll.fade-left {
+    -webkit-mask-image: linear-gradient(to right, transparent, black 28px);
+    mask-image: linear-gradient(to right, transparent, black 28px);
+  }
+  .tab-scroll.fade-right {
+    -webkit-mask-image: linear-gradient(to left, transparent, black 28px);
+    mask-image: linear-gradient(to left, transparent, black 28px);
+  }
+  .tab-scroll.fade-left.fade-right {
+    -webkit-mask-image: linear-gradient(to right, transparent, black 28px, black calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, transparent, black 28px, black calc(100% - 28px), transparent);
+  }
+}
+
+/* --- Grouped nav, desktop: a rail beside the content instead of stacked
+   pill rows that wrap unpredictably. Sticky + its own scroll so a long
+   group list never pushes the page around. --- */
+.tabbar-rail {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-self: flex-start;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.tabbar-rail-group-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 14px;
+  margin-bottom: 2px;
+}
+
+/* Shared between the desktop rail's items and the mobile vertical tab
+   list below the group pills — same list-item language on both sizes. */
+.tabbar-list-item {
+  border: none;
+  background: none;
+  border-left: 3px solid transparent;
+  padding: 9px 14px 9px 11px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.tabbar-list-item.is-active {
+  border-left-color: var(--success);
+  background: var(--surface-2);
+  color: var(--text-color);
+}
+.tabbar-mobile-list {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Two-column dashboard body: rail beside content on desktop, stacked
+   on mobile. One breakpoint, defined once, that both the layout and
+   TabBar's own isMobile check key off — the earlier mismatch (TabBar's
+   JS switching at 768px while related CSS lived at other breakpoints)
+   is exactly what let the two levels drift out of sync. --- */
+.dash-body {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+.dash-body > .dash-main {
+  min-width: 0;
+  flex: 1;
+}
+@media (max-width: 768px) {
+  .dash-body {
+    flex-direction: column;
   }
 }
 

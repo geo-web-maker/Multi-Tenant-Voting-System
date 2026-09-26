@@ -309,8 +309,14 @@ export default function CommissionDashboard({ onLogout }) {
           </div>
         )}
 
-        {/* ── Tabs ── */}
+        {/* ── Tabs ──
+            TabBar renders a sticky rail on desktop and a group-pill row
+            on mobile; .dash-body/.dash-main lay it out beside the content
+            on desktop and stack it above on mobile, off the same 768px
+            breakpoint TabBar itself uses. */}
+        <div className="dash-body">
         <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
+        <div className="dash-main">
 
         {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'} />}
 
@@ -699,6 +705,9 @@ export default function CommissionDashboard({ onLogout }) {
 
         <SharedTabPanels activeTab={activeTab} isChief={isChief || isDeputyChief} />
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
+
+        </div>
+        </div>
       </div>
     </div>
   );
