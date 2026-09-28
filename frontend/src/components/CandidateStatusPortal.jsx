@@ -77,6 +77,7 @@ export default function CandidateStatusPortal({ token }) {
   usePolling(() => fetchStatus({ silent: true }), 20000);
 
   const candidacy = candidacies?.[selected] || null;
+  const who = candidacies?.find(c => c.application_snapshot)?.application_snapshot || null;
 
   // When results are public from the start, they're already on display for everyone,
   // so this page doesn't repeat them in its own tab.
@@ -101,10 +102,22 @@ export default function CandidateStatusPortal({ token }) {
     <div style={outerWrap}>
       <PrintStyles />
       <div style={container}>
-        <div style={header} className="no-print">
-          <div style={{ minWidth: 0 }}>
+        <div style={{ ...header, flexWrap: 'nowrap', gap: 14, marginBottom: 22 }} className="no-print">
+          <div style={{ width: 56, flexShrink: 0 }}>
+            {branding.university_logo_url && <img src={branding.university_logo_url} alt="" style={logoImg} />}
+          </div>
+          <div style={{ minWidth: 0, flex: 1, textAlign: 'center' }}>
             <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Candidate Status</h2>
             <span style={sub}>{branding.org_name || 'Election'} · {branding.university_name || ''}</span>
+            {who && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-color)' }}>{properName(who.full_name)}</div>
+                {who.student_id && <div style={{ ...sub, marginTop: 2 }}>Reg. no. {regNo(who.student_id)}</div>}
+              </div>
+            )}
+          </div>
+          <div style={{ width: 56, flexShrink: 0, textAlign: 'right' }}>
+            {branding.logo_url && <img src={branding.logo_url} alt="" style={{ ...logoImg, marginLeft: 'auto' }} />}
           </div>
         </div>
 
@@ -124,20 +137,33 @@ export default function CandidateStatusPortal({ token }) {
 
         {!error && candidacies && candidacies.length > 0 && (
           <>
-            {/* §4.2: more than one position applied for → a simple picker above the tabs. */}
-            {candidacies.length > 1 && (
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }} className="no-print">
-                {candidacies.map((c, i) => (
+            {/* One pill per position, coloured by status; with several positions it also acts as the picker (§4.2). */}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }} className="no-print">
+              {candidacies.map((c, i) => {
+                const col = statusColor(c.status);
+                const active = i === selected;
+                return (
                   <button
                     key={i}
                     onClick={() => setSelected(i)}
-                    style={{ ...pillBtn, ...(i === selected ? pillBtnActive : {}) }}
+                    title={statusLabel(c.status)}
+                    style={{
+                      ...pillBtn, display: 'inline-flex', alignItems: 'center', gap: 8,
+                      borderColor: `color-mix(in srgb, ${col} ${active ? 100 : 45}%, transparent)`,
+                      background: `color-mix(in srgb, ${col} ${active ? 18 : 10}%, var(--bg-color))`,
+                      fontWeight: active ? 600 : 400,
+                      boxShadow: active ? `0 0 0 1px ${col}` : 'none',
+                    }}
                   >
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: col, flexShrink: 0 }} />
                     {properTitle(c.position_title)}
+                    <span style={{ fontSize: 10, letterSpacing: 0.5, textTransform: 'uppercase', color: col, fontWeight: 700 }}>
+                      {statusLabel(c.status)}
+                    </span>
                   </button>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
 
             <div className="no-print">
               <TabBar tabs={tabs} activeTab={activeTab} onChange={setTab} />
@@ -500,6 +526,10 @@ function statusLabel(status) {
   return String(status || '').toUpperCase();
 }
 
+function statusColor(status) {
+  return { pending: 'var(--warning)', approved: 'var(--success)', denied: 'var(--danger)' }[status] || '#95a5a6';
+}
+
 function statusBadge(status) {
   const map = {
     pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
@@ -517,6 +547,7 @@ function statusBadge(status) {
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '100%', maxWidth: '760px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const header     = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
+const logoImg    = { maxWidth: 56, maxHeight: 56, objectFit: 'contain', display: 'block' };
 const sub        = { fontSize: '12px', opacity: 0.6 };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
 const infoBox    = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
@@ -524,4 +555,3 @@ const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--te
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const primaryBtn = { padding: '9px 14px', background: 'var(--info)', border: '1px solid var(--info)', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
 const pillBtn    = { padding: '8px 14px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px' };
-const pillBtnActive = { borderColor: 'var(--info)', color: 'var(--info)', fontWeight: 600 };
