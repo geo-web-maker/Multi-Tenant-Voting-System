@@ -9,6 +9,7 @@ import { ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
+import { LoadingBlock } from './Spinner.jsx';
 
 
 export default function OverseerDashboard({ onLogout }) {
@@ -73,7 +74,7 @@ export default function OverseerDashboard({ onLogout }) {
         )}
 
         {!data && loading && (
-          <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading platform data…</p></div>
+          <div style={emptyState}><LoadingBlock text="Loading platform data…" /></div>
         )}
 
         {data && (
@@ -164,7 +165,7 @@ export default function OverseerDashboard({ onLogout }) {
             {tab === 'results' && (
               <div>
                 {!liveResults ? (
-                  <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading live results…</p></div>
+                  <div style={emptyState}><LoadingBlock text="Loading live results…" /></div>
                 ) : (
                   <>
                     <div style={{ ...summaryCard, flexDirection: 'row', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>

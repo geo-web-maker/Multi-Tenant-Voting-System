@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { properName, properTitle } from '../displayText';
+import { LoadingBlock } from './Spinner.jsx';
 
 /**
  * Public page a certificate's QR code opens (/verify/<certificate_id>).
@@ -24,7 +25,7 @@ export default function VerifyCertificate({ certificateId }) {
     <div style={{ minHeight: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 20, background: 'var(--bg-color)' }}>
       <div style={{ width: '100%', maxWidth: 460, background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: 16, padding: 28, textAlign: 'center', color: 'var(--text-color)' }}>
         <div style={{ fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', opacity: 0.55, marginBottom: 12 }}>Certificate verification</div>
-        {loading && <p style={{ opacity: 0.6 }}>Checking our records…</p>}
+        {loading && <LoadingBlock text="Checking our records…" />}
         {failed && <p style={{ color: '#e74c3c' }}>Could not reach the server. Please try again.</p>}
         {(notFound || revoked || valid) && (
           <>

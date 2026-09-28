@@ -5,6 +5,7 @@ import { Icon } from './icons.jsx';
 import { listContactChanges, decideContactChange, breakGlassApprove, undoDigestEntry, CHANGE_LABELS, EVENT_LABELS, errMsg } from '../studentEdit';
 import { ScrollList } from './UIFeedback';
 import { regNo } from '../regNo';
+import { LoadingBlock } from './Spinner.jsx';
 
 const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocaleString() : '—');
 
@@ -41,7 +42,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
     if (!breakGlass) return;
     api.get('/superadmin/security-settings').then(r => setBgEnabled(Boolean(r.data?.settings?.superadmin_breakglass))).catch(() => {});
   }, [breakGlass]);
-  if (!data) return <p style={{ opacity: 0.6 }}>Loading…</p>;
+  if (!data) return <LoadingBlock text="Loading…" />;
 
   const decide = async (c, decision) => {
     let note = '';

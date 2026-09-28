@@ -10,6 +10,7 @@ import { regNo } from '../regNo';
 import ManifestoText from './ManifestoText';
 import { properName, properTitle } from '../displayText';
 import { faceCropUrl } from '../cloudinaryImage';
+import { LoadingBlock } from './Spinner.jsx';
 
 const PrintStyles = () => (
   <style>{`
@@ -139,7 +140,7 @@ export default function CandidateStatusPortal({ token }) {
         )}
 
         {!error && candidacies === null && (
-          <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading your application status…</p></div>
+          <div style={emptyState}><LoadingBlock text="Loading your application status…" /></div>
         )}
 
         {!error && candidacies && candidacies.length === 0 && (

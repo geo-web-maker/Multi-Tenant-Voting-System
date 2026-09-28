@@ -3,6 +3,7 @@ import api from '../api';
 import { Icon } from './icons.jsx';
 import { loadBallot, saveBallot, clearBallot } from '../session';
 import { faceCropUrl } from '../cloudinaryImage';
+import { LoadingBlock } from './Spinner.jsx';
 
 export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
@@ -134,7 +135,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
     }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}>Loading…</div>;
+  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}><LoadingBlock text="Loading…" color="#fff" /></div>;
 
   const groupedCandidates = candidates.reduce((groups, c) => {
     const pos = c.position || "Other";

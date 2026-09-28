@@ -1,6 +1,7 @@
 import React from 'react';
 import api from '../api';
 import { DEFAULT_TZ, tzShort, utcOffsetLabel } from '../tz';
+import { LoadingBlock } from './Spinner.jsx';
 
 // "Today" is always the day it is in the ELECTION timezone (set on the
 // admin Timeline), never the viewer's device timezone — a voter abroad sees
@@ -230,7 +231,7 @@ export default function ElectionTimeline() {
       <style>{PULSE_CSS}</style>
       <LiveClock now={now} tz={tz} />
       {milestonesError && <p style={{ fontSize: 13, opacity: 0.7 }}>Couldn't load the election roadmap.</p>}
-      {!milestonesError && !milestones && <p style={{ fontSize: 13, opacity: 0.7 }}>Loading…</p>}
+      {!milestonesError && !milestones && <LoadingBlock text="Loading…" />}
       {milestones && milestones.length === 0 && <p style={{ fontSize: 13, opacity: 0.7 }}>No roadmap has been published yet.</p>}
       {weeks.length > 0 && (
         <div>

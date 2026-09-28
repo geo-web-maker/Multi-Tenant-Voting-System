@@ -7,6 +7,7 @@ import usePolling from '../hooks/usePolling';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import MobileMoneyNumber from './MobileMoneyNumber';
 import { usePaymentInfo } from '../paymentInfo';
+import { LoadingBlock } from './Spinner.jsx';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -274,7 +275,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
             <h4 style={sectionTitle}>Position</h4>
 
             {posLoading ? (
-              <p style={{ opacity: 0.5, fontSize: '13px' }}>Loading available positions…</p>
+              <LoadingBlock text="Loading available positions…" />
             ) : positions.length === 0 ? (
               <div style={{ ...infoBox, borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }}>
                 <p style={{ margin: 0, color: 'var(--danger)', fontSize: '13px' }}>

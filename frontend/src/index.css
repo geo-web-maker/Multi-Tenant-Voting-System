@@ -720,6 +720,17 @@ td, th {
 .icon-spin { animation: icon-spin 0.9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .icon-spin { animation-duration: 2.5s; } }
 
+/* SVG loading spinner (components/Spinner.jsx): brand navy on light, brand gold on dark */
+:root { --spinner-default: var(--brand-primary, #003366); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --spinner-default: var(--brand-accent, #f1c40f); }
+}
+[data-theme="dark"] { --spinner-default: var(--brand-accent, #f1c40f); }
+.loading-spinner { animation: icon-spin 0.9s linear infinite; }
+.loading-spinner-track { stroke: currentColor; opacity: 0.18; }
+.loading-spinner-arc { stroke: var(--spinner-color, var(--spinner-default)); }
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation-duration: 2.5s; } }
+
 /* Shared fade+slide entrance for modals and menus (help panel, fee/register/
    timeline modals). Kept short (180ms) so it reads as responsive, not showy.
    Reduced-motion users get the instant version via the global rule above. */

@@ -7,6 +7,7 @@ import { Icon } from './icons.jsx';
 import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, fmtZoned, tzShort, utcOffsetLabel, zoneList } from '../tz';
 import { regNo } from '../regNo';
 import { AdminTurnoutBreakdown } from './TurnoutBreakdown';
+import { LoadingBlock } from './Spinner.jsx';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -434,7 +435,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
   };
 
   if (error && !data) return <p style={errStyle}>{error}</p>;
-  if (!data) return <p style={mutedStyle}>Loading schedule…</p>;
+  if (!data) return <LoadingBlock text="Loading schedule…" />;
   const tz = data.timezone || DEFAULT_TZ;
 
   return (
@@ -694,7 +695,7 @@ export function RoadmapEditor({ canEdit = false }) {
   };
 
   if (error && !rows) return <p style={errStyle}>{error}</p>;
-  if (!rows) return <p style={mutedStyle}>Loading roadmap…</p>;
+  if (!rows) return <LoadingBlock text="Loading roadmap…" />;
 
   return (
     <div>
@@ -837,7 +838,7 @@ export function ActivityLog() {
       </div>
 
       {error && <p style={errStyle}>{error}</p>}
-      {loading && <p style={mutedStyle}>Loading…</p>}
+      {loading && <LoadingBlock text="Loading…" />}
 
       <div style={scrollBox} className="table-scroll">
         <table style={tableStyle}>
@@ -1331,7 +1332,7 @@ export function RosterStats() {
   }, []);
 
   if (error) return <p style={errStyle}>{error}</p>;
-  if (!data) return <p style={mutedStyle}>Loading…</p>;
+  if (!data) return <LoadingBlock text="Loading…" />;
 
   const cards = [
     { label: 'Registered voters', value: data.total_registered },
@@ -1393,7 +1394,7 @@ export function RecentActivity({ limit = 6 }) {
     <div style={{ marginTop: '20px' }}>
       <h4 style={panelTitle}>Recent Activity</h4>
       {error && <p style={errStyle}>{error}</p>}
-      {!error && entries === null && <p style={mutedStyle}>Loading…</p>}
+      {!error && entries === null && <LoadingBlock text="Loading…" />}
       {!error && entries?.length === 0 && <p style={mutedStyle}>Nothing has happened yet.</p>}
       {!error && entries?.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '65vh', overflowY: 'auto', overscrollBehavior: 'contain' }}>

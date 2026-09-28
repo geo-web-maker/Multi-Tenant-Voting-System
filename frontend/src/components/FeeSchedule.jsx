@@ -2,6 +2,7 @@ import React from 'react';
 import api from '../api';
 import MobileMoneyNumber from './MobileMoneyNumber';
 import { usePaymentInfo } from '../paymentInfo';
+import { LoadingBlock } from './Spinner.jsx';
 
 /**
  * Nomination fee list, shown from the Help menu so anyone can check what a
@@ -24,7 +25,7 @@ export default function FeeSchedule() {
     <div>
       <h3 style={{ marginTop: 0 }}>Nomination Fees</h3>
       {error && <p style={{ opacity: 0.7 }}>Could not load the fee list right now. Please try again shortly.</p>}
-      {!error && positions === null && <p style={{ opacity: 0.7 }}>Loading…</p>}
+      {!error && positions === null && <LoadingBlock text="Loading…" />}
       {!error && positions !== null && positions.length === 0 && (
         <p style={{ opacity: 0.7 }}>No positions have been set up yet.</p>
       )}

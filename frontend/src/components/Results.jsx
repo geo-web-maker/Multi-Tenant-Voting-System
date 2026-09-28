@@ -3,6 +3,7 @@ import api from '../api';
 import FinalReport from './FinalReport';
 import { Icon } from './icons.jsx';
 import { PublicTurnoutBreakdown } from './TurnoutBreakdown';
+import { LoadingBlock } from './Spinner.jsx';
 
 // 1. SHUFFLE UTILITY (Outside the component)
 const shuffleArray = (array) => {
@@ -179,7 +180,7 @@ const fetchData = async ({ force = false } = {}) => {
     group.candidates.push(candidate);
   });
 
-  if (loading) return <div style={{textAlign: 'center', padding: '50px'}}>Loading Live Tally…</div>;
+  if (loading) return <div style={{textAlign: 'center', padding: '50px'}}><LoadingBlock text="Loading Live Tally…" /></div>;
 
   return (
     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
@@ -345,7 +346,7 @@ const fetchData = async ({ force = false } = {}) => {
             // Threshold is met, so the lock is NOT active — the roll just hasn't (re)loaded yet, e.g. a
             // rate-limited or failed request. Never claim a privacy lock the numbers contradict.
             <div style={privacyLockStyle}>
-              <p style={{ margin: 0, fontSize: '13px' }}>Loading the participation roll…</p>
+              <LoadingBlock text="Loading the participation roll…" />
             </div>
           ) : (
             <div style={privacyLockStyle}>

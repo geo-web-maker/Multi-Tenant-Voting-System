@@ -14,6 +14,7 @@ import ManifestoText from './ManifestoText';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import ClosedNotice, { vettingNoticeText } from './ClosedNotice';
+import { LoadingBlock } from './Spinner.jsx';
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
@@ -634,7 +635,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div>
             {!liveResults ? (
               <div style={emptyState}>
-                <p style={{ opacity: 0.5 }}>Loading live results…</p>
+                <LoadingBlock text="Loading live results…" />
               </div>
             ) : (
               <>

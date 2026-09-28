@@ -21,6 +21,7 @@ import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
 import VoterImportReview from './VoterImportReview';
 import PaymentInfoPanel from './PaymentInfoPanel';
+import { LoadingBlock } from './Spinner.jsx';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -1031,7 +1032,7 @@ const handleSuperAdminRemoveStudent = async () => {
               ))}
             </div>
 
-            {appsLoading && <p style={{ opacity: 0.5 }}>Loading…</p>}
+            {appsLoading && <LoadingBlock text="Loading…" />}
 
             {filteredApps.length === 0 && !appsLoading && (
               <p style={{ opacity: 0.5, textAlign: 'center', marginTop: '40px' }}>No applications in this category.</p>

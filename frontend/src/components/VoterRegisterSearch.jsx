@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
 import { regNo } from '../regNo';
+import { LoadingBlock } from './Spinner.jsx';
 
 export default function VoterRegisterSearch() {
   const [q, setQ] = useState('');
@@ -57,7 +58,7 @@ export default function VoterRegisterSearch() {
             <span>Registration Number</span>
           </div>
           <div style={tableBodyStyle}>
-            {loading && <p style={mutedCenter}>Searching…</p>}
+            {loading && <div style={mutedCenter}><LoadingBlock text="Searching…" inline /></div>}
             {!loading && results.length === 0 && <p style={mutedCenter}>No matches found.</p>}
             {!loading && results.map((v, i) => (
               <div key={i} style={rowStyle}>

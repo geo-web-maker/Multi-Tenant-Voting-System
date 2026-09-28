@@ -4,6 +4,7 @@ import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
 import { regNo } from '../regNo';
+import { LoadingBlock } from './Spinner.jsx';
 
 // Must match RESET_REASONS in the backend.
 const REASONS = [
@@ -62,7 +63,7 @@ function TypeaheadSearch({ placeholder, ariaLabel, fetcher, onPick, renderResult
         onFocus={() => { if (results.length > 0) setOpen(true); }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
       />
-      {loading && <span style={spinnerHint}>Searching…</span>}
+      {loading && <span style={spinnerHint}><LoadingBlock text="Searching…" inline /></span>}
       {open && results.length > 0 && (
         <div style={list}>
           {results.map((item, i) => (
