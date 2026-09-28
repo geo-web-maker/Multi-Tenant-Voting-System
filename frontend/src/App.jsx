@@ -11,6 +11,8 @@ import ClosedNotice, { votingNoticeText } from './components/ClosedNotice';
 import ITAdminDashboard from './components/ITAdminDashboard';
 import FinancialControllerDashboard from './components/FinancialControllerDashboard';
 import OverseerDashboard from './components/OverseerDashboard';
+import CandidateStatusPortal from './components/CandidateStatusPortal';
+import VerifyCertificate from './components/VerifyCertificate';
 import { HelpMenuProvider } from './context/HelpMenuContext';
 import HelpPanel from './components/HelpPanel';
 
@@ -75,7 +77,20 @@ const examples = [
   { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
 ];
 
+// Matched once per render (cheap, and the pathname doesn't change without a
+// reload in this session-state-driven SPA) rather than as a hook — it must
+// be readable before deciding whether to run the rest of App's hooks' work.
+function matchStatusToken() {
+  return window.location.pathname.match(/^\/status\/([A-Za-z0-9_-]+)$/)?.[1] || null;
+}
+
+function matchVerifyId() {
+  return window.location.pathname.match(/^\/verify\/([A-Za-z0-9_-]+)$/)?.[1] || null;
+}
+
 function App() {
+  const statusToken = matchStatusToken();
+  const verifyId = matchVerifyId();
   const [supportContacts, setSupportContacts] = useState([]);
   const [supportPhone, setSupportPhone] = useState("");
   const [showGuide, setShowGuide] = useState(false); // New state for Guide
@@ -631,6 +646,20 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
   if (!bootReady) {
     return <BootSplash orgName={orgName} logoUrl={logoUrl} exiting={bootExiting} slow={bootSlow} />;
+  }
+
+  // candidate-portal-spec §4.1: a public, token-linked status page, reachable
+  // by URL rather than a nav click (same idea as ApplicantPortal). No router
+  // exists in this app, so this is a plain pathname check — skips all of the
+  // view/step/session restoration above entirely. frontend/vercel.json's SPA
+  // catch-all already rewrites any path to /index.html, so a cold hit here
+  // loads the app shell before this check runs; no Vercel config change needed.
+  if (statusToken) {
+    return <CandidateStatusPortal token={statusToken} />;
+  }
+  // What a certificate's QR code opens — public, read-only (see VerifyCertificate).
+  if (verifyId) {
+    return <VerifyCertificate certificateId={verifyId} />;
   }
 
   return (

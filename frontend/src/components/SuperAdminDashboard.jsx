@@ -18,6 +18,7 @@ import ContactChangesQueue from './ContactChangesQueue';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
+import VoterImportReview from './VoterImportReview';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -100,6 +101,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [electionVoters, setElectionVoters] = useState([]);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified]       = useState(false);
+  const [importFile, setImportFile] = useState(null);
   const [importing, setImporting]           = useState(false);
   const [voterSearch2, setVoterSearch2]     = useState('');
   const [loading, setLoading]               = useState(false);
@@ -438,6 +440,16 @@ const refetchAll = () => {
     } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
+  // Resend is about SMS delivery, not a vetting decision, so it's available
+  // regardless of application status (pending/approved/denied alike) —
+  // candidate-portal-spec §4.3.
+  const handleResendStatusLink = async (studentId) => {
+    try {
+      await api.post(`/superadmin/candidates/${encodeURIComponent(studentId)}/resend-status-link`);
+      toast('Status link resent.', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to resend status link.'), { kind: 'error' }); }
+  };
+
   // ── Commissioners ──
 
   const handleToggleCommissioner = async (studentId) => {
@@ -617,21 +629,23 @@ const handleCreateOrg = async (e) => {
     } catch (e) { toast(getErrorMessage(e, 'Reset failed.'), { kind: 'error' }); }
   };
 
-  const handleImportVoters = async (e) => {
+  // Picking a file only opens the review screen (a dry-run diff against the
+  // live roster); nothing is written until the admin confirms there.
+  const handleImportVoters = (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    const formData = new FormData();
-    formData.append('file', file);
-    setImporting(true);
-    try {
-      const res = await api.post(`/admin/import-voters`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      toast(`Imported ${res.data.imported_count} voters.`, { kind: 'success' });
-      fetchElectionData();
-      fetchVotersList();
-    } catch (e) { toast(getErrorMessage(e, 'Import failed.'), { kind: 'error' }); }
-    finally { setImporting(false); e.target.value = null; }
+    e.target.value = null;
+    if (file) setImportFile(file);
+  };
+
+  const handleImportDone = (r) => {
+    const parts = [`${r.added} added`, `${r.updated} updated`];
+      if (r.skipped_changes) parts.push(`${r.skipped_changes} left unchanged`);
+      if (r.removed) parts.push(`${r.removed} removed`);
+      if (r.blocked_removals) parts.push(`${r.blocked_removals} protected voter(s) kept`);
+      toast(`Voter update applied: ${parts.join(', ')}.`, { kind: 'success', duration: 7000 });
+    setImportFile(null);
+    fetchElectionData();
+    fetchVotersList();
   };
   
   //--IT Admin changes
@@ -1082,6 +1096,9 @@ const handleSuperAdminRemoveStudent = async () => {
                       Remove from Ballot
                     </button>
                   )}
+                  <button style={ghostBtn} onClick={() => handleResendStatusLink(app.student_id)}>
+                    Resend status link
+                  </button>
                 </div>
               </div>
             ))}
@@ -1293,6 +1310,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   ? <span style={{ fontSize: '13px', opacity: 0.8 }}>{FROZEN_NOTE}</span>
                   : <><span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters CSV</span>
                     <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} /></>}
+                {importFile && <VoterImportReview file={importFile} onClose={() => setImportFile(null)} onDone={handleImportDone} />}
               </div>
               <button style={ghostBtn} onClick={() => fetchElectionData()} disabled={loading}>
                 {loading ? 'Syncing…' : <>Refresh</>}

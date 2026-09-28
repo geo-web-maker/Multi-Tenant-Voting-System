@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 import secrets
+from collections import Counter
 import asyncio
 import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
@@ -168,6 +169,8 @@ async def lifespan(app: FastAPI):
     await db.contact_changes.create_index(                         # one pending request per voter, atomically
         [("org_id", 1), ("student_id", 1)], unique=True, partialFilterExpression={"status": "pending"})
     await db.roster_ledger.create_index([("org_id", 1), ("seq", 1)], unique=True)
+    await db.voter_import_previews.create_index("created_at", expireAfterSeconds=3600)
+    await db.voter_import_previews.create_index("preview_id", unique=True)
     await db.roster_ledger.create_index([("org_id", 1), ("event", 1), ("ref_id", 1), ("ts", -1)])
     await db.voters.create_index([("has_voted", 1), ("sms_sends_total", 1)])
     # Phase exception grants — looked up on every gated action.
@@ -318,7 +321,11 @@ except Exception as e:
 # whose data still has org_id=None.
 REQUIRE_ORG_CONTEXT = os.getenv("REQUIRE_ORG_CONTEXT", "true").strip().lower() == "true"
 ORG_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json",
-                       "/superadmin/orgs", "/superadmin/mfa", "/verify-admin")
+                       "/superadmin/orgs", "/superadmin/mfa", "/verify-admin",
+                       # Token/id-scoped, not header-scoped (candidate-portal-spec §3.2/§3.4) —
+                       # the token or certificate_id itself carries the org, so an
+                       # X-Org-Slug header is neither required nor consulted.
+                       "/candidates/status/", "/verify/")
 
 
 @app.middleware("http")
@@ -376,6 +383,11 @@ def _is_public(path: str, method: str) -> bool:
     # nothing sensitive — and is fetched unauthenticated on every page load
     # by App.jsx and Results.jsx for every visitor, not just superadmin.
     if method == "GET" and path in {"/candidates", "/positions", "/superadmin/branding", "/election-schedule", "/election-roadmap"}:
+        return True
+    # candidate-portal-spec §3.2/§3.4: read-only, token/id-scoped, no admin
+    # session involved at all — same reasoning as the voter-facing routes
+    # in PUBLIC_PATHS above (auth happens per-request via the token itself).
+    if method == "GET" and (path.startswith("/candidates/status/") or path.startswith("/verify/")):
         return True
     return False
 
@@ -627,6 +639,10 @@ class PositionUpdate(BaseModel):
 
 # --- Applications ---
 MANIFESTO_MAX_CHARS = 3000  # ~500 words; keep in sync with the frontend constant
+
+# Base URL the candidate status-link SMS points into (frontend/vercel.json's
+# SPA catch-all loads the app shell for any /status/<token> path).
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourapp.vercel.app").rstrip("/")
 
 class ApplicationSubmit(BaseModel):
     student_id:        str
@@ -1363,6 +1379,74 @@ async def _flag_tie_for_chief(app_id: str, org_id: str):
     await log_action("application_vote_tied", "commission", {"app_id": app_id}, org_id=org_id)
 
 
+async def _issue_certificate(app_doc: dict, org_id: str = None):
+    """
+    Called at the moment an application is approved (commission vote or
+    superadmin force-approve) — candidate-portal-spec §3.5. Inserts a
+    minimal, public-safe row into `certificates` (never a copy of the full
+    `applications` doc) and stamps `certificate_id`/`certificate_issued_at`
+    back onto the application. This row *is* the snapshot: nothing else is
+    rendered or stored server-side, the frontend prints the certificate
+    component from these fields plus branding.
+    """
+    title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
+    b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
+    certificate_id = f"CERT-{secrets.token_urlsafe(6).upper().replace('-', '').replace('_', '')[:8]}"
+    issued_at = datetime.utcnow()
+    await db.certificates.insert_one({
+        "certificate_id": certificate_id,
+        "org_id": org_id,
+        "candidate_name": app_doc.get("full_name", ""),
+        "position_title": title,
+        "org_name": b.get("org_name", ""),
+        "issued_at": issued_at,
+        "revoked": False,
+    })
+    await db.applications.update_one(
+        {"_id": ObjectId(str(app_doc["_id"]))},
+        {"$set": {"certificate_id": certificate_id, "certificate_issued_at": issued_at}}
+    )
+
+
+async def _record_denial_snapshot(app_doc: dict, org_id: str):
+    """
+    Called at the moment an application is denied, from any of the three
+    denial paths (commission vote, finance rejection, superadmin
+    force-deny) — candidate-portal-spec §3.5. A standard denial: no reason is
+    recorded or shown. Freezes the fields the plain denial-notice renders; a later correction to the
+    candidate's live record never changes what already "printed".
+    """
+    title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
+    decided_at = datetime.utcnow()
+    await db.applications.update_one(
+        {"_id": ObjectId(str(app_doc["_id"]))},
+        {"$set": {
+            "denial_snapshot": {
+                "full_name": app_doc.get("full_name", ""),
+                "position_title": title,
+                "decided_at": decided_at,
+            },
+        }}
+    )
+
+
+async def _revoke_certificate_for_application(app_doc: dict, org_id: str = None):
+    """
+    Called when an approved candidate is removed (commission removal-vote
+    majority or superadmin force-removal) — candidate-portal-spec §3.7. The
+    certificate row is never deleted, only flipped to revoked, so a stale
+    printed copy still resolves at /verify/{certificate_id} but correctly
+    shows as no longer valid rather than disappearing or still confirming.
+    """
+    certificate_id = app_doc.get("certificate_id")
+    if not certificate_id:
+        return
+    await db.certificates.update_one(
+        {"certificate_id": certificate_id, "org_id": org_id},
+        {"$set": {"revoked": True}}
+    )
+
+
 async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
     """
     Called after every commissioner vote. Resolution rule (unanimous /
@@ -1397,6 +1481,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         if result.matched_count == 0:
             return
         await _create_candidate_from_application(app_doc, org_id)
+        await _issue_certificate(app_doc, org_id)
         await log_action("application_approved", "commission", {
             "app_id": app_id, "approve_count": approve_count, "total_commissioners": total, "policy": policy,
         }, org_id=org_id)
@@ -1412,6 +1497,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         )
         if result.matched_count == 0:
             return
+        await _record_denial_snapshot(app_doc, org_id)
         await log_action("application_denied", "commission", {
             "app_id": app_id, "deny_count": deny_count, "total_commissioners": total, "policy": policy,
         }, org_id=org_id)
@@ -1451,6 +1537,7 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
             return
         cand = await db.candidates.find_one({"application_id": app_id})
         await db.candidates.delete_one({"application_id": app_id})
+        await _revoke_certificate_for_application(app_doc, org_id)
         # Was only logger.info'd — a candidate removed by commission majority
         # never showed up in the Activity Log at all, unlike a superadmin's
         # forced removal (candidate_removed, logged in
@@ -3223,11 +3310,28 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     if existing:
         raise HTTPException(400, "You have already applied for this position.")
 
+    round_id = await current_round_id(request)
+    org_id = request.state.org_id
+    position_title, _ = await _resolve_position_title(data.position_id, org_id)
+
+    # candidate-portal-spec §2/§4.1: a copy of the submitted fields, captured
+    # once here. The printable "Application Snapshot" view always renders
+    # this, never the live application doc, so a later IT-admin correction
+    # doesn't change what was already "printed".
+    application_snapshot = {
+        "student_id":     data.student_id,
+        "full_name":      data.full_name,
+        "position_title": position_title,
+        "manifesto":      data.manifesto,
+        "image_url":      data.image_url,
+        "submitted_at":   datetime.utcnow(),
+    }
+
     await db.applications.insert_one(org_stamp(request, {
         **data.dict(),
         # round_id is written now so multi-round support later is a feature
         # addition, not a breaking data migration.
-        "round_id": await current_round_id(request),
+        "round_id": round_id,
         "status": "pending",
         "votes": {},          # { commissioner_student_id: "approve" | "deny" }
         "removal_votes": {},  # same structure, used after approval
@@ -3235,13 +3339,181 @@ async def submit_application(data: ApplicationSubmit, request: Request):
         "finance_cleared": False,      # gate: Finance Commissioner must clear before voting opens
         "finance_cleared_by": None,
         "finance_cleared_at": None,
-        "submitted_at": datetime.utcnow()
+        "submitted_at": datetime.utcnow(),
+        "application_snapshot": application_snapshot,
+        "denial_snapshot": None,
+        "certificate_id": None,
+        "certificate_issued_at": None,
     }))
     await log_action("application_submitted", data.student_id, {
     "position_id": data.position_id,
     "full_name":   data.full_name
     }, org_id=request.state.org_id)
+
+    # candidate-portal-spec §3.1: one status link per student per round,
+    # generated on first application and reused for every later one.
+    existing_token = await db.candidate_tokens.find_one({
+        "student_id": data.student_id, "round_id": round_id, "org_id": org_id,
+    })
+    if not existing_token:
+        token = secrets.token_urlsafe(32)
+        await db.candidate_tokens.insert_one({
+            "token": token, "student_id": data.student_id,
+            "round_id": round_id, "org_id": org_id,
+            "created_at": datetime.utcnow(),
+        })
+        phones = student.get("phone_numbers") or []
+        if phones:
+            # "candidate_status_link" deliberately isn't in PRIORITY_SMS_KINDS —
+            # this rides the cheap/slow non-priority tier (§3.1): nobody is
+            # staring at their phone waiting for it the way an OTP recipient is.
+            await send_sms(
+                phones[0],
+                f"Application received. Check status: {FRONTEND_URL}/status/{token}",
+                request, kind="candidate_status_link",
+            )
     return {"status": "submitted"}
+
+# =============================================================================
+# CANDIDATE STATUS PORTAL  (public, token-linked, read-only — candidate-portal-spec)
+# =============================================================================
+
+async def _candidacy_results_band(position_title: str, candidate_id: str, org_id: str, request: Request) -> dict | None:
+    """
+    §3.3: rank/of/trend for one candidate, reusing the same aggregation the
+    Commission/Overseer "Candidate Results" tab already uses
+    (get_vote_counts), gated the same way /election-results gates the public
+    breakdown — never raw vote counts or opponent names, only the band.
+    """
+    cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    schedule = await get_phase_schedule(request)
+    voting_open = _phase_is_open(schedule["phases"].get("voting", {}), datetime.utcnow())
+    voting_closed_certified = cfg.get("is_certified", False)
+    if not (voting_open or voting_closed_certified):
+        return None
+
+    vote_counts = await get_vote_counts(request)
+    peers = [c async for c in db.candidates.find(org_query(request, {"position": position_title}))]
+    if not peers:
+        return None
+    ranked = sorted(peers, key=lambda c: vote_counts.get(str(c["_id"]), 0), reverse=True)
+    of = len(ranked)
+    rank = next((i + 1 for i, c in enumerate(ranked) if str(c["_id"]) == candidate_id), None)
+    if rank is None:
+        return None
+    trend = "leading" if rank == 1 else ("tied" if of > 1 and vote_counts.get(str(ranked[0]["_id"]), 0) == vote_counts.get(candidate_id, 0) else "trailing")
+    return {"rank": rank, "of": of, "trend": trend}
+
+
+@app.get("/candidates/status/{token}")
+async def get_candidate_status(token: str, request: Request):
+    """
+    Public, no auth, no org_query/org_stamp — the token itself scopes the
+    lookup (§3.2). One link covers every position a student applied for in
+    a round, so this returns one entry per matching `applications` row.
+    """
+    token_doc = await db.candidate_tokens.find_one({"token": token})
+    if not token_doc:
+        raise HTTPException(404, "Status link not found or expired.")
+
+    org_id = token_doc.get("org_id")
+    # Every downstream helper here (org_query/org_stamp/get_phase_schedule/
+    # get_vote_counts) reads tenant scope off request.state.org_id — set it
+    # from the token's stored org_id rather than duplicating each helper.
+    request.state.org_id = org_id
+
+    apps = db.applications.find({
+        "student_id": token_doc["student_id"],
+        "round_id": token_doc["round_id"],
+        "org_id": org_id,
+    })
+
+    candidacies = []
+    async for app_doc in apps:
+        title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
+        entry = {
+            "position_title": title,
+            "status": app_doc.get("status", "pending"),
+            "application_snapshot": app_doc.get("application_snapshot"),
+        }
+        if app_doc.get("status") == "denied" and app_doc.get("denial_snapshot"):
+            entry["denial_snapshot"] = app_doc["denial_snapshot"]
+        if app_doc.get("certificate_id"):
+            cert = await db.certificates.find_one({"certificate_id": app_doc["certificate_id"]})
+            if cert and not cert.get("revoked"):
+                entry["certificate_id"] = app_doc["certificate_id"]
+        if app_doc.get("status") in ("approved", "removed"):
+            cand = await db.candidates.find_one({"application_id": str(app_doc["_id"])})
+            if cand:
+                results = await _candidacy_results_band(
+                    title, str(cand["_id"]), org_id, request)
+                if results:
+                    entry["results"] = results
+        candidacies.append(entry)
+
+    return {"candidacies": candidacies}
+
+
+@app.get("/verify/{certificate_id}")
+async def verify_certificate(certificate_id: str):
+    """
+    Public. Looks up `certificates` only, never `applications` (§3.4) — what
+    a certificate's QR code points to.
+    """
+    cert = await db.certificates.find_one({"certificate_id": certificate_id})
+    if not cert:
+        raise HTTPException(404, "Certificate not found.")
+    if cert.get("revoked"):
+        return {"verified": False, "revoked": True}
+    return {
+        "verified": True,
+        "candidate_name": cert.get("candidate_name", ""),
+        "position_title": cert.get("position_title", ""),
+        "org_name": cert.get("org_name", ""),
+        "issued_at": cert.get("issued_at"),
+    }
+
+
+@app.post("/superadmin/candidates/{student_id:path}/resend-status-link")
+async def resend_candidate_status_link(student_id: str, request: Request):
+    """
+    §3.8. Placed under /superadmin (rather than the /admin path the spec
+    prose names) so the codebase's existing auth_guard_middleware — which
+    already gates every /superadmin/* path to the superadmin role — covers
+    it for free, consistent with every other force-approve/force-deny-tier
+    action in this file.
+    """
+    round_id = await current_round_id(request)
+    # candidate_tokens.student_id is written verbatim in submit_application
+    # (§3.1: "student_id" from the same student_id used to insert that row)
+    # — try an exact match first, then the app's usual forgiving/normalized
+    # comparison for a student_id typed differently than it was stored.
+    student_id_canon = normalize_student_id(student_id)
+    token_doc = (
+        await db.candidate_tokens.find_one(org_query(request, {"round_id": round_id, "student_id": student_id}))
+        or await db.candidate_tokens.find_one(org_query(request, {
+            "round_id": round_id,
+            "student_id": {"$regex": f"^{student_id_canon}$", "$options": "i"},
+        }))
+    )
+    if not token_doc:
+        raise HTTPException(404, "This student has no candidacy this round.")
+
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    phones = (voter or {}).get("phone_numbers") or []
+    if not phones:
+        raise HTTPException(400, "This student has no phone number on file.")
+
+    # Never generates a new token — an already-shared link should keep working.
+    await send_sms(
+        phones[0],
+        f"Application received. Check status: {FRONTEND_URL}/status/{token_doc['token']}",
+        request, kind="candidate_status_link",
+    )
+    await log_action("candidate_status_link_resent", current_actor(request),
+                      {"student_id": student_id}, org_id=request.state.org_id)
+    return {"status": "resent"}
+
 
 # =============================================================================
 # ADMIN ROUTES  (election control — accessible to both superadmin & commission)
@@ -3726,119 +3998,244 @@ IMPORT_FIELD_MAX_LEN = 200
 _UGANDA_MSISDN_RE = re.compile(r"^256\d{9}$")
 
 
-@app.post("/admin/import-voters")
-async def import_voters(request: Request, file: UploadFile = File(...), admin: dict = Depends(require_role("it_admin", "superadmin"))):
-    await assert_roster_unfrozen(request)   # import also overwrites phones/names of existing voters
-    content = await file.read()
-    reader  = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
-    now     = datetime.utcnow()
+def _normalize_phone_field(raw_phone_field: str, sid: str, row_num: int, warnings: list) -> list:
+    formatted = []
+    for num in raw_phone_field.split('/'):
+        clean = re.sub(r'\D', '', num.strip())
+        if not clean:
+            continue
+        if clean.startswith('0'):
+            clean = '256' + clean[1:]
+        elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
+            clean = '256' + clean
+        if not _UGANDA_MSISDN_RE.match(clean):
+            # Kept, just surfaced — the importing admin can judge one flagged row.
+            warnings.append(
+                f"Row {row_num} ({sid}): phone \"{num.strip()}\" normalized to \"{clean}\", "
+                f"which doesn't look like a standard Ugandan number — please double-check it.")
+        if clean not in formatted:
+            formatted.append(clean)
+    return formatted
 
-    ops: list[UpdateOne] = []
+
+def _parse_voter_csv(content: bytes) -> dict:
+    """Shared by the preview and the legacy endpoint. Last row wins for a repeated ID (warned)."""
+    reader = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
+    rows: dict[str, dict] = {}
     warnings: list[str] = []
     skipped = 0
-    row_num = 1  # header is row 1; first data row is 2, matching what a spreadsheet shows
-
+    row_num = 1  # header is row 1; first data row is 2, matching a spreadsheet
     for row in reader:
         row_num += 1
-        # Handle both hyphen (student-id) and underscore (student_id) column names
-        sid             = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
-        name            = normalize_name((row.get('full_name')  or row.get('full-name')  or '').strip())
-        raw_phone_field = (row.get('phone') or '').strip()
-
+        sid   = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
+        name  = normalize_name((row.get('full_name') or row.get('full-name') or '').strip())
         if not (sid and name):
             skipped += 1
             continue
-
         if len(sid) > IMPORT_FIELD_MAX_LEN or len(name) > IMPORT_FIELD_MAX_LEN:
             skipped += 1
             warnings.append(f"Row {row_num}: student_id or full_name exceeds {IMPORT_FIELD_MAX_LEN} characters — skipped.")
             continue
+        if sid in rows:
+            warnings.append(f"Row {row_num} ({sid}): registration number appears more than once in the file — the later row is used.")
+        rows[sid] = {
+            "student_id": sid, "full_name": name,
+            "phone_numbers": _normalize_phone_field((row.get('phone') or '').strip(), sid, row_num, warnings),
+        }
+    return {"rows": rows, "warnings": warnings, "skipped": skipped}
 
-        raw_numbers       = raw_phone_field.split('/')
-        formatted_numbers = []
 
-        for num in raw_numbers:
-            clean = re.sub(r'\D', '', num.strip())
-            if not clean:
-                continue
-            if clean.startswith('0'):
-                clean = '256' + clean[1:]
-            elif len(clean) == 9 and (clean.startswith('7') or clean.startswith('4')):
-                clean = '256' + clean
-            if not _UGANDA_MSISDN_RE.match(clean):
-                # Not rejected outright — some legitimate numbers (a foreign
-                # number for a diaspora student, say) won't match this
-                # pattern, and the importing admin is in a better position
-                # than this endpoint to judge one flagged row. It's kept,
-                # just surfaced.
-                warnings.append(
-                    f"Row {row_num} ({sid}): phone \"{num.strip()}\" normalized to \"{clean}\", "
-                    f"which doesn't look like a standard Ugandan number — please double-check it."
-                )
-            if clean not in formatted_numbers:
-                formatted_numbers.append(clean)
+_NEW_VOTER_DEFAULTS = {
+    "is_commissioner": False, "has_voted": False, "last_active": None, "last_status": "idle", "otp_count": 0,
+}
+_STAFF_FLAGS = (
+    ("has_voted", "Has already voted"),
+    ("is_commissioner", "Commissioner"),
+    ("is_it_admin", "IT admin"),
+    ("is_financial_controller", "Financial controller"),
+    ("is_overseer", "Overseer"),
+)
 
-        # This used to $set has_voted/last_status/is_commissioner to
-        # their defaults on EVERY row, including voters who already
-        # existed. Re-importing the roster mid-election (to fix a typo,
-        # add a few late names, etc.) silently un-voted every existing
-        # voter, wiped every commissioner's role, and reset otp_count —
-        # while vote_events (the actual tally) is untouched by import
-        # and only ever cleared by /admin/reset-election. That's how
-        # "votes cast" (from vote_events, cumulative across re-imports)
-        # and "completed voters" (from voters.has_voted, reset by the
-        # next import) drift apart — the Undervote/Funnel panels were
-        # comparing two counters that could silently fall out of sync.
-        # It was also a real double-vote path: a re-imported voter's
-        # has_voted flips back to False, so they can authenticate and
-        # vote again, adding a second vote_events row for the same
-        # person. $setOnInsert confines the reset-to-defaults to voters
-        # that don't exist yet; an existing voter's status is untouched
-        # by a re-import, only their name/phone are refreshed.
+
+async def _diff_roster(request: Request, rows: dict) -> dict:
+    """Compares parsed CSV rows against the live roster (matched on canonical registration number)."""
+    existing = {}
+    async for v in db.voters.find(org_query(request)):
+        existing[normalize_student_id(v.get("student_id", ""))] = v
+    applicants = set(await db.applications.distinct("student_id", org_query(request)))
+
+    new, changed, unchanged, missing = [], [], 0, []
+    for sid, r in rows.items():
+        v = existing.get(sid)
+        if not v:
+            new.append(r)
+            continue
+        old_name   = v.get("full_name", "")
+        old_phones = v.get("phone_numbers") or []
+        name_changed   = normalize_name(old_name) != r["full_name"]
+        phones_changed = set(old_phones) != set(r["phone_numbers"])
+        if name_changed or phones_changed:
+            changed.append({
+                "student_id": sid, "actual_id": v["student_id"],
+                "name_changed": name_changed, "phones_changed": phones_changed,
+                "old_name": old_name, "new_name": r["full_name"],
+                "old_phones": old_phones, "new_phones": r["phone_numbers"],
+            })
+        else:
+            unchanged += 1
+    for sid, v in existing.items():
+        if sid in rows:
+            continue
+        reasons = [label for flag, label in _STAFF_FLAGS if v.get(flag)]
+        if v.get("student_id") in applicants or sid in applicants:
+            reasons.append("Has an application / candidacy")
+        missing.append({
+            "student_id": sid, "actual_id": v["student_id"], "full_name": v.get("full_name", ""),
+            "protected": bool(reasons), "protected_reasons": reasons,
+        })
+    return {"new": new, "changed": changed, "unchanged": unchanged, "missing": missing}
+
+
+def _public_diff(diff: dict) -> dict:
+    """Phones are masked for display; full numbers never leave the server via preview."""
+    return {
+        "new": [{"student_id": r["student_id"], "full_name": r["full_name"],
+                 "phones": [_mask_phone(p) for p in r["phone_numbers"]]} for r in diff["new"]],
+        "changed": [{
+            "student_id": c["student_id"], "name_changed": c["name_changed"], "phones_changed": c["phones_changed"],
+            "old_name": c["old_name"], "new_name": c["new_name"],
+            "old_phones": [_mask_phone(p) for p in c["old_phones"]],
+            "new_phones": [_mask_phone(p) for p in c["new_phones"]],
+        } for c in diff["changed"]],
+        "missing": [{k: m[k] for k in ("student_id", "full_name", "protected", "protected_reasons")} for m in diff["missing"]],
+        "unchanged": diff["unchanged"],
+    }
+
+
+@app.post("/admin/import-voters/preview")
+async def import_voters_preview(request: Request, file: UploadFile = File(...),
+                                admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Step 1 of a roster update: nothing is written to the roster. Returns what the file would
+    add, change and leave behind so the admin can choose an action for each group."""
+    await assert_roster_unfrozen(request)
+    parsed = _parse_voter_csv(await file.read())
+    if not parsed["rows"]:
+        raise HTTPException(400, "No valid rows found. The file needs student_id, full_name and phone columns.")
+    diff = await _diff_roster(request, parsed["rows"])
+    preview_id = secrets.token_urlsafe(16)
+    await db.voter_import_previews.insert_one({
+        "preview_id": preview_id, "org_id": request.state.org_id, "created_by": current_actor(request),
+        "created_at": datetime.utcnow(), "rows": list(parsed["rows"].values()),
+    })
+    return {
+        "preview_id": preview_id,
+        "summary": {"file_rows": len(parsed["rows"]), "new": len(diff["new"]), "changed": len(diff["changed"]),
+                    "unchanged": diff["unchanged"], "missing": len(diff["missing"]),
+                    "skipped_rows": parsed["skipped"], "warning_count": len(parsed["warnings"])},
+        "warnings": parsed["warnings"][:50],
+        **_public_diff(diff),
+    }
+
+
+class VoterImportApply(BaseModel):
+    preview_id: str
+    new_action: str = "add"            # add | skip
+    changed_default: str = "apply"     # apply | skip
+    changed_overrides: dict[str, str] = {}   # student_id -> apply | skip
+    phone_mode: str = "replace"        # replace | merge (keep old numbers, add the new ones)
+    missing_default: str = "keep"      # keep | remove
+    missing_overrides: dict[str, str] = {}   # student_id -> keep | remove
+
+
+@app.post("/admin/import-voters/apply")
+async def import_voters_apply(data: VoterImportApply, request: Request,
+                              admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Step 2. The diff is recomputed against the roster as it is NOW (it may have changed since the
+    preview). Only name/phones are ever touched on existing voters — never has_voted, roles or
+    credentials — and voters with a vote, a staff role or an application can never be removed."""
+    await assert_roster_unfrozen(request)
+    if (data.new_action not in ("add", "skip") or data.changed_default not in ("apply", "skip")
+            or data.phone_mode not in ("replace", "merge") or data.missing_default not in ("keep", "remove")
+            or any(v not in ("apply", "skip") for v in data.changed_overrides.values())
+            or any(v not in ("keep", "remove") for v in data.missing_overrides.values())):
+        raise HTTPException(400, "Invalid import action.")
+    org_id = request.state.org_id
+    prev = await db.voter_import_previews.find_one({"preview_id": data.preview_id, "org_id": org_id})
+    if not prev:
+        raise HTTPException(404, "This import preview expired. Upload the file again.")
+    rows = {r["student_id"]: r for r in prev["rows"]}
+    diff = await _diff_roster(request, rows)
+    now = datetime.utcnow()
+    ops: list[UpdateOne] = []
+
+    added = 0
+    if data.new_action == "add":
+        for r in diff["new"]:
+            ops.append(UpdateOne(
+                org_query(request, {"student_id": r["student_id"]}),
+                {"$set": org_stamp(request, {"full_name": r["full_name"], "phone_numbers": r["phone_numbers"], "updated_at": now}),
+                 "$setOnInsert": dict(_NEW_VOTER_DEFAULTS)},
+                upsert=True))
+            added += 1
+
+    updated = skipped_changed = 0
+    for c in diff["changed"]:
+        if data.changed_overrides.get(c["student_id"], data.changed_default) != "apply":
+            skipped_changed += 1
+            continue
+        phones = c["new_phones"]
+        if data.phone_mode == "merge":
+            phones = c["old_phones"] + [p for p in c["new_phones"] if p not in c["old_phones"]]
         ops.append(UpdateOne(
-            org_query(request, {"student_id": sid}),
-            {
-                "$set": org_stamp(request, {
-                    "full_name":     name,
-                    "phone_numbers": formatted_numbers,
-                    "updated_at":    now,
-                }),
-                "$setOnInsert": {
-                    "is_commissioner": False,
-                    "has_voted":       False,
-                    "last_active":     None,
-                    "last_status":     "idle",
-                    "otp_count":       0,
-                },
-            },
-            upsert=True
-        ))
+            org_query(request, {"student_id": c["actual_id"]}),
+            {"$set": {"full_name": c["new_name"], "phone_numbers": phones, "updated_at": now}}))
+        updated += 1
+
+    to_remove, blocked = [], []
+    for m in diff["missing"]:
+        if data.missing_overrides.get(m["student_id"], data.missing_default) != "remove":
+            continue
+        if m["protected"]:
+            blocked.append({"student_id": m["student_id"], "reasons": m["protected_reasons"]})
+        else:
+            to_remove.append(m["actual_id"])
 
     if ops:
-        # PERFORMANCE: previously one update_one round trip per CSV row in a
-        # plain Python loop — fine for a few hundred students, but a roster
-        # in the low thousands could take long enough to risk hitting the
-        # platform's request timeout, leaving the import silently partial
-        # with no clear signal of where it stopped. bulk_write sends every
-        # row's update in one (or a few, batched by the driver) round trip.
-        # unordered=True so one bad row doesn't abort the rows after it.
         await db.voters.bulk_write(ops, ordered=False)
-    count = len(ops)  # rows that passed validation and were sent to Mongo
+    removed = 0
+    if to_remove:
+        res = await db.voters.delete_many(org_query(request, {"student_id": {"$in": to_remove}, "has_voted": {"$ne": True}}))
+        removed = res.deleted_count
+    await db.voter_import_previews.delete_one({"preview_id": data.preview_id})
 
-    # Cap how many individual warnings ride along in the response — a badly
-    # formatted file could otherwise generate thousands of lines. The admin
-    # still gets the total count and a representative sample.
-    MAX_WARNINGS_RETURNED = 50
+    summary = {"added": added, "updated": updated, "skipped_changes": skipped_changed, "removed": removed,
+               "blocked_removals": len(blocked), "phone_mode": data.phone_mode}
+    await log_action("voters_import_applied", current_actor(request), summary, org_id=org_id)
+    await append_ledger(org_id, "voters_import_applied", "roster", current_actor(request),
+                        (admin or {}).get("role", "admin"), summary)
+    return {"status": "success", **summary, "blocked": blocked}
+
+
+@app.post("/admin/import-voters")
+async def import_voters(request: Request, file: UploadFile = File(...), admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Legacy one-shot upsert (add new + refresh name/phone), kept for API compatibility. The
+    dashboards use /preview + /apply instead. Existing voters' status/roles are never reset here."""
+    await assert_roster_unfrozen(request)
+    parsed = _parse_voter_csv(await file.read())
+    now = datetime.utcnow()
+    ops = [UpdateOne(
+        org_query(request, {"student_id": r["student_id"]}),
+        {"$set": org_stamp(request, {"full_name": r["full_name"], "phone_numbers": r["phone_numbers"], "updated_at": now}),
+         "$setOnInsert": dict(_NEW_VOTER_DEFAULTS)},
+        upsert=True) for r in parsed["rows"].values()]
+    if ops:
+        await db.voters.bulk_write(ops, ordered=False)
     await log_action("voters_imported", current_actor(request), {
-        "count": count, "skipped": skipped, "warning_count": len(warnings)
+        "count": len(ops), "skipped": parsed["skipped"], "warning_count": len(parsed["warnings"])
     }, org_id=request.state.org_id)
-    return {
-        "status": "success",
-        "imported_count": count,
-        "skipped_rows": skipped,
-        "warnings": warnings[:MAX_WARNINGS_RETURNED],
-        "warning_count": len(warnings),
-    }
+    return {"status": "success", "imported_count": len(ops), "skipped_rows": parsed["skipped"],
+            "warnings": parsed["warnings"][:50], "warning_count": len(parsed["warnings"])}
+
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
@@ -4276,6 +4673,13 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
     )
     if result.matched_count == 0:
         raise HTTPException(400, "This application was already resolved or cleared by someone else.")
+
+    # Finance rejection is a separate code path from a commissioner-vote
+    # denial, so it records the denial snapshot itself — otherwise the
+    # candidate's status page would have no decision notice for it.
+    # (The finance reason above stays internal; the candidate sees a
+    # standard "Not approved".)
+    await _record_denial_snapshot(app_doc, request.state.org_id)
 
     await log_action("application_finance_rejected", data.commissioner_id,
                       {"app_id": app_id, "reason": data.reason.strip()}, org_id=request.state.org_id)
@@ -4812,6 +5216,7 @@ async def superadmin_force_approve(app_id: str, request: Request):
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just approved by someone else. Please refresh.")
     await _create_candidate_from_application(app_doc, request.state.org_id)
+    await _issue_certificate(app_doc, request.state.org_id)
     await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
         f"{org}: Congratulations! Your nomination for {pos} has been approved. "
         f"Your name will appear on the ballot."))
@@ -4840,6 +5245,7 @@ async def superadmin_force_deny(app_id: str, request: Request):
     )
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just resolved by someone else. Please refresh.")
+    await _record_denial_snapshot(app_doc, request.state.org_id)
     await log_action("application_force_denied", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-denied application {app_id}.")
     return {"status": "force_denied"}
@@ -4886,14 +5292,21 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
     
     # If the candidate came from an application, mark it removed
     if cand.get("application_id"):
+        app_oid = parse_oid(cand["application_id"], "application id")
         await db.applications.update_one(
-            org_query(request, {"_id": parse_oid(cand["application_id"], "application id")}),
+            org_query(request, {"_id": app_oid}),
             {"$set": {
                 "status": "removed",
                 "superadmin_override": True,
                 "removed_at": datetime.utcnow()
             }}
         )
+        # Same as a commission-majority removal (§3.7): stop the certificate
+        # from confirming, don't just unlink it, so a copy printed before
+        # removal can't keep validating forever.
+        removed_app_doc = await db.applications.find_one(org_query(request, {"_id": app_oid}))
+        if removed_app_doc:
+            await _revoke_certificate_for_application(removed_app_doc, request.state.org_id)
 
     logger.info(f"Superadmin removed candidate {candidate_id}.")
     return {"status": "removed"}

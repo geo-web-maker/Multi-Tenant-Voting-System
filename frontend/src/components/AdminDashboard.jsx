@@ -7,6 +7,7 @@ import { faceCropUrl } from '../cloudinaryImage';
 import usePolling from '../hooks/usePolling';
 import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
+import VoterImportReview from './VoterImportReview';
 
 export default function AdminDashboard({ onLogout }) {
   const toast = useToast();
@@ -33,6 +34,7 @@ export default function AdminDashboard({ onLogout }) {
   const [newCandidate, setNewCandidate] = useState({ name: '', position: '', image: null, order: 0 });
   const [uploading, setUploading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importFile, setImportFile] = useState(null);
 
   // Editing State
   const [editingId, setEditingId] = useState(null);
@@ -127,24 +129,21 @@ export default function AdminDashboard({ onLogout }) {
     }
   };
 
-  const handleImportVoters = async (e) => {
+  // Picking a file opens the review screen (dry-run diff); nothing is written until confirmed there.
+  const handleImportVoters = (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    const formData = new FormData();
-    formData.append("file", file);
-    setImporting(true);
-    try {
-      const res = await api.post(`/admin/import-voters`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      const { imported_count, skipped_rows, warning_count } = res.data;
-      let msg = `Import Successful! ${imported_count} records processed.`;
-      if (skipped_rows) msg += ` ${skipped_rows} row(s) skipped (missing/invalid data).`;
-      if (warning_count) msg += ` ${warning_count} row(s) flagged for review (see server log / activity log for details, e.g. unusual phone numbers).`;
-      toast(msg, { kind: 'success', duration: warning_count ? 9000 : 5000 });
-      fetchData();
-    } catch (err) { toast(getErrorMessage(err, "Import failed."), { kind: 'error' }); }
-    finally { setImporting(false); e.target.value = null; }
+    e.target.value = null;
+    if (file) setImportFile(file);
+  };
+
+  const handleImportDone = (r) => {
+    const parts = [`${r.added} added`, `${r.updated} updated`];
+    if (r.skipped_changes) parts.push(`${r.skipped_changes} left unchanged`);
+    if (r.removed) parts.push(`${r.removed} removed`);
+    if (r.blocked_removals) parts.push(`${r.blocked_removals} protected voter(s) kept`);
+    toast(`Voter update applied: ${parts.join(', ')}.`, { kind: 'success', duration: 7000 });
+    setImportFile(null);
+    fetchData();
   };
 
   const handleAddCandidate = async (e) => {
@@ -298,10 +297,11 @@ useEffect(() => { fetchData(); }, []);
           <>
             <div style={importBoxStyle}>
               <div style={{ flex: 1 }}>
-                <h4 style={{ margin: 0 }}>Bulk Import Voters (JSON or CSV)</h4>
+                <h4 style={{ margin: 0 }}>Update Voters from CSV</h4>
                 {duplicateIds.length > 0 && <p style={{ color: '#e74c3c', fontSize: '12px' }}><Icon name="warning" /> Warning: {duplicateIds.length} duplicates detected!</p>}
               </div>
-              <input type="file" accept=".csv,.json" onChange={handleImportVoters} disabled={importing} />
+              <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} />
+              {importFile && <VoterImportReview file={importFile} onClose={() => setImportFile(null)} onDone={handleImportDone} />}
             </div>
 
             <div style={funnelGridStyle}>
