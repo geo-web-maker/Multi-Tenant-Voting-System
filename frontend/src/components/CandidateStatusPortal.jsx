@@ -21,6 +21,17 @@ const PrintStyles = () => (
       .csp-doc-card { max-width: none !important; padding: 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; }
       .csp-print-sheet { border: none !important; border-radius: 0 !important; padding: 0 !important; }
     }
+    @media screen and (max-width: 560px) {
+      .csp-outer { padding: 10px !important; }
+      .csp-card { padding: 16px !important; border-radius: 12px !important; }
+      /* logos share the first row (one left, one right); the text drops to its own full-width row */
+      .csp-hd, .csp-dh { flex-wrap: wrap !important; row-gap: 8px !important; }
+      .csp-hd-l, .csp-dh-l { order: 1; width: auto !important; }
+      .csp-hd-r, .csp-dh-r { order: 2; width: auto !important; }
+      .csp-hd-t, .csp-dh-t { order: 3; flex: 1 1 100% !important; padding: 0 !important; }
+      .csp-dh img { width: 60px !important; }
+      .csp-cert-box { padding: 22px 16px !important; }
+    }
     /* index.css forces h1/h2/h3/p/span to var(--text-color) on screen; in OS dark
        mode that is near-white, which vanishes on the white sheet. Pin the sheet
        to light-mode values so documents look the same as the printed PDF. */
@@ -99,14 +110,14 @@ export default function CandidateStatusPortal({ token }) {
   }
 
   return (
-    <div style={outerWrap}>
+    <div style={outerWrap} className="csp-outer">
       <PrintStyles />
-      <div style={container}>
-        <div style={{ ...header, flexWrap: 'nowrap', gap: 14, marginBottom: 22 }} className="no-print">
-          <div style={{ width: 56, flexShrink: 0 }}>
+      <div style={container} className="csp-card">
+        <div style={{ ...header, flexWrap: 'nowrap', gap: 14, marginBottom: 22 }} className="no-print csp-hd">
+          <div style={{ width: 64, flexShrink: 0 }} className="csp-hd-l">
             {branding.university_logo_url && <img src={branding.university_logo_url} alt="" style={logoImg} />}
           </div>
-          <div style={{ minWidth: 0, flex: 1, textAlign: 'center' }}>
+          <div style={{ minWidth: 0, flex: 1, textAlign: 'center' }} className="csp-hd-t">
             <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Candidate Status</h2>
             <span style={sub}>{branding.org_name || 'Election'} · {branding.university_name || ''}</span>
             {who && (
@@ -116,7 +127,7 @@ export default function CandidateStatusPortal({ token }) {
               </div>
             )}
           </div>
-          <div style={{ width: 56, flexShrink: 0, textAlign: 'right' }}>
+          <div style={{ width: 64, flexShrink: 0, textAlign: 'right' }} className="csp-hd-r">
             {branding.logo_url && <img src={branding.logo_url} alt="" style={{ ...logoImg, marginLeft: 'auto' }} />}
           </div>
         </div>
@@ -332,14 +343,14 @@ function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
   const logoW = cert ? { uni: 96, org: 84 } : { uni: 80, org: 70 };
   return (
     <div style={{ marginBottom, fontFamily: font }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <div style={{ width: 110, textAlign: 'left', flexShrink: 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }} className="csp-dh">
+        <div style={{ width: 110, textAlign: 'left', flexShrink: 0 }} className="csp-dh-l">
           {branding.university_logo_url && <img src={branding.university_logo_url} alt="University logo" style={{ width: logoW.uni, height: 'auto' }} />}
         </div>
-        <div style={{ textAlign: 'center', flex: 1, padding: '0 10px', minWidth: 0 }}>
+        <div style={{ textAlign: 'center', flex: 1, padding: '0 10px', minWidth: 0, overflowWrap: 'anywhere' }} className="csp-dh-t">
           <div style={cert
-            ? { fontSize: 30, fontWeight: 700, letterSpacing: 2, lineHeight: 1.2, color: '#7a5c00' }
-            : { fontSize: 22, fontWeight: 900, textTransform: 'uppercase', color: '#1e293b' }}>
+            ? { fontSize: 'clamp(20px, 6.5vw, 30px)', fontWeight: 700, letterSpacing: 2, lineHeight: 1.2, color: '#7a5c00' }
+            : { fontSize: 'clamp(16px, 5vw, 22px)', fontWeight: 900, textTransform: 'uppercase', color: '#1e293b' }}>
             {branding.org_name}
           </div>
           <div style={cert
@@ -349,7 +360,7 @@ function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
           </div>
           {title && <div style={{ margin: '5px 0', fontSize: 16, fontWeight: 500, color: '#475569' }}>{title}</div>}
         </div>
-        <div style={{ width: 110, textAlign: 'right', flexShrink: 0 }}>
+        <div style={{ width: 110, textAlign: 'right', flexShrink: 0 }} className="csp-dh-r">
           {branding.logo_url && <img src={branding.logo_url} alt="Organisation logo" style={{ width: logoW.org, height: 'auto' }} />}
         </div>
       </div>
@@ -371,7 +382,7 @@ function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
 function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = '' }) {
   return (
     <div style={outerWrap} className="csp-outer">
-      <div style={{ ...container, maxWidth: maxWidth + 62 }} className="csp-doc-card">
+      <div style={{ ...container, maxWidth: maxWidth + 62 }} className="csp-doc-card csp-card">
         <div style={header} className="no-print">
           <div style={{ minWidth: 0 }}>
             <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Candidate Status</h2>
@@ -452,7 +463,7 @@ function CertificateDoc({ candidacy, branding: liveBranding, onClose }) {
 
   return (
     <DocShell maxWidth={800} onClose={onClose} branding={branding} label="Certificate of Nomination">
-      <div style={{ border: '3px double #b8860b', padding: '44px 48px', position: 'relative' }}>
+      <div style={{ border: '3px double #b8860b', padding: '44px 48px', position: 'relative' }} className="csp-cert-box">
         <DocHeader branding={branding} title="" variant="certificate" marginBottom={6} />
 
         <div style={{ textAlign: 'center', fontFamily: 'Times New Roman, Times, serif', fontSize: 30, fontWeight: 700, letterSpacing: 3, color: '#b8860b', margin: '22px 0 4px' }}>
@@ -476,7 +487,7 @@ function CertificateDoc({ candidacy, branding: liveBranding, onClose }) {
           <div style={{ textAlign: 'center' }}>
             {qrDataUrl && <img src={qrDataUrl} alt="Verification QR code" style={{ width: 84, height: 84 }} />}
             <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 4, letterSpacing: 1 }}>ID: {candidacy.certificate_id}</div>
-            <div style={{ fontSize: 9, color: '#94a3b8' }}>Verify at {verifyUrl}</div>
+            <div style={{ fontSize: 9, color: '#94a3b8', overflowWrap: 'anywhere' }}>Verify at {verifyUrl}</div>
           </div>
         </div>
 
@@ -547,7 +558,8 @@ function statusBadge(status) {
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '100%', maxWidth: '760px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const header     = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
-const logoImg    = { maxWidth: 56, maxHeight: 56, objectFit: 'contain', display: 'block' };
+// White tile so dark / transparent logos stay visible on the dark theme too.
+const logoImg    = { maxWidth: 64, maxHeight: 64, objectFit: 'contain', display: 'block', background: '#fff', padding: 4, borderRadius: 8, boxSizing: 'border-box' };
 const sub        = { fontSize: '12px', opacity: 0.6 };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
 const infoBox    = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
