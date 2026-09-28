@@ -616,6 +616,9 @@ class CandidateCreate(BaseModel):
 
 class AdminTestSMS(BaseModel):
     phone: str
+    # None = send exactly like a real OTP would (follows the routing setting); "egosms" / "mambosms" =
+    # test that one provider directly, ignoring routing.
+    provider: str | None = None
 
 # --- Branding & Positions ---
 class BrandingUpdate(BaseModel):
@@ -884,59 +887,83 @@ async def _safe_count_sms(org_id, kind: str):
 # slow, which is fine for messages nobody is staring at their phone for.
 PRIORITY_SMS_KINDS = {"otp"}
 
+# ── SMS routing (superadmin-adjustable per org, Security tab -> "SMS delivery") ──────────────
+# A route decides which provider(s) a message may use and in what order:
+#   default        the original behaviour: OTP -> EgoSMS then MamboSMS; everything else -> MamboSMS then EgoSMS
+#   egosms_first   EgoSMS, falling back to MamboSMS on a definite failure
+#   mambosms_first MamboSMS, falling back to EgoSMS on a failure
+#   egosms_only    EgoSMS only - never touches MamboSMS
+#   mambosms_only  MamboSMS only - never touches EgoSMS
+SMS_PROVIDERS = ("egosms", "mambosms")
+SMS_ROUTES = ("default", "egosms_first", "mambosms_first", "egosms_only", "mambosms_only")
+_SMS_PROVIDER_LABEL = {"egosms": "EgoSMS", "mambosms": "MamboSMS"}
 
-async def _send_sms_priority(to_number: str, message_text: str, org, kind: str) -> str:
-    """EgoSMS (primary) first; on a DEFINITE failure falls back to MamboSMS. On an AMBIGUOUS EgoSMS result
-    (timeout) it does NOT fall back unless the org's sms_fallback_on_timeout setting is on (per-org,
-    defaults from SMS_FALLBACK_ON_TIMEOUT), because the first send may have been delivered and billed.
+
+def sms_route_group(kind: str) -> str:
+    """Which routing setting a message kind follows: 'otp' (voter codes) or 'other' (everything else)."""
+    return "otp" if kind in PRIORITY_SMS_KINDS else "other"
+
+
+def sms_provider_order(route: str, kind: str) -> list[str]:
+    """Ordered provider list for a route. Unknown routes behave like 'default'."""
+    if route == "egosms_only":
+        return ["egosms"]
+    if route == "mambosms_only":
+        return ["mambosms"]
+    if route == "egosms_first":
+        return ["egosms", "mambosms"]
+    if route == "mambosms_first":
+        return ["mambosms", "egosms"]
+    return ["egosms", "mambosms"] if kind in PRIORITY_SMS_KINDS else ["mambosms", "egosms"]
+
+
+async def _sms_try_provider(provider: str, to_number: str, message_text: str) -> str:
+    """One provider attempt -> "ok" | "failed" | "ambiguous" (only EgoSMS can report ambiguous)."""
+    if provider == "egosms":
+        return await send_sms_via_egosms(to_number, message_text)
+    return "ok" if await send_sms_via_mambosms(to_number, message_text) else "failed"
+
+
+async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) -> str:
+    """Send following the org's routing setting for this kind of message.
+
+    Every attempt that was accepted OR may have been accepted (ambiguous) is counted toward the SMS
+    budget. After an AMBIGUOUS result (timeout: the message may already have been delivered and billed)
+    the next provider is only tried if the org's sms_fallback_on_timeout setting is on, to avoid
+    double-sending a voter's code.
     """
-    first = await send_sms_via_egosms(to_number, message_text)
-    if first == "ok":
-        await _safe_count_sms(org, kind)
-        return "ok"
-    if first == "ambiguous":
-        await _safe_count_sms(org, kind)        # may have been billed
+    try:
         sec = await security_settings_for(org)
-        if not sec["sms_fallback_on_timeout"]:
-            await log_action("sms_ambiguous_no_fallback", "system", {"primary": "egosms"}, org_id=org)
+    except Exception as e:                      # settings read must never block a voter's code
+        logger.error(f"sms routing settings read failed, using defaults: {e}")
+        sec = dict(_SEC_DEFAULTS)
+    route = sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
+    order = sms_provider_order(route, kind)
+
+    last = "failed"
+    for i, provider in enumerate(order):
+        last = await _sms_try_provider(provider, to_number, message_text)
+        if last in ("ok", "ambiguous"):
+            await _safe_count_sms(org, kind)    # ambiguous may have been billed
+        if last == "ok":
+            return "ok"
+        has_next = i + 1 < len(order)
+        if last == "ambiguous" and not (has_next and sec.get("sms_fallback_on_timeout")):
+            if has_next:
+                await log_action("sms_ambiguous_no_fallback", "system", {"primary": provider}, org_id=org)
             return "ambiguous"
+        if has_next:
+            nxt = order[i + 1]
+            logger.warning(f"{_SMS_PROVIDER_LABEL[provider]} failed for {to_number}, falling back to {_SMS_PROVIDER_LABEL[nxt]}.")
+            await log_action("sms_provider_fallback", "system", {"primary": provider, "fallback": nxt, "route": route}, org_id=org)
 
-    logger.warning(f"EgoSMS failed for {to_number}, falling back to MamboSMS.")
-    await log_action("sms_provider_fallback", "system", {"primary": "egosms", "fallback": "mambosms"}, org_id=org)
-    if await send_sms_via_mambosms(to_number, message_text):
-        await _safe_count_sms(org, kind)
-        return "ok"
-    # Both providers down. This is the exact silent-failure case: a voter is
-    # sitting on the OTP screen and nothing ever arrives, with no error shown
-    # anywhere but the server log. Tier 1 for "otp" (a voter is blocked right
-    # now); warning for other priority kinds.
+    # Every provider this route allows failed. For "otp" this is the silent-failure case: a voter is
+    # sitting on the OTP screen and nothing ever arrives. Tier 1 for otp, warning for anything else.
+    names = " and ".join(_SMS_PROVIDER_LABEL[p] for p in order)
     level = "critical" if kind == "otp" else "warning"
     await send_alert(
-        f"Both SMS providers failed ({kind})",
-        f"EgoSMS and MamboSMS both failed sending to {to_number}. Org: {org}. Kind: {kind}.",
-        level=level,
-    )
-    return "failed"
-
-
-async def _send_sms_non_priority(to_number: str, message_text: str, org, kind: str) -> str:
-    """MamboSMS (primary) first — cheap, slow, fine for non-time-critical notices. On a Mambo
-    failure falls back to EgoSMS so the message still gets there, just at EgoSMS's cost.
-    """
-    if await send_sms_via_mambosms(to_number, message_text):
-        await _safe_count_sms(org, kind)
-        return "ok"
-
-    logger.warning(f"MamboSMS failed for {to_number}, falling back to EgoSMS.")
-    await log_action("sms_provider_fallback", "system", {"primary": "mambosms", "fallback": "egosms"}, org_id=org)
-    second = await send_sms_via_egosms(to_number, message_text)
-    if second in ("ok", "ambiguous"):
-        await _safe_count_sms(org, kind)        # ambiguous here too may have been billed
-        return "ok" if second == "ok" else "ambiguous"
-    level = "critical" if kind == "otp" else "warning"
-    await send_alert(
-        f"Both SMS providers failed ({kind})",
-        f"MamboSMS and EgoSMS both failed sending to {to_number}. Org: {org}. Kind: {kind}.",
+        f"SMS send failed ({kind})",
+        f"{names} failed sending to {to_number} (route: {route}). Org: {org}. Kind: {kind}.",
         level=level,
     )
     return "failed"
@@ -946,8 +973,8 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
                           kind: str = "otp", org_id: str | None = None) -> str:
     """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
 
-    Provider order depends on `kind`: see PRIORITY_SMS_KINDS, _send_sms_priority and
-    _send_sms_non_priority. Every provider send (Ego and Mambo) is counted toward the election budget.
+    Provider order comes from the org's SMS routing setting (see SMS_ROUTES / sms_provider_order),
+    which defaults to the original behaviour. Every provider send is counted toward the election budget.
     """
     org = request.state.org_id if request is not None else org_id
     if DEBUG_MODE:
@@ -957,9 +984,7 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
         await _safe_count_sms(org, kind)
         return "ok"
 
-    if kind in PRIORITY_SMS_KINDS:
-        return await _send_sms_priority(to_number, message_text, org, kind)
-    return await _send_sms_non_priority(to_number, message_text, org, kind)
+    return await _send_sms_routed(to_number, message_text, org, kind)
 
 
 async def send_sms(to_number: str, message_text: str, request: Request | None = None,
@@ -2082,6 +2107,11 @@ CONTACT_EVIDENCE_TYPES = (
 CONTACT_CHANGE_TYPES = ("phone_change", "phone_add", "phone_remove", "registration_number_change")
 RESET_REASONS = ("sms_delayed", "victim_of_lockout", "wrong_details_fixed", "test")
 
+def _env_sms_route(name: str) -> str:
+    v = os.getenv(name, "default").strip().lower()
+    return v if v in SMS_ROUTES else "default"
+
+
 # Per-org overrides live in db.settings {name: "security_settings"}; these are the fallbacks.
 _SEC_DEFAULTS = {
     "roster_freeze_at": None,
@@ -2091,6 +2121,9 @@ _SEC_DEFAULTS = {
     "turnstile_mode": os.getenv("TURNSTILE_MODE", "off").strip().lower(),
     "public_results_mode": os.getenv("PUBLIC_RESULTS_MODE", "live").strip().lower(),
     "sms_fallback_on_timeout": ol.env_bool("SMS_FALLBACK_ON_TIMEOUT", False),
+    # Which provider(s) carry voter OTPs vs everything else (see SMS_ROUTES). Env vars only set the default.
+    "sms_route_otp": _env_sms_route("SMS_ROUTE_OTP"),
+    "sms_route_other": _env_sms_route("SMS_ROUTE_OTHER"),
     "sms_budget_total": None,
     "sms_budget_enforce": ol.env_bool("SMS_BUDGET_ENFORCE", False),  # monitor-only until the dry run passes
     "sms_balance_floor_ugx": ol.env_int("SMS_BALANCE_FLOOR_UGX", 0) or None,
@@ -4055,14 +4088,32 @@ async def _get_mambosms_balance() -> dict:
 async def test_sms_connection(data: AdminTestSMS, request: Request, admin: dict = Depends(require_role("superadmin"))):
     # Restricted to superadmin: this sends a real, billable SMS to an
     # arbitrary number supplied in the body. Under "any admin token" it was a
-    # free SMS relay for every provisioned role. Goes through the same
-    # send_sms() dispatch as real OTPs (EgoSMS primary, MamboSMS fallback),
-    # so this test reflects what a voter would actually experience.
-    await log_action("sms_test_sent", current_actor(request), {"phone": _mask_phone(data.phone)}, org_id=request.state.org_id)
-    success = await send_sms(data.phone, "SMS Connection Verified for BallotBox!", request, kind="test")
+    # free SMS relay for every provisioned role. With no `provider` it goes through the same
+    # routing as real OTPs, so the test reflects what a voter would actually experience; with a
+    # `provider` it checks that one account directly (ignoring routing and fallback).
+    if data.provider is not None and data.provider not in SMS_PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider must be egosms or mambosms.")
+    await log_action("sms_test_sent", current_actor(request),
+                     {"phone": _mask_phone(data.phone), "provider": data.provider or "routing"}, org_id=request.state.org_id)
+    text = "SMS Connection Verified for BallotBox!"
+    if data.provider:
+        label = _SMS_PROVIDER_LABEL[data.provider]
+        if DEBUG_MODE:
+            success = await send_sms(data.phone, text, request, kind="test")
+        else:
+            outcome = await _sms_try_provider(data.provider, data.phone, text)
+            if outcome in ("ok", "ambiguous"):
+                await _safe_count_sms(request.state.org_id, "test")
+            success = outcome == "ok"
+            if outcome == "ambiguous":
+                raise HTTPException(status_code=400, detail=f"{label} did not answer in time. The test message may still arrive.")
+        if success:
+            return {"status": "success", "message": f"Test message sent via {label} to {data.phone}"}
+        raise HTTPException(status_code=400, detail=f"{label} rejected the request. Check server logs for the reason.")
+    success = await send_sms(data.phone, text, request, kind="test")
     if success:
         return {"status": "success", "message": f"Test message delivered to {data.phone}"}
-    raise HTTPException(status_code=400, detail="Both MamboSMS and EgoSMS rejected the request. Check server logs for the reason.")
+    raise HTTPException(status_code=400, detail="Every provider allowed by the current routing rejected the request. Check server logs for the reason.")
 
 
 # Applied to student_id and full_name from an imported CSV. Generous enough
@@ -7322,6 +7373,8 @@ class SecuritySettingsUpdate(BaseModel):
     quota_hard_cap_pct: float | None = None
     superadmin_breakglass: bool | None = None
     sms_fallback_on_timeout: bool | None = None
+    sms_route_otp: str | None = None
+    sms_route_other: str | None = None
     reset_admin_hourly_alert: int | None = None
     reset_admin_hourly_hard_cap: int | None = None
     reset_per_voter_daily: int | None = None
@@ -7973,6 +8026,7 @@ async def get_sms_usage(request: Request, admin: dict = Depends(require_role("su
         "balance_floor_ugx": sec.get("sms_balance_floor_ugx"),
         "voters": voters, "suggested_budget": math.ceil(voters * SMS_BUDGET_DEFAULT_MULTIPLIER),
         "turnstile_mode": sec["turnstile_mode"],
+        "sms_route_otp": sec["sms_route_otp"], "sms_route_other": sec["sms_route_other"],
     }
 
 
@@ -8025,6 +8079,8 @@ async def superadmin_get_security_settings(request: Request):
             "guess_budget": round(params["budget"], 1), "refill_interval_seconds": round(params["interval"]),
             "free_guesses": ol.FREE_GUESSES, "suggested_sms_budget": math.ceil(voters * SMS_BUDGET_DEFAULT_MULTIPLIER),
             "turnstile_secret_configured": bool(TURNSTILE_SECRET),
+            "sms_providers_configured": {"egosms": bool(EGOSMS_USER and EGOSMS_PASS), "mambosms": bool(MAMBOSMS_API_KEY)},
+            "sms_routes": list(SMS_ROUTES),
         },
         "banner": None if not params["window_is_default"] else
                   f"Voting window not scheduled — using {ol.DEFAULT_WINDOW_HOURS} h defaults for lock strength.",
@@ -8055,6 +8111,12 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
         if data.public_results_mode not in ("live", "closed", "certified"):
             raise HTTPException(400, "public_results_mode must be live, closed or certified.")
         updates["public_results_mode"] = data.public_results_mode
+    for f in ("sms_route_otp", "sms_route_other"):
+        v = getattr(data, f)
+        if v is not None:
+            if v not in SMS_ROUTES:
+                raise HTTPException(400, f"{f} must be one of: {', '.join(SMS_ROUTES)}.")
+            updates[f] = v
     if data.approval_policy is not None:
         if data.approval_policy not in VALID_APPROVAL_POLICIES:
             raise HTTPException(400, f"approval_policy must be one of: {', '.join(sorted(VALID_APPROVAL_POLICIES))}.")

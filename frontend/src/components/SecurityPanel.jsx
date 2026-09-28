@@ -6,6 +6,20 @@ import { errMsg } from '../studentEdit';
 import { turnstileConfigured } from '../supportLink';
 import { DEFAULT_TZ, utcToZonedInput, zonedInputToUtcISO, utcOffsetLabel, fmtZoned } from '../tz';
 
+const ROUTE_LABELS = {
+  default: 'Automatic (original behaviour)',
+  egosms_first: 'EgoSMS first, MamboSMS as fallback',
+  mambosms_first: 'MamboSMS first, EgoSMS as fallback',
+  egosms_only: 'EgoSMS only (no fallback)',
+  mambosms_only: 'MamboSMS only (no fallback)',
+};
+const ROUTE_SHORT = {
+  default: 'Automatic', egosms_first: 'EgoSMS → MamboSMS', mambosms_first: 'MamboSMS → EgoSMS',
+  egosms_only: 'EgoSMS only', mambosms_only: 'MamboSMS only',
+};
+/** What "Automatic" actually does, so nobody has to guess. */
+const AUTO_ORDER = { otp: 'EgoSMS, then MamboSMS if it fails', other: 'MamboSMS, then EgoSMS if it fails' };
+
 /** SMS usage tile (read-only; superadmin / overseer / commission). */
 export function SmsUsageTile() {
   const [u, setU] = useState(null);
@@ -31,6 +45,9 @@ export function SmsUsageTile() {
         <Stat label="Last 30 min" value={u.recent.ratio_30m == null ? '—' : `${Math.round(u.recent.ratio_30m * 100)}% of ${u.recent.sends_30m}`} />
         <Stat label="Budget left" value={u.budget_total ? `${u.budget_left} / ${u.budget_total}` : 'not set'} color={low ? 'var(--danger)' : undefined} />
       </div>
+      {u.sms_route_otp && (
+        <p style={note}>Routing — OTP: <b>{ROUTE_SHORT[u.sms_route_otp] || u.sms_route_otp}</b> · Other messages: <b>{ROUTE_SHORT[u.sms_route_other] || u.sms_route_other}</b></p>
+      )}
       {u.mode === 'under_attack' && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> Send-to-verify ratio is very low: possible SMS pumping. The bot check is mandatory until it recovers.</p>}
       {u.budget_total && !u.budget_enforced && <p style={note}>Budget is in monitor-only mode (counted and alerted, not enforced).</p>}
       {low && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> Credit is running low — top up the provider account.</p>}
@@ -51,6 +68,9 @@ export default function SecurityPanel() {
   const [reason, setReason] = useState('');
   const [ledger, setLedger] = useState(null);
   const [tz, setTz] = useState(DEFAULT_TZ);   // election timezone (set on the Timeline tab)
+  const [testPhone, setTestPhone] = useState('');
+  const [testing, setTesting] = useState('');
+  const [balances, setBalances] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -71,7 +91,7 @@ export default function SecurityPanel() {
     if (!need()) return;
     if (!(await confirm('Save these security settings? The change is logged with your reason and shown to the overseer.', { confirmText: 'Save' }))) return;
     const body = { reason: reason.trim() };
-    ['roster_freeze_enabled', 'contact_change_required', 'superadmin_breakglass', 'sms_fallback_on_timeout'].forEach(k => { body[k] = Boolean(f[k]); });
+    ['roster_freeze_enabled', 'contact_change_required', 'superadmin_breakglass'].forEach(k => { body[k] = Boolean(f[k]); });
     ['otp_target_risk', 'quota_alert_pct', 'quota_hard_cap_pct'].forEach(k => { body[k] = Number(f[k]); });
     ['contact_change_ttl_hours', 'contact_change_max_per_voter', 'approver_daily_cap',
       'reset_admin_hourly_alert', 'reset_admin_hourly_hard_cap', 'reset_per_voter_daily', 'reset_per_voter_election'].forEach(k => { body[k] = Number(f[k]); });
@@ -82,6 +102,36 @@ export default function SecurityPanel() {
     else body.clear_roster_freeze_at = true;
     try { await api.put('/superadmin/security-settings', body); toast('Security settings saved.', { kind: 'success' }); setReason(''); load(); }
     catch (e) { toast(errMsg(e, 'Save failed.'), { kind: 'error' }); }
+  };
+  const saveSms = async () => {
+    if (!need()) return;
+    const warn = [f.sms_route_otp, f.sms_route_other].some(r => r === 'egosms_only' || r === 'mambosms_only');
+    const msg = warn
+      ? 'Save SMS routing? A provider set to "only" has NO fallback: if that provider is down or out of credit, those messages will not be delivered. Send a test first.'
+      : 'Save SMS routing? It takes effect immediately for every new message.';
+    if (!(await confirm(msg, { confirmText: 'Save routing' }))) return;
+    try {
+      await api.put('/superadmin/security-settings', {
+        reason: reason.trim(), sms_route_otp: f.sms_route_otp, sms_route_other: f.sms_route_other,
+        sms_fallback_on_timeout: Boolean(f.sms_fallback_on_timeout),
+      });
+      toast('SMS routing saved.', { kind: 'success' }); setReason(''); load();
+    } catch (e) { toast(errMsg(e, 'Save failed.'), { kind: 'error' }); }
+  };
+  const sendTest = async (provider) => {
+    if (!testPhone.trim()) { toast('Enter a phone number to send the test to.', { kind: 'error' }); return; }
+    setTesting(provider || 'routing');
+    try {
+      const r = (await api.post('/admin/test-connection', { phone: testPhone.trim(), ...(provider ? { provider } : {}) })).data;
+      toast(r.message || 'Test sent.', { kind: 'success' });
+    } catch (e) { toast(errMsg(e, 'Test failed.'), { kind: 'error' }); }
+    finally { setTesting(''); }
+  };
+  const checkBalances = async () => {
+    setTesting('balances');
+    try { setBalances((await api.get('/admin/sms-balance')).data); }
+    catch (e) { toast(errMsg(e, 'Could not read provider balances.'), { kind: 'error' }); }
+    finally { setTesting(''); }
   };
   const saveBudget = async () => {
     if (!need()) return;
@@ -146,10 +196,46 @@ export default function SecurityPanel() {
         </div>
       </div>
 
-      <div style={box}>
-        <b style={{ fontSize: 14 }}>SMS delivery</b>
-        <p style={note}>When EgoSMS times out (result unknown — it may still have been delivered and billed), fall back to MamboSMS automatically. Off by default to avoid double-sending a voter's OTP.</p>
-        {chk('sms_fallback_on_timeout', 'Fall back to MamboSMS on an ambiguous EgoSMS timeout')}
+      <div style={{ ...box, gridColumn: '1 / -1' }}>
+        <b style={{ fontSize: 14 }}>SMS delivery &amp; routing</b>
+        <p style={note}>Choose which provider carries each kind of message. Use “MamboSMS first” (or “only”) to send everything through the fallback provider, or “EgoSMS only” to stop using MamboSMS altogether. Changes apply immediately to new messages.</p>
+        <div style={grid}>
+          <label style={fld}><span style={lbl}>Voter OTP codes</span>
+            <select style={inp} value={f.sms_route_otp || 'default'} onChange={e => setF({ ...f, sms_route_otp: e.target.value })}>
+              {(dv.sms_routes || Object.keys(ROUTE_LABELS)).map(r => <option key={r} value={r}>{ROUTE_LABELS[r] || r}</option>)}
+            </select></label>
+          <label style={fld}><span style={lbl}>Everything else (admin passwords, notices, candidate links)</span>
+            <select style={inp} value={f.sms_route_other || 'default'} onChange={e => setF({ ...f, sms_route_other: e.target.value })}>
+              {(dv.sms_routes || Object.keys(ROUTE_LABELS)).map(r => <option key={r} value={r}>{ROUTE_LABELS[r] || r}</option>)}
+            </select></label>
+        </div>
+        <p style={note}>“Automatic” means: OTP codes → {AUTO_ORDER.otp}; everything else → {AUTO_ORDER.other}.</p>
+        {['egosms', 'mambosms'].filter(p => dv.sms_providers_configured && !dv.sms_providers_configured[p]).map(p => (
+          <p key={p} style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> {p === 'egosms' ? 'EgoSMS' : 'MamboSMS'} credentials are not set on the server, so this provider cannot send.</p>
+        ))}
+        {[f.sms_route_otp, f.sms_route_other].includes('egosms_only') && dv.sms_providers_configured && !dv.sms_providers_configured.egosms && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> A route is set to EgoSMS only but EgoSMS is not configured — those messages will fail.</p>}
+        {[f.sms_route_otp, f.sms_route_other].includes('mambosms_only') && dv.sms_providers_configured && !dv.sms_providers_configured.mambosms && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> A route is set to MamboSMS only but MamboSMS is not configured — those messages will fail.</p>}
+        {chk('sms_fallback_on_timeout', 'Also switch provider when the first one times out (result unknown). Risk: the voter may receive the code twice.')}
+
+        <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
+          <input style={inp} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. EgoSMS credit low, routing OTPs via MamboSMS" /></label>
+        <button style={{ ...btn, marginTop: 8 }} onClick={saveSms}>Save SMS routing</button>
+
+        <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '16px 0 8px' }} />
+        <b style={{ fontSize: 13 }}>Test &amp; check providers</b>
+        <p style={note}>Sends a real (billable) test message. “Current routing” behaves exactly like a voter OTP; the provider buttons test one account directly, ignoring routing.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input style={{ ...inp, maxWidth: 220 }} value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="Phone, e.g. 2567XXXXXXXX" />
+          <button style={{ ...btn, background: '#3498db' }} disabled={!!testing} onClick={() => sendTest()}>{testing === 'routing' ? 'Sending…' : 'Current routing'}</button>
+          <button style={{ ...btn, background: '#3498db' }} disabled={!!testing} onClick={() => sendTest('egosms')}>{testing === 'egosms' ? 'Sending…' : 'EgoSMS'}</button>
+          <button style={{ ...btn, background: '#3498db' }} disabled={!!testing} onClick={() => sendTest('mambosms')}>{testing === 'mambosms' ? 'Sending…' : 'MamboSMS'}</button>
+          <button style={{ ...btn, background: '#7f8c8d' }} disabled={!!testing} onClick={checkBalances}>{testing === 'balances' ? 'Checking…' : 'Check balances'}</button>
+        </div>
+        {balances && (
+          <p style={note}>
+            EgoSMS: <b>{balances.egosms?.balance ?? '—'}</b>{balances.egosms?.error ? ` (${balances.egosms.error})` : ''} · MamboSMS: <b>{balances.mambosms?.balance ?? '—'}</b>{balances.mambosms?.error ? ` (${balances.mambosms.error})` : ''}
+          </p>
+        )}
       </div>
 
       <div style={box}>
