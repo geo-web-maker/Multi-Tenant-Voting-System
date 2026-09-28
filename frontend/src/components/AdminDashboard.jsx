@@ -141,6 +141,7 @@ export default function AdminDashboard({ onLogout }) {
     if (r.skipped_changes) parts.push(`${r.skipped_changes} left unchanged`);
     if (r.removed) parts.push(`${r.removed} removed`);
     if (r.blocked_removals) parts.push(`${r.blocked_removals} protected voter(s) kept`);
+    if (r.staff_changes_skipped) parts.push(`${r.staff_changes_skipped} admin/commissioner change(s) need a superadmin`);
     toast(`Voter update applied: ${parts.join(', ')}.`, { kind: 'success', duration: 7000 });
     setImportFile(null);
     fetchData();

@@ -443,6 +443,14 @@ const refetchAll = () => {
   // Resend is about SMS delivery, not a vetting decision, so it's available
   // regardless of application status (pending/approved/denied alike) —
   // candidate-portal-spec §4.3.
+  const handleRevokeStatusLink = async (studentId) => {
+    if (!(await confirm('Revoke this candidate\'s status link? The current link stops working immediately. Use "Resend status link" afterwards to send a new one.'))) return;
+    try {
+      await api.post(`/superadmin/candidates/${encodeURIComponent(studentId)}/revoke-status-link`);
+      toast('Status link revoked.', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to revoke status link.'), { kind: 'error' }); }
+  };
+
   const handleResendStatusLink = async (studentId) => {
     try {
       await api.post(`/superadmin/candidates/${encodeURIComponent(studentId)}/resend-status-link`);
@@ -642,6 +650,7 @@ const handleCreateOrg = async (e) => {
       if (r.skipped_changes) parts.push(`${r.skipped_changes} left unchanged`);
       if (r.removed) parts.push(`${r.removed} removed`);
       if (r.blocked_removals) parts.push(`${r.blocked_removals} protected voter(s) kept`);
+    if (r.staff_changes_skipped) parts.push(`${r.staff_changes_skipped} admin/commissioner change(s) need a superadmin`);
       toast(`Voter update applied: ${parts.join(', ')}.`, { kind: 'success', duration: 7000 });
     setImportFile(null);
     fetchElectionData();
@@ -1098,6 +1107,9 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                   <button style={ghostBtn} onClick={() => handleResendStatusLink(app.student_id)}>
                     Resend status link
+                  </button>
+                  <button style={ghostBtn} onClick={() => handleRevokeStatusLink(app.student_id)}>
+                    Revoke status link
                   </button>
                 </div>
               </div>

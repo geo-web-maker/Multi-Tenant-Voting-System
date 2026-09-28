@@ -644,6 +644,32 @@ MANIFESTO_MAX_CHARS = 3000  # ~500 words; keep in sync with the frontend constan
 # SPA catch-all loads the app shell for any /status/<token> path).
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourapp.vercel.app").rstrip("/")
 
+# Candidate status links expire automatically (default 60 days) and can be revoked
+# by a superadmin. Resending a still-valid link extends it; an expired or revoked
+# one is replaced with a fresh link.
+STATUS_LINK_TTL_DAYS = int(os.getenv("STATUS_LINK_TTL_DAYS", "60"))
+
+
+def _status_link_expired(token_doc: dict) -> bool:
+    if token_doc.get("revoked"):
+        return True
+    expires = token_doc.get("expires_at") or (
+        (token_doc.get("created_at") or datetime.utcnow()) + timedelta(days=STATUS_LINK_TTL_DAYS))  # pre-expiry tokens
+    return expires <= datetime.utcnow()
+
+
+async def _get_or_create_status_token(student_id: str, round_id, org_id) -> dict:
+    """Returns (and if needed creates) the student's one live status link for this round."""
+    now = datetime.utcnow()
+    async for t in db.candidate_tokens.find(
+            {"student_id": student_id, "round_id": round_id, "org_id": org_id}).sort("created_at", -1):
+        if not _status_link_expired(t):
+            return t
+    doc = {"token": secrets.token_urlsafe(32), "student_id": student_id, "round_id": round_id, "org_id": org_id,
+           "created_at": now, "expires_at": now + timedelta(days=STATUS_LINK_TTL_DAYS), "revoked": False}
+    await db.candidate_tokens.insert_one(doc)
+    return doc
+
 class ApplicationSubmit(BaseModel):
     student_id:        str
     full_name:         str
@@ -1391,7 +1417,7 @@ async def _issue_certificate(app_doc: dict, org_id: str = None):
     """
     title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
     b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
-    certificate_id = f"CERT-{secrets.token_urlsafe(6).upper().replace('-', '').replace('_', '')[:8]}"
+    certificate_id = f"CERT-{secrets.token_hex(6).upper()}"   # 48 bits, unambiguous charset
     issued_at = datetime.utcnow()
     await db.certificates.insert_one({
         "certificate_id": certificate_id,
@@ -3350,18 +3376,16 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     "full_name":   data.full_name
     }, org_id=request.state.org_id)
 
-    # candidate-portal-spec §3.1: one status link per student per round,
-    # generated on first application and reused for every later one.
-    existing_token = await db.candidate_tokens.find_one({
-        "student_id": data.student_id, "round_id": round_id, "org_id": org_id,
-    })
-    if not existing_token:
-        token = secrets.token_urlsafe(32)
-        await db.candidate_tokens.insert_one({
-            "token": token, "student_id": data.student_id,
-            "round_id": round_id, "org_id": org_id,
-            "created_at": datetime.utcnow(),
-        })
+    # candidate-portal-spec §3.1: one live status link per student per round,
+    # created on first application and reused for every later one. The SMS is
+    # only sent when a link is newly created (not on later applications).
+    had_live_link = False
+    async for t in db.candidate_tokens.find({"student_id": data.student_id, "round_id": round_id, "org_id": org_id}):
+        if not _status_link_expired(t):
+            had_live_link = True
+            break
+    if not had_live_link:
+        token_doc = await _get_or_create_status_token(data.student_id, round_id, org_id)
         phones = student.get("phone_numbers") or []
         if phones:
             # "candidate_status_link" deliberately isn't in PRIORITY_SMS_KINDS —
@@ -3369,7 +3393,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
             # staring at their phone waiting for it the way an OTP recipient is.
             await send_sms(
                 phones[0],
-                f"Application received. Check status: {FRONTEND_URL}/status/{token}",
+                f"Application received. Check status: {FRONTEND_URL}/status/{token_doc['token']}",
                 request, kind="candidate_status_link",
             )
     return {"status": "submitted"}
@@ -3412,15 +3436,25 @@ async def get_candidate_status(token: str, request: Request):
     lookup (§3.2). One link covers every position a student applied for in
     a round, so this returns one entry per matching `applications` row.
     """
+    # Public + unauthenticated: the token is the only credential, so cap guessing per IP.
+    # Limit is generous because the portal polls every 20s and campus users share NAT'd IPs.
+    await _check_rate_limit(request, bucket="cand_status", limit=120, window_s=60,
+                            message="Too many requests. Please try again shortly.")
     token_doc = await db.candidate_tokens.find_one({"token": token})
     if not token_doc:
-        raise HTTPException(404, "Status link not found or expired.")
+        raise HTTPException(404, "Status link not found.")
+    if _status_link_expired(token_doc):
+        raise HTTPException(410, "This status link has expired or was withdrawn. Contact the election office for a new one.")
 
     org_id = token_doc.get("org_id")
     # Every downstream helper here (org_query/org_stamp/get_phase_schedule/
     # get_vote_counts) reads tenant scope off request.state.org_id — set it
     # from the token's stored org_id rather than duplicating each helper.
     request.state.org_id = org_id
+
+    # If the org shows public results from the start ("live"), results are already on
+    # display for everyone, so the candidate-specific results band is redundant.
+    public_results_live = (await get_security_settings(request))["public_results_mode"] == "live"
 
     apps = db.applications.find({
         "student_id": token_doc["student_id"],
@@ -3442,7 +3476,7 @@ async def get_candidate_status(token: str, request: Request):
             cert = await db.certificates.find_one({"certificate_id": app_doc["certificate_id"]})
             if cert and not cert.get("revoked"):
                 entry["certificate_id"] = app_doc["certificate_id"]
-        if app_doc.get("status") in ("approved", "removed"):
+        if not public_results_live and app_doc.get("status") in ("approved", "removed"):
             cand = await db.candidates.find_one({"application_id": str(app_doc["_id"])})
             if cand:
                 results = await _candidacy_results_band(
@@ -3451,15 +3485,17 @@ async def get_candidate_status(token: str, request: Request):
                     entry["results"] = results
         candidacies.append(entry)
 
-    return {"candidacies": candidacies}
+    return {"candidacies": candidacies, "public_results_live": public_results_live}
 
 
 @app.get("/verify/{certificate_id}")
-async def verify_certificate(certificate_id: str):
+async def verify_certificate(certificate_id: str, request: Request):
     """
     Public. Looks up `certificates` only, never `applications` (§3.4) — what
     a certificate's QR code points to.
     """
+    await _check_rate_limit(request, bucket="verify_cert", limit=30, window_s=60,
+                            message="Too many requests. Please try again shortly.")
     cert = await db.certificates.find_one({"certificate_id": certificate_id})
     if not cert:
         raise HTTPException(404, "Certificate not found.")
@@ -3484,19 +3520,18 @@ async def resend_candidate_status_link(student_id: str, request: Request):
     action in this file.
     """
     round_id = await current_round_id(request)
-    # candidate_tokens.student_id is written verbatim in submit_application
-    # (§3.1: "student_id" from the same student_id used to insert that row)
-    # — try an exact match first, then the app's usual forgiving/normalized
+    # candidate_tokens.student_id is written verbatim in submit_application —
+    # try an exact match first, then the app's usual forgiving/normalized
     # comparison for a student_id typed differently than it was stored.
     student_id_canon = normalize_student_id(student_id)
-    token_doc = (
+    any_token = (
         await db.candidate_tokens.find_one(org_query(request, {"round_id": round_id, "student_id": student_id}))
         or await db.candidate_tokens.find_one(org_query(request, {
             "round_id": round_id,
-            "student_id": {"$regex": f"^{student_id_canon}$", "$options": "i"},
+            "student_id": {"$regex": f"^{re.escape(student_id_canon)}$", "$options": "i"},
         }))
     )
-    if not token_doc:
+    if not any_token:
         raise HTTPException(404, "This student has no candidacy this round.")
 
     voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
@@ -3504,7 +3539,12 @@ async def resend_candidate_status_link(student_id: str, request: Request):
     if not phones:
         raise HTTPException(400, "This student has no phone number on file.")
 
-    # Never generates a new token — an already-shared link should keep working.
+    # A still-valid link is re-sent as is (and its expiry extended); an expired or
+    # revoked one is replaced with a fresh link.
+    token_doc = await _get_or_create_status_token(any_token["student_id"], round_id, request.state.org_id)
+    await db.candidate_tokens.update_one(
+        {"token": token_doc["token"]},
+        {"$set": {"expires_at": datetime.utcnow() + timedelta(days=STATUS_LINK_TTL_DAYS)}})
     await send_sms(
         phones[0],
         f"Application received. Check status: {FRONTEND_URL}/status/{token_doc['token']}",
@@ -3513,6 +3553,23 @@ async def resend_candidate_status_link(student_id: str, request: Request):
     await log_action("candidate_status_link_resent", current_actor(request),
                       {"student_id": student_id}, org_id=request.state.org_id)
     return {"status": "resent"}
+
+
+@app.post("/superadmin/candidates/{student_id:path}/revoke-status-link")
+async def revoke_candidate_status_link(student_id: str, request: Request):
+    """Kills every status link for this student this round (e.g. a link shared by mistake).
+    Under /superadmin, so the auth guard already restricts it to superadmins. A new link
+    is issued the next time "Resend status link" is used."""
+    round_id = await current_round_id(request)
+    student_id_canon = normalize_student_id(student_id)
+    res = await db.candidate_tokens.update_many(
+        org_query(request, {"round_id": round_id, "student_id": {"$regex": f"^{re.escape(student_id_canon)}$", "$options": "i"}}),
+        {"$set": {"revoked": True}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "This student has no status link this round.")
+    await log_action("candidate_status_link_revoked", current_actor(request),
+                     {"student_id": student_id}, org_id=request.state.org_id)
+    return {"status": "revoked"}
 
 
 # =============================================================================
@@ -4027,6 +4084,9 @@ def _parse_voter_csv(content: bytes) -> dict:
     row_num = 1  # header is row 1; first data row is 2, matching a spreadsheet
     for row in reader:
         row_num += 1
+        if row_num > MAX_CSV_ROWS:
+            warnings.append(f"File truncated at {MAX_CSV_ROWS} rows.")
+            break
         sid   = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
         name  = normalize_name((row.get('full_name') or row.get('full-name') or '').strip())
         if not (sid and name):
@@ -4048,6 +4108,7 @@ def _parse_voter_csv(content: bytes) -> dict:
 _NEW_VOTER_DEFAULTS = {
     "is_commissioner": False, "has_voted": False, "last_active": None, "last_status": "idle", "otp_count": 0,
 }
+_STAFF_ROLE_FLAGS = ("is_commissioner", "is_it_admin", "is_financial_controller", "is_overseer")
 _STAFF_FLAGS = (
     ("has_voted", "Has already voted"),
     ("is_commissioner", "Commissioner"),
@@ -4077,6 +4138,8 @@ async def _diff_roster(request: Request, rows: dict) -> dict:
         if name_changed or phones_changed:
             changed.append({
                 "student_id": sid, "actual_id": v["student_id"],
+                # Admin/commissioner accounts receive their OTPs on these numbers.
+                "staff": any(v.get(f) for f in _STAFF_ROLE_FLAGS),
                 "name_changed": name_changed, "phones_changed": phones_changed,
                 "old_name": old_name, "new_name": r["full_name"],
                 "old_phones": old_phones, "new_phones": r["phone_numbers"],
@@ -4103,6 +4166,7 @@ def _public_diff(diff: dict) -> dict:
                  "phones": [_mask_phone(p) for p in r["phone_numbers"]]} for r in diff["new"]],
         "changed": [{
             "student_id": c["student_id"], "name_changed": c["name_changed"], "phones_changed": c["phones_changed"],
+            "staff": c["staff"],
             "old_name": c["old_name"], "new_name": c["new_name"],
             "old_phones": [_mask_phone(p) for p in c["old_phones"]],
             "new_phones": [_mask_phone(p) for p in c["new_phones"]],
@@ -4118,7 +4182,7 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
     """Step 1 of a roster update: nothing is written to the roster. Returns what the file would
     add, change and leave behind so the admin can choose an action for each group."""
     await assert_roster_unfrozen(request)
-    parsed = _parse_voter_csv(await file.read())
+    parsed = _parse_voter_csv(await _read_csv_upload(file))
     if not parsed["rows"]:
         raise HTTPException(400, "No valid rows found. The file needs student_id, full_name and phone columns.")
     diff = await _diff_roster(request, parsed["rows"])
@@ -4160,7 +4224,9 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
             or any(v not in ("keep", "remove") for v in data.missing_overrides.values())):
         raise HTTPException(400, "Invalid import action.")
     org_id = request.state.org_id
-    prev = await db.voter_import_previews.find_one({"preview_id": data.preview_id, "org_id": org_id})
+    # Only the admin who uploaded the file can apply its preview.
+    prev = await db.voter_import_previews.find_one(
+        {"preview_id": data.preview_id, "org_id": org_id, "created_by": current_actor(request)})
     if not prev:
         raise HTTPException(404, "This import preview expired. Upload the file again.")
     rows = {r["student_id"]: r for r in prev["rows"]}
@@ -4178,10 +4244,16 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
                 upsert=True))
             added += 1
 
-    updated = skipped_changed = 0
+    updated = skipped_changed = staff_skipped = 0
+    is_superadmin = (admin or {}).get("role") == "superadmin"
     for c in diff["changed"]:
         if data.changed_overrides.get(c["student_id"], data.changed_default) != "apply":
             skipped_changed += 1
+            continue
+        if c["staff"] and not is_superadmin:
+            # An IT admin must not be able to repoint a commissioner's/admin's OTP
+            # number via bulk import; those changes need a superadmin.
+            staff_skipped += 1
             continue
         phones = c["new_phones"]
         if data.phone_mode == "merge":
@@ -4209,7 +4281,7 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
     await db.voter_import_previews.delete_one({"preview_id": data.preview_id})
 
     summary = {"added": added, "updated": updated, "skipped_changes": skipped_changed, "removed": removed,
-               "blocked_removals": len(blocked), "phone_mode": data.phone_mode}
+               "blocked_removals": len(blocked), "staff_changes_skipped": staff_skipped, "phone_mode": data.phone_mode}
     await log_action("voters_import_applied", current_actor(request), summary, org_id=org_id)
     await append_ledger(org_id, "voters_import_applied", "roster", current_actor(request),
                         (admin or {}).get("role", "admin"), summary)
@@ -4221,7 +4293,7 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
     """Legacy one-shot upsert (add new + refresh name/phone), kept for API compatibility. The
     dashboards use /preview + /apply instead. Existing voters' status/roles are never reset here."""
     await assert_roster_unfrozen(request)
-    parsed = _parse_voter_csv(await file.read())
+    parsed = _parse_voter_csv(await _read_csv_upload(file))
     now = datetime.utcnow()
     ops = [UpdateOne(
         org_query(request, {"student_id": r["student_id"]}),
@@ -4239,6 +4311,15 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
+MAX_CSV_BYTES = 5 * 1024 * 1024
+MAX_CSV_ROWS = 50000
+
+
+async def _read_csv_upload(file: UploadFile) -> bytes:
+    content = await file.read(MAX_CSV_BYTES + 1)   # never buffers an unbounded upload
+    if len(content) > MAX_CSV_BYTES:
+        raise HTTPException(400, "CSV file is too large (limit 5MB).")
+    return content
 
 
 @app.post("/admin/upload-image")

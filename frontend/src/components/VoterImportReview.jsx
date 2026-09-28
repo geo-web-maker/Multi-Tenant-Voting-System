@@ -117,6 +117,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
                     <div key={c.student_id} style={row}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <b style={{ fontSize: 13 }}>{regNo(c.student_id)}</b>
+                        {c.staff && <div style={{ fontSize: 11, color: 'var(--warning)' }}>Admin / commissioner account — only a superadmin can apply this change</div>}
                         {c.name_changed && <div style={diffLine}>Name: <s style={{ opacity: 0.5 }}>{c.old_name}</s> → <b>{c.new_name}</b></div>}
                         {c.phones_changed && <div style={diffLine}>Phones: <s style={{ opacity: 0.5 }}>{c.old_phones.join(', ') || 'none'}</s> → <b>{c.new_phones.join(', ') || 'none'}</b></div>}
                       </div>

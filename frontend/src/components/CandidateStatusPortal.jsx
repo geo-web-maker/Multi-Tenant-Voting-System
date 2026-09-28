@@ -37,6 +37,7 @@ export default function CandidateStatusPortal({ token }) {
   const [branding, setBranding] = useState({});
   const [candidacies, setCandidacies] = useState(null); // null = loading
   const [error, setError] = useState('');
+  const [publicResultsLive, setPublicResultsLive] = useState(false);
   const [selected, setSelected] = useState(0);
   const [tab, setTab] = usePersistedTab('candidate-status', 'application');
   const [printing, setPrinting] = useState(null); // 'application' | 'certificate' | 'denial' | null
@@ -45,6 +46,7 @@ export default function CandidateStatusPortal({ token }) {
     try {
       const res = await api.get(`/candidates/status/${encodeURIComponent(token)}`);
       setCandidacies(res.data.candidacies || []);
+      setPublicResultsLive(!!res.data.public_results_live);
       setError('');
     } catch (e) {
       if (!silent) setError(e?.response?.data?.detail || 'This status link could not be found.');
@@ -62,12 +64,15 @@ export default function CandidateStatusPortal({ token }) {
 
   const candidacy = candidacies?.[selected] || null;
 
+  // When results are public from the start, they're already on display for everyone,
+  // so this page doesn't repeat them in its own tab.
   const tabs = [
     { id: 'application', label: 'Application' },
     { id: 'vetting', label: 'Vetting' },
     { id: 'documents', label: 'Documents' },
-    { id: 'results', label: 'Results' },
+    ...(publicResultsLive ? [] : [{ id: 'results', label: 'Results' }]),
   ];
+  const activeTab = tabs.some(t => t.id === tab) ? tab : 'application';
 
   if (printing) {
     return (
@@ -121,11 +126,11 @@ export default function CandidateStatusPortal({ token }) {
             )}
 
             <div className="no-print">
-              <TabBar tabs={tabs} activeTab={tab} onChange={setTab} />
+              <TabBar tabs={tabs} activeTab={activeTab} onChange={setTab} />
               <div style={{ marginBottom: '20px' }} />
             </div>
 
-            {candidacy.status === 'removed' && (tab === 'vetting' || tab === 'documents') && (
+            {candidacy.status === 'removed' && (activeTab === 'vetting' || activeTab === 'documents') && (
               <div style={{ ...infoBox, marginBottom: '16px' }}>
                 <p style={{ margin: 0, fontSize: '13px' }}>
                   This candidacy was withdrawn after approval.
@@ -133,15 +138,15 @@ export default function CandidateStatusPortal({ token }) {
               </div>
             )}
 
-            {tab === 'application' && (
+            {activeTab === 'application' && (
               <ApplicationTab candidacy={candidacy} onPrint={() => setPrinting('application')} />
             )}
 
-            {tab === 'vetting' && (
+            {activeTab === 'vetting' && (
               <VettingTab candidacy={candidacy} onPrintCertificate={() => setPrinting('certificate')} onPrintDenial={() => setPrinting('denial')} />
             )}
 
-            {tab === 'documents' && (
+            {activeTab === 'documents' && (
               <DocumentsTab
                 candidacy={candidacy}
                 onPrintApplication={() => setPrinting('application')}
@@ -150,7 +155,7 @@ export default function CandidateStatusPortal({ token }) {
               />
             )}
 
-            {tab === 'results' && <ResultsTab candidacy={candidacy} />}
+            {activeTab === 'results' && <ResultsTab candidacy={candidacy} />}
           </>
         )}
       </div>
