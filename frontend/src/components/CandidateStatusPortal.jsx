@@ -8,13 +8,26 @@ import usePolling from '../hooks/usePolling';
 import { usePersistedTab } from '../session';
 import { regNo } from '../regNo';
 import ManifestoText from './ManifestoText';
+import { properName, properTitle } from '../displayText';
+import { faceCropUrl } from '../cloudinaryImage';
 
 const PrintStyles = () => (
   <style>{`
     @media print {
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .no-print { display: none !important; }
       body { background: #fff; }
-      .csp-print-sheet { box-shadow: none !important; margin: 0 !important; }
+      .csp-outer { padding: 0 !important; background: #fff !important; }
+      .csp-doc-card { max-width: none !important; padding: 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; }
+      .csp-print-sheet { border: none !important; border-radius: 0 !important; padding: 0 !important; }
+    }
+    /* index.css forces h1/h2/h3/p/span to var(--text-color) on screen; in OS dark
+       mode that is near-white, which vanishes on the white sheet. Pin the sheet
+       to light-mode values so documents look the same as the printed PDF. */
+    .csp-print-sheet {
+      color-scheme: light;
+      --text-color: #1e293b;
+      --text-muted: #64748b;
     }
   `}</style>
 );
@@ -47,6 +60,7 @@ export default function CandidateStatusPortal({ token }) {
       const res = await api.get(`/candidates/status/${encodeURIComponent(token)}`);
       setCandidacies(res.data.candidacies || []);
       setPublicResultsLive(!!res.data.public_results_live);
+      if (res.data.branding) setBranding(res.data.branding);
       setError('');
     } catch (e) {
       if (!silent) setError(e?.response?.data?.detail || 'This status link could not be found.');
@@ -54,7 +68,7 @@ export default function CandidateStatusPortal({ token }) {
   };
 
   useEffect(() => {
-    api.get('/superadmin/branding').then(res => setBranding(res.data || {})).catch(() => {});
+    api.get('/superadmin/branding').then(res => setBranding(b => (b.org_name ? b : (res.data || {})))).catch(() => {});
     fetchStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -119,7 +133,7 @@ export default function CandidateStatusPortal({ token }) {
                     onClick={() => setSelected(i)}
                     style={{ ...pillBtn, ...(i === selected ? pillBtnActive : {}) }}
                   >
-                    {c.position_title}
+                    {properTitle(c.position_title)}
                   </button>
                 ))}
               </div>
@@ -171,12 +185,12 @@ function ApplicationTab({ candidacy, onPrint }) {
     <div>
       <div style={appCard}>
         <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-          <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>{candidacy.position_title}</b>
+          <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>{properTitle(candidacy.position_title)}</b>
           <span style={statusBadge(candidacy.status)}>{statusLabel(candidacy.status)}</span>
         </div>
         {snap ? (
           <>
-            <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.7 }}>{snap.full_name}</p>
+            <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.7 }}>{properName(snap.full_name)}</p>
             <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.55 }}>
               Submitted {formatDate(snap.submitted_at)}
             </p>
@@ -203,7 +217,7 @@ function VettingTab({ candidacy, onPrintCertificate, onPrintDenial }) {
     return (
       <div style={appCard}>
         <p style={{ margin: 0, fontSize: '14px', color: 'var(--success)' }}>
-          <Icon name="success" /> Your nomination for <strong>{candidacy.position_title}</strong> was approved.
+          <Icon name="success" /> Your nomination for <strong>{properTitle(candidacy.position_title)}</strong> was approved.
         </p>
         <button style={{ ...ghostBtn, marginTop: '12px' }} onClick={onPrintCertificate}>View / print certificate</button>
       </div>
@@ -213,7 +227,7 @@ function VettingTab({ candidacy, onPrintCertificate, onPrintDenial }) {
     return (
       <div style={appCard}>
         <p style={{ margin: 0, fontSize: '14px', color: '#e74c3c' }}>
-          <Icon name="error" /> Your application for <strong>{candidacy.position_title}</strong> was not approved.
+          <Icon name="error" /> Your application for <strong>{properTitle(candidacy.position_title)}</strong> was not approved.
         </p>
         <button style={{ ...ghostBtn, marginTop: '12px' }} onClick={onPrintDenial}>View / print decision notice</button>
       </div>
@@ -283,15 +297,73 @@ function PrintableDoc({ kind, candidacy, branding, onClose }) {
   return null;
 }
 
-function DocShell({ children, maxWidth = 760, onClose }) {
+// Header layout follows FinalReport.jsx (university logo left, organisation logo
+// right, text centred) but with the organisation name on top. The two variants
+// use different typefaces: sans-serif for forms/notices, serif for the certificate.
+function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
+  const cert = variant === 'certificate';
+  const font = cert ? 'Georgia, "Times New Roman", Times, serif' : 'inherit';
+  const logoW = cert ? { uni: 96, org: 84 } : { uni: 80, org: 70 };
   return (
-    <div style={{ minHeight: '100vh', background: '#f1f5f9' }}>
-      <div style={{ maxWidth, margin: '16px auto 0', padding: '0 4px', display: 'flex', justifyContent: 'space-between' }} className="no-print">
-        <button onClick={onClose} style={{ background: 'none', border: '1px solid #cbd5e1', color: '#475569', padding: '10px 18px', borderRadius: '6px', fontSize: '14px', cursor: 'pointer' }}>← Back</button>
-        <button onClick={() => window.print()} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '10px 18px', borderRadius: '6px', fontSize: '14px', cursor: 'pointer' }}>Print / Save as PDF</button>
+    <div style={{ marginBottom, fontFamily: font }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 110, textAlign: 'left', flexShrink: 0 }}>
+          {branding.university_logo_url && <img src={branding.university_logo_url} alt="University logo" style={{ width: logoW.uni, height: 'auto' }} />}
+        </div>
+        <div style={{ textAlign: 'center', flex: 1, padding: '0 10px', minWidth: 0 }}>
+          <div style={cert
+            ? { fontSize: 30, fontWeight: 700, letterSpacing: 2, lineHeight: 1.2, color: '#7a5c00' }
+            : { fontSize: 22, fontWeight: 900, textTransform: 'uppercase', color: '#1e293b' }}>
+            {branding.org_name}
+          </div>
+          <div style={cert
+            ? { margin: '8px 0 0', fontSize: 12, textTransform: 'uppercase', letterSpacing: 4, color: '#64748b' }
+            : { margin: '2px 0', fontSize: 16, fontWeight: 600, color: '#334155' }}>
+            {branding.university_name}
+          </div>
+          {title && <div style={{ margin: '5px 0', fontSize: 16, fontWeight: 500, color: '#475569' }}>{title}</div>}
+        </div>
+        <div style={{ width: 110, textAlign: 'right', flexShrink: 0 }}>
+          {branding.logo_url && <img src={branding.logo_url} alt="Organisation logo" style={{ width: logoW.org, height: 'auto' }} />}
+        </div>
       </div>
-      <div className="csp-print-sheet" style={{ maxWidth, margin: '16px auto 40px', background: '#fff', boxShadow: '0 1px 6px rgba(0,0,0,0.15)', padding: 40, color: '#1e293b', fontFamily: '-apple-system, "Segoe UI", Arial, sans-serif' }}>
-        {children}
+      {cert && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '18px auto 0', maxWidth: 360 }}>
+          <div style={{ flex: 1, borderTop: '1px solid #b8860b' }} />
+          <div style={{ color: '#b8860b', fontSize: 14, lineHeight: 1 }}>&#10086;</div>
+          <div style={{ flex: 1, borderTop: '1px solid #b8860b' }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Wraps every printable document in the same chrome as the portal itself
+// (themed page, bordered card, "Candidate Status" header), so opening a document
+// feels like another view of the portal rather than a separate page. The white
+// "paper" inside is what actually prints; everything else is .no-print.
+function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = '' }) {
+  return (
+    <div style={outerWrap} className="csp-outer">
+      <div style={{ ...container, maxWidth: maxWidth + 62 }} className="csp-doc-card">
+        <div style={header} className="no-print">
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0, color: 'var(--text-color)' }}>Candidate Status</h2>
+            <span style={sub}>{branding.org_name || 'Election'} · {branding.university_name || ''}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} style={ghostBtn}>← Back</button>
+            <button onClick={() => window.print()} style={primaryBtn}>Print / Save as PDF</button>
+          </div>
+        </div>
+        {label && (
+          <div className="no-print" style={{ fontSize: 12, opacity: 0.6, marginBottom: 12, color: 'var(--text-color)' }}>
+            {label} · this is how it will print
+          </div>
+        )}
+        <div className="csp-print-sheet" style={{ background: '#fff', border: '1px solid var(--border-color)', borderRadius: 8, padding: 'clamp(16px, 5vw, 40px)', color: '#1e293b', fontFamily: '-apple-system, "Segoe UI", Arial, sans-serif' }}>
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -300,20 +372,12 @@ function DocShell({ children, maxWidth = 760, onClose }) {
 function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
   const snap = candidacy.application_snapshot || {};
   return (
-    <DocShell onClose={onClose}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div style={{ width: 90 }}>{branding.university_logo_url && <img src={branding.university_logo_url} alt="" style={{ width: '100%' }} />}</div>
-        <div style={{ textAlign: 'center', flex: 1 }}>
-          <h1 style={{ margin: 0, fontSize: 20, textTransform: 'uppercase', fontWeight: 900 }}>{branding.university_name}</h1>
-          <h2 style={{ margin: '2px 0', fontSize: 16 }}>{branding.org_name}</h2>
-          <h3 style={{ margin: '6px 0 0', fontSize: 13, fontWeight: 500, color: '#475569' }}>Candidate Application Record</h3>
-        </div>
-        <div style={{ width: 90, textAlign: 'right' }}>{branding.logo_url && <img src={branding.logo_url} alt="" style={{ width: '100%' }} />}</div>
-      </div>
+    <DocShell onClose={onClose} branding={branding} label="Candidate Application Record">
+      <DocHeader branding={branding} title="Candidate Application Record" marginBottom={24} />
 
       <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #3b82f6', paddingBottom: 10, marginBottom: 24, fontSize: 12 }}>
         <div>
-          <p style={{ margin: '2px 0' }}><strong>Position applied for:</strong> {candidacy.position_title}</p>
+          <p style={{ margin: '2px 0' }}><strong>Position applied for:</strong> {properTitle(candidacy.position_title)}</p>
         </div>
         <div style={{ textAlign: 'right' }}>
           <p style={{ margin: '2px 0' }}><strong>Submitted:</strong> {formatDate(snap.submitted_at)}</p>
@@ -321,10 +385,10 @@ function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
       </div>
 
       <div style={{ display: 'flex', gap: 20, marginBottom: 24, alignItems: 'flex-start' }}>
-        {snap.image_url && <img src={snap.image_url} alt="" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />}
+        {snap.image_url && <img src={faceCropUrl(snap.image_url, 96, 96)} alt="" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />}
         <dl style={{ flex: 1, margin: 0 }}>
           <dt style={{ fontSize: 10, textTransform: 'uppercase', color: '#64748b' }}>Full name</dt>
-          <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{snap.full_name}</dd>
+          <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{properName(snap.full_name)}</dd>
           <dt style={{ fontSize: 10, textTransform: 'uppercase', color: '#64748b', marginTop: 8 }}>Registration number</dt>
           <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{regNo(snap.student_id)}</dd>
         </dl>
@@ -342,7 +406,11 @@ function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
   );
 }
 
-function CertificateDoc({ candidacy, branding, onClose }) {
+function CertificateDoc({ candidacy, branding: liveBranding, onClose }) {
+  // Prefer the frozen values stored on the certificate row over live branding.
+  const cert = candidacy.certificate || {};
+  const branding = { ...liveBranding, org_name: cert.org_name || liveBranding.org_name };
+  const nomineeName = cert.candidate_name || candidacy.application_snapshot?.full_name || '';
   const [qrDataUrl, setQrDataUrl] = useState('');
   // Opens the public /verify page in this app, which reads the backend endpoint.
   const verifyUrl = `${window.location.origin}/verify/${candidacy.certificate_id}`;
@@ -357,16 +425,9 @@ function CertificateDoc({ candidacy, branding, onClose }) {
   }, [verifyUrl]);
 
   return (
-    <DocShell maxWidth={800} onClose={onClose}>
+    <DocShell maxWidth={800} onClose={onClose} branding={branding} label="Certificate of Nomination">
       <div style={{ border: '3px double #b8860b', padding: '44px 48px', position: 'relative' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-          <div style={{ width: 74 }}>{branding.university_logo_url && <img src={branding.university_logo_url} alt="" style={{ width: '100%' }} />}</div>
-          <div style={{ textAlign: 'center', flex: 1 }}>
-            <h1 style={{ margin: 0, fontSize: 15, textTransform: 'uppercase', fontWeight: 800, color: '#64748b', letterSpacing: 1 }}>{branding.university_name}</h1>
-            <h2 style={{ margin: '2px 0', fontSize: 20, fontWeight: 900 }}>{branding.org_name}</h2>
-          </div>
-          <div style={{ width: 74, textAlign: 'right' }}>{branding.logo_url && <img src={branding.logo_url} alt="" style={{ width: '100%' }} />}</div>
-        </div>
+        <DocHeader branding={branding} title="" variant="certificate" marginBottom={6} />
 
         <div style={{ textAlign: 'center', fontFamily: 'Times New Roman, Times, serif', fontSize: 30, fontWeight: 700, letterSpacing: 3, color: '#b8860b', margin: '22px 0 4px' }}>
           Certificate of Nomination
@@ -378,10 +439,10 @@ function CertificateDoc({ candidacy, branding, onClose }) {
         <div style={{ fontFamily: 'Times New Roman, Times, serif', fontSize: 16, lineHeight: 2, textAlign: 'center', margin: '0 10px 30px' }}>
           This is to certify that<br />
           <span style={{ fontSize: 22, fontWeight: 700, borderBottom: '1px solid #1e293b', paddingBottom: 2 }}>
-            {candidacy.application_snapshot?.full_name}
+            {properName(nomineeName)}
           </span><br />
           has been reviewed and duly nominated as a candidate for the position of<br />
-          <span style={{ fontWeight: 700 }}>{candidacy.position_title}</span><br />
+          <span style={{ fontWeight: 700 }}>{properTitle(candidacy.position_title)}</span><br />
           in the {branding.org_name} election.
         </div>
 
@@ -404,12 +465,11 @@ function CertificateDoc({ candidacy, branding, onClose }) {
 function DenialNoticeDoc({ candidacy, branding, onClose }) {
   const d = candidacy.denial_snapshot || {};
   return (
-    <DocShell maxWidth={600} onClose={onClose}>
-      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 24 }}>{branding.org_name} · {branding.university_name}</div>
-      <h1 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 24px' }}>Application Decision Notice</h1>
+    <DocShell maxWidth={600} onClose={onClose} branding={branding} label="Application Decision Notice">
+      <DocHeader branding={branding} title="Application Decision Notice" marginBottom={24} />
       <dl style={{ margin: 0 }}>
-        <Row label="Applicant" value={d.full_name} />
-        <Row label="Position applied for" value={d.position_title} />
+        <Row label="Applicant" value={properName(d.full_name)} />
+        <Row label="Position applied for" value={properTitle(d.position_title)} />
         <Row label="Decision" value="Not approved" />
         <Row label="Decision date" value={formatDate(d.decided_at)} />
       </dl>
@@ -462,5 +522,6 @@ const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12p
 const infoBox    = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+const primaryBtn = { padding: '9px 14px', background: 'var(--info)', border: '1px solid var(--info)', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
 const pillBtn    = { padding: '8px 14px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px' };
 const pillBtnActive = { borderColor: 'var(--info)', color: 'var(--info)', fontWeight: 600 };

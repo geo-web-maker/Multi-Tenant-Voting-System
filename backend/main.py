@@ -1422,7 +1422,8 @@ async def _issue_certificate(app_doc: dict, org_id: str = None):
     await db.certificates.insert_one({
         "certificate_id": certificate_id,
         "org_id": org_id,
-        "candidate_name": app_doc.get("full_name", ""),
+        "candidate_name": app_doc.get("full_name")
+                          or (app_doc.get("application_snapshot") or {}).get("full_name", ""),
         "position_title": title,
         "org_name": b.get("org_name", ""),
         "issued_at": issued_at,
@@ -3462,6 +3463,12 @@ async def get_candidate_status(token: str, request: Request):
         "org_id": org_id,
     })
 
+    # Branding is scoped by the token's org here, so the portal never depends on
+    # a tenant header that a bare status link doesn't carry.
+    b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
+    branding = {k: b.get(k, "") for k in
+                ("logo_url", "org_name", "university_name", "university_logo_url")}
+
     candidacies = []
     async for app_doc in apps:
         title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
@@ -3476,6 +3483,12 @@ async def get_candidate_status(token: str, request: Request):
             cert = await db.certificates.find_one({"certificate_id": app_doc["certificate_id"]})
             if cert and not cert.get("revoked"):
                 entry["certificate_id"] = app_doc["certificate_id"]
+                entry["certificate"] = {
+                    "candidate_name": cert.get("candidate_name")
+                        or (app_doc.get("application_snapshot") or {}).get("full_name")
+                        or app_doc.get("full_name", ""),
+                    "org_name": cert.get("org_name") or branding["org_name"],
+                }
         if not public_results_live and app_doc.get("status") in ("approved", "removed"):
             cand = await db.candidates.find_one({"application_id": str(app_doc["_id"])})
             if cand:
@@ -3485,7 +3498,8 @@ async def get_candidate_status(token: str, request: Request):
                     entry["results"] = results
         candidacies.append(entry)
 
-    return {"candidacies": candidacies, "public_results_live": public_results_live}
+    return {"candidacies": candidacies, "public_results_live": public_results_live,
+            "branding": branding}
 
 
 @app.get("/verify/{certificate_id}")
@@ -3501,11 +3515,17 @@ async def verify_certificate(certificate_id: str, request: Request):
         raise HTTPException(404, "Certificate not found.")
     if cert.get("revoked"):
         return {"verified": False, "revoked": True}
+    # Certificates issued before the organisation name was configured stored it
+    # empty; fall back to the org's current branding (name only, nothing else).
+    org_name = cert.get("org_name", "")
+    if not org_name:
+        b = await db.settings.find_one({"name": "branding", "org_id": cert.get("org_id")}) or {}
+        org_name = b.get("org_name", "")
     return {
         "verified": True,
         "candidate_name": cert.get("candidate_name", ""),
         "position_title": cert.get("position_title", ""),
-        "org_name": cert.get("org_name", ""),
+        "org_name": org_name,
         "issued_at": cert.get("issued_at"),
     }
 

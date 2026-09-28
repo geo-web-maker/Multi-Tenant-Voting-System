@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { properName, properTitle } from '../displayText';
 
 /**
  * Public page a certificate's QR code opens (/verify/<certificate_id>).
@@ -37,7 +38,7 @@ export default function VerifyCertificate({ certificateId }) {
             </p>
             {valid && (
               <dl style={{ margin: 0, textAlign: 'left', fontSize: 14 }}>
-                {[['Candidate', data.candidate_name], ['Position', data.position_title], ['Organisation', data.org_name],
+                {[['Candidate', properName(data.candidate_name)], ['Position', properTitle(data.position_title)], ['Organisation', data.org_name],
                   ['Issued', data.issued_at ? new Date(data.issued_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : '']].map(([l, v]) => (
                   <div key={l} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--border-color)' }}>
                     <dt style={{ opacity: 0.6 }}>{l}</dt><dd style={{ margin: 0, fontWeight: 600, textAlign: 'right' }}>{v}</dd>
