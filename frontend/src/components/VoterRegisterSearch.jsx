@@ -54,7 +54,7 @@ export default function VoterRegisterSearch() {
         <div style={tableWrapStyle}>
           <div style={tableHeaderStyle}>
             <span>Name</span>
-            <span>Reg. Number</span>
+            <span>Registration Number</span>
           </div>
           <div style={tableBodyStyle}>
             {loading && <p style={mutedCenter}>Searching…</p>}

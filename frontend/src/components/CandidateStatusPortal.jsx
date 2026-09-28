@@ -123,7 +123,7 @@ export default function CandidateStatusPortal({ token }) {
             {who && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-color)' }}>{properName(who.full_name)}</div>
-                {who.student_id && <div style={{ ...sub, marginTop: 2 }}>Reg. no. {regNo(who.student_id)}</div>}
+                {who.student_id && <div style={{ ...sub, marginTop: 2 }}>Registration number: {regNo(who.student_id)}</div>}
               </div>
             )}
           </div>

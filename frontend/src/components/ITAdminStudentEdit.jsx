@@ -79,12 +79,12 @@ export default function ITAdminStudentEdit() {
           <div style={{ marginTop: 16 }}>
             <label style={lbl}>Name</label>
             <input className="itadmin-input" value={draft.full_name} onChange={e => setDraft({ ...draft, full_name: e.target.value })} />
-            <label style={{ ...lbl, marginTop: 10 }}>Registration number</label>
+            <label style={{ ...lbl, marginTop: 10 }}>Registration Number</label>
             <input className="itadmin-input" value={draft.new_student_id} disabled={draft.original.holds_admin_role || frozen}
               onChange={e => setDraft({ ...draft, new_student_id: e.target.value })} />
             {draft.original.holds_admin_role && <p style={warn}><Icon name="warning" /> This student holds an admin or commission role; the registration number cannot be changed.</p>}
 
-            <label style={{ ...lbl, marginTop: 10 }}>Phone numbers</label>
+            <label style={{ ...lbl, marginTop: 10 }}>Phone Numbers</label>
             {draft.phones.map(p => (
               <div key={p.key} className="itadmin-row" style={{ marginTop: 6 }}>
                 <input className="itadmin-input" aria-label="Phone number" value={p.value} disabled={p.removed || frozen}
@@ -112,7 +112,7 @@ export default function ITAdminStudentEdit() {
       <aside className="itadmin-card itadmin-summary" aria-label="Live summary">
         <h4 style={title}>Summary</h4>
         <div className="itadmin-kv"><span>Student</span><b>{draft ? draft.original.full_name : '—'}</b></div>
-        <div className="itadmin-kv"><span>Registration no.</span><b>{draft ? regNo(draft.original.student_id) : '—'}</b></div>
+        <div className="itadmin-kv"><span>Registration Number</span><b>{draft ? regNo(draft.original.student_id) : '—'}</b></div>
         <div className="itadmin-kv"><span>Reason</span><b>{reason.trim() || '—'}</b></div>
         <h5 style={{ margin: '14px 0 6px', fontSize: 12, opacity: 0.65 }}>CURRENT → NEW</h5>
         <div className="itadmin-changes">

@@ -610,7 +610,7 @@ const handleCreateOrg = async (e) => {
       setIsElectionOpen(data.is_open);
       const fb = electionToggleFeedback(data);
       toast(fb.text, { kind: fb.kind });
-    } catch (e) { toast(getErrorMessage(e, 'Toggle failed.'), { kind: 'error' }); }
+    } catch (e) { toast(getErrorMessage(e, 'Could not change the election status. Please try again.'), { kind: 'error' }); }
   };
 
   const handleToggleCertification = async () => {
@@ -912,7 +912,7 @@ const handleSuperAdminRemoveStudent = async () => {
             <div style={card}>
               <h4 style={cardTitle}>Add Candidate Directly</h4>
               <form onSubmit={handleAddCandidate} style={formCol}>
-                <input style={inp} placeholder="Full name" value={newCandidate.name}
+                <input style={inp} placeholder="Full Name" value={newCandidate.name}
                   onChange={e => setNewCandidate({ ...newCandidate, name: e.target.value })} required />
                 <select style={inp} value={newCandidate.position}
                   onChange={e => setNewCandidate({ ...newCandidate, position: e.target.value })} required>
@@ -1474,7 +1474,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         const url = await uploadToCloudinary(file);
                         setBranding({ ...branding, logo_url: url });
                       } catch {
-                        toast('Logo upload failed. Check Cloudinary env vars.', { kind: 'error' });
+                        toast('Logo upload failed. Please try again, and contact the system administrator if the problem continues.', { kind: 'error' });
                       } finally {
                         setBrandSaving(false);
                       }
@@ -1537,7 +1537,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                 </div>
         
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Primary colour</label>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Primary Colour</label>
                 <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                   <input type="color" value={branding.primary_color}
                     onChange={e => setBranding({ ...branding, primary_color: e.target.value })}
@@ -1546,7 +1546,7 @@ const handleSuperAdminRemoveStudent = async () => {
                     onChange={e => setBranding({ ...branding, primary_color: e.target.value })} />
                 </div>
         
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Accent colour</label>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Accent Colour</label>
                 <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                   <input type="color" value={branding.accent_color}
                     onChange={e => setBranding({ ...branding, accent_color: e.target.value })}
@@ -1578,7 +1578,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         const url = await uploadToCloudinary(file);
                         setBranding({ ...branding, university_logo_url: url });
                       } catch {
-                        toast('University logo upload failed. Check Cloudinary env vars.', { kind: 'error' });
+                        toast('University logo upload failed. Please try again, and contact the system administrator if the problem continues.', { kind: 'error' });
                       } finally {
                         setBrandSaving(false);
                       }
@@ -1655,7 +1655,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   sent when a phone number is changed.
                 </small>
 
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Support contacts by reason</label>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Support Contacts by Reason</label>
                 <small style={{ color: '#64748b', fontSize: '11px' }}>
                   One card per reason, e.g. “Editing contact details”, “Reporting an issue”, “System guidance”. Add one
                   or more named contacts under a reason — a voter who taps a reason with several contacts sees their
@@ -1940,9 +1940,9 @@ const handleSuperAdminRemoveStudent = async () => {
                 <form onSubmit={handleSuperAdminAddStudent} style={formCol}>
                   <input style={inp} placeholder="Student ID" value={saDirectAdd.student_id}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, student_id: e.target.value })} required />
-                  <input style={inp} placeholder="Full name" value={saDirectAdd.full_name}
+                  <input style={inp} placeholder="Full Name" value={saDirectAdd.full_name}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, full_name: e.target.value })} required />
-                  <input style={inp} placeholder="Phone(s), comma-separated" value={saDirectAdd.phone}
+                  <input style={inp} placeholder="Phone Number(s), comma-separated" value={saDirectAdd.phone}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, phone: e.target.value })} required />
                   <input style={inp} placeholder="Reason" value={saDirectAdd.reason}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, reason: e.target.value })} required />

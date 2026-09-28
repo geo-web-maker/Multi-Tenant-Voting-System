@@ -114,7 +114,7 @@ export default function SuperAdminStudentEdit() {
               <input style={inp} value={draft.full_name} onChange={e => setDraft({ ...draft, full_name: e.target.value })} />
             </label>
             <label style={field}>
-              <span style={lbl}>Registration number</span>
+              <span style={lbl}>Registration Number</span>
               <input style={inp} value={draft.new_student_id} disabled={frozen}
                 onChange={e => setDraft({ ...draft, new_student_id: e.target.value })} />
             </label>
@@ -125,7 +125,7 @@ export default function SuperAdminStudentEdit() {
             </p>
           )}
 
-          <span style={{ ...lbl, display: 'block', marginTop: '14px' }}>Phone numbers</span>
+          <span style={{ ...lbl, display: 'block', marginTop: '14px' }}>Phone Numbers</span>
           {draft.phones.map(p => (
             <div key={p.key} style={{ display: 'flex', gap: '8px', marginTop: '6px', alignItems: 'center' }}>
               <input style={{ ...inp, flex: 1, textDecoration: p.removed ? 'line-through' : 'none', opacity: p.removed ? 0.5 : 1 }}
@@ -142,7 +142,7 @@ export default function SuperAdminStudentEdit() {
           </button>
 
           <div style={review}>
-            <b style={{ fontSize: '13px' }}>Review: current value next to new value</b>
+            <b style={{ fontSize: '13px' }}>Review: Current Value Next to New Value</b>
             {changes.rows.length === 0 && <p style={muted}>No changes yet.</p>}
             {changes.rows.length > 0 && (
               <div style={{ overflowX: 'auto' }}>
@@ -177,7 +177,7 @@ export default function SuperAdminStudentEdit() {
         </div>
       )}
 
-      <h4 style={{ ...cardTitle, marginTop: '28px' }}>Change history (read only)</h4>
+      <h4 style={{ ...cardTitle, marginTop: '28px' }}>Change History (Read Only)</h4>
       <form onSubmit={e => { e.preventDefault(); loadHistory(histQ); }} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <input style={{ ...inp, flex: '1 1 220px' }} aria-label="Search history"
           placeholder="Search by old or new registration number, or name"

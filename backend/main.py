@@ -1832,16 +1832,16 @@ class Milestone(BaseModel):
         try:
             return datetime.strptime(str(v), "%Y-%m-%d").date().isoformat()
         except ValueError:
-            raise ValueError("dates must be YYYY-MM-DD")
+            raise ValueError("Dates must be in YYYY-MM-DD format.")
 
     @field_validator("end_date")
     @classmethod
     def _end_after_start(cls, v, info):
         start = info.data.get("start_date")
         if v and not start:
-            raise ValueError("end_date requires start_date")
+            raise ValueError("An end date requires a start date.")
         if v and start and v < start:
-            raise ValueError("end_date must not be before start_date")
+            raise ValueError("The end date must not be before the start date.")
         if v and v == start:
             return None  # same day = single-day event
         return v
@@ -2724,7 +2724,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         await ip_record(request, "fails")
-        raise HTTPException(status_code=404, detail="Student ID not found")
+        raise HTTPException(status_code=404, detail="Student ID not found.")
 
     # LEGACY (OTP_LIMITER_MODE=legacy only): permanent 3-send cap. The new limiter never reads otp_count.
     if legacy and student.get("otp_count", 0) >= 3:
@@ -2734,7 +2734,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
         )
 
     if student.get("has_voted"):
-        raise HTTPException(status_code=400, detail="Already voted")
+        raise HTTPException(status_code=400, detail="Already voted.")
 
     if not names_match(student.get("full_name", ""), data.full_name):
         await ip_record(request, "fails")
@@ -2786,7 +2786,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     if outcome == "failed":
         if reservation:
             await rollback_send(request, sid, reservation["snapshot"])      # gateway failure is free
-        raise HTTPException(status_code=500, detail="SMS Delivery Failed")
+        raise HTTPException(status_code=500, detail="SMS delivery failed.")
 
     # "ok" or "ambiguous": the SMS may well be on its way, so the code must be valid and the cooldown must hold.
     if not live:
@@ -2868,7 +2868,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
     search = org_query(request, get_forgiving_filter(data.student_id))
     voter  = await db.voters.find_one(search)
     if not voter:
-        raise HTTPException(status_code=404, detail="Voter not found")
+        raise HTTPException(status_code=404, detail="Voter not found.")
 
     record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
 
@@ -2911,7 +2911,7 @@ async def verify_otp(data: OTPCheck, request: Request):
     search = org_query(request, get_forgiving_filter(data.student_id))
     voter = await db.voters.find_one(search)
     if not voter:
-        raise HTTPException(status_code=404, detail="Voter not found")
+        raise HTTPException(status_code=404, detail="Voter not found.")
     sid = voter["student_id"]
 
     record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
@@ -2998,7 +2998,7 @@ async def cast_vote(data: VoteRequest, request: Request):
             org_query(request, get_forgiving_filter(data.student_id)), session=session
         )
         if not student or student.get("has_voted"):
-            raise HTTPException(status_code=400, detail="Ineligible voter")
+            raise HTTPException(status_code=400, detail="Ineligible voter.")
         if student.get("last_status") != "authenticated":
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
         _assert_voter_session(request, student)
@@ -3015,7 +3015,7 @@ async def cast_vote(data: VoteRequest, request: Request):
             session=session
         )
         if claimed.matched_count != 1:
-            raise HTTPException(status_code=400, detail="Ineligible voter")
+            raise HTTPException(status_code=400, detail="Ineligible voter.")
         # Append-only insert — no shared document for concurrent voters to
         # lock against, unlike the $inc this replaces. No voter_id is stored:
         # has_voted (on the voter doc) and this event are deliberately
@@ -3077,7 +3077,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             org_query(request, get_forgiving_filter(data.student_id)), session=session
         )
         if not student:
-            raise HTTPException(status_code=404, detail="Voter not found")
+            raise HTTPException(status_code=404, detail="Voter not found.")
         if student.get("has_voted"):
             raise HTTPException(status_code=400, detail="You have already cast your vote.")
         if student.get("last_status") != "authenticated":
@@ -3136,7 +3136,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
 
     await log_action("vote_cast", normalize_student_id(data.student_id), {"positions": len(candidate_oids)}, org_id=request.state.org_id)
 
-    return {"status": "success", "message": "Ballot cast successfully"}
+    return {"status": "success", "message": "Ballot cast successfully."}
 
 
 @app.get("/candidates")
@@ -3487,7 +3487,7 @@ async def get_candidate_status(token: str, request: Request):
     if not token_doc:
         raise HTTPException(404, "Status link not found.")
     if _status_link_expired(token_doc):
-        raise HTTPException(410, "This status link has expired or was withdrawn. Contact the election office for a new one.")
+        raise HTTPException(410, "This status link has expired or was withdrawn. Contact the IT administrators for a new one.")
 
     org_id = token_doc.get("org_id")
     # Every downstream helper here (org_query/org_stamp/get_phase_schedule/
@@ -4095,7 +4095,7 @@ async def test_sms_connection(data: AdminTestSMS, request: Request, admin: dict 
     # routing as real OTPs, so the test reflects what a voter would actually experience; with a
     # `provider` it checks that one account directly (ignoring routing and fallback).
     if data.provider is not None and data.provider not in SMS_PROVIDERS:
-        raise HTTPException(status_code=400, detail="provider must be egosms or mambosms.")
+        raise HTTPException(status_code=400, detail="Provider must be 'egosms' or 'mambosms'.")
     await log_action("sms_test_sent", current_actor(request),
                      {"phone": _mask_phone(data.phone), "provider": data.provider or "routing"}, org_id=request.state.org_id)
     text = "SMS Connection Verified for BallotBox!"
@@ -4199,7 +4199,7 @@ def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict]
             continue
         if len(sid) > IMPORT_FIELD_MAX_LEN or len(name) > IMPORT_FIELD_MAX_LEN:
             skipped += 1
-            warnings.append(f"Row {row_num}: student_id or full_name exceeds {IMPORT_FIELD_MAX_LEN} characters — skipped.")
+            warnings.append(f"Row {row_num}: Student ID or full name exceeds {IMPORT_FIELD_MAX_LEN} characters — skipped.")
             continue
         if sid in rows:
             warnings.append(f"Row {row_num} ({sid}): registration number appears more than once in the file — the later row is used.")
@@ -4740,7 +4740,7 @@ async def list_applications(request: Request, status: str = None):
 async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request):
     """A commissioner casts their approve/deny vote on a pending application."""
     if data.vote not in ("approve", "deny"):
-        raise HTTPException(400, "vote must be 'approve' or 'deny'.")
+        raise HTTPException(400, "Vote must be 'approve' or 'deny'.")
 
     oid = parse_oid(app_id, "application id")
     app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
@@ -4794,7 +4794,7 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
     this endpoint as-is until that's settled — don't add UI for it without checking first.
     """
     if data.vote not in ("approve", "deny"):
-        raise HTTPException(400, "vote must be 'approve' (remove) or 'deny' (keep).")
+        raise HTTPException(400, "Vote must be 'approve' (remove) or 'deny' (keep).")
 
     oid = parse_oid(app_id, "application id")
     app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
@@ -4895,7 +4895,7 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
         when = f"{local.day} {local:%b %Y}"
     await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
         f"{org}: Your payment has been confirmed. You are invited for nomination/vetting for {pos}"
-        + (f" on {when}." if when else " — the date will be communicated once the Timeline is set.")))
+        + (f" on {when}." if when else " — the date will be communicated once the timeline is set.")))
     logger.info(f"Application {app_id} finance-cleared by {data.commissioner_id}.")
     return {"status": "finance_cleared"}
 
@@ -5897,7 +5897,7 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     """
     await assert_roster_unfrozen(request)
     if data.decision not in ("approve", "deny"):
-        raise HTTPException(400, "decision must be 'approve' or 'deny'.")
+        raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
 
     oid = parse_oid(change_id, "change id")
     change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
@@ -6871,7 +6871,7 @@ async def list_exception_grants(request: Request):
 async def create_exception_grant(data: ExceptionGrantCreate, request: Request,
                                  admin: dict = Depends(require_chief_commissioner)):
     if data.phase not in PHASE_NAMES:
-        raise HTTPException(400, f"phase must be one of: {', '.join(PHASE_NAMES)}.")
+        raise HTTPException(400, f"Phase must be one of: {', '.join(PHASE_NAMES)}.")
     if not data.reason.strip():
         raise HTTPException(400, "A written reason is required — this grant is the decision record.")
     if data.expires_at and data.expires_at <= datetime.utcnow():
@@ -7008,7 +7008,7 @@ async def analytics_turnout_velocity(request: Request, bucket: str = "hour"):
     """Votes cast per hour or day, built from vote_events.cast_at — collected
     since day one and never surfaced anywhere until now."""
     if bucket not in ("hour", "day"):
-        raise HTTPException(400, "bucket must be 'hour' or 'day'.")
+        raise HTTPException(400, "Bucket must be 'hour' or 'day'.")
     fmt = "%Y-%m-%dT%H:00" if bucket == "hour" else "%Y-%m-%d"
     series = []
     async for row in db.vote_events.aggregate([
@@ -7505,7 +7505,7 @@ async def _expire_contact_changes(request: Request):
 async def _validate_contact_change(data: ContactChangeRequest, voter: dict, org_id) -> dict:
     t = data.change_type
     if t not in CONTACT_CHANGE_TYPES:
-        raise HTTPException(400, f"change_type must be one of: {', '.join(CONTACT_CHANGE_TYPES)}.")
+        raise HTTPException(400, f"Change type must be one of: {', '.join(CONTACT_CHANGE_TYPES)}.")
     phones = list(voter.get("phone_numbers", []))
     ch: dict = {"type": t, "index": None, "expected_old": None, "new_value": None}
     if t in ("phone_change", "phone_remove"):
@@ -7549,7 +7549,7 @@ async def request_contact_change(data: ContactChangeRequest, request: Request,
         raise HTTPException(409, "Contact-change approval is switched off for this election — edit the student directly.")
 
     if data.evidence_type not in CONTACT_EVIDENCE_TYPES:
-        raise HTTPException(400, f"evidence_type must be one of: {', '.join(CONTACT_EVIDENCE_TYPES)}.")
+        raise HTTPException(400, f"Evidence type must be one of: {', '.join(CONTACT_EVIDENCE_TYPES)}.")
     note = data.evidence_note.strip()
     if len(note) < (20 if data.evidence_type == "other_documented" else 3):
         raise HTTPException(400, "Describe the evidence you checked (at least 20 characters for 'other_documented').")
@@ -7835,7 +7835,7 @@ async def _notify_old_number(request: Request, c: dict, old_phones: list[str], n
         " was removed" if ch["type"] == "phone_remove" else "")
     reach = b.get("support_phone") or next(
         (c.get("link") for g in (b.get("support_contacts") or []) for c in (g.get("contacts") or []) if c.get("link")), "")
-    contact = f" If this was not you, contact {reach}." if reach else " If this was not you, contact the electoral commission."
+    contact = f" If this was not you, contact {reach}." if reach else " If this was not you, contact the Electoral Commission."
     text = f"{what} the {org} voting register{tail} at {when}.{contact}" if ch["type"] != "phone_add" else \
            f"{what} the {org} voting register at {when}.{contact}"
     return "sent" if await send_sms(old, text, request, kind="notice") else "failed"
@@ -7843,7 +7843,7 @@ async def _notify_old_number(request: Request, c: dict, old_phones: list[str], n
 
 async def _decide_contact_change(change_id: str, data: ContactChangeDecision, request: Request, breakglass: bool):
     if data.decision not in ("approve", "deny"):
-        raise HTTPException(400, "decision must be 'approve' or 'deny'.")
+        raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
     note = data.note.strip()
     if data.decision == "deny" and len(note) < 3:
         raise HTTPException(400, "A denial needs a note.")
@@ -7966,9 +7966,9 @@ async def superadmin_force_contact_change(change_id: str, data: ContactChangeDec
 async def override_cap(data: CapOverride, request: Request, admin: dict = Depends(require_chief_commissioner)):
     """Chief commissioner raises one person's approval cap (approver_daily) or reset cap (reset_hourly)."""
     if data.kind not in ("approver_daily", "reset_hourly"):
-        raise HTTPException(400, "kind must be approver_daily or reset_hourly.")
+        raise HTTPException(400, "Kind must be 'approver_daily' or 'reset_hourly'.")
     if not 1 <= data.cap <= 10000 or len(data.reason.strip()) < 3:
-        raise HTTPException(400, "cap must be 1-10000 and a reason is required.")
+        raise HTTPException(400, "The cap must be between 1 and 10000, and a reason is required.")
     await _save_security(request, {f"cap_overrides.{data.kind}.{_capkey(data.admin_id)}": data.cap})
     await append_ledger(request.state.org_id, "cap_override", normalize_student_id(data.admin_id), current_actor(request),
                         current_role(request), {"kind": data.kind, "cap": data.cap, "reason": data.reason.strip()})
@@ -8031,7 +8031,7 @@ async def reset_otp_limits(student_id: str, data: OtpResetRequest, request: Requ
                            admin: dict = Depends(require_role("it_admin", "commission", "superadmin"))):
     """Clears the send ladder and guess bucket. NEVER reveals or creates a code."""
     if data.reason not in RESET_REASONS:
-        raise HTTPException(400, f"reason must be one of: {', '.join(RESET_REASONS)}.")
+        raise HTTPException(400, f"Reason must be one of: {', '.join(RESET_REASONS)}.")
     if len(data.note.strip()) < 3:
         raise HTTPException(400, "A short note is required.")
     org_id, sec = request.state.org_id, await get_security_settings(request)
@@ -8115,7 +8115,7 @@ async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
         updates["sms_budget_total"] = data.sms_budget_total
     if data.sms_mode is not None:
         if data.sms_mode not in ("normal", "conservation"):
-            raise HTTPException(400, "sms_mode must be normal or conservation.")
+            raise HTTPException(400, "SMS mode must be 'normal' or 'conservation'.")
         updates["sms_mode"] = data.sms_mode
     if data.sms_budget_enforce is not None:
         updates["sms_budget_enforce"] = data.sms_budget_enforce
@@ -8170,25 +8170,25 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
         v = getattr(data, f)
         if v is not None:
             if not lo <= v <= hi:
-                raise HTTPException(400, f"{f} must be between {lo} and {hi}.")
+                raise HTTPException(400, f"{f.replace('_', ' ').capitalize()} must be between {lo} and {hi}.")
             updates[f] = v
     if data.turnstile_mode is not None:
         if data.turnstile_mode not in ("off", "adaptive", "on"):
-            raise HTTPException(400, "turnstile_mode must be off, adaptive or on.")
+            raise HTTPException(400, "Bot check mode must be 'off', 'adaptive' or 'on'.")
         updates["turnstile_mode"] = data.turnstile_mode
     if data.public_results_mode is not None:
         if data.public_results_mode not in ("live", "closed", "certified"):
-            raise HTTPException(400, "public_results_mode must be live, closed or certified.")
+            raise HTTPException(400, "Public results mode must be 'live', 'closed' or 'certified'.")
         updates["public_results_mode"] = data.public_results_mode
     for f in ("sms_route_otp", "sms_route_other"):
         v = getattr(data, f)
         if v is not None:
             if v not in SMS_ROUTES:
-                raise HTTPException(400, f"{f} must be one of: {', '.join(SMS_ROUTES)}.")
+                raise HTTPException(400, f"The {'OTP' if f == 'sms_route_otp' else 'other-messages'} SMS route must be one of: {', '.join(SMS_ROUTES)}.")
             updates[f] = v
     if data.approval_policy is not None:
         if data.approval_policy not in VALID_APPROVAL_POLICIES:
-            raise HTTPException(400, f"approval_policy must be one of: {', '.join(sorted(VALID_APPROVAL_POLICIES))}.")
+            raise HTTPException(400, f"Approval policy must be one of: {', '.join(sorted(VALID_APPROVAL_POLICIES))}.")
         updates["approval_policy"] = data.approval_policy
     if data.clear_roster_freeze_at:
         updates["roster_freeze_at"] = None

@@ -119,7 +119,7 @@ def _read_xlsx(content: bytes, sheet: str | None) -> Table:
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except ImportError:
-        raise TableError("Excel import isn't installed on the server (pip install openpyxl). CSV files still work.")
+        raise TableError("Excel import is not available on the server. Please upload a CSV file instead.")
     except Exception:
         raise TableError("That Excel file could not be opened. Try saving it again as .xlsx or CSV.")
     try:

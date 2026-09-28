@@ -350,9 +350,9 @@ export default function ITAdminDashboard({ onLogout }) {
             <aside style={card} className="itadmin-summary" aria-label="Live summary">
               <h4 style={cardTitle}>Summary</h4>
               {[
-                ['Registration no.', regNo(addForm.student_id.trim())],
+                ['Registration Number', regNo(addForm.student_id.trim())],
                 ['Name', addForm.full_name.trim()],
-                ['Phone(s)', addForm.phones.map(p => p.trim()).filter(Boolean)
+                ['Phone Number(s)', addForm.phones.map(p => p.trim()).filter(Boolean)
                   .map(p => previewPhone(p) || `${p} (invalid)`).join(', ')],
                 ['Reason', addForm.reason.trim()],
                 ['Payment', paymentMethod],
@@ -447,7 +447,7 @@ export default function ITAdminDashboard({ onLogout }) {
               <h4 style={cardTitle}>Summary</h4>
               {[
                 ['Student', removeForm.student_id ? (voters.find(v => v.student_id === removeForm.student_id)?.full_name || '') : ''],
-                ['Registration no.', regNo(removeForm.student_id)],
+                ['Registration Number', regNo(removeForm.student_id)],
                 ['Reason', removeForm.reason.trim()],
               ].map(([k, v]) => (
                 <div key={k} className="itadmin-kv"><span>{k}</span><b>{v || '—'}</b></div>

@@ -1,0 +1,438 @@
+diff --git a/frontend/src/components/ApplicantPortal.jsx b/frontend/src/components/ApplicantPortal.jsx
+index ffa5079..97f3c26 100644
+--- a/frontend/src/components/ApplicantPortal.jsx
++++ b/frontend/src/components/ApplicantPortal.jsx
+@@ -7,6 +7,7 @@ import usePolling from '../hooks/usePolling';
+ import { useHelpMenu } from '../context/HelpMenuContext';
+ import MobileMoneyNumber from './MobileMoneyNumber';
+ import { usePaymentInfo } from '../paymentInfo';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ // Signed, server-side upload via our own backend — replaces the old
+ // unsigned Cloudinary preset upload that ran straight from the browser.
+@@ -274,7 +275,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return;
+             <h4 style={sectionTitle}>Position</h4>
+ 
+             {posLoading ? (
+-              <p style={{ opacity: 0.5, fontSize: '13px' }}>Loading available positions…</p>
++              <LoadingBlock text="Loading available positions…" />
+             ) : positions.length === 0 ? (
+               <div style={{ ...infoBox, borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }}>
+                 <p style={{ margin: 0, color: 'var(--danger)', fontSize: '13px' }}>
+diff --git a/frontend/src/components/BallotBox.jsx b/frontend/src/components/BallotBox.jsx
+index 0f70d97..5c1d458 100644
+--- a/frontend/src/components/BallotBox.jsx
++++ b/frontend/src/components/BallotBox.jsx
+@@ -3,6 +3,7 @@ import api from '../api';
+ import { Icon } from './icons.jsx';
+ import { loadBallot, saveBallot, clearBallot } from '../session';
+ import { faceCropUrl } from '../cloudinaryImage';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, propCandidates, isPreview = false, orgName = "" }) {
+   const [candidates, setCandidates] = useState(propCandidates || []);
+@@ -134,7 +135,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired,
+     }
+   };
+ 
+-  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}>Loading…</div>;
++  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}><LoadingBlock text="Loading…" color="#fff" /></div>;
+ 
+   const groupedCandidates = candidates.reduce((groups, c) => {
+     const pos = c.position || "Other";
+diff --git a/frontend/src/components/CandidateStatusPortal.jsx b/frontend/src/components/CandidateStatusPortal.jsx
+index 99376a9..07c9ef9 100644
+--- a/frontend/src/components/CandidateStatusPortal.jsx
++++ b/frontend/src/components/CandidateStatusPortal.jsx
+@@ -10,6 +10,7 @@ import { regNo } from '../regNo';
+ import ManifestoText from './ManifestoText';
+ import { properName, properTitle } from '../displayText';
+ import { faceCropUrl } from '../cloudinaryImage';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ const PrintStyles = () => (
+   <style>{`
+@@ -139,7 +140,7 @@ export default function CandidateStatusPortal({ token }) {
+         )}
+ 
+         {!error && candidacies === null && (
+-          <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading your application status…</p></div>
++          <div style={emptyState}><LoadingBlock text="Loading your application status…" /></div>
+         )}
+ 
+         {!error && candidacies && candidacies.length === 0 && (
+diff --git a/frontend/src/components/CommissionDashboard.jsx b/frontend/src/components/CommissionDashboard.jsx
+index ffdef79..411aee5 100644
+--- a/frontend/src/components/CommissionDashboard.jsx
++++ b/frontend/src/components/CommissionDashboard.jsx
+@@ -14,6 +14,7 @@ import ManifestoText from './ManifestoText';
+ import { regNo } from '../regNo';
+ import AdminHeader, { useLastSynced } from './AdminHeader';
+ import ClosedNotice, { vettingNoticeText } from './ClosedNotice';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ export default function CommissionDashboard({ onLogout }) {
+   const toast = useToast();
+@@ -634,7 +635,7 @@ export default function CommissionDashboard({ onLogout }) {
+           <div>
+             {!liveResults ? (
+               <div style={emptyState}>
+-                <p style={{ opacity: 0.5 }}>Loading live results…</p>
++                <LoadingBlock text="Loading live results…" />
+               </div>
+             ) : (
+               <>
+diff --git a/frontend/src/components/ContactChangesQueue.jsx b/frontend/src/components/ContactChangesQueue.jsx
+index 0c5b9b3..e20b0bb 100644
+--- a/frontend/src/components/ContactChangesQueue.jsx
++++ b/frontend/src/components/ContactChangesQueue.jsx
+@@ -5,6 +5,7 @@ import { Icon } from './icons.jsx';
+ import { listContactChanges, decideContactChange, breakGlassApprove, undoDigestEntry, CHANGE_LABELS, EVENT_LABELS, errMsg } from '../studentEdit';
+ import { ScrollList } from './UIFeedback';
+ import { regNo } from '../regNo';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocaleString() : '—');
+ 
+@@ -41,7 +42,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
+     if (!breakGlass) return;
+     api.get('/superadmin/security-settings').then(r => setBgEnabled(Boolean(r.data?.settings?.superadmin_breakglass))).catch(() => {});
+   }, [breakGlass]);
+-  if (!data) return <p style={{ opacity: 0.6 }}>Loading…</p>;
++  if (!data) return <LoadingBlock text="Loading…" />;
+ 
+   const decide = async (c, decision) => {
+     let note = '';
+diff --git a/frontend/src/components/ElectionTimeline.jsx b/frontend/src/components/ElectionTimeline.jsx
+index b1fe171..d6e66f8 100644
+--- a/frontend/src/components/ElectionTimeline.jsx
++++ b/frontend/src/components/ElectionTimeline.jsx
+@@ -1,6 +1,7 @@
+ import React from 'react';
+ import api from '../api';
+ import { DEFAULT_TZ, tzShort, utcOffsetLabel } from '../tz';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ // "Today" is always the day it is in the ELECTION timezone (set on the
+ // admin Timeline), never the viewer's device timezone — a voter abroad sees
+@@ -230,7 +231,7 @@ export default function ElectionTimeline() {
+       <style>{PULSE_CSS}</style>
+       <LiveClock now={now} tz={tz} />
+       {milestonesError && <p style={{ fontSize: 13, opacity: 0.7 }}>Couldn't load the election roadmap.</p>}
+-      {!milestonesError && !milestones && <p style={{ fontSize: 13, opacity: 0.7 }}>Loading…</p>}
++      {!milestonesError && !milestones && <LoadingBlock text="Loading…" />}
+       {milestones && milestones.length === 0 && <p style={{ fontSize: 13, opacity: 0.7 }}>No roadmap has been published yet.</p>}
+       {weeks.length > 0 && (
+         <div>
+diff --git a/frontend/src/components/FeeSchedule.jsx b/frontend/src/components/FeeSchedule.jsx
+index 353d51d..9941e2f 100644
+--- a/frontend/src/components/FeeSchedule.jsx
++++ b/frontend/src/components/FeeSchedule.jsx
+@@ -2,6 +2,7 @@ import React from 'react';
+ import api from '../api';
+ import MobileMoneyNumber from './MobileMoneyNumber';
+ import { usePaymentInfo } from '../paymentInfo';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ /**
+  * Nomination fee list, shown from the Help menu so anyone can check what a
+@@ -24,7 +25,7 @@ export default function FeeSchedule() {
+     <div>
+       <h3 style={{ marginTop: 0 }}>Nomination Fees</h3>
+       {error && <p style={{ opacity: 0.7 }}>Could not load the fee list right now. Please try again shortly.</p>}
+-      {!error && positions === null && <p style={{ opacity: 0.7 }}>Loading…</p>}
++      {!error && positions === null && <LoadingBlock text="Loading…" />}
+       {!error && positions !== null && positions.length === 0 && (
+         <p style={{ opacity: 0.7 }}>No positions have been set up yet.</p>
+       )}
+diff --git a/frontend/src/components/OverseerDashboard.jsx b/frontend/src/components/OverseerDashboard.jsx
+index 745880d..851f72c 100644
+--- a/frontend/src/components/OverseerDashboard.jsx
++++ b/frontend/src/components/OverseerDashboard.jsx
+@@ -9,6 +9,7 @@ import { ScrollList } from './UIFeedback';
+ import usePolling from '../hooks/usePolling';
+ import { regNo } from '../regNo';
+ import AdminHeader, { useLastSynced } from './AdminHeader';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ 
+ export default function OverseerDashboard({ onLogout }) {
+@@ -73,7 +74,7 @@ export default function OverseerDashboard({ onLogout }) {
+         )}
+ 
+         {!data && loading && (
+-          <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading platform data…</p></div>
++          <div style={emptyState}><LoadingBlock text="Loading platform data…" /></div>
+         )}
+ 
+         {data && (
+@@ -164,7 +165,7 @@ export default function OverseerDashboard({ onLogout }) {
+             {tab === 'results' && (
+               <div>
+                 {!liveResults ? (
+-                  <div style={emptyState}><p style={{ opacity: 0.5 }}>Loading live results…</p></div>
++                  <div style={emptyState}><LoadingBlock text="Loading live results…" /></div>
+                 ) : (
+                   <>
+                     <div style={{ ...summaryCard, flexDirection: 'row', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+diff --git a/frontend/src/components/ResetOtpLimitsPanel.jsx b/frontend/src/components/ResetOtpLimitsPanel.jsx
+index 3c78742..43187f4 100644
+--- a/frontend/src/components/ResetOtpLimitsPanel.jsx
++++ b/frontend/src/components/ResetOtpLimitsPanel.jsx
+@@ -4,6 +4,7 @@ import { useToast, useConfirm } from './UIFeedback';
+ import { Icon } from './icons.jsx';
+ import { errMsg } from '../studentEdit';
+ import { regNo } from '../regNo';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ // Must match RESET_REASONS in the backend.
+ const REASONS = [
+@@ -62,7 +63,7 @@ function TypeaheadSearch({ placeholder, ariaLabel, fetcher, onPick, renderResult
+         onFocus={() => { if (results.length > 0) setOpen(true); }}
+         onBlur={() => setTimeout(() => setOpen(false), 150)}
+       />
+-      {loading && <span style={spinnerHint}>Searching…</span>}
++      {loading && <span style={spinnerHint}><LoadingBlock text="Searching…" inline /></span>}
+       {open && results.length > 0 && (
+         <div style={list}>
+           {results.map((item, i) => (
+diff --git a/frontend/src/components/Results.jsx b/frontend/src/components/Results.jsx
+index 14cae4e..884adc4 100644
+--- a/frontend/src/components/Results.jsx
++++ b/frontend/src/components/Results.jsx
+@@ -3,6 +3,7 @@ import api from '../api';
+ import FinalReport from './FinalReport';
+ import { Icon } from './icons.jsx';
+ import { PublicTurnoutBreakdown } from './TurnoutBreakdown';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ // 1. SHUFFLE UTILITY (Outside the component)
+ const shuffleArray = (array) => {
+@@ -179,7 +180,7 @@ const fetchData = async ({ force = false } = {}) => {
+     group.candidates.push(candidate);
+   });
+ 
+-  if (loading) return <div style={{textAlign: 'center', padding: '50px'}}>Loading Live Tally…</div>;
++  if (loading) return <div style={{textAlign: 'center', padding: '50px'}}><LoadingBlock text="Loading Live Tally…" /></div>;
+ 
+   return (
+     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
+@@ -345,7 +346,7 @@ const fetchData = async ({ force = false } = {}) => {
+             // Threshold is met, so the lock is NOT active — the roll just hasn't (re)loaded yet, e.g. a
+             // rate-limited or failed request. Never claim a privacy lock the numbers contradict.
+             <div style={privacyLockStyle}>
+-              <p style={{ margin: 0, fontSize: '13px' }}>Loading the participation roll…</p>
++              <LoadingBlock text="Loading the participation roll…" />
+             </div>
+           ) : (
+             <div style={privacyLockStyle}>
+diff --git a/frontend/src/components/SharedAdminPanels.jsx b/frontend/src/components/SharedAdminPanels.jsx
+index 2dccfbc..22a926c 100644
+--- a/frontend/src/components/SharedAdminPanels.jsx
++++ b/frontend/src/components/SharedAdminPanels.jsx
+@@ -7,6 +7,7 @@ import { Icon } from './icons.jsx';
+ import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, fmtZoned, tzShort, utcOffsetLabel, zoneList } from '../tz';
+ import { regNo } from '../regNo';
+ import { AdminTurnoutBreakdown } from './TurnoutBreakdown';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ /*
+  * One set of panels, mounted identically in all five dashboards.
+@@ -434,7 +435,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
+   };
+ 
+   if (error && !data) return <p style={errStyle}>{error}</p>;
+-  if (!data) return <p style={mutedStyle}>Loading schedule…</p>;
++  if (!data) return <LoadingBlock text="Loading schedule…" />;
+   const tz = data.timezone || DEFAULT_TZ;
+ 
+   return (
+@@ -694,7 +695,7 @@ export function RoadmapEditor({ canEdit = false }) {
+   };
+ 
+   if (error && !rows) return <p style={errStyle}>{error}</p>;
+-  if (!rows) return <p style={mutedStyle}>Loading roadmap…</p>;
++  if (!rows) return <LoadingBlock text="Loading roadmap…" />;
+ 
+   return (
+     <div>
+@@ -837,7 +838,7 @@ export function ActivityLog() {
+       </div>
+ 
+       {error && <p style={errStyle}>{error}</p>}
+-      {loading && <p style={mutedStyle}>Loading…</p>}
++      {loading && <LoadingBlock text="Loading…" />}
+ 
+       <div style={scrollBox} className="table-scroll">
+         <table style={tableStyle}>
+@@ -1331,7 +1332,7 @@ export function RosterStats() {
+   }, []);
+ 
+   if (error) return <p style={errStyle}>{error}</p>;
+-  if (!data) return <p style={mutedStyle}>Loading…</p>;
++  if (!data) return <LoadingBlock text="Loading…" />;
+ 
+   const cards = [
+     { label: 'Registered voters', value: data.total_registered },
+@@ -1393,7 +1394,7 @@ export function RecentActivity({ limit = 6 }) {
+     <div style={{ marginTop: '20px' }}>
+       <h4 style={panelTitle}>Recent Activity</h4>
+       {error && <p style={errStyle}>{error}</p>}
+-      {!error && entries === null && <p style={mutedStyle}>Loading…</p>}
++      {!error && entries === null && <LoadingBlock text="Loading…" />}
+       {!error && entries?.length === 0 && <p style={mutedStyle}>Nothing has happened yet.</p>}
+       {!error && entries?.length > 0 && (
+         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '65vh', overflowY: 'auto', overscrollBehavior: 'contain' }}>
+diff --git a/frontend/src/components/Spinner.jsx b/frontend/src/components/Spinner.jsx
+new file mode 100644
+index 0000000..1e07867
+--- /dev/null
++++ b/frontend/src/components/Spinner.jsx
+@@ -0,0 +1,62 @@
++import React from 'react';
++
++/**
++ * SVG loading spinner that matches the site's look (brand navy in light mode,
++ * brand gold in dark mode; see the `.loading-spinner` rules in index.css).
++ *
++ *   <Spinner size={20} />                       just the ring
++ *   <LoadingBlock text="Loading results…" />    ring + label, centred (sections/panels)
++ *   <LoadingBlock text="Searching…" inline />   ring + label on one line (small hints)
++ *
++ * `color` overrides the arc colour (any CSS colour), e.g. for a dark backdrop.
++ */
++export function Spinner({ size = 24, color, label, style, className = '' }) {
++  return (
++    <svg
++      className={`loading-spinner ${className}`.trim()}
++      width={size}
++      height={size}
++      viewBox="0 0 50 50"
++      role={label ? 'img' : undefined}
++      aria-label={label}
++      aria-hidden={label ? undefined : 'true'}
++      focusable="false"
++      style={{
++        display: 'inline-block', flexShrink: 0, maxWidth: 'none', maxHeight: 'none',
++        ...(color ? { '--spinner-color': color } : null), ...style,
++      }}
++    >
++      <circle className="loading-spinner-track" cx="25" cy="25" r="20" fill="none" strokeWidth="5" />
++      <circle
++        className="loading-spinner-arc" cx="25" cy="25" r="20" fill="none"
++        strokeWidth="5" strokeLinecap="round" strokeDasharray="31.4 125.6"
++      />
++    </svg>
++  );
++}
++
++export function LoadingBlock({ text = 'Loading…', size, inline = false, color, style }) {
++  const s = size || (inline ? 14 : 28);
++  return (
++    <div
++      role="status"
++      aria-live="polite"
++      style={{
++        display: inline ? 'inline-flex' : 'flex',
++        flexDirection: inline ? 'row' : 'column',
++        alignItems: 'center',
++        justifyContent: 'center',
++        gap: inline ? 8 : 10,
++        padding: inline ? 0 : '16px 0',
++        fontSize: inline ? 12 : 13,
++        opacity: 0.75,
++        ...style,
++      }}
++    >
++      <Spinner size={s} color={color} />
++      {text ? <span>{text}</span> : null}
++    </div>
++  );
++}
++
++export default Spinner;
+diff --git a/frontend/src/components/SuperAdminDashboard.jsx b/frontend/src/components/SuperAdminDashboard.jsx
+index 3796338..901ad51 100644
+--- a/frontend/src/components/SuperAdminDashboard.jsx
++++ b/frontend/src/components/SuperAdminDashboard.jsx
+@@ -21,6 +21,7 @@ import { regNo } from '../regNo';
+ import AdminHeader from './AdminHeader';
+ import VoterImportReview from './VoterImportReview';
+ import PaymentInfoPanel from './PaymentInfoPanel';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ // Signed, server-side upload via our own backend — replaces the old
+ // unsigned Cloudinary preset upload that ran straight from the browser.
+@@ -1031,7 +1032,7 @@ const handleSuperAdminRemoveStudent = async () => {
+               ))}
+             </div>
+ 
+-            {appsLoading && <p style={{ opacity: 0.5 }}>Loading…</p>}
++            {appsLoading && <LoadingBlock text="Loading…" />}
+ 
+             {filteredApps.length === 0 && !appsLoading && (
+               <p style={{ opacity: 0.5, textAlign: 'center', marginTop: '40px' }}>No applications in this category.</p>
+diff --git a/frontend/src/components/VerifyCertificate.jsx b/frontend/src/components/VerifyCertificate.jsx
+index 54a9643..dfa36a9 100644
+--- a/frontend/src/components/VerifyCertificate.jsx
++++ b/frontend/src/components/VerifyCertificate.jsx
+@@ -1,6 +1,7 @@
+ import React, { useEffect, useState } from 'react';
+ import api from '../api';
+ import { properName, properTitle } from '../displayText';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ /**
+  * Public page a certificate's QR code opens (/verify/<certificate_id>).
+@@ -24,7 +25,7 @@ export default function VerifyCertificate({ certificateId }) {
+     <div style={{ minHeight: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 20, background: 'var(--bg-color)' }}>
+       <div style={{ width: '100%', maxWidth: 460, background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: 16, padding: 28, textAlign: 'center', color: 'var(--text-color)' }}>
+         <div style={{ fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', opacity: 0.55, marginBottom: 12 }}>Certificate verification</div>
+-        {loading && <p style={{ opacity: 0.6 }}>Checking our records…</p>}
++        {loading && <LoadingBlock text="Checking our records…" />}
+         {failed && <p style={{ color: '#e74c3c' }}>Could not reach the server. Please try again.</p>}
+         {(notFound || revoked || valid) && (
+           <>
+diff --git a/frontend/src/components/VoterRegisterSearch.jsx b/frontend/src/components/VoterRegisterSearch.jsx
+index e37631f..dfe1048 100644
+--- a/frontend/src/components/VoterRegisterSearch.jsx
++++ b/frontend/src/components/VoterRegisterSearch.jsx
+@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
+ import api from '../api';
+ import { Icon } from './icons.jsx';
+ import { regNo } from '../regNo';
++import { LoadingBlock } from './Spinner.jsx';
+ 
+ export default function VoterRegisterSearch() {
+   const [q, setQ] = useState('');
+@@ -57,7 +58,7 @@ export default function VoterRegisterSearch() {
+             <span>Registration Number</span>
+           </div>
+           <div style={tableBodyStyle}>
+-            {loading && <p style={mutedCenter}>Searching…</p>}
++            {loading && <div style={mutedCenter}><LoadingBlock text="Searching…" inline /></div>}
+             {!loading && results.length === 0 && <p style={mutedCenter}>No matches found.</p>}
+             {!loading && results.map((v, i) => (
+               <div key={i} style={rowStyle}>
+diff --git a/frontend/src/index.css b/frontend/src/index.css
+index c7f9241..601e634 100644
+--- a/frontend/src/index.css
++++ b/frontend/src/index.css
+@@ -720,6 +720,17 @@ td, th {
+ .icon-spin { animation: icon-spin 0.9s linear infinite; }
+ @media (prefers-reduced-motion: reduce) { .icon-spin { animation-duration: 2.5s; } }
+ 
++/* SVG loading spinner (components/Spinner.jsx): brand navy on light, brand gold on dark */
++:root { --spinner-default: var(--brand-primary, #003366); }
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme="light"]) { --spinner-default: var(--brand-accent, #f1c40f); }
++}
++[data-theme="dark"] { --spinner-default: var(--brand-accent, #f1c40f); }
++.loading-spinner { animation: icon-spin 0.9s linear infinite; }
++.loading-spinner-track { stroke: currentColor; opacity: 0.18; }
++.loading-spinner-arc { stroke: var(--spinner-color, var(--spinner-default)); }
++@media (prefers-reduced-motion: reduce) { .loading-spinner { animation-duration: 2.5s; } }
++
+ /* Shared fade+slide entrance for modals and menus (help panel, fee/register/
+    timeline modals). Kept short (180ms) so it reads as responsive, not showy.
+    Reduced-motion users get the instant version via the global rule above. */

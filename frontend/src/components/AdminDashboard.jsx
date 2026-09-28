@@ -111,7 +111,7 @@ export default function AdminDashboard({ onLogout }) {
       const fb = electionToggleFeedback(data);
       toast(fb.text, { kind: fb.kind });
     } catch (err) { 
-      toast(getErrorMessage(err, "Toggle failed. Ensure the route /admin/toggle-election exists on the backend."), { kind: 'error' }); 
+      toast(getErrorMessage(err, "Could not change the election status. Please try again."), { kind: 'error' }); 
     }
   };
 

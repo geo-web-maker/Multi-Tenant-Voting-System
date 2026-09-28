@@ -266,7 +266,7 @@ export default function FinalReport({
                 let resultText = topCandidate?.name || "N/A";
                 
                 if (isTie) {
-                    resultText = "TIE: RE-RUN REQ.";
+                    resultText = "TIE: RE-RUN REQUIRED";
                 } else if (isSolo && hasMandate) {
                     // Show both name and status for unopposed winners
                     resultText = `${topCandidate.name} (MANDATE GAINED)`;

@@ -50,7 +50,7 @@ export function computeChanges(d) {
   const sid = normId(d.new_student_id);
   if (!sid) errors.push('Registration number cannot be empty.');
   else if (sid !== d.original.student_id) {
-    rows.push({ id: 'sid', label: 'Registration number', from: d.original.student_id, to: sid });
+    rows.push({ id: 'sid', label: 'Registration Number', from: d.original.student_id, to: sid });
   }
 
   d.phones.forEach((p) => {
