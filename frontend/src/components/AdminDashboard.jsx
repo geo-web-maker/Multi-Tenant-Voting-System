@@ -307,7 +307,7 @@ useEffect(() => { fetchData(); }, []);
 
             <div style={funnelGridStyle}>
               <div style={statCardStyle}><small>Step 1: OTP</small><h3>{stage1}</h3></div>
-              <div style={statCardStyle}><small>Step 2: Authed</small><h3>{stage2}</h3></div>
+              <div style={statCardStyle}><small>Step 2: Authenticated</small><h3>{stage2}</h3></div>
               <div style={statCardStyle}><small>Step 3: Voted</small><h3 style={{ color: '#2ecc71' }}>{stage3}</h3></div>
               <div style={statCardStyle}><small>Turnout</small><h3>{turnout}%</h3></div>
               <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />

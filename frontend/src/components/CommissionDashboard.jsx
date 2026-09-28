@@ -550,7 +550,7 @@ export default function CommissionDashboard({ onLogout }) {
               {/* Superadmin override notice */}
               {app.superadmin_override && (
                 <div style={overrideNote}>
-                  This was decided by the superadmin — commission voting bypassed.
+                  This was decided by the superadmin — commission voting was bypassed.
                 </div>
               )}
 

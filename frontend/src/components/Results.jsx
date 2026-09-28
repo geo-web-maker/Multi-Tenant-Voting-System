@@ -179,7 +179,7 @@ const fetchData = async ({ force = false } = {}) => {
     group.candidates.push(candidate);
   });
 
-  if (loading) return <div style={{textAlign: 'center', padding: '50px'}}>Loading Live Tally...</div>;
+  if (loading) return <div style={{textAlign: 'center', padding: '50px'}}>Loading Live Tally…</div>;
 
   return (
     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>

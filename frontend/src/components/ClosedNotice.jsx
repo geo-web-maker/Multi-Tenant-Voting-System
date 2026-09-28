@@ -59,8 +59,8 @@ export function applicationsNoticeText(status) {
   }
   if (status.applications_phase === 'ended') {
     return status.applications_closes_at
-      ? `The applications period has ended. It closed ${fmtZoned(status.applications_closes_at, status.timezone)}.`
-      : 'The applications period has ended.';
+      ? `The application period has ended. It closed ${fmtZoned(status.applications_closes_at, status.timezone)}.`
+      : 'The application period has ended.';
   }
   if (status.applications_phase_open === false) return 'Applications are not currently open.';
   return null;

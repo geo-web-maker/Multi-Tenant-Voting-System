@@ -327,7 +327,7 @@ const refetchAll = () => {
   // ── Positions ──
 
   const handleAddPosition = async () => {
-    if (!newPosition.title.trim()) return toast('Position title required.');
+    if (!newPosition.title.trim()) return toast('Position title is required.');
     setPosLoading(true);
     try {
       await api.post(`/positions`, { ...newPosition, application_fee: parseInt(newPosition.application_fee, 10) || 0 });
@@ -352,7 +352,7 @@ const refetchAll = () => {
   };
 
   const handleSaveEditPosition = async (id) => {
-    if (!editPositionForm.title.trim()) return toast('Position title required.');
+    if (!editPositionForm.title.trim()) return toast('Position title is required.');
     const fee = parseInt(String(editPositionForm.application_fee).replace(/[^\d]/g, ''), 10) || 0;
     setEditPosSaving(true);
     try {
@@ -586,14 +586,14 @@ const handleResetOverseerPassword = async (studentId) => {
 
 const handleCreateOrg = async (e) => {
   e.preventDefault();
-  if (!orgForm.name.trim()) { toast('Organization name is required.'); return; }
+  if (!orgForm.name.trim()) { toast('Organisation name is required.'); return; }
   setOrgCreating(true);
   try {
     const res = await api.post('/superadmin/orgs', { name: orgForm.name.trim(), slug: orgForm.slug.trim() });
-    toast(`Organization "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`, { kind: 'success' });
+    toast(`Organisation "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`, { kind: 'success' });
     setOrgForm({ name: '', slug: '' });
     fetchOrganizations();
-  } catch (e) { toast(getErrorMessage(e, 'Failed to create organization.'), { kind: 'error' }); }
+  } catch (e) { toast(getErrorMessage(e, 'Failed to create organisation.'), { kind: 'error' }); }
   finally { setOrgCreating(false); }
 };
 
@@ -804,7 +804,7 @@ const handleSuperAdminRemoveStudent = async () => {
         { id: 'it_admins',     label: <>IT Admins</>, icon: 'monitor' },
         { id: 'financial_controllers', label: <>Financial Controllers</>, icon: 'wallet' },
         { id: 'overseers',     label: <>Overseers</>, icon: 'eye' },
-        { id: 'organizations', label: <>Organizations</>, icon: 'building' },
+        { id: 'organizations', label: <>Organisations</>, icon: 'building' },
       ],
     },
     {
@@ -891,11 +891,11 @@ const handleSuperAdminRemoveStudent = async () => {
         </select>
         {activeOrgSlug ? (
           <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
-            <Icon name="check" /> Viewing only this organization's data
+            <Icon name="check" /> Viewing only this organisation's data
           </span>
         ) : (
           <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
-            <Icon name="warning" /> Unscoped — showing data across all organizations combined
+            <Icon name="warning" /> Unscoped — showing data across all organisations combined
           </span>
         )}
       </div>
@@ -2247,11 +2247,11 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'organizations' && (
           <div style={twoCol}>
             <div style={card}>
-              <h4 style={cardTitle}>Provision New Organization</h4>
+              <h4 style={cardTitle}>Provision New Organisation</h4>
               <form onSubmit={handleCreateOrg} style={formCol}>
                 <input
                   style={inp}
-                  placeholder="Organization name (e.g. KYUCCU)"
+                  placeholder="Organisation name (e.g. KYUCCU)"
                   value={orgForm.name}
                   onChange={e => setOrgForm(prev => ({ ...prev, name: e.target.value }))}
                 />
@@ -2262,7 +2262,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   onChange={e => setOrgForm(prev => ({ ...prev, slug: e.target.value }))}
                 />
                 <button type="submit" style={greenBtn} disabled={orgCreating}>
-                  {orgCreating ? 'Provisioning…' : '+ Create Organization'}
+                  {orgCreating ? 'Provisioning…' : '+ Create Organisation'}
                 </button>
               </form>
               <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.55 }}>
@@ -2271,9 +2271,9 @@ const handleSuperAdminRemoveStudent = async () => {
             </div>
 
             <div style={card}>
-              <h4 style={cardTitle}>Provisioned Organizations ({organizations.length})</h4>
+              <h4 style={cardTitle}>Provisioned Organisations ({organizations.length})</h4>
               {organizations.length === 0 && (
-                <p style={{ opacity: 0.5 }}>No organizations provisioned yet.</p>
+                <p style={{ opacity: 0.5 }}>No organisations provisioned yet.</p>
               )}
               <ScrollList maxHeight="50vh">
               {organizations.map(o => (

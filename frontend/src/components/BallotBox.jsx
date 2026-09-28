@@ -134,7 +134,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
     }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}>Loading...</div>;
+  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}>Loading…</div>;
 
   const groupedCandidates = candidates.reduce((groups, c) => {
     const pos = c.position || "Other";

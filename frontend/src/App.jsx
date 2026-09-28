@@ -530,7 +530,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       if (isAdminPath) {
         setStatusModal({
           show: true,
-          title: "Admin Authorized",
+          title: "Admin Authorised",
           message: "Welcome back. You now have access to the election controls.",
           type: "success"
         });
@@ -547,7 +547,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         setStep(3);
       }
     } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Invalid or Expired Code. Please try again.";
+      const errorMsg = err.response?.data?.detail || "Invalid or expired code. Please try again.";
       setStatusModal({
         show: true,
         title: "Verification Failed",
@@ -814,13 +814,13 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     style={inputStyle}
                     value={studentId}
                     onChange={e => setStudentId(e.target.value)}
-                    placeholder={`Student Registration Number e.g ${placeholderText.id}`}
+                    placeholder={`Student Registration Number e.g. ${placeholderText.id}`}
                   />
                   <input
                     style={inputStyle}
                     value={name}
                     onChange={e => setName(e.target.value)}
-                    placeholder={`Full Name e.g ${placeholderText.name}`}
+                    placeholder={`Full Name e.g. ${placeholderText.name}`}
                   />
                 </>
               )}
@@ -836,10 +836,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   cursor: isVerifying ? 'wait' : 'pointer',
                 }}
               >
-                {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Login" : "Verify & Send Code")}
+                {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Log In" : "Verify & Send Code")}
               </button>
               <button onClick={() => { setIsAdminPath(!isAdminPath); setNeedsTotp(false); setTotpCode(""); }} style={linkBtnStyle}>
-                {isAdminPath ? "Switch to Voter Login" : "Are you an Admin? Login here"}
+                {isAdminPath ? "Switch to Voter Login" : "Are you an admin? Log in here"}
               </button>
               </div>
             )}
@@ -1018,7 +1018,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             />
             
             <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
-              <p>This is a guide. Login to cast your actual vote.</p>
+              <p>This is a guide. Log in to cast your actual vote.</p>
             </div>
           </div>
         </div>

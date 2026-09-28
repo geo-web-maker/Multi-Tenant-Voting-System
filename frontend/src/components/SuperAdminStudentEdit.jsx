@@ -58,7 +58,7 @@ export default function SuperAdminStudentEdit() {
 
   const save = async () => {
     setError('');
-    const summary = changes.rows.map(r => `${r.label}: ${r.from ?? 'none'} -> ${r.to ?? 'none'}`).join('\n');
+    const summary = changes.rows.map(r => `${r.label}: ${r.from ?? 'none'} → ${r.to ?? 'none'}`).join('\n');
     const ok = await confirm(
       `Save ${changes.rows.length} change${changes.rows.length !== 1 ? 's' : ''} now?\n\n${summary}\n\n` +
       'This takes effect immediately and is recorded in the audit history.',

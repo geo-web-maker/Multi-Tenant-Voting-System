@@ -242,7 +242,7 @@ export default function SecurityPanel() {
         <b style={{ fontSize: 14 }}>Candidate approval policy</b>
         <p style={note}>How the commission's votes on candidate applications and removals resolve. Changing this immediately re-checks every pending application and pending removal vote against the new rule — it can flip an outcome without a new vote being cast.</p>
         <select style={inp} value={f.approval_policy} onChange={e => setF({ ...f, approval_policy: e.target.value })}>
-          <option value="majority_total">Majority of total commissioners (original behavior)</option>
+          <option value="majority_total">Majority of total commissioners (original behaviour)</option>
           <option value="unanimous">Unanimous — every commissioner must agree</option>
           <option value="majority_cast">Majority of votes cast — resolves once everyone has voted</option>
         </select>
@@ -250,9 +250,9 @@ export default function SecurityPanel() {
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>Public results visibility</b>
-        <p style={note}>Controls when the public, unauthenticated results page shows numbers. This is per-org — it does not affect other organizations on this deployment.</p>
+        <p style={note}>Controls when the public, unauthenticated results page shows numbers. This is per-org — it does not affect other organisations on this deployment.</p>
         <select style={inp} value={f.public_results_mode} onChange={e => setF({ ...f, public_results_mode: e.target.value })}>
-          <option value="live">Live (visible while voting is open — original behavior)</option>
+          <option value="live">Live (visible while voting is open — original behaviour)</option>
           <option value="closed">Hidden until voting closes</option>
           <option value="certified">Hidden until a commissioner certifies results (recommended)</option>
         </select>
@@ -273,7 +273,7 @@ export default function SecurityPanel() {
 
       <div style={{ ...box, gridColumn: '1 / -1' }}>
         <b style={{ fontSize: 14 }}>SMS budget</b>
-        <p style={note}>Suggested: <b>{dv.suggested_sms_budget}</b> (voters × 2.5). Raising the budget re-arms the 50/25/10 % alerts.</p>
+        <p style={note}>Suggested: <b>{dv.suggested_sms_budget}</b> (voters × 2.5). Raising the budget re-arms the 50/25/10% alerts.</p>
         <div style={grid}>
           <label style={fld}><span style={lbl}>Budget (SMS)</span><input style={inp} type="number" value={budget.total} onChange={e => setBudget({ ...budget, total: e.target.value })} /></label>
           <label style={fld}><span style={lbl}>Mode</span>
@@ -313,7 +313,7 @@ function NameNormalizerTile() {
   const run = async (dryRun) => {
     if (!dryRun) {
       const ok = await confirm(
-        'Rewrite the capitalisation of every name in the voter register, applications, candidates and change requests for this organization? Only letter case and spacing change (e.g. "john OKELLO" becomes "John Okello"). Preview first if you have not already.',
+        'Rewrite the capitalisation of every name in the voter register, applications, candidates and change requests for this organisation? Only letter case and spacing change (e.g. "john OKELLO" becomes "John Okello"). Preview first if you have not already.',
         { confirmText: 'Apply to all names' });
       if (!ok) return;
     }

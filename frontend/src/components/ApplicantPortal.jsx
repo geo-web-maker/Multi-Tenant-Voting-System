@@ -193,8 +193,16 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
           <h2 style={{ color: 'var(--text-color)', margin: '0 0 10px' }}>Application Submitted!</h2>
           <p style={{ opacity: 0.7, lineHeight: '1.6', marginBottom: '24px' }}>
             Thank you, <strong>{submittedName}</strong>. Your application has been received and
-            is now pending review by the Election Commission. You will be notified of the outcome.
+            is now with the Election Commission for review.
           </p>
+          <div style={{ ...infoBox, marginBottom: '16px', textAlign: 'left' }} role="note">
+            <p style={{ margin: 0, fontSize: '13px', opacity: 0.9, lineHeight: '1.6' }}>
+              <strong>Follow your application on your candidate portal.</strong> A link to it is being sent by SMS
+              to the phone number on your student record and may take a few minutes to arrive. Open it any time to
+              see where your application stands and its outcome. If the link doesn't arrive, or you have no phone
+              number on your student record, please contact the IT administrators.
+            </p>
+          </div>
           <div style={infoBox}>
             <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
               {approvalPolicyCopy}
@@ -232,8 +240,9 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
         <div style={{ ...infoBox, marginBottom: '24px' }}>
           <p style={{ margin: 0, fontSize: '13px', opacity: 0.85, lineHeight: '1.7' }}>
             <strong>How it works:</strong> Fill in the form below and submit your application.
-            The Election Commission will review it — <em>all commissioners must unanimously approve</em> before
-            your name appears on the ballot.
+            The Election Commission will review it. Once you submit, a link to your <em>candidate portal</em> is sent
+            by SMS to the phone number on your student record — use it to follow your application status and outcome.
+            If you have no number on record, contact the IT administrators.
           </p>
         </div>
 
