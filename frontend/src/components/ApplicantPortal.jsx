@@ -5,6 +5,8 @@ import ClosedNotice, { applicationsNoticeText } from './ClosedNotice';
 import { loadDraft, saveDraft, clearDraft } from '../session';
 import usePolling from '../hooks/usePolling';
 import { useHelpMenu } from '../context/HelpMenuContext';
+import MobileMoneyNumber from './MobileMoneyNumber';
+import { usePaymentInfo } from '../paymentInfo';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -23,6 +25,7 @@ const MANIFESTO_MAX_CHARS = 3000;
 
 export default function ApplicantPortal() {
   const { openFees } = useHelpMenu();
+  const paymentInfo = usePaymentInfo(20000);
 
   // Text fields of an unfinished application survive a page reload. Files
   // (candidate photo, payment proof) can't be stored, so those need to be
@@ -348,6 +351,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
                 <p style={{ margin: '4px 0 8px', fontSize: '22px', fontWeight: 700, color: 'var(--text-color)' }}>
                   UGX {requiredFee.toLocaleString('en-UG')}
                 </p>
+                <MobileMoneyNumber info={paymentInfo} style={{ margin: '0 0 10px' }} />
                 <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, opacity: 0.85 }}>
                   <strong>Important:</strong> your receipt must show a payment of this full amount. Applications with
                   an incomplete or incorrect payment amount will be rejected.

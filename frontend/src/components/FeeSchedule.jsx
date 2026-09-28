@@ -1,5 +1,7 @@
 import React from 'react';
 import api from '../api';
+import MobileMoneyNumber from './MobileMoneyNumber';
+import { usePaymentInfo } from '../paymentInfo';
 
 /**
  * Nomination fee list, shown from the Help menu so anyone can check what a
@@ -10,6 +12,7 @@ import api from '../api';
 export default function FeeSchedule() {
   const [positions, setPositions] = React.useState(null); // null = loading, [] once loaded
   const [error, setError] = React.useState(false);
+  const paymentInfo = usePaymentInfo();
 
   React.useEffect(() => {
     api.get('/positions')
@@ -40,6 +43,7 @@ export default function FeeSchedule() {
           })}
         </div>
       )}
+      {!error && positions !== null && positions.length > 0 && <MobileMoneyNumber info={paymentInfo} style={{ marginTop: '14px' }} />}
       <p style={{ marginTop: '18px', fontSize: '12px', opacity: 0.7 }}>
         Pay the fee for your position and upload proof of payment when you submit your application.
         Applications are not cleared for voting until Finance confirms your payment.

@@ -11,3 +11,4 @@ cloudinary
 pyotp
 boto3
 tzdata
+openpyxl

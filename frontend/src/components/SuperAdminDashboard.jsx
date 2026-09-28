@@ -20,6 +20,7 @@ import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
 import VoterImportReview from './VoterImportReview';
+import PaymentInfoPanel from './PaymentInfoPanel';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -1321,8 +1322,8 @@ const handleSuperAdminRemoveStudent = async () => {
               <div style={{ ...card, flexDirection: 'row', alignItems: 'center', padding: '14px', gap: '12px', flex: 1 }}>
                 {rosterFrozen
                   ? <span style={{ fontSize: '13px', opacity: 0.8 }}>{FROZEN_NOTE}</span>
-                  : <><span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters CSV</span>
-                    <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} /></>}
+                  : <><span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters (CSV or Excel)</span>
+                    <input type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm" onChange={handleImportVoters} disabled={importing} /></>}
                 {importFile && <VoterImportReview file={importFile} onClose={() => setImportFile(null)} onDone={handleImportDone} />}
               </div>
               <button style={ghostBtn} onClick={() => fetchElectionData()} disabled={loading}>
@@ -1368,6 +1369,8 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ POSITIONS TAB ══════════════ */}
         {activeTab === 'positions' && (
+          <>
+          <PaymentInfoPanel />
           <div style={twoCol}>
             <div style={card}>
               <h4 style={cardTitle}>Add New Position</h4>
@@ -1438,6 +1441,7 @@ const handleSuperAdminRemoveStudent = async () => {
               </ScrollList>
             </div>
           </div>
+          </>
         )}
 
         {/* ══════════════ BRANDING TAB ══════════════ */}

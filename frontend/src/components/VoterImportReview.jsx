@@ -1,15 +1,23 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import { regNo } from '../regNo';
+import ColumnMapper from './ColumnMapper';
+import { mappingPayload, missingRequired, toMappingState } from '../columnMapping';
 
 /**
- * Two-step roster update. The chosen CSV is only *compared* against the live
- * voter list first (POST /admin/import-voters/preview); nothing is written
- * until the admin picks an action for each group and confirms
+ * Three-step roster update. The chosen file (CSV, TSV or Excel) is first read and its columns are
+ * matched to the voter fields (POST /admin/import-voters/inspect, then the admin confirms or corrects
+ * the guess). It is then only *compared* against the live voter list (POST /admin/import-voters/preview);
+ * nothing is written until the admin picks an action for each group and confirms
  * (POST /admin/import-voters/apply). Existing voters keep their vote status,
  * roles and login credentials no matter what is chosen here.
  */
 export default function VoterImportReview({ file, onClose, onDone }) {
+  const [stage, setStage] = useState('map');        // 'map' = match columns, 'review' = compare with roster
+  const [inspect, setInspect] = useState(null);
+  const [mapping, setMapping] = useState({});
+  const [mapBusy, setMapBusy] = useState(false);
+  const inspectSeq = useRef(0);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState('');
   const [tab, setTab] = useState('changed');
@@ -23,9 +31,40 @@ export default function VoterImportReview({ file, onClose, onDone }) {
   const [missingOverrides, setMissingOverrides] = useState({});
   const [confirmText, setConfirmText] = useState('');
 
-  useEffect(() => {
+  // Reads the file and asks the server which row looks like the headings and which column is which.
+  // Called again when the admin picks another sheet or heading row (the newest answer wins).
+  const loadInspect = (opts = {}) => {
+    const seq = ++inspectSeq.current;
     const fd = new FormData();
     fd.append('file', file);
+    if (opts.sheet) fd.append('sheet', opts.sheet);
+    if (opts.header_row) fd.append('header_row', String(opts.header_row));
+    setMapBusy(true);
+    api.post('/admin/import-voters/inspect', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      .then(res => {
+        if (seq !== inspectSeq.current) return;
+        setInspect(res.data);
+        setMapping(toMappingState(res.data.suggested_mapping));
+        setError('');
+      })
+      .catch(e => { if (seq === inspectSeq.current) setError(getErrorMessage(e, 'Could not read that file.')); })
+      .finally(() => { if (seq === inspectSeq.current) setMapBusy(false); });
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadInspect(); }, [file]);
+
+  const runPreview = () => {
+    setStage('review');
+    setPreview(null);
+    setError('');
+    setChangedOverrides({});
+    setMissingOverrides({});
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('mapping', JSON.stringify(mappingPayload(mapping)));
+    fd.append('header_row', String(inspect.header_row));
+    if (inspect.sheet) fd.append('sheet', inspect.sheet);
     api.post('/admin/import-voters/preview', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       .then(res => {
         setPreview(res.data);
@@ -33,7 +72,10 @@ export default function VoterImportReview({ file, onClose, onDone }) {
         setTab(s.changed ? 'changed' : s.new ? 'new' : s.missing ? 'missing' : 'warnings');
       })
       .catch(e => setError(getErrorMessage(e, 'Could not read that file.')));
-  }, [file]);
+  };
+
+  const backToMap = () => { setStage('map'); setPreview(null); setError(''); };
+  const missing = inspect ? missingRequired(inspect, mapping) : [];
 
   const changedValue = sid => changedOverrides[sid] ?? changedDefault;
   const missingValue = sid => missingOverrides[sid] ?? missingDefault;
@@ -72,13 +114,16 @@ export default function VoterImportReview({ file, onClose, onDone }) {
     <div style={overlay}>
       <div style={modal}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <h3 style={{ margin: 0, color: 'var(--text-color)' }}>Review voter update</h3>
+          <h3 style={{ margin: 0, color: 'var(--text-color)' }}>{stage === 'map' ? 'Match file columns' : 'Review voter update'}</h3>
           <button style={ghostBtn} onClick={onClose} disabled={applying}>Cancel</button>
         </div>
+        {stage === 'review' && (
+          <button style={{ ...ghostBtn, marginBottom: 10 }} onClick={backToMap} disabled={applying}>← Change column matching</button>
+        )}
         <p style={{ margin: '0 0 12px', fontSize: 12, opacity: 0.6 }}>
           {file.name} — nothing changes until you press Apply. Vote status, roles and admin logins of existing voters are never touched.
         </p>
-        {preview && s.fields_in_file.length > 0 && (
+        {stage === 'review' && preview && s.fields_in_file.length > 0 && (
           <p style={{ margin: '0 0 12px', fontSize: 12, opacity: 0.75 }}>
             Also reading: {s.fields_in_file.map(f => f.label).join(', ')}.
             {s.attr_fills > 0 && ` ${s.attr_fills} voter(s) with an empty value will be filled from the file automatically; existing values are only replaced if you apply a change below.`}
@@ -86,9 +131,25 @@ export default function VoterImportReview({ file, onClose, onDone }) {
         )}
 
         {error && <p style={{ color: '#e74c3c', fontSize: 13 }}>{error}</p>}
-        {!preview && !error && <p style={{ opacity: 0.6 }}>Comparing with the current voter list…</p>}
+        {stage === 'map' && (
+          <>
+            {!inspect && !error && <p style={{ opacity: 0.6 }}>Reading the file…</p>}
+            {inspect && (
+              <ColumnMapper data={inspect} mapping={mapping} onMapping={setMapping} busy={mapBusy}
+                onSheet={sheet => loadInspect({ sheet })}
+                onHeaderRow={header_row => loadInspect({ sheet: inspect.sheet, header_row })} />
+            )}
+            {inspect && (
+              <button style={{ ...primaryBtn, marginTop: 14, opacity: missing.length || mapBusy ? 0.5 : 1 }}
+                disabled={missing.length > 0 || mapBusy} onClick={runPreview}>
+                {missing.length ? `Choose a column for ${missing.map(m => m.label).join(' and ')}` : 'Continue — compare with current voters'}
+              </button>
+            )}
+          </>
+        )}
+        {stage === 'review' && !preview && !error && <p style={{ opacity: 0.6 }}>Comparing with the current voter list…</p>}
 
-        {preview && (
+        {stage === 'review' && preview && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8, marginBottom: 12 }}>
               {[['In file', s.file_rows], ['Unchanged', s.unchanged], ['Changed', s.changed], ['New', s.new], ['Not in file', s.missing]].map(([l, v]) => (

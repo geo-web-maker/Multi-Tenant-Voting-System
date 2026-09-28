@@ -298,10 +298,10 @@ useEffect(() => { fetchData(); }, []);
           <>
             <div style={importBoxStyle}>
               <div style={{ flex: 1 }}>
-                <h4 style={{ margin: 0 }}>Update Voters from CSV</h4>
+                <h4 style={{ margin: 0 }}>Update Voters from a file (CSV or Excel)</h4>
                 {duplicateIds.length > 0 && <p style={{ color: '#e74c3c', fontSize: '12px' }}><Icon name="warning" /> Warning: {duplicateIds.length} duplicates detected!</p>}
               </div>
-              <input type="file" accept=".csv" onChange={handleImportVoters} disabled={importing} />
+              <input type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm" onChange={handleImportVoters} disabled={importing} />
               {importFile && <VoterImportReview file={importFile} onClose={() => setImportFile(null)} onDone={handleImportDone} />}
             </div>
 

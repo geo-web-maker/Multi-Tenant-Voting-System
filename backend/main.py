@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -37,10 +37,13 @@ from alerts import alert_critical, alert_warning, send_alert
 from name_utils import normalize_name
 from roster_utils import (
     DEFAULT_MIN_GROUP, MIN_GROUP_RANGE, UNRECORDED_LABEL, apply_field_changes, attr_columns, attr_set_paths,
-    check_id_shapes, diff_attrs, finish_groups, merge_voter_fields, row_attrs, shape_warnings,
+    check_id_shapes, diff_attrs, finish_groups, merge_voter_fields, normalize_attr_value, row_attrs, shape_warnings,
     suppress_small_groups,
 )
 from name_backfill import run_backfill as run_name_backfill
+from tabular_import import (
+    CORE_KEYS, TableError, describe_table, guess_header_row, read_table, suggest_mapping, validate_mapping,
+)
 from regno_audit import audit_reg_numbers
 import otp_limits as ol
 
@@ -388,7 +391,7 @@ def _is_public(path: str, method: str) -> bool:
     # "logged in" anywhere. Branding is logo/colors/org-name/support-contact —
     # nothing sensitive — and is fetched unauthenticated on every page load
     # by App.jsx and Results.jsx for every visitor, not just superadmin.
-    if method == "GET" and path in {"/candidates", "/positions", "/superadmin/branding", "/election-schedule", "/election-roadmap"}:
+    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/superadmin/branding", "/election-schedule", "/election-roadmap"}:
         return True
     # candidate-portal-spec §3.2/§3.4: read-only, token/id-scoped, no admin
     # session involved at all — same reasoning as the voter-facing routes
@@ -4162,25 +4165,35 @@ async def get_voter_fields(request: Request) -> dict:
             "min_group_size": k if isinstance(k, int) and lo <= k <= hi else DEFAULT_MIN_GROUP}
 
 
-def _parse_voter_csv(content: bytes, fields: list[dict] | None = None, roster_ids=()) -> dict:
-    """Shared by the preview and the legacy endpoint. Last row wins for a repeated ID (warned).
-    fields: the org's voter-field config; enabled ones with a matching CSV column are read into
-    row["attrs"] (blank cell = not provided). roster_ids: the org's existing registration numbers,
-    used as the reference for the registration-number format check (warn-only)."""
-    reader = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
-    cols = attr_columns(reader.fieldnames, fields or [])
+def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict] | None = None, roster_ids=()) -> dict:
+    """Shared by preview, the legacy endpoint and the column-mapping flow. Last row wins for a repeated ID
+    (warned). mapping: {target: [column index, ...]} from tabular_import — student_id / full_name / phone plus
+    any enabled voter field. Several columns for full_name or phone are joined (First + Surname, Phone 1 / 2).
+    Row numbers in warnings are the row numbers in the uploaded file. roster_ids: the org's existing
+    registration numbers, used as the reference for the registration-number format check (warn-only)."""
+    enabled = {f["key"] for f in (fields or []) if f.get("enabled")}
+    attr_keys = [k for k in mapping if k not in CORE_KEYS and k in enabled]
     rows: dict[str, dict] = {}
     row_nums: dict[str, int] = {}
     warnings: list[str] = []
     skipped = 0
-    row_num = 1  # header is row 1; first data row is 2, matching a spreadsheet
-    for row in reader:
-        row_num += 1
-        if row_num > MAX_CSV_ROWS:
+    if table.truncated:
+        warnings.append(f"File truncated at {MAX_CSV_ROWS} rows.")
+    if not (mapping.get("student_id") and mapping.get("full_name")):
+        return {"rows": {}, "warnings": ["No registration number / full name column was found."],
+                "skipped": 0, "attr_fields": []}
+    if not mapping.get("phone"):
+        warnings.append("No phone column is mapped: voters imported this way have no number to receive an OTP on.")
+
+    def cell(cells, i):
+        return cells[i] if i < len(cells) else ""
+
+    for row_num, cells in table.data_rows(header_row):
+        if row_num - header_row > MAX_CSV_ROWS:
             warnings.append(f"File truncated at {MAX_CSV_ROWS} rows.")
             break
-        sid   = normalize_student_id(row.get('student_id') or row.get('student-id') or '')
-        name  = normalize_name((row.get('full_name') or row.get('full-name') or '').strip())
+        sid   = normalize_student_id(cell(cells, mapping["student_id"][0]))
+        name  = normalize_name(" ".join(p for p in (cell(cells, i).strip() for i in mapping["full_name"]) if p))
         if not (sid and name):
             skipped += 1
             continue
@@ -4190,15 +4203,38 @@ def _parse_voter_csv(content: bytes, fields: list[dict] | None = None, roster_id
             continue
         if sid in rows:
             warnings.append(f"Row {row_num} ({sid}): registration number appears more than once in the file — the later row is used.")
+        raw_phone = "/".join(p for p in (cell(cells, i).strip() for i in mapping.get("phone", [])) if p)
+        attrs = {}
+        for k in attr_keys:
+            v = normalize_attr_value(cell(cells, mapping[k][0]))
+            if v:
+                attrs[k] = v
         rows[sid] = {
             "student_id": sid, "full_name": name,
-            "phone_numbers": _normalize_phone_field((row.get('phone') or '').strip(), sid, row_num, warnings),
-            "attrs": row_attrs(row, cols),
+            # A cell like "0772123456, 0701234567" is two numbers, not one long one.
+            "phone_numbers": _normalize_phone_field(re.sub(r"[,;\n]+", "/", raw_phone), sid, row_num, warnings),
+            "attrs": attrs,
         }
         row_nums[sid] = row_num
     # Format check runs on the already-normalized IDs. Warn only: nothing is skipped or blocked.
     shape = shape_warnings(check_id_shapes(rows.keys(), roster_ids), len(rows), row_nums)
-    return {"rows": rows, "warnings": shape + warnings, "skipped": skipped, "attr_fields": list(cols)}
+    return {"rows": rows, "warnings": shape + warnings, "skipped": skipped, "attr_fields": attr_keys}
+
+
+def _load_table(content: bytes, filename: str | None, sheet: str | None = None):
+    try:
+        return read_table(content, filename or "", sheet)
+    except TableError as e:
+        raise HTTPException(400, str(e))
+
+
+def _parse_voter_csv(content: bytes, fields: list[dict] | None = None, roster_ids=(), filename: str = "") -> dict:
+    """No manual mapping: the header row and columns are guessed from the file itself (CSV/TSV/XLSX).
+    Used by the legacy one-shot endpoint and by /preview when the client sends no mapping."""
+    table = _load_table(content, filename)
+    header_row = guess_header_row(table.rows, fields)
+    mapping = suggest_mapping(table.headers(header_row), fields)
+    return _parse_voter_table(table, header_row, mapping, fields, roster_ids)
 
 
 async def _roster_ids(request: Request) -> list[str]:
@@ -4283,17 +4319,50 @@ def _public_diff(diff: dict) -> dict:
     }
 
 
+@app.post("/admin/import-voters/inspect")
+async def import_voters_inspect(request: Request, file: UploadFile = File(...),
+                                sheet: str | None = Form(None), header_row: int | None = Form(None),
+                                admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Step 0 of a roster update ("Match columns"): reads the file and returns its sheets, a raw view of
+    the top rows, the header row it picked (or the one asked for), the columns and a suggested
+    mapping. Nothing is stored. The client re-calls this when the admin changes sheet or header row."""
+    await assert_roster_unfrozen(request)
+    vf = (await get_voter_fields(request))["fields"]
+    table = _load_table(await _read_csv_upload(file), file.filename, sheet)
+    try:
+        return describe_table(table, header_row, vf)
+    except TableError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/admin/import-voters/preview")
 async def import_voters_preview(request: Request, file: UploadFile = File(...),
+                                mapping: str | None = Form(None), sheet: str | None = Form(None),
+                                header_row: int | None = Form(None),
                                 admin: dict = Depends(require_role("it_admin", "superadmin"))):
     """Step 1 of a roster update: nothing is written to the roster. Returns what the file would
-    add, change and leave behind so the admin can choose an action for each group."""
+    add, change and leave behind so the admin can choose an action for each group.
+    mapping (optional JSON {field: [column index, ...]}) + sheet + header_row come from the Match columns
+    step; without them the header row and columns are guessed, which is what plain CSV clients rely on."""
     await assert_roster_unfrozen(request)
     vf = (await get_voter_fields(request))["fields"]
     enabled = {f["key"] for f in vf if f["enabled"]}
-    parsed = _parse_voter_csv(await _read_csv_upload(file), vf, await _roster_ids(request))
+    content = await _read_csv_upload(file)
+    if mapping is None or not mapping.strip():
+        parsed = _parse_voter_csv(content, vf, await _roster_ids(request), file.filename or "")
+    else:
+        try:
+            chosen = validate_mapping(json.loads(mapping), enabled)
+        except (ValueError, TypeError) as e:      # json errors and TableError are both ValueErrors
+            raise HTTPException(400, str(e) if isinstance(e, TableError) else "The column mapping is not valid.")
+        table = _load_table(content, file.filename, sheet)
+        hr = header_row or guess_header_row(table.rows, vf)
+        if not 1 <= hr <= len(table.rows):
+            raise HTTPException(400, f"Row {hr} is not in the file.")
+        parsed = _parse_voter_table(table, hr, chosen, vf, await _roster_ids(request))
     if not parsed["rows"]:
-        raise HTTPException(400, "No valid rows found. The file needs student_id, full_name and phone columns.")
+        raise HTTPException(400, "No valid rows found. Each row needs a registration number and a full name; "
+                                 "check the columns you matched and the header row.")
     diff = await _diff_roster(request, parsed["rows"], enabled)
     preview_id = secrets.token_urlsafe(16)
     await db.voter_import_previews.insert_one({
@@ -4417,7 +4486,7 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
     dashboards use /preview + /apply instead. Existing voters' status/roles are never reset here."""
     await assert_roster_unfrozen(request)
     vf = (await get_voter_fields(request))["fields"]
-    parsed = _parse_voter_csv(await _read_csv_upload(file), vf, await _roster_ids(request))
+    parsed = _parse_voter_csv(await _read_csv_upload(file), vf, await _roster_ids(request), file.filename or "")
     now = datetime.utcnow()
     ops = [UpdateOne(
         org_query(request, {"student_id": r["student_id"]}),
@@ -4443,7 +4512,7 @@ MAX_CSV_ROWS = 50000
 async def _read_csv_upload(file: UploadFile) -> bytes:
     content = await file.read(MAX_CSV_BYTES + 1)   # never buffers an unbounded upload
     if len(content) > MAX_CSV_BYTES:
-        raise HTTPException(400, "CSV file is too large (limit 5MB).")
+        raise HTTPException(400, "File is too large (limit 5MB).")
     return content
 
 
@@ -8218,3 +8287,68 @@ async def superadmin_put_voter_fields(data: VoterFieldsUpdate, request: Request)
     await log_action("voter_fields_changed", actor, details, org_id=request.state.org_id)
     await append_ledger(request.state.org_id, "voter_fields_changed", "roster", actor, "superadmin", details)
     return await get_voter_fields(request)
+
+
+# ── Mobile Money payment details (shown with the nomination fees) ───────────
+# One number + the name it is registered under, per org. Applicants are told to pay this number, so a
+# change is superadmin-only, needs a reason, and is written to the audit log with the old and new value.
+
+PAYMENT_NAME_MAX_LEN = 60
+
+
+def _clean_momo_number(raw: str) -> str:
+    """'0772 123-456' / '+256 772 123 456' -> '256772123456'. Other countries' numbers keep their digits."""
+    n = re.sub(r"[\s\-().]", "", raw or "")
+    if n.startswith("+"):
+        n = n[1:]
+    if not n.isdigit() or not 7 <= len(n) <= 15:
+        raise HTTPException(400, "Enter a valid phone number, for example 0772123456.")
+    if n.startswith("0") and len(n) == 10:
+        n = "256" + n[1:]
+    return n
+
+
+async def get_payment_info(request: Request) -> dict:
+    doc = await db.settings.find_one(org_query(request, {"name": "payment_info"})) or {}
+    return {"mobile_money_number": doc.get("mobile_money_number") or "",
+            "mobile_money_name": doc.get("mobile_money_name") or ""}
+
+
+@app.get("/payment-info")
+async def public_payment_info(request: Request):
+    """Public (see _is_public): applicants need it before they have any session."""
+    return await get_payment_info(request)
+
+
+class PaymentInfoUpdate(BaseModel):
+    mobile_money_number: str = Field("", max_length=40)
+    mobile_money_name: str = Field("", max_length=200)
+    reason: str = Field(..., max_length=300)
+
+
+@app.put("/superadmin/payment-info")
+async def superadmin_put_payment_info(data: PaymentInfoUpdate, request: Request):
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every change.")
+    raw_number = data.mobile_money_number.strip()
+    name = " ".join(data.mobile_money_name.split())
+    if not raw_number and not name:
+        number = ""                                   # both blank = stop showing payment details
+    else:
+        if not raw_number or not name:
+            raise HTTPException(400, "Give both the number and the name it is registered under, or leave both blank to hide them.")
+        if len(name) > PAYMENT_NAME_MAX_LEN or any(ord(c) < 32 for c in name):
+            raise HTTPException(400, f"The name must be at most {PAYMENT_NAME_MAX_LEN} characters.")
+        number = _clean_momo_number(raw_number)
+    old = await get_payment_info(request)
+    new = {"mobile_money_number": number, "mobile_money_name": name}
+    if new == old:
+        raise HTTPException(400, "Nothing to change.")
+    await db.settings.update_one(
+        org_query(request, {"name": "payment_info"}),
+        {"$set": org_stamp(request, {"name": "payment_info", **new, "updated_at": datetime.utcnow()})},
+        upsert=True)
+    await log_action("payment_info_changed", current_actor(request),
+                     {"reason": reason, "old": old, "new": new}, org_id=request.state.org_id)
+    return new

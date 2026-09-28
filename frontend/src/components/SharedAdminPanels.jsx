@@ -190,6 +190,7 @@ const PATH_LABELS = [
   [/^\/superadmin\/student-changes\/?$/, 'the roster changes list'],
   [/^\/superadmin\/students\/add/, 'adding a student directly'],
   [/^\/superadmin\/students\/remove/, 'removing a student directly'],
+  [/^\/superadmin\/payment-info/, 'the Mobile Money payment details'],
   [/^\/superadmin\/audit\/checkpoint/, 'creating an audit checkpoint'],
   [/^\/superadmin\/audit\/verify/, 'verifying the audit chain'],
   [/^\/superadmin\/audit-log/, 'the (superadmin) audit log'],
