@@ -10,6 +10,7 @@ import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import SecurityPanel from './SecurityPanel';
+import VoterFieldsPanel from './VoterFieldsPanel';
 import usePolling from '../hooks/usePolling';
 import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
 import ReceiptLink from './ReceiptLink';
@@ -1841,7 +1842,7 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
         
         {/* ══════════════ IT ADMINS TAB ══════════════ */}
-        {activeTab === 'security' && <SecurityPanel />}
+        {activeTab === 'security' && <><SecurityPanel /><VoterFieldsPanel /></>}
 
         {activeTab === 'it_admins' && (
           <div style={twoCol}>

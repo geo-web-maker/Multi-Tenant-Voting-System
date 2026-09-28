@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import api from '../api';
 import FinalReport from './FinalReport';
 import { Icon } from './icons.jsx';
+import { PublicTurnoutBreakdown } from './TurnoutBreakdown';
 
 // 1. SHUFFLE UTILITY (Outside the component)
 const shuffleArray = (array) => {
@@ -366,6 +367,8 @@ const fetchData = async ({ force = false } = {}) => {
             </div>
           )}
         </div>
+
+        <PublicTurnoutBreakdown />
 
         <div style={{ marginTop: '40px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
           <button onClick={handlePrint} style={printBtnStyle} className="print-btn">

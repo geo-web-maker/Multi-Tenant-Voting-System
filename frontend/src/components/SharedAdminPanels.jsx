@@ -6,6 +6,7 @@ import { askEarlyReason } from '../electionControls';
 import { Icon } from './icons.jsx';
 import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, fmtZoned, tzShort, utcOffsetLabel, zoneList } from '../tz';
 import { regNo } from '../regNo';
+import { AdminTurnoutBreakdown } from './TurnoutBreakdown';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -1301,6 +1302,8 @@ export function Analytics() {
           </table>
         </div>
       </div>
+
+      <AdminTurnoutBreakdown />
     </div>
   );
 }

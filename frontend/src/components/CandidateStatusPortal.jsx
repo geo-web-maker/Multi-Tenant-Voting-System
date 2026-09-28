@@ -379,7 +379,21 @@ function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
 // (themed page, bordered card, "Candidate Status" header), so opening a document
 // feels like another view of the portal rather than a separate page. The white
 // "paper" inside is what actually prints; everything else is .no-print.
-function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = '' }) {
+// Chrome (and most browsers) use document.title as the default file name for
+// "Save as PDF", so it is set while a document is open, for both the button and
+// Ctrl+P, and restored when the document is closed.
+function docFileName(kind, name, position) {
+  const clean = (t) => String(t || '').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return [kind, properName(clean(name)), properTitle(clean(position))].filter(Boolean).join(' - ');
+}
+
+function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = '', fileName = '' }) {
+  useEffect(() => {
+    if (!fileName) return undefined;
+    const prev = document.title;
+    document.title = fileName;
+    return () => { document.title = prev; };
+  }, [fileName]);
   return (
     <div style={outerWrap} className="csp-outer">
       <div style={{ ...container, maxWidth: maxWidth + 62 }} className="csp-doc-card csp-card">
@@ -409,7 +423,7 @@ function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = ''
 function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
   const snap = candidacy.application_snapshot || {};
   return (
-    <DocShell onClose={onClose} branding={branding} label="Candidate Application Record">
+    <DocShell onClose={onClose} branding={branding} label="Candidate Application Record" fileName={docFileName('Application', snap.full_name, candidacy.position_title)}>
       <DocHeader branding={branding} title="Candidate Application Record" marginBottom={24} />
 
       <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #3b82f6', paddingBottom: 10, marginBottom: 24, fontSize: 12 }}>
@@ -462,7 +476,7 @@ function CertificateDoc({ candidacy, branding: liveBranding, onClose }) {
   }, [verifyUrl]);
 
   return (
-    <DocShell maxWidth={800} onClose={onClose} branding={branding} label="Certificate of Nomination">
+    <DocShell maxWidth={800} onClose={onClose} branding={branding} label="Certificate of Nomination" fileName={docFileName('Certificate of Nomination', nomineeName, candidacy.position_title)}>
       <div style={{ border: '3px double #b8860b', padding: '44px 48px', position: 'relative' }} className="csp-cert-box">
         <DocHeader branding={branding} title="" variant="certificate" marginBottom={6} />
 
@@ -502,7 +516,7 @@ function CertificateDoc({ candidacy, branding: liveBranding, onClose }) {
 function DenialNoticeDoc({ candidacy, branding, onClose }) {
   const d = candidacy.denial_snapshot || {};
   return (
-    <DocShell maxWidth={600} onClose={onClose} branding={branding} label="Application Decision Notice">
+    <DocShell maxWidth={600} onClose={onClose} branding={branding} label="Application Decision Notice" fileName={docFileName('Decision Notice', d.full_name, candidacy.position_title)}>
       <DocHeader branding={branding} title="Application Decision Notice" marginBottom={24} />
       <dl style={{ margin: 0 }}>
         <Row label="Applicant" value={properName(d.full_name)} />

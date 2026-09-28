@@ -60,6 +60,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
   };
 
   const s = preview?.summary;
+  const fieldLabel = k => s?.fields_in_file.find(f => f.key === k)?.label || k;
   const tabs = preview ? [
     { id: 'changed', label: `Changed (${s.changed})` },
     { id: 'new', label: `New (${s.new})` },
@@ -77,6 +78,12 @@ export default function VoterImportReview({ file, onClose, onDone }) {
         <p style={{ margin: '0 0 12px', fontSize: 12, opacity: 0.6 }}>
           {file.name} — nothing changes until you press Apply. Vote status, roles and admin logins of existing voters are never touched.
         </p>
+        {preview && s.fields_in_file.length > 0 && (
+          <p style={{ margin: '0 0 12px', fontSize: 12, opacity: 0.75 }}>
+            Also reading: {s.fields_in_file.map(f => f.label).join(', ')}.
+            {s.attr_fills > 0 && ` ${s.attr_fills} voter(s) with an empty value will be filled from the file automatically; existing values are only replaced if you apply a change below.`}
+          </p>
+        )}
 
         {error && <p style={{ color: '#e74c3c', fontSize: 13 }}>{error}</p>}
         {!preview && !error && <p style={{ opacity: 0.6 }}>Comparing with the current voter list…</p>}
@@ -120,6 +127,9 @@ export default function VoterImportReview({ file, onClose, onDone }) {
                         {c.staff && <div style={{ fontSize: 11, color: 'var(--warning)' }}>Admin / commissioner account — only a superadmin can apply this change</div>}
                         {c.name_changed && <div style={diffLine}>Name: <s style={{ opacity: 0.5 }}>{c.old_name}</s> → <b>{c.new_name}</b></div>}
                         {c.phones_changed && <div style={diffLine}>Phones: <s style={{ opacity: 0.5 }}>{c.old_phones.join(', ') || 'none'}</s> → <b>{c.new_phones.join(', ') || 'none'}</b></div>}
+                        {Object.entries(c.attrs_changed || {}).map(([k, v]) => (
+                          <div key={k} style={diffLine}>{fieldLabel(k)}: <s style={{ opacity: 0.5 }}>{v.old}</s> → <b>{v.new}</b></div>
+                        ))}
                       </div>
                       <select style={sel} value={changedValue(c.student_id)}
                         onChange={e => setChangedOverrides(o => ({ ...o, [c.student_id]: e.target.value }))}>
@@ -145,7 +155,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
                   {preview.new.map(r => (
                     <div key={r.student_id} style={row}>
                       <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>{regNo(r.student_id)}</b> <span style={{ fontSize: 12, opacity: 0.7 }}>{r.full_name}</span></div>
-                      <span style={{ fontSize: 11, opacity: 0.5 }}>{r.phones.join(', ')}</span>
+                      <span style={{ fontSize: 11, opacity: 0.5 }}>{[...Object.values(r.attrs || {}), ...r.phones].join(', ')}</span>
                     </div>
                   ))}
                 </>

@@ -35,6 +35,11 @@ import backup
 from backup_routes import build_router as build_backup_router
 from alerts import alert_critical, alert_warning, send_alert
 from name_utils import normalize_name
+from roster_utils import (
+    DEFAULT_MIN_GROUP, MIN_GROUP_RANGE, UNRECORDED_LABEL, apply_field_changes, attr_columns, attr_set_paths,
+    check_id_shapes, diff_attrs, finish_groups, merge_voter_fields, row_attrs, shape_warnings,
+    suppress_small_groups,
+)
 from name_backfill import run_backfill as run_name_backfill
 from regno_audit import audit_reg_numbers
 import otp_limits as ol
@@ -366,6 +371,7 @@ PUBLIC_PATHS = {
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
     "/verify-admin", "/election-results", "/election-results/voter-roll",
+    "/election-results/turnout-breakdown",
     "/voter-register", "/voter-register/check-number",
     # Backup triggers: called by an external scheduler with a shared secret
     # (X-Backup-Token, checked in backup_routes.py), not by an admin session.
@@ -4095,10 +4101,25 @@ def _normalize_phone_field(raw_phone_field: str, sid: str, row_num: int, warning
     return formatted
 
 
-def _parse_voter_csv(content: bytes) -> dict:
-    """Shared by the preview and the legacy endpoint. Last row wins for a repeated ID (warned)."""
+async def get_voter_fields(request: Request) -> dict:
+    """Per-org optional voter attributes (gender, programme, any custom field), each switchable.
+    {"fields": [{key,label,standard,enabled,public}], "min_group_size": int}."""
+    doc = await db.settings.find_one(org_query(request, {"name": "voter_fields"})) or {}
+    lo, hi = MIN_GROUP_RANGE
+    k = doc.get("min_group_size")
+    return {"fields": merge_voter_fields(doc.get("fields")),
+            "min_group_size": k if isinstance(k, int) and lo <= k <= hi else DEFAULT_MIN_GROUP}
+
+
+def _parse_voter_csv(content: bytes, fields: list[dict] | None = None, roster_ids=()) -> dict:
+    """Shared by the preview and the legacy endpoint. Last row wins for a repeated ID (warned).
+    fields: the org's voter-field config; enabled ones with a matching CSV column are read into
+    row["attrs"] (blank cell = not provided). roster_ids: the org's existing registration numbers,
+    used as the reference for the registration-number format check (warn-only)."""
     reader = csv.DictReader(io.StringIO(content.decode('utf-8-sig')))
+    cols = attr_columns(reader.fieldnames, fields or [])
     rows: dict[str, dict] = {}
+    row_nums: dict[str, int] = {}
     warnings: list[str] = []
     skipped = 0
     row_num = 1  # header is row 1; first data row is 2, matching a spreadsheet
@@ -4121,8 +4142,16 @@ def _parse_voter_csv(content: bytes) -> dict:
         rows[sid] = {
             "student_id": sid, "full_name": name,
             "phone_numbers": _normalize_phone_field((row.get('phone') or '').strip(), sid, row_num, warnings),
+            "attrs": row_attrs(row, cols),
         }
-    return {"rows": rows, "warnings": warnings, "skipped": skipped}
+        row_nums[sid] = row_num
+    # Format check runs on the already-normalized IDs. Warn only: nothing is skipped or blocked.
+    shape = shape_warnings(check_id_shapes(rows.keys(), roster_ids), len(rows), row_nums)
+    return {"rows": rows, "warnings": shape + warnings, "skipped": skipped, "attr_fields": list(cols)}
+
+
+async def _roster_ids(request: Request) -> list[str]:
+    return [normalize_student_id(i) for i in await db.voters.distinct("student_id", org_query(request)) if i]
 
 
 _NEW_VOTER_DEFAULTS = {
@@ -4138,29 +4167,35 @@ _STAFF_FLAGS = (
 )
 
 
-async def _diff_roster(request: Request, rows: dict) -> dict:
-    """Compares parsed CSV rows against the live roster (matched on canonical registration number)."""
+async def _diff_roster(request: Request, rows: dict, enabled_keys=frozenset()) -> dict:
+    """Compares parsed CSV rows against the live roster (matched on canonical registration number).
+    Voter attributes (enabled_keys only): filling an EMPTY value is never a "change" (returned in
+    attr_fills, applied automatically); only overwriting a different existing value shows up as changed."""
     existing = {}
     async for v in db.voters.find(org_query(request)):
         existing[normalize_student_id(v.get("student_id", ""))] = v
     applicants = set(await db.applications.distinct("student_id", org_query(request)))
 
-    new, changed, unchanged, missing = [], [], 0, []
+    new, changed, unchanged, missing, attr_fills = [], [], 0, [], []
     for sid, r in rows.items():
+        attrs = {k: x for k, x in (r.get("attrs") or {}).items() if k in enabled_keys}
         v = existing.get(sid)
         if not v:
-            new.append(r)
+            new.append({**r, "attrs": attrs})
             continue
         old_name   = v.get("full_name", "")
         old_phones = v.get("phone_numbers") or []
         name_changed   = normalize_name(old_name) != r["full_name"]
         phones_changed = set(old_phones) != set(r["phone_numbers"])
-        if name_changed or phones_changed:
+        fills, overwrites = diff_attrs(v.get("attrs"), attrs, enabled_keys)
+        if fills:
+            attr_fills.append({"actual_id": v["student_id"], "attrs": fills})
+        if name_changed or phones_changed or overwrites:
             changed.append({
                 "student_id": sid, "actual_id": v["student_id"],
                 # Admin/commissioner accounts receive their OTPs on these numbers.
                 "staff": any(v.get(f) for f in _STAFF_ROLE_FLAGS),
-                "name_changed": name_changed, "phones_changed": phones_changed,
+                "name_changed": name_changed, "phones_changed": phones_changed, "attrs_changed": overwrites,
                 "old_name": old_name, "new_name": r["full_name"],
                 "old_phones": old_phones, "new_phones": r["phone_numbers"],
             })
@@ -4176,23 +4211,24 @@ async def _diff_roster(request: Request, rows: dict) -> dict:
             "student_id": sid, "actual_id": v["student_id"], "full_name": v.get("full_name", ""),
             "protected": bool(reasons), "protected_reasons": reasons,
         })
-    return {"new": new, "changed": changed, "unchanged": unchanged, "missing": missing}
+    return {"new": new, "changed": changed, "unchanged": unchanged, "missing": missing, "attr_fills": attr_fills}
 
 
 def _public_diff(diff: dict) -> dict:
     """Phones are masked for display; full numbers never leave the server via preview."""
     return {
         "new": [{"student_id": r["student_id"], "full_name": r["full_name"],
-                 "phones": [_mask_phone(p) for p in r["phone_numbers"]]} for r in diff["new"]],
+                 "phones": [_mask_phone(p) for p in r["phone_numbers"]], "attrs": r.get("attrs") or {}} for r in diff["new"]],
         "changed": [{
             "student_id": c["student_id"], "name_changed": c["name_changed"], "phones_changed": c["phones_changed"],
-            "staff": c["staff"],
+            "staff": c["staff"], "attrs_changed": c["attrs_changed"],
             "old_name": c["old_name"], "new_name": c["new_name"],
             "old_phones": [_mask_phone(p) for p in c["old_phones"]],
             "new_phones": [_mask_phone(p) for p in c["new_phones"]],
         } for c in diff["changed"]],
         "missing": [{k: m[k] for k in ("student_id", "full_name", "protected", "protected_reasons")} for m in diff["missing"]],
         "unchanged": diff["unchanged"],
+        "attr_fills": len(diff["attr_fills"]),
     }
 
 
@@ -4202,10 +4238,12 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
     """Step 1 of a roster update: nothing is written to the roster. Returns what the file would
     add, change and leave behind so the admin can choose an action for each group."""
     await assert_roster_unfrozen(request)
-    parsed = _parse_voter_csv(await _read_csv_upload(file))
+    vf = (await get_voter_fields(request))["fields"]
+    enabled = {f["key"] for f in vf if f["enabled"]}
+    parsed = _parse_voter_csv(await _read_csv_upload(file), vf, await _roster_ids(request))
     if not parsed["rows"]:
         raise HTTPException(400, "No valid rows found. The file needs student_id, full_name and phone columns.")
-    diff = await _diff_roster(request, parsed["rows"])
+    diff = await _diff_roster(request, parsed["rows"], enabled)
     preview_id = secrets.token_urlsafe(16)
     await db.voter_import_previews.insert_one({
         "preview_id": preview_id, "org_id": request.state.org_id, "created_by": current_actor(request),
@@ -4215,7 +4253,9 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
         "preview_id": preview_id,
         "summary": {"file_rows": len(parsed["rows"]), "new": len(diff["new"]), "changed": len(diff["changed"]),
                     "unchanged": diff["unchanged"], "missing": len(diff["missing"]),
-                    "skipped_rows": parsed["skipped"], "warning_count": len(parsed["warnings"])},
+                    "skipped_rows": parsed["skipped"], "warning_count": len(parsed["warnings"]),
+                    "attr_fills": len(diff["attr_fills"]),
+                    "fields_in_file": [{"key": f["key"], "label": f["label"]} for f in vf if f["key"] in parsed["attr_fields"]]},
         "warnings": parsed["warnings"][:50],
         **_public_diff(diff),
     }
@@ -4250,7 +4290,9 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
     if not prev:
         raise HTTPException(404, "This import preview expired. Upload the file again.")
     rows = {r["student_id"]: r for r in prev["rows"]}
-    diff = await _diff_roster(request, rows)
+    # Fields switched off since the preview are ignored, so nothing is stored for a disabled field.
+    enabled = {f["key"] for f in (await get_voter_fields(request))["fields"] if f["enabled"]}
+    diff = await _diff_roster(request, rows, enabled)
     now = datetime.utcnow()
     ops: list[UpdateOne] = []
 
@@ -4259,7 +4301,8 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
         for r in diff["new"]:
             ops.append(UpdateOne(
                 org_query(request, {"student_id": r["student_id"]}),
-                {"$set": org_stamp(request, {"full_name": r["full_name"], "phone_numbers": r["phone_numbers"], "updated_at": now}),
+                {"$set": org_stamp(request, {"full_name": r["full_name"], "phone_numbers": r["phone_numbers"], "updated_at": now,
+                                             **attr_set_paths(r.get("attrs"))}),
                  "$setOnInsert": dict(_NEW_VOTER_DEFAULTS)},
                 upsert=True))
             added += 1
@@ -4280,8 +4323,16 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
             phones = c["old_phones"] + [p for p in c["new_phones"] if p not in c["old_phones"]]
         ops.append(UpdateOne(
             org_query(request, {"student_id": c["actual_id"]}),
-            {"$set": {"full_name": c["new_name"], "phone_numbers": phones, "updated_at": now}}))
+            {"$set": {"full_name": c["new_name"], "phone_numbers": phones, "updated_at": now,
+                      **attr_set_paths({k: o["new"] for k, o in c["attrs_changed"].items()})}}))
         updated += 1
+
+    # Empty -> value for gender/programme/etc. is additive, so it is applied without review.
+    attrs_filled = 0
+    for fl in diff["attr_fills"]:
+        ops.append(UpdateOne(org_query(request, {"student_id": fl["actual_id"]}),
+                             {"$set": {**attr_set_paths(fl["attrs"]), "updated_at": now}}))
+        attrs_filled += 1
 
     to_remove, blocked = [], []
     for m in diff["missing"]:
@@ -4301,7 +4352,8 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
     await db.voter_import_previews.delete_one({"preview_id": data.preview_id})
 
     summary = {"added": added, "updated": updated, "skipped_changes": skipped_changed, "removed": removed,
-               "blocked_removals": len(blocked), "staff_changes_skipped": staff_skipped, "phone_mode": data.phone_mode}
+               "blocked_removals": len(blocked), "staff_changes_skipped": staff_skipped, "phone_mode": data.phone_mode,
+               "attrs_filled": attrs_filled}
     await log_action("voters_import_applied", current_actor(request), summary, org_id=org_id)
     await append_ledger(org_id, "voters_import_applied", "roster", current_actor(request),
                         (admin or {}).get("role", "admin"), summary)
@@ -4313,11 +4365,13 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
     """Legacy one-shot upsert (add new + refresh name/phone), kept for API compatibility. The
     dashboards use /preview + /apply instead. Existing voters' status/roles are never reset here."""
     await assert_roster_unfrozen(request)
-    parsed = _parse_voter_csv(await _read_csv_upload(file))
+    vf = (await get_voter_fields(request))["fields"]
+    parsed = _parse_voter_csv(await _read_csv_upload(file), vf, await _roster_ids(request))
     now = datetime.utcnow()
     ops = [UpdateOne(
         org_query(request, {"student_id": r["student_id"]}),
-        {"$set": org_stamp(request, {"full_name": r["full_name"], "phone_numbers": r["phone_numbers"], "updated_at": now}),
+        {"$set": org_stamp(request, {"full_name": r["full_name"], "phone_numbers": r["phone_numbers"], "updated_at": now,
+                                     **attr_set_paths(r.get("attrs"))}),
          "$setOnInsert": dict(_NEW_VOTER_DEFAULTS)},
         upsert=True) for r in parsed["rows"].values()]
     if ops:
@@ -6991,6 +7045,38 @@ async def analytics_overview(request: Request):
     }
 
 
+async def _turnout_groups(request: Request, key: str) -> list[dict]:
+    """Registered/voted counts per value of one voter attribute. `key` is always taken from the org's
+    own field config, never from the request. Counts only - no voter is identified."""
+    pipeline = [
+        {"$match": org_query(request)},
+        {"$group": {"_id": f"$attrs.{key}", "registered": {"$sum": 1},
+                    "voted": {"$sum": {"$cond": [{"$eq": ["$has_voted", True]}, 1, 0]}}}},
+    ]
+    merged: dict[str, dict] = {}
+    async for g in db.voters.aggregate(pipeline):
+        label = g["_id"] if isinstance(g["_id"], str) and g["_id"].strip() else UNRECORDED_LABEL
+        m = merged.setdefault(label, {"label": label, "registered": 0, "voted": 0})
+        m["registered"] += g["registered"]
+        m["voted"] += g["voted"]
+    return list(merged.values())
+
+
+@app.get("/admin/analytics/turnout-breakdown")
+async def analytics_turnout_breakdown(request: Request):
+    """Turnout per enabled voter field (gender, programme, ...). Admin-only, live, unsuppressed counts.
+    Never includes how anyone voted."""
+    vf = await get_voter_fields(request)
+    total = await db.voters.count_documents(org_query(request))
+    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    return {
+        "total": {"registered": total, "voted": voted},
+        "fields": [{"key": f["key"], "label": f["label"], "public": f["public"],
+                    "groups": finish_groups(await _turnout_groups(request, f["key"]))}
+                   for f in vf["fields"] if f["enabled"]],
+    }
+
+
 # =============================================================================
 # OFFICIAL REPORT  (admin-only — declaration, signatures, cc list)
 # =============================================================================
@@ -7153,6 +7239,34 @@ async def get_public_voter_roll(request: Request):
     async for v in cursor:
         roll.append({"full_name": _mask_name(v.get("full_name", ""))})
     return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": True, "roll": roll}
+
+
+async def _election_closed(request: Request) -> bool:
+    """Voting is over: master switch off, results certified, or the enforced voting window has ended."""
+    cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    if cfg.get("is_certified") or not cfg.get("is_open", True):
+        return True
+    return voting_window_state(await get_phase_schedule(request), datetime.utcnow())["ended"]
+
+
+@app.get("/election-results/turnout-breakdown")
+async def get_public_turnout_breakdown(request: Request):
+    """Public turnout split for fields the org marked `public`. Turnout only, never candidate votes.
+    Withheld until the election has closed; groups under the org's minimum size are folded into
+    "Other" (or the field is withheld if too little remains)."""
+    await _check_rate_limit(
+        request, bucket="turnout_breakdown", limit=ROLL_RATE_LIMIT, window_s=ROLL_RATE_WINDOW_S,
+        message="Too many requests. Please try again shortly.",
+    )
+    vf = await get_voter_fields(request)
+    public = [f for f in vf["fields"] if f["public"]]
+    if not public or not await _election_closed(request):
+        return {"available": False, "fields": []}
+    out = []
+    for f in public:
+        res = suppress_small_groups(await _turnout_groups(request, f["key"]), vf["min_group_size"])
+        out.append({"key": f["key"], "label": f["label"], **res})
+    return {"available": True, "min_group_size": vf["min_group_size"], "fields": out}
 
 
 # =============================================================================
@@ -7973,3 +8087,72 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
             "reason": reason, "new_policy": updates["approval_policy"],
         }, org_id=request.state.org_id)
     return await superadmin_get_security_settings(request)
+
+
+# ── Optional voter fields (gender / programme / custom) ─────────────────────
+# Per-org switchable attributes stored under voter["attrs"][key]. `enabled` = read from imports and
+# shown in the admin turnout breakdown; `public` = also publish the turnout split (never how anyone
+# voted) after the election closes. Turning a field off keeps its data (re-enable is lossless); use
+# `purge` to erase stored values. Removing a custom field purges it.
+
+class VoterFieldEdit(BaseModel):
+    key: str
+    label: str | None = None
+    enabled: bool | None = None
+    public: bool | None = None
+
+
+class VoterFieldsUpdate(BaseModel):
+    reason: str
+    fields: list[VoterFieldEdit] = []     # upsert; an unknown key creates a custom field
+    remove: list[str] = []                # custom fields to delete (values purged)
+    purge: list[str] = []                 # erase stored values, keep the field definition
+    min_group_size: int | None = None     # public turnout groups smaller than this are folded into "Other"
+
+
+@app.get("/superadmin/voter-fields")
+async def superadmin_get_voter_fields(request: Request):
+    return await get_voter_fields(request)
+
+
+@app.put("/superadmin/voter-fields")
+async def superadmin_put_voter_fields(data: VoterFieldsUpdate, request: Request):
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every change.")
+    cur = await get_voter_fields(request)
+    try:
+        new_fields, removed = apply_field_changes(
+            cur["fields"], [f.dict(exclude_unset=True) for f in data.fields], data.remove)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    known = {f["key"] for f in cur["fields"]}
+    if any(k not in known for k in data.purge):
+        raise HTTPException(400, "Unknown field in purge list.")
+    min_group = cur["min_group_size"]
+    if data.min_group_size is not None:
+        lo, hi = MIN_GROUP_RANGE
+        if not lo <= data.min_group_size <= hi:
+            raise HTTPException(400, f"min_group_size must be between {lo} and {hi}.")
+        min_group = data.min_group_size
+    purge = sorted(set(data.purge) | set(removed))
+    if new_fields == cur["fields"] and min_group == cur["min_group_size"] and not purge:
+        raise HTTPException(400, "Nothing to change.")
+
+    await db.settings.update_one(
+        org_query(request, {"name": "voter_fields"}),
+        {"$set": org_stamp(request, {
+            "name": "voter_fields", "min_group_size": min_group, "updated_at": datetime.utcnow(),
+            "fields": [{k: f[k] for k in ("key", "label", "enabled", "public")} for f in new_fields]})},
+        upsert=True)
+    if purge:
+        await db.voters.update_many(org_query(request), {"$unset": {f"attrs.{k}": "" for k in purge}})
+
+    def brief(fl): return {f["key"]: (f["enabled"], f["public"]) for f in fl}
+    details = {"reason": reason, "fields": {k: {"enabled": v[0], "public": v[1]} for k, v in brief(new_fields).items()
+                                            if brief(cur["fields"]).get(k) != v},
+               "removed": removed, "purged": purge, "min_group_size": min_group}
+    actor = current_actor(request)
+    await log_action("voter_fields_changed", actor, details, org_id=request.state.org_id)
+    await append_ledger(request.state.org_id, "voter_fields_changed", "roster", actor, "superadmin", details)
+    return await get_voter_fields(request)
