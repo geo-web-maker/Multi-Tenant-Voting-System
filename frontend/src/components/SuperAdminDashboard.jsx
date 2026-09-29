@@ -9,6 +9,7 @@ import TabBar from './TabBar';
 import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
+import VoterList from './VoterList';
 import SecurityPanel from './SecurityPanel';
 import VoterFieldsPanel from './VoterFieldsPanel';
 import usePolling from '../hooks/usePolling';
@@ -123,7 +124,9 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [itCredEmail, setItCredEmail]   = useState({});   // { student_id: email }
   const [commCredEmail, setCommCredEmail] = useState({}); // { student_id: email }
   const [resetting, setResetting]       = useState({});   // { student_id: bool }
-  const [saDirectAdd, setSaDirectAdd]       = useState({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
+  const [saDirectAdd, setSaDirectAdd]       = useState({ student_id: '', full_name: '', phone: '', attrs: {}, reason: '', requested_by: 'superadmin' });
+  const [voterFields, setVoterFields] = useState([]);
+  const [selectedStudentId, setSelectedStudentId] = useState('');
   const [saDirectRemove, setSaDirectRemove] = useState({ student_id: '', reason: '', requested_by: 'superadmin' });
 
   //--Financial Controllers, Overseers, Organizations--
@@ -273,6 +276,7 @@ const refetchAll = () => {
     fetchCommissioners();
     fetchElectionData();
     fetchVotersList();
+    api.get('/admin/voter-fields').then(r => setVoterFields(r.data)).catch(() => {});
     fetchItAdmins();
     fetchStudentChanges();
     fetchFinancialControllers();
@@ -724,9 +728,10 @@ const handleSuperAdminAddStudent = async (e) => {
       await api.post('/superadmin/students/add', {
         ...saDirectAdd,
         phones: saDirectAdd.phone.split(',').map(p => p.trim()).filter(Boolean),
+        attrs: saDirectAdd.attrs,
       });
       toast('Student added.', { kind: 'success' });
-      setSaDirectAdd({ student_id: '', full_name: '', phone: '', reason: '', requested_by: 'superadmin' });
+      setSaDirectAdd({ student_id: '', full_name: '', phone: '', attrs: {}, reason: '', requested_by: 'superadmin' });
       fetchElectionData();
       fetchVotersList();
     } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
@@ -1265,89 +1270,14 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
 
         {/* ══════════════ VOTERS TAB ══════════════ */}
-        {activeTab === 'voters' && (!electionLoaded || !smsLoaded) && <LoadingBlock text="Loading voters…" />}
-        {activeTab === 'voters' && electionLoaded && smsLoaded && (
-          <div>
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%' }}>
-                <div style={statCard}><small>Total Voters</small><h3>{electionVoters.length}</h3></div>
-                <div style={statCard}><small>Voted</small><h3 style={{ color: 'var(--success)' }}>{electionVoters.filter(v => v.has_voted).length}</h3></div>
-                <div style={statCard}><small>Turnout</small><h3>{turnout}%</h3></div>
-                <div style={statCard}><small>Pending</small><h3 style={{ color: 'var(--warning)' }}>{electionVoters.filter(v => !v.has_voted).length}</h3></div>
-              </div>
-            </div>
-
-            {/* One card per SMS provider — see SmsProviderCard: labeling
-                which provider a balance belongs to matters since only one
-                (EgoSMS) sends first and Mambo is the paid fallback. */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%', marginTop: '12px' }}>
-              <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />
-              <SmsProviderCard label="MamboSMS" sub="fallback" data={smsBalance.mambosms} />
-            </div>
-
-            {/* Ported from AdminDashboard: voter funnel by last_status */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%', marginBottom: '16px' }}>
-              <div style={statCard}><small>OTP Sent</small><h3 style={{ color: 'var(--info)' }}>{stage1}</h3></div>
-              <div style={statCard}><small>Authenticated</small><h3 style={{ color: '#9b59b6' }}>{stage2}</h3></div>
-              <div style={statCard}><small>Completed</small><h3 style={{ color: 'var(--success)' }}>{stage3}</h3></div>
-            </div>
-
-            {duplicateIds.length > 0 && (
-              <div style={{ padding: '12px 16px', border: '1px solid #e74c3c', borderRadius: '10px', marginBottom: '16px', color: '#e74c3c', fontSize: '13px' }}>
-                <Icon name="warning" /> Duplicate student IDs detected: {[...new Set(duplicateIds)].join(', ')}
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '14px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ ...card, flexDirection: 'row', alignItems: 'center', padding: '14px', gap: '12px', flex: 1 }}>
-                {rosterFrozen
-                  ? <span style={{ fontSize: '13px', opacity: 0.8 }}>{FROZEN_NOTE}</span>
-                  : <><span style={{ fontSize: '13px', opacity: 0.7 }}>Import voters (CSV or Excel)</span>
-                    <input type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm" onChange={handleImportVoters} disabled={importing} /></>}
-                {importFile && <VoterImportReview file={importFile} onClose={() => setImportFile(null)} onDone={handleImportDone} />}
-              </div>
-              <button style={ghostBtn} onClick={() => fetchElectionData()} disabled={loading}>
-                {loading ? 'Syncing…' : <>Refresh</>}
-              </button>
-            </div>
-
-            <input style={{ ...inp, marginBottom: '12px' }}
-              placeholder="Search voters…"
-              value={voterSearch2}
-              onChange={e => setVoterSearch2(e.target.value)} />
-
-            <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead style={{ position: 'sticky', top: 0, backgroundColor: '#1e293b' }}>
-                  <tr>
-                    {['ID','Name','Status'].map(h => (
-                      <th key={h} style={th}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredVoters.map(v => (
-                    <tr key={v.student_id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={td}><code style={{ fontSize: '12px' }}>{regNo(v.student_id)}</code></td>
-                      <td style={td}>{v.full_name}</td>
-                      <td style={td}>
-                        <span style={{
-                          fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
-                            background: v.has_voted ? 'color-mix(in srgb, var(--success) 20%, transparent)' : 'color-mix(in srgb, var(--warning) 20%, transparent)',
-                            color: v.has_voted ? 'var(--success)' : 'var(--warning)',
-                        }}>
-                          {v.has_voted ? 'VOTED' : (v.last_status || 'IDLE').toUpperCase()}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        {activeTab === 'voters' && (
+          <VoterList
+            showStatus
+            onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
+            onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
+          />
         )}
 
-        {/* ══════════════ POSITIONS TAB ══════════════ */}
         {activeTab === 'positions' && (
           <RevealGroup text="Loading…">
           <PaymentInfoPanel />
@@ -1919,7 +1849,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {/* ══════════════ STUDENT CHANGES TAB (superadmin view) ══════════════ */}
         {activeTab === 'student_changes' && (
           <div>
-            <SuperAdminStudentEdit />
+            <SuperAdminStudentEdit initialStudentId={selectedStudentId} />
             {rosterFrozen && <div style={{ ...card, margin: '16px 0', borderColor: 'var(--warning)' }}>Direct add / remove is disabled while the roster is frozen.</div>}
             {!rosterFrozen && <div style={twoCol}>
               <div style={card}>
@@ -1931,6 +1861,10 @@ const handleSuperAdminRemoveStudent = async () => {
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, full_name: e.target.value })} required />
                   <input style={inp} placeholder="Phone Number(s), comma-separated" value={saDirectAdd.phone}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, phone: e.target.value })} required />
+                  {voterFields.map(f => (
+                    <input key={f.key} style={inp} maxLength={60} placeholder={`${f.label} (optional)`} value={saDirectAdd.attrs[f.key] || ''}
+                      onChange={e => setSaDirectAdd({ ...saDirectAdd, attrs: { ...saDirectAdd.attrs, [f.key]: e.target.value } })} />
+                  ))}
                   <input style={inp} placeholder="Reason" value={saDirectAdd.reason}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, reason: e.target.value })} required />
                   <button type="submit" style={greenBtn}>+ Add Student Instantly</button>
@@ -2025,6 +1959,11 @@ const handleSuperAdminRemoveStudent = async () => {
                 <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
                   <b>{change.full_name}</b> — <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
                 </p>
+                {change.attrs && Object.keys(change.attrs).length > 0 && (
+                  <div style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>
+                    {Object.entries(change.attrs).map(([k, v]) => <div key={k}><b>{k}:</b> {v}</div>)}
+                  </div>
+                )}
                 <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                   Reason: {change.reason}
                 </p>
@@ -2064,7 +2003,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'contact_changes' && <ContactChangesQueue readOnly breakGlass />}
 
         {/* ══════════════ RESET OTP LIMITS TAB ══════════════ */}
-        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel canOverrideCaps />}
+        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel canOverrideCaps initialStudentId={selectedStudentId} />}
 
         {/* ══════════════ FINANCIAL CONTROLLERS TAB ══════════════ */}
         {activeTab === 'financial_controllers' && (

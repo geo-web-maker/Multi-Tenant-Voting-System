@@ -714,6 +714,7 @@ class ITAdminStudentAdd(BaseModel):
     student_id:        str
     full_name:         str
     phones:            list[str]
+    attrs:             dict[str, str] = {}
     reason:            str = ""
     requested_by:      str
     payment_method:    str = ""
@@ -1645,6 +1646,22 @@ async def _resweep_pending_after_policy_change(org_id: str):
 
 #--IT Administration Helpers---
 
+async def _validate_voter_attrs(org_id: str, attrs: dict | None) -> dict:
+    """Validate/normalize only fields enabled for this organisation."""
+    attrs = attrs or {}
+    fields = await get_voter_fields_for_org(org_id)
+    enabled = {f["key"] for f in fields if f.get("enabled")}
+    unknown = sorted(set(attrs) - enabled)
+    if unknown:
+        raise HTTPException(400, f"Unknown or disabled voter field: {unknown[0]}")
+    return {k: normalize_attr_value(v) for k, v in attrs.items() if normalize_attr_value(v)}
+
+
+async def get_voter_fields_for_org(org_id: str) -> list[dict]:
+    doc = await db.settings.find_one({"org_id": org_id, "name": "voter_fields"}) or {}
+    return merge_voter_fields(doc.get("fields"))
+
+
 async def _execute_student_change(change_doc: dict, org_id: str = None):
     if change_doc["change_type"] == "add":
         # Accept both the new multi-number "phones" list and the older
@@ -1658,19 +1675,25 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             clean = normalize_phone_number(raw)
             if clean not in phones:
                 phones.append(clean)
-        q = {"student_id": normalize_student_id(change_doc["student_id"])}
+        sid = normalize_student_id(change_doc["student_id"])
+        q = {"student_id": sid}
         if org_id:
             q["org_id"] = org_id
+        if await db.voters.find_one(q, {"_id": 1}):
+            raise HTTPException(409, "Already registered, use Edit Student.")
+        attrs = await _validate_voter_attrs(org_id, change_doc.get("attrs"))
+        set_doc = {
+            "full_name":       change_doc["full_name"],
+            "phone_numbers":   phones,
+            "added_by_it":     True,
+            "added_by":        change_doc.get("requested_by", ""),
+            "org_id":          org_id,
+            "student_id":      sid
+        }
+        set_doc.update(attr_set_paths(attrs))
         await db.voters.update_one(
             q,
-            {"$set": {
-                "full_name":       change_doc["full_name"],
-                "phone_numbers":   phones,
-                "added_by_it":     True,
-                "added_by":        change_doc.get("requested_by", ""),
-                "org_id":          org_id,
-                "student_id":      normalize_student_id(change_doc["student_id"])
-            },
+            {"$set": set_doc,
             # Defaults ONLY on insert: for an existing ID, $set here used to flip has_voted back to
             # False (a double-vote path) and wipe every role flag.
             "$setOnInsert": {
@@ -4604,13 +4627,72 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
     return {"secure_url": result["secure_url"]}
 
 
+@app.get("/admin/voter-fields")
+async def admin_get_voter_fields(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    fields = await get_voter_fields(request)
+    return [{"key": f["key"], "label": f["label"]} for f in fields["fields"] if f.get("enabled")]
+
+
+def _admin_voter_projection(role: str) -> dict:
+    projection = {"_id": 0, "full_name": 1, "student_id": 1, "phone_numbers": 1, "attrs": 1}
+    if role == "superadmin":
+        projection["has_voted"] = 1
+        projection["last_status"] = 1
+    return projection
+
+
+@app.get("/admin/voters/list")
+async def list_admin_voters(request: Request, q: str = "", page: int = 1, page_size: int = 25,
+                            missing_phone: bool = False, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    role = admin.get("role", "")
+    page_size = min(max(page_size, 1), 50)
+    page = max(page, 1)
+    q = q.strip()[:80]
+    query = org_query(request)
+    clauses = []
+    if q:
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        clauses.append({"$or": [{"student_id": rx}, {"full_name": rx}]})
+    if missing_phone:
+        clauses.append({"$or": [{"phone_numbers": {"$exists": False}}, {"phone_numbers": {"$size": 0}}]})
+    if clauses:
+        query["$and"] = clauses
+    total = await db.voters.count_documents(query)
+    skip = (page - 1) * page_size
+    if skip >= total and total:
+        page = max(1, math.ceil(total / page_size))
+        skip = (page - 1) * page_size
+    fields = await get_voter_fields(request)
+    enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
+    results = []
+    projection = _admin_voter_projection(role)
+    async for v in db.voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)]).skip(skip).limit(page_size):
+        attrs = {k: v.get("attrs", {}).get(k, "") for k in enabled if v.get("attrs", {}).get(k, "") != ""}
+        row = {"full_name": v.get("full_name", ""), "student_id": v.get("student_id", ""),
+               "phone_numbers": [_mask_phone(p) for p in v.get("phone_numbers", [])], "attrs": attrs}
+        if role == "superadmin":
+            row["has_voted"] = bool(v.get("has_voted"))
+            row["last_status"] = v.get("last_status", "idle")
+        results.append(row)
+    return {"results": results, "total": total, "page": page, "page_size": page_size}
+
+
 @app.get("/admin/voters")
 async def get_all_voters(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    # Kept for legacy callers. Never expose stored fields wholesale.
+    role = admin.get("role", "")
+    projection = _admin_voter_projection(role)
+    fields = await get_voter_fields(request)
+    enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
     voters = []
-    async for v in db.voters.find(org_query(request), {"_id": 0}):
-        # Full numbers are only served by the audited /admin/students/lookup edit screens.
-        v["phone_numbers"] = [_mask_phone(p) for p in v.get("phone_numbers", [])]
-        voters.append(v)
+    async for v in db.voters.find(org_query(request), projection):
+        row = {"full_name": v.get("full_name", ""), "student_id": v.get("student_id", ""),
+               "phone_numbers": [_mask_phone(p) for p in v.get("phone_numbers", [])],
+               "attrs": {k: v.get("attrs", {}).get(k, "") for k in enabled if v.get("attrs", {}).get(k, "") != ""}}
+        if role == "superadmin":
+            row["has_voted"] = bool(v.get("has_voted"))
+            row["last_status"] = v.get("last_status", "idle")
+        voters.append(row)
     return voters
 
 @app.post("/admin/set-password")
@@ -5760,6 +5842,9 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
     bind_identity(request, data.requested_by, "IT Admin account")
     data.full_name = normalize_name(data.full_name)
     data.student_id = normalize_student_id(data.student_id)
+    data.attrs = await _validate_voter_attrs(request.state.org_id, data.attrs)
+    if await db.voters.find_one(org_query(request, {"student_id": data.student_id}), {"_id": 1}):
+        raise HTTPException(409, "Already registered, use Edit Student.")
     bypass = await upload_bypass_enabled(request)
     if not bypass and not data.reason.strip():
         raise HTTPException(400, "A reason is required.")
@@ -6374,6 +6459,11 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
     # Must match the canonical stored form: every lookup (login, search, votes) does an exact
     # match on normalize_student_id(), so a reg no. saved as typed could never be found.
     data.student_id = normalize_student_id(data.student_id)
+    data.attrs = await _validate_voter_attrs(request.state.org_id, data.attrs)
+    if await db.voters.find_one(org_query(request, {"student_id": data.student_id}), {"_id": 1}):
+        raise HTTPException(409, "Already registered, use Edit Student.")
+    if not any(str(p or "").strip() for p in data.phones):
+        raise HTTPException(400, "At least one phone number is required.")
     phones = []
     for raw in data.phones:
         if not str(raw or "").strip():
@@ -6381,14 +6471,14 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
         clean = normalize_phone_number(raw)
         if clean not in phones:
             phones.append(clean)
+    set_doc = org_stamp(request, {
+        "full_name": data.full_name, "phone_numbers": phones,
+        "added_by": "superadmin", "add_reason": data.reason
+    })
+    set_doc.update(attr_set_paths(data.attrs))
     await db.voters.update_one(
         org_query(request, {"student_id": data.student_id}),
-        {"$set": org_stamp(request, {
-            "full_name":       data.full_name,
-            "phone_numbers":   phones,
-            "added_by":        "superadmin",
-            "add_reason":      data.reason
-        }),
+        {"$set": set_doc,
          # Defaults ONLY on insert (see _execute_student_change): never un-vote an existing voter or wipe roles.
          "$setOnInsert": {
             "is_commissioner": False,
@@ -6483,11 +6573,18 @@ class StudentPhoneOp(BaseModel):
     number: str | None = None      # new number (add / change)
 
 
+class StudentAttrOp(BaseModel):
+    key: str
+    expected_old: str | None = None
+    value: str | None = None
+
+
 class StudentEditRequest(BaseModel):
     student_id: str                # CURRENT registration number of the record
     full_name: str | None = None
     new_student_id: str | None = None
     phone_ops: list[StudentPhoneOp] = []
+    attr_ops: list[StudentAttrOp] = []
     reason: str
 
 
@@ -6507,14 +6604,18 @@ def _mask_phone(p: str | None) -> str | None:
     return None if p is None else ("*" * max(len(p) - 3, 0)) + p[-3:]
 
 
-def _student_edit_view(v: dict) -> dict:
-    return {
+def _student_edit_view(v: dict, role: str = "superadmin", enabled_keys=None) -> dict:
+    enabled_keys = set(enabled_keys or [])
+    out = {
         "student_id": v.get("student_id", ""),
         "full_name": v.get("full_name", ""),
         "phone_numbers": v.get("phone_numbers", []),
-        "has_voted": bool(v.get("has_voted")),
+        "attrs": {k: v.get("attrs", {}).get(k, "") for k in enabled_keys if v.get("attrs", {}).get(k, "") != ""},
         "holds_admin_role": any(v.get(f) for f in STUDENT_ROLE_FLAGS),
     }
+    if role == "superadmin":
+        out["has_voted"] = bool(v.get("has_voted"))
+    return out
 
 
 @app.get("/admin/students/lookup")
@@ -6525,18 +6626,47 @@ async def lookup_students_for_edit(q: str, request: Request,
         return []
     rx = {"$regex": re.escape(q), "$options": "i"}
     cur = db.voters.find({"org_id": request.state.org_id, "$or": [{"student_id": rx}, {"full_name": rx}]}).limit(10)
-    return [_student_edit_view(v) async for v in cur]
+    role = admin.get("role", "")
+    fields = await get_voter_fields(request)
+    enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
+    return [_student_edit_view(v, role, enabled) async for v in cur]
 
 
 async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_student_id: str | None,
-                              phone_ops: list) -> dict:
+                              phone_ops: list, attr_ops: list = None) -> dict:
     """Validate and apply name / registration-number / phone operations with optimistic concurrency.
     Shared by direct edits and approved contact changes so the two can never drift apart."""
     old_sid = voter["student_id"]
     old_name = voter.get("full_name", "")
     old_phones = list(voter.get("phone_numbers", []))
     new_name, new_sid, phones = old_name, old_sid, list(old_phones)
+    old_attrs = dict(voter.get("attrs") or {})
+    new_attrs = dict(old_attrs)
     events: list[dict] = []          # {event, field, old, new}
+
+    fields = await get_voter_fields_for_org(org_id)
+    enabled = {f["key"] for f in fields if f.get("enabled")}
+    attr_ops = attr_ops or []
+    if attr_ops:
+        unknown = [op.key for op in attr_ops if op.key not in enabled]
+        if unknown:
+            raise HTTPException(400, f"Unknown or disabled voter field: {unknown[0]}")
+        seen = set()
+        for op in attr_ops:
+            if op.key in seen:
+                raise HTTPException(400, f"Duplicate voter field operation: {op.key}")
+            seen.add(op.key)
+            current = old_attrs.get(op.key, "")
+            if op.expected_old is not None and normalize_attr_value(op.expected_old) != current:
+                raise HTTPException(409, "A voter field changed since you loaded it; reload and try again.")
+            value = normalize_attr_value(op.value) if op.value else ""
+            if value == current:
+                continue
+            if value:
+                new_attrs[op.key] = value
+            else:
+                new_attrs.pop(op.key, None)
+            events.append({"event": "student_attr_changed", "field": f"attrs.{op.key}", "old": current or None, "new": value or None})
 
     if full_name is not None:
         candidate = normalize_name(full_name)
@@ -6591,11 +6721,19 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
 
     # Optimistic concurrency: the update only applies if the student still looks the way the
     # editor saw it, so two simultaneous edits cannot silently overwrite each other.
-    updated = await db.voters.update_one(
-        {"_id": voter["_id"], "org_id": org_id, "student_id": old_sid,
-         "full_name": old_name, "phone_numbers": old_phones},
-        {"$set": {"full_name": new_name, "student_id": new_sid, "phone_numbers": phones}},
-    )
+    filter_doc = {"_id": voter["_id"], "org_id": org_id, "student_id": old_sid,
+                  "full_name": old_name, "phone_numbers": old_phones}
+    for op in attr_ops:
+        filter_doc[f"attrs.{op.key}"] = old_attrs.get(op.key, None)
+    set_doc = {"full_name": new_name, "student_id": new_sid, "phone_numbers": phones}
+    for key, value in new_attrs.items():
+        if key in enabled and value != old_attrs.get(key, ""):
+            set_doc[f"attrs.{key}"] = value
+    unset_doc = {f"attrs.{op.key}": "" for op in attr_ops if not new_attrs.get(op.key)}
+    update_doc = {"$set": set_doc}
+    if unset_doc:
+        update_doc["$unset"] = unset_doc
+    updated = await db.voters.update_one(filter_doc, update_doc)
     if updated.matched_count != 1:
         raise HTTPException(409, "This student was changed by someone else; reload and try again.")
 
@@ -6612,7 +6750,7 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
             await coll.update_many({"org_id": org_id, "student_id": old_sid}, {"$set": {"student_id": new_sid}})
 
     return {"events": events, "old_sid": old_sid, "new_sid": new_sid, "old_name": old_name,
-            "new_name": new_name, "old_phones": old_phones, "phones": phones}
+            "new_name": new_name, "old_phones": old_phones, "phones": phones, "attrs": new_attrs}
 
 
 async def _write_student_audit(org_id, voter: dict, res: dict, reason: str, actor: str, role: str,
@@ -6659,14 +6797,22 @@ async def edit_student(data: StudentEditRequest, request: Request,
             raise ApiError(409, "The roster is frozen: phone and registration-number changes must be submitted "
                                 "as a contact-change request for a commissioner to approve.", "contact_change_required")
         if voter.get("has_voted"):
-            raise ApiError(409, "This voter has already voted; their details can no longer be edited.", "already_voted")
+            role = admin.get("role", "")
+            detail = "This voter's details can no longer be edited." if role == "it_admin" else "This voter has already voted; their details can no longer be edited."
+            raise ApiError(409, detail, "already_voted")
         name_changes = await db.student_edit_audit.count_documents({
             "org_id": org_id, "student_key": str(voter["_id"]), "event": "student_name_changed",
             "at": {"$gte": st["freeze_at"] or datetime(1970, 1, 1)}})
         if name_changes >= 2:
             raise ApiError(409, "This voter has already had 2 name corrections since the freeze.", "name_edit_cap")
+        if data.attr_ops:
+            attr_changes = await db.student_edit_audit.count_documents({
+                "org_id": org_id, "student_key": str(voter["_id"]), "event": "student_attr_changed",
+                "at": {"$gte": st["freeze_at"] or datetime(1970, 1, 1)}})
+            if attr_changes + len(data.attr_ops) > 2:
+                raise ApiError(409, "This voter has already had 2 optional-field corrections since the freeze.", "attr_edit_cap")
 
-    res = await _apply_student_edit(org_id, voter, data.full_name, data.new_student_id, data.phone_ops)
+    res = await _apply_student_edit(org_id, voter, data.full_name, data.new_student_id, data.phone_ops, data.attr_ops)
     actor, role = current_actor(request), admin.get("role", "")
     await _write_student_audit(org_id, voter, res, reason, actor, role)
     # D5: any applied correction forgets this voter's send/guess state and live code.
@@ -6679,9 +6825,12 @@ async def edit_student(data: StudentEditRequest, request: Request,
                 "old": _mask_name(ev["old"]) if is_name else _mask_phone(ev["old"]) if ev["field"] == "phone_numbers" else _mask_student_id(ev["old"] or ""),
                 "new": _mask_name(ev["new"]) if is_name else _mask_phone(ev["new"]) if ev["field"] == "phone_numbers" else _mask_student_id(ev["new"] or "")})
 
+    fields = await get_voter_fields(request)
+    enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
+    student_view = {**voter, "full_name": res["new_name"], "student_id": res["new_sid"],
+                    "phone_numbers": res["phones"], "attrs": res.get("attrs", voter.get("attrs", {}))}
     return {"status": "updated", "changes": [e["event"] for e in res["events"]],
-            "student": _student_edit_view({**voter, "full_name": res["new_name"], "student_id": res["new_sid"],
-                                           "phone_numbers": res["phones"]})}
+            "student": _student_edit_view(student_view, admin.get("role", ""), enabled)}
 
 
 @app.get("/admin/students/edit-history")

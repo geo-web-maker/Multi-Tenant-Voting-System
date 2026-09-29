@@ -14,6 +14,7 @@ import useRosterStatus from '../hooks/useRosterStatus';
 import { previewPhone } from '../studentEdit';
 import './ITAdminDashboard.css';
 import { regNo } from '../regNo';
+import VoterList from './VoterList';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 
 
@@ -39,8 +40,10 @@ export default function ITAdminDashboard({ onLogout }) {
   
   // ── Add student form state ──
   const [addForm, setAddForm] = useState({
-    student_id: '', full_name: '', phones: [''], reason: ''
+    student_id: '', full_name: '', phones: [''], attrs: {}, reason: ''
   });
+  const [voterFields, setVoterFields] = useState([]);
+  const [editStudentId, setEditStudentId] = useState('');
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError]           = useState('');
   const [addSuccess, setAddSuccess]       = useState('');
@@ -69,18 +72,22 @@ export default function ITAdminDashboard({ onLogout }) {
   
   useEffect(() => {
     fetchMyRequests();
-    fetchVoters();
+    api.get('/admin/voter-fields').then(r => setVoterFields(r.data)).catch(() => {});
     api.get('/admin/upload-bypass').then(r => setBypass(!!r.data.enabled)).catch(() => {});
   // Mount-only.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Decisions on my requests (approved / denied) appear without a manual refresh.
   usePolling(() => fetchMyRequests({ silent: true }), 15000);
+
+  useEffect(() => {
+    if (activeTab === 'remove' && removeSearch.trim().length >= 2) fetchVoters(removeSearch.trim());
+  }, [activeTab, removeSearch]);
   
-  const fetchVoters = async () => {
+  const fetchVoters = async (query = '') => {
     try {
-      const res = await api.get('/admin/voters');
-      setVoters(res.data);
+      const res = await api.get('/admin/voters/list', { params: { q: query, page: 1, page_size: 50 } });
+      setVoters(res.data.results || []);
     } catch { /* non-critical: ignore */ }
   };
 
@@ -136,13 +143,14 @@ export default function ITAdminDashboard({ onLogout }) {
         student_id:        addForm.student_id.trim(),
         full_name:         addForm.full_name.trim(),
         phones:            cleanPhones,
+        attrs:             addForm.attrs,
         reason:            addForm.reason.trim(),
         requested_by:      itAdminId,
         payment_method:    paymentMethod,
         payment_proof_url,
       });
       setAddSuccess(bypass ? 'Voter added.' : 'Request submitted.');
-      setAddForm({ student_id: '', full_name: '', phones: [''], reason: '' });
+      setAddForm({ student_id: '', full_name: '', phones: [''], attrs: {}, reason: '' });
       setPaymentMethod('');
       setPaymentProof(null);
       setPaymentProofPreview(null);
@@ -214,6 +222,7 @@ export default function ITAdminDashboard({ onLogout }) {
     // IT Admin previously had no visibility into election state at all —
     // only the three roster-change tabs. Overview is now the landing tab.
     { id: 'overview', label: <>Overview</> },
+    { id: 'voters', label: <>Voters</> },
     ...(rosterFrozen ? [] : [{ id: 'add', label: <>Add Student</> }]),
     { id: 'edit',     label: <>Edit Student</> },
     ...(rosterFrozen ? [] : [{ id: 'remove', label: <>Remove Student</> }]),
@@ -231,7 +240,7 @@ export default function ITAdminDashboard({ onLogout }) {
           title="IT Admin Panel"
           subtitle={<>Logged in as <strong>{itAdminName || itAdminId}</strong>{pendingCount > 0 && ` · ${pendingCount} pending request${pendingCount !== 1 ? 's' : ''}`}</>}
           lastSynced={lastSynced}
-          onRefresh={() => { fetchMyRequests(); fetchVoters(); }}
+          onRefresh={() => { fetchMyRequests(); if (removeSearch.trim().length >= 2) fetchVoters(removeSearch.trim()); }}
           refreshing={loading}
           onLogout={onLogout}
         />
@@ -290,6 +299,14 @@ export default function ITAdminDashboard({ onLogout }) {
                 <button type="button" style={{ ...ghostBtn, marginTop: '8px', alignSelf: 'flex-start' }} onClick={addAddPhoneRow}>
                   + Add another phone number
                 </button>
+
+                {voterFields.map(f => (
+                  <label key={f.key} style={{ ...lbl, marginTop: '10px' }}>
+                    {f.label} (optional)
+                    <input style={{ ...inp, marginTop: 4 }} maxLength={60} value={addForm.attrs[f.key] || ''}
+                      onChange={e => setAddForm({ ...addForm, attrs: { ...addForm.attrs, [f.key]: e.target.value } })} />
+                  </label>
+                ))}
 
                 <label style={{ ...lbl, marginTop: '10px' }}>Reason for Adding{bypass ? ' (optional)' : ' *'}</label>
                 <textarea style={{ ...inp, height: '80px', resize: 'vertical' }}
@@ -360,6 +377,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 ['Name', addForm.full_name.trim()],
                 ['Phone Number(s)', addForm.phones.map(p => p.trim()).filter(Boolean)
                   .map(p => previewPhone(p) || `${p} (invalid)`).join(', ')],
+                ...voterFields.map(f => [f.label, addForm.attrs[f.key] || '']),
                 ['Reason', addForm.reason.trim()],
                 ['Payment', paymentMethod],
                 ['Receipt', paymentProof ? paymentProof.name : ''],
@@ -371,10 +389,19 @@ export default function ITAdminDashboard({ onLogout }) {
         )}
 
         {/* ══════════════ EDIT STUDENT ══════════════ */}
-        {activeTab === 'edit' && <ITAdminStudentEdit />}
+        {activeTab === 'voters' && (
+          <VoterList
+            onEdit={(sid) => { setEditStudentId(sid); setActiveTab('edit'); }}
+            onRemove={!rosterFrozen ? (v) => { setRemoveForm({ ...removeForm, student_id: v.student_id }); setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`); setActiveTab('remove'); } : undefined}
+            onResetOtp={(sid) => { setEditStudentId(sid); setActiveTab('reset_otp'); }}
+          />
+        )}
+
+        {activeTab === 'edit' && <ITAdminStudentEdit initialStudentId={editStudentId} />}
+
 
         {/* ══════════════ RESET OTP LIMITS ══════════════ */}
-        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel />}
+        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel initialStudentId={editStudentId} />}
 
         {/* ══════════════ REMOVE STUDENT ══════════════ */}
         {activeTab === 'remove' && !rosterFrozen && (
@@ -503,6 +530,11 @@ export default function ITAdminDashboard({ onLogout }) {
                     Phone{(req.phones?.length || 1) > 1 ? 's' : ''}: {req.phones?.length ? req.phones.join(', ') : req.phone}
                   </p>
                 )}
+                {req.change_type === 'add' && req.attrs && Object.keys(req.attrs).length > 0 && (
+                  <div style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>
+                    {Object.entries(req.attrs).map(([k, v]) => <div key={k}><b>{k}:</b> {v}</div>)}
+                  </div>
+                )}
                 <p style={{ margin: '6px 0', fontSize: '13px', opacity: 0.8 }}>
                   <b>Reason:</b> {req.reason}
                 </p>
@@ -555,13 +587,14 @@ export default function ITAdminDashboard({ onLogout }) {
               {!rosterFrozen && (
                 <button style={greenBtn} onClick={() => setActiveTab('add')}>+ Add Student</button>
               )}
+              <button style={ghostBtn} onClick={() => setActiveTab('voters')}>Voters</button>
               <button style={ghostBtn} onClick={() => setActiveTab('edit')}>Edit Student</button>
               {!rosterFrozen && (
                 <button style={ghostBtn} onClick={() => setActiveTab('remove')}>Remove Student</button>
               )}
             </div>
             <RevealGroup text="Loading overview…">
-              <RosterStats />
+              <RosterStats onRegisteredClick={() => setActiveTab('voters')} />
               <RecentActivity />
             </RevealGroup>
           </div>

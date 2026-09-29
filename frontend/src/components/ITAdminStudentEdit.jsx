@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ContactChangePanel from './ContactChangePanel';
@@ -8,10 +8,11 @@ import {
   draftFromStudent, withNewPhoneRow, computeChanges, buildPayload, EVENT_LABELS, errMsg,
 } from '../studentEdit';
 import { regNo } from '../regNo';
+import api from '../api';
 
 // Standalone IT admin screen: form on one side, live summary on the other.
 // Uses the same backend endpoint and audit logic as the superadmin screen; layout is its own.
-export default function ITAdminStudentEdit() {
+export default function ITAdminStudentEdit({ initialStudentId = '' }) {
   const toast = useToast();
   const confirm = useConfirm();
   const roster = useRosterStatus();
@@ -24,6 +25,9 @@ export default function ITAdminStudentEdit() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [recent, setRecent] = useState([]);
+  const [voterFields, setVoterFields] = useState([]);
+
+  useEffect(() => { api.get('/admin/voter-fields').then(r => setVoterFields(r.data)).catch(() => {}); }, []);
 
   const changes = draft ? computeChanges(draft) : null;
   const canSave = draft && changes.hasChanges && !changes.errors.length && reason.trim().length >= 3 && !saving;
@@ -38,6 +42,13 @@ export default function ITAdminStudentEdit() {
     try { setRecent((await fetchEditHistory(sid)).slice(0, 5)); } catch { setRecent([]); }
   };
   const pick = (s) => { setDraft(draftFromStudent(s)); setReason(''); setError(''); setResults([]); setSearched(false); loadRecent(s.student_id); };
+  useEffect(() => {
+    if (!initialStudentId) return;
+    lookupStudents(initialStudentId).then(rows => { const s = rows.find(x => x.student_id === initialStudentId) || rows[0]; if (s) pick(s); }).catch(() => {});
+  }, [initialStudentId]);
+
+  const setAttr = (key, value) => setDraft(d => ({ ...d, attrs: { ...d.attrs, [key]: value } }));
+
   const setPhone = (key, patch) =>
     setDraft(d => ({ ...d, phones: d.phones.map(p => (p.key === key ? { ...p, ...patch } : p)) }));
 
@@ -97,6 +108,14 @@ export default function ITAdminStudentEdit() {
             <button type="button" className="itadmin-btn ghost" style={{ marginTop: 8 }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
               Add phone number
             </button>
+
+            {voterFields.map(f => (
+              <label key={f.key} style={{ ...lbl, marginTop: 12 }}>
+                {f.label}
+                <input className="itadmin-input" maxLength={60} value={draft.attrs[f.key] || ''} disabled={false}
+                  onChange={e => setAttr(f.key, e.target.value)} />
+              </label>
+            ))}
 
             <label style={{ ...lbl, marginTop: 14 }}>Reason (required)</label>
             <textarea className="itadmin-input" style={{ height: 80 }} value={reason} onChange={e => setReason(e.target.value)}

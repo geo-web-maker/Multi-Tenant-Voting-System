@@ -1320,7 +1320,7 @@ function AnalyticsBody() {
 
 /* ══════════════ ROSTER STATS (IT Admin landing view) ══════════════ */
 
-export function RosterStats() {
+export function RosterStats({ onRegisteredClick }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
@@ -1364,12 +1364,16 @@ export function RosterStats() {
         </span>
       </h4>
       <div style={statGrid}>
-        {cards.map(c => (
-          <div key={c.label} style={statCard}>
+        {cards.map(c => {
+          const clickable = c.label === 'Registered voters' && onRegisteredClick;
+          const body = <>
             <div style={{ fontSize: '24px', fontWeight: 800 }}>{c.value}</div>
             <div style={{ fontSize: '11px', opacity: 0.7 }}>{c.label}</div>
-          </div>
-        ))}
+          </>;
+          return clickable ? (
+            <button key={c.label} type="button" onClick={onRegisteredClick} style={{ ...statCard, textAlign: 'left', cursor: 'pointer', color: 'inherit', width: '100%' }}>{body}</button>
+          ) : <div key={c.label} style={statCard}>{body}</div>;
+        })}
       </div>
       <div style={barTrack}>
         <div style={{ width: `${data.turnout_pct}%`, height: '100%', background: 'var(--success)', borderRadius: '4px' }} />

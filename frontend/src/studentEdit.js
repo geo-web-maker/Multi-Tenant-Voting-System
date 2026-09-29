@@ -28,7 +28,8 @@ export function draftFromStudent(s) {
     original: s,
     full_name: s.full_name,
     new_student_id: s.student_id,
-    phones: s.phone_numbers.map((n, i) => ({ key: `o${i}`, index: i, original: n, value: n, removed: false })),
+    attrs: { ...(s.attrs || {}) },
+    phones: (s.phone_numbers || []).map((n, i) => ({ key: `o${i}`, index: i, original: n, value: n, removed: false })),
   };
 }
 
@@ -41,7 +42,7 @@ export const withNewPhoneRow = (d) => ({
 export function computeChanges(d) {
   const rows = [];
   const errors = [];
-  const ops = { change: [], remove: [], add: [] };
+  const ops = { change: [], remove: [], add: [], attrs: [] };
 
   const name = cleanName(d.full_name);
   if (!name) errors.push('Name cannot be empty.');
@@ -74,6 +75,22 @@ export function computeChanges(d) {
     }
   });
 
+  Object.keys(d.original.attrs || {}).forEach((key) => {
+    const from = d.original.attrs[key] || '';
+    const to = String(d.attrs?.[key] || '').trim();
+    if (from !== to) {
+      rows.push({ id: `attr:${key}`, label: key, from: from || null, to: to || null });
+      ops.attrs.push({ key, expected_old: from || null, value: to || null });
+    }
+  });
+  Object.keys(d.attrs || {}).filter(key => !(key in (d.original.attrs || {}))).forEach((key) => {
+    const to = String(d.attrs[key] || '').trim();
+    if (to) {
+      rows.push({ id: `attr:${key}`, label: key, from: null, to });
+      ops.attrs.push({ key, expected_old: null, value: to });
+    }
+  });
+
   const remaining = d.phones.filter((p) => !p.removed && (p.index !== null || p.value.trim())).length;
   const warnings = [];
   if (rows.length && remaining === 0) {
@@ -91,12 +108,14 @@ export function buildPayload(d, reason) {
     full_name: has('name') ? cleanName(d.full_name) : undefined,
     new_student_id: has('sid') ? d.new_student_id : undefined,
     phone_ops: [...ops.change, ...[...ops.remove].sort((a, b) => b.index - a.index), ...ops.add],
+    attr_ops: ops.attrs,
     reason: reason.trim(),
   };
 }
 
 export const EVENT_LABELS = {
   student_name_changed: 'Name changed',
+  student_attr_changed: 'Optional field changed',
   student_registration_number_changed: 'Registration number changed',
   phone_added: 'Phone added',
   phone_removed: 'Phone removed',

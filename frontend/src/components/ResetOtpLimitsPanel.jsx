@@ -88,7 +88,7 @@ function TypeaheadSearch({ placeholder, ariaLabel, fetcher, onPick, renderResult
  *
  * canOverrideCaps  — Chief / Deputy Chief Commissioner and superadmin may raise one person's cap.
  */
-export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
+export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialStudentId = '' }) {
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -97,6 +97,11 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!initialStudentId) return;
+    searchVoters(initialStudentId).then(rows => { const s = rows.find(x => x.student_id === initialStudentId) || rows[0]; if (s) setVoter({ student_id: s.student_id, full_name: s.full_name }); }).catch(() => {});
+  }, [initialStudentId]);
 
   const [cap, setCap] = useState({ kind: 'approver_daily', target: null, cap: '', reason: '' }); // target: { id, name, role }
   const [capBusy, setCapBusy] = useState(false);

@@ -8,10 +8,11 @@ import {
   draftFromStudent, withNewPhoneRow, computeChanges, buildPayload, EVENT_LABELS, errMsg,
 } from '../studentEdit';
 import { regNo } from '../regNo';
+import api from '../api';
 
 // Edit-student UI that lives INSIDE the superadmin "Student Changes" tab.
 // Changes apply immediately (no approval, no notifications); the audit history below is the control.
-export default function SuperAdminStudentEdit() {
+export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
   const toast = useToast();
   const confirm = useConfirm();
   const roster = useRosterStatus();
@@ -23,6 +24,7 @@ export default function SuperAdminStudentEdit() {
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [voterFields, setVoterFields] = useState([]);
 
   const [histQ, setHistQ] = useState('');
   const [history, setHistory] = useState([]);
@@ -39,7 +41,7 @@ export default function SuperAdminStudentEdit() {
     }
   }, [toast]);
 
-  useEffect(() => { loadHistory(''); }, [loadHistory]);
+  useEffect(() => { loadHistory(''); api.get('/admin/voter-fields').then(r => setVoterFields(r.data)).catch(() => {}); }, [loadHistory]);
 
   const search = async (e) => {
     e.preventDefault();
@@ -77,6 +79,11 @@ export default function SuperAdminStudentEdit() {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!initialStudentId) return;
+    lookupStudents(initialStudentId).then(rows => { const s = rows.find(x => x.student_id === initialStudentId) || rows[0]; if (s) pick(s); }).catch(() => {});
+  }, [initialStudentId]);
 
   const setPhone = (key, patch) =>
     setDraft(d => ({ ...d, phones: d.phones.map(p => (p.key === key ? { ...p, ...patch } : p)) }));
@@ -140,6 +147,14 @@ export default function SuperAdminStudentEdit() {
           <button type="button" style={{ ...ghostBtn, marginTop: '8px' }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
             Add phone number
           </button>
+
+          {voterFields.map(f => (
+            <label key={f.key} style={{ ...field, marginTop: 12 }}>
+              <span style={lbl}>{f.label}</span>
+              <input style={inp} maxLength={60} value={draft.attrs[f.key] || ''}
+                onChange={e => setDraft({ ...draft, attrs: { ...draft.attrs, [f.key]: e.target.value } })} />
+            </label>
+          ))}
 
           <div style={review}>
             <b style={{ fontSize: '13px' }}>Review: Current Value Next to New Value</b>
