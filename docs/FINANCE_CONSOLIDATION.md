@@ -1,0 +1,24 @@
+# Candidate payments moved to the Financial Controller
+
+**Rule:** clearing payments is done in the Financial Controller portal; the Commission portal only votes. One person may hold both roles, and each role acts through its own login.
+
+## What changed
+- `POST /admin/applications/{id}/finance-clear` and `/finance-reject` now accept the **Financial Controller only**
+  (body: `financial_controller_id`, `reason`; reject needs a reason). Commissioners, IT admins, overseers and the
+  superadmin get 403. The superadmin keeps `/superadmin/applications/{id}/force-finance-clear` (still logged).
+- One person may hold both roles. Each role has its own login and portal, so the session says which system is
+  acting: payments need the Financial Controller session, votes need the Commission session. When a dual-role
+  person clears or rejects a payment, the audit entry is marked `decider_also_commissioner`.
+- Audit entries for clear/reject now carry the receipt URL, fee and payment method.
+- Financial Controller portal: **Voter payments** and **Candidate payments** tabs, each with Pending/Approved/Denied views.
+  Denying a voter request now needs a reason, same as rejecting a candidate payment.
+- The Financial Controller sees receipts but not which commissioner voted how.
+- `set-finance-commissioner` returns 410; "Set/Clear Finance" buttons and the "Finance" badge are gone.
+- Unchanged: the upload bypass (the one path that skips the controller).
+
+## Rollout
+1. Deploy backend + frontend.
+2. `python migrate_retire_finance_commissioner.py` (dry run: lists holders, waiting applications, and orgs with no
+   Financial Controller), then rerun with `--apply`.
+3. Applications that were waiting on a commissioner need no data change: they appear in the controller's
+   **Candidate payments → Awaiting** list.

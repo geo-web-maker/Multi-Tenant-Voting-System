@@ -30,11 +30,7 @@ export default function CommissionDashboard({ onLogout }) {
   const [showDenyBox, setShowDenyBox]   = useState({});  // { app_id: bool }
   const [voting, setVoting]             = useState({});  // { app_id: bool }
   const [studentChanges, setStudentChanges] = useState([]);
-  const [commissioners, setCommissioners] = useState([]);
   const [electionStatus, setElectionStatus] = useState(null);
-  const [financeClearing, setFinanceClearing] = useState({});
-  const [financeDenyReasons, setFinanceDenyReasons] = useState({});  // { app_id: string }
-  const [showFinanceDenyBox, setShowFinanceDenyBox] = useState({});  // { app_id: bool }
   const [searchQuery, setSearchQuery] = useState('');
   const [liveResults, setLiveResults] = useState(null);
   // Chief/Deputy-Commissioner-only controls (exception grants, certification)
@@ -66,7 +62,6 @@ export default function CommissionDashboard({ onLogout }) {
           api.get('/election-status').catch(() => ({ data: null })),
         ]);
         setApplications(appsRes.data);
-        setCommissioners(commRes.data);
         setTotalCommissioners(commRes.data.length);
         if (policyRes.data) setApprovalPolicy(policyRes.data.policy);
         setElectionStatus(statusRes.data);
@@ -122,53 +117,11 @@ export default function CommissionDashboard({ onLogout }) {
     }
   };
 
-  const castFinanceClear = async (appId) => {
-    if (!commissionerId.trim()) {
-      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
-      return;
-    }
-    setFinanceClearing(prev => ({ ...prev, [appId]: true }));
-    try {
-      await api.post(`/admin/applications/${appId}/finance-clear`, {
-        commissioner_id: commissionerId,
-      });
-      await fetchAll();
-    } catch (e) {
-      toast(e.response?.data?.detail || 'Finance clearance failed.', { kind: 'error' })
-    } finally {
-      setFinanceClearing(prev => ({ ...prev, [appId]: false }));
-    }
-  };
-
-  const castFinanceReject = async (appId) => {
-    if (!commissionerId.trim()) {
-      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
-      return;
-    }
-    const reason = (financeDenyReasons[appId] || '').trim();
-    if (!reason) {
-      toast('Please enter a reason for rejection.', { kind: 'error' });
-      return;
-    }
-    setFinanceClearing(prev => ({ ...prev, [appId]: true }));
-    try {
-      await api.post(`/admin/applications/${appId}/finance-reject`, {
-        commissioner_id: commissionerId,
-        reason,
-      });
-      await fetchAll();
-    } catch (e) {
-      toast(e.response?.data?.detail || 'Finance rejection failed.', { kind: 'error' })
-    } finally {
-      setFinanceClearing(prev => ({ ...prev, [appId]: false }));
-    }
-  };
-
   // ── Helpers ──
 
   // The vetting window (set on the admin Timeline tab) is when commissioners may cast an
-  // approve/deny vote. Finance clearance is separate and not gated by it, so the Finance
-  // Commissioner can clear applications any time and they'll be ready the moment vetting opens.
+  // approve/deny vote. Payment clearance is separate (the Financial Controller's job, not gated by
+  // the window), so applications are ready the moment vetting opens.
   const vettingOpen = electionStatus ? electionStatus.vetting_phase_open !== false : true;
   const vettingNotice = vettingNoticeText(electionStatus);
 
@@ -187,10 +140,6 @@ export default function CommissionDashboard({ onLogout }) {
       total:   Object.keys(votes).length,
     };
   };
-
-  const isFinanceCommissioner = commissioners.some(
-    c => c.student_id === commissionerId && c.is_finance_commissioner
-  );
 
   const majorityRequired = (total) => Math.floor(total / 2) + 1;
 
@@ -421,61 +370,13 @@ export default function CommissionDashboard({ onLogout }) {
                 </div>
               )}
 
-              {/* ── Pending: finance-clear gate, then approve / deny actions ── */}
+              {/* ── Pending: waits for the Financial Controller's payment clearance, then approve / deny ── */}
               {app.status === 'pending' && !app.superadmin_override && (
                 <div style={{ marginTop: '14px' }}>
                   {!app.finance_cleared ? (
-                    isFinanceCommissioner ? (
-                      <>
-                        {showFinanceDenyBox[app._id] && (
-                          <div style={{ marginBottom: '10px' }}>
-                            <textarea
-                              style={{ ...inp, height: '70px', resize: 'vertical' }}
-                              placeholder="Reason for rejection (required)…"
-                              value={financeDenyReasons[app._id] || ''}
-                              onChange={e => setFinanceDenyReasons(prev => ({ ...prev, [app._id]: e.target.value }))}
-                            />
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                          <button
-                            style={{ ...greenBtn, flex: 1 }}
-                            disabled={financeClearing[app._id]}
-                            onClick={() => castFinanceClear(app._id)}
-                          >
-                            {financeClearing[app._id] ? 'Clearing…' : <>Clear for Finance</>}
-                          </button>
-                          {showFinanceDenyBox[app._id] ? (
-                            <button
-                              style={{ ...redBtn, flex: 1 }}
-                              disabled={financeClearing[app._id]}
-                              onClick={() => castFinanceReject(app._id)}
-                            >
-                              {financeClearing[app._id] ? 'Rejecting…' : <>Confirm Reject</>}
-                            </button>
-                          ) : (
-                            <button
-                              style={{ ...ghostBtn, flex: 1, color: '#e74c3c', borderColor: '#e74c3c' }}
-                              onClick={() => setShowFinanceDenyBox(prev => ({ ...prev, [app._id]: true }))}
-                            >
-                              Reject
-                            </button>
-                          )}
-                          {showFinanceDenyBox[app._id] && (
-                            <button
-                              style={ghostBtn}
-                              onClick={() => setShowFinanceDenyBox(prev => ({ ...prev, [app._id]: false }))}
-                            >
-                              Cancel
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <div style={lockedNote}>
-                        Awaiting Finance Commissioner clearance before voting can open.
-                      </div>
-                    )
+                    <div style={lockedNote}>
+                      Awaiting Financial Controller clearance before voting can open.
+                    </div>
                   ) : myVote ? (
                     <div style={myVoteRow(myVote)}>
                       {myVote === 'approve'

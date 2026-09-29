@@ -501,18 +501,6 @@ const handleSetRole = async (studentId, role) => {
   } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
 };
 
-const handleSetFinanceCommissioner = async (studentId) => {
-  try {
-    await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-finance-commissioner`);
-    fetchCommissioners();
-  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
-};
-
-const handleClearFinanceCommissioner = async (studentId) => {
-  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-finance-commissioner`);
-  fetchCommissioners();
-};
-
 // ── Financial Controllers ──
 
 const handleToggleFinancialController = async (studentId) => {
@@ -1149,11 +1137,6 @@ const handleSuperAdminRemoveStudent = async () => {
                         Deputy Chief
                         </span>
                       )}
-                      {c.is_finance_commissioner && (
-                        <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                          Finance
-                        </span>
-                      )}
                     </div>
                     <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
                     <br />
@@ -1208,19 +1191,6 @@ const handleSuperAdminRemoveStudent = async () => {
                         onClick={() => handleSetDeputyChief(c.student_id)}
                         style={{ ...ghostBtn, fontSize: '12px' }}>
                         Set Deputy
-                      </button>
-                    )}
-                    {c.is_finance_commissioner ? (
-                      <button
-                        onClick={() => handleClearFinanceCommissioner(c.student_id)}
-                        style={{ ...ghostBtn, color: 'var(--success)', borderColor: 'var(--success)', fontSize: '12px' }}>
-                        Clear Finance
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleSetFinanceCommissioner(c.student_id)}
-                        style={{ ...ghostBtn, fontSize: '12px' }}>
-                        Set Finance
                       </button>
                     )}
                   </div>

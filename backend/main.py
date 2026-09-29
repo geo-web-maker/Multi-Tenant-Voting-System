@@ -702,11 +702,12 @@ class CommissionerVote(BaseModel):
     reason: str = ""
 
 class FinanceClear(BaseModel):
-    commissioner_id: str   # must belong to the voter flagged is_finance_commissioner
+    financial_controller_id: str   # must belong to a voter flagged is_financial_controller
+    reason: str = ""               # optional note on a clearance; kept on the application + audit log
 
 class FinanceReject(BaseModel):
-    commissioner_id: str   # must belong to the voter flagged is_finance_commissioner
-    reason: str
+    financial_controller_id: str   # must belong to a voter flagged is_financial_controller
+    reason: str                    # required
     
 
 class ITAdminStudentAdd(BaseModel):
@@ -1743,6 +1744,47 @@ def bind_identity(request: Request, claimed_id: str, label: str = "account") -> 
             detail=f"You can only act as your own {label}.",
         )
     return claimed_id
+
+
+async def require_payment_controller(request: Request, claimed_id: str, verb: str) -> dict:
+    """
+    Gate for clearing / rejecting a CANDIDATE's payment. Only the Financial Controller may do it.
+
+    Candidate payments used to be cleared by a commissioner holding "finance-clearing power", who then
+    also voted on the same application, so one person confirmed the money and judged the candidate.
+    This gate keeps the two apart:
+      * the token must be a Financial Controller session (a superadmin uses the logged
+        /superadmin/applications/{id}/force-finance-clear override instead),
+      * the body's id must be the token's own id (bind_identity),
+      * the voter must still hold is_financial_controller.
+    One person MAY hold both roles (e.g. a small commission). Each role has its own login and portal, so
+    the session's role says which system is acting; clearing payments needs the Financial Controller
+    session, voting needs the Commission session. Returns the voter document.
+    """
+    if current_role(request) != "financial_controller":
+        raise HTTPException(403, f"Only the Financial Controller can {verb} a candidate's payment.")
+    bind_identity(request, claimed_id, "Financial Controller account")
+    fc = await db.voters.find_one(org_query(request, {
+        **get_forgiving_filter(claimed_id),
+        "is_financial_controller": True,
+    }))
+    if not fc:
+        raise HTTPException(403, "Not a registered Financial Controller.")
+    return fc
+
+
+def _payment_audit(app_doc: dict, fc: dict | None = None) -> dict:
+    """Receipt details copied into the audit entry, so the log alone shows what the decision rested on."""
+    d = {
+        "student_id":        app_doc.get("student_id", ""),
+        "position_id":       app_doc.get("position_id", ""),
+        "fee_required":      app_doc.get("fee_required") or 0,
+        "payment_method":    app_doc.get("payment_method", ""),
+        "payment_proof_url": app_doc.get("payment_proof_url", ""),
+    }
+    if fc and fc.get("is_commissioner"):
+        d["decider_also_commissioner"] = True     # allowed, but visible in the log
+    return d
 
 
 async def _is_chief_or_deputy(request: Request, admin: dict) -> bool:
@@ -4735,6 +4777,12 @@ async def list_applications(request: Request, status: str = None):
             a["position_order"] = 0
         apps.append(a)
     apps.sort(key=lambda x: (x.get("position_order", 0), -x["submitted_at"].timestamp() if x.get("submitted_at") else 0))
+    if current_role(request) == "financial_controller":
+        # Payment and judgement stay separate both ways: the controller sees the money side of every
+        # application but not which commissioner voted how (the raw maps are keyed by commissioner).
+        for a in apps:
+            a.pop("votes", None)
+            a.pop("removal_votes", None)
     return apps
 
 # =============================================================================
@@ -4754,7 +4802,7 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     if app_doc.get("status") in ("approved", "denied", "removed"):
         raise HTTPException(400, "This application is already resolved.")
     if not app_doc.get("finance_cleared"):
-        raise HTTPException(400, "Awaiting Finance Commissioner clearance before voting can open.")
+        raise HTTPException(400, "Awaiting Financial Controller clearance before voting can open.")
     # Commissioners may only cast approve/deny votes inside the scheduled vetting window
     # (set on the Timeline tab); Finance clearance above is deliberately exempt from this.
     await assert_phase_open(request, "vetting")
@@ -4836,9 +4884,9 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
 @app.post("/admin/applications/{app_id}/finance-clear")
 async def finance_clear_application(app_id: str, data: FinanceClear, request: Request):
     """
-    The Finance Commissioner verifies the candidate's payment status and clears
-    the application for voting. No commissioner (including her) can cast a vote
-    on this application until this is done.
+    The Financial Controller verifies the candidate's payment and clears the
+    application for voting. No commissioner can cast a vote on this application
+    until this is done, and no commissioner can do it for them.
     """
     oid = parse_oid(app_id, "application id")
     app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
@@ -4849,15 +4897,9 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
-    bind_identity(request, data.commissioner_id, "commissioner account")
-
-    finance_commissioner = await db.voters.find_one(org_query(request, {
-        **get_forgiving_filter(data.commissioner_id),
-        "is_commissioner": True,
-        "is_finance_commissioner": True
-    }))
-    if not finance_commissioner:
-        raise HTTPException(403, "Only the designated Finance Commissioner can clear applications.")
+    fc = await require_payment_controller(request, data.financial_controller_id, "clear")
+    fc_id = fc["student_id"]
+    note = data.reason.strip()
 
     # Atomic guard: fold the "not already cleared / not already resolved"
     # check into the update filter itself instead of trusting the read
@@ -4875,13 +4917,16 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
         }),
         {"$set": {
             "finance_cleared": True,
-            "finance_cleared_by": data.commissioner_id,
-            "finance_cleared_at": datetime.utcnow()
+            "finance_cleared_by": fc_id,
+            "finance_cleared_at": datetime.utcnow(),
+            **({"finance_clear_note": note} if note else {}),
         }}
     )
     if result.matched_count == 0:
         raise HTTPException(400, "This application was already resolved or finance-cleared by someone else.")
-    await log_action("application_finance_cleared", data.commissioner_id, {"app_id": app_id}, org_id=request.state.org_id)
+    await log_action("application_finance_cleared", fc_id,
+                     {"app_id": app_id, **_payment_audit(app_doc, fc), **({"reason": note} if note else {})},
+                     org_id=request.state.org_id)
 
     # Nomination/vetting date comes from the "vetting" phase on the admin Timeline, not a
     # hardcoded string, so it always matches whatever dates are actually configured this round.
@@ -4901,14 +4946,14 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
         f"{org}: Your payment has been confirmed. You are invited for nomination/vetting for {pos}"
         + (f" on {when}." if when else " — the date will be communicated once the timeline is set.")))
-    logger.info(f"Application {app_id} finance-cleared by {data.commissioner_id}.")
+    logger.info(f"Application {app_id} finance-cleared by {fc_id}.")
     return {"status": "finance_cleared"}
 
 
 @app.post("/admin/applications/{app_id}/finance-reject")
 async def finance_reject_application(app_id: str, data: FinanceReject, request: Request):
     """
-    The Finance Commissioner rejects the candidate's payment/receipt with a
+    The Financial Controller rejects the candidate's payment/receipt with a
     required reason. This resolves the application as denied, mirroring the
     commission's deny flow but for the finance gate specifically.
     """
@@ -4924,15 +4969,8 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared and can no longer be finance-rejected.")
 
-    bind_identity(request, data.commissioner_id, "commissioner account")
-
-    finance_commissioner = await db.voters.find_one(org_query(request, {
-        **get_forgiving_filter(data.commissioner_id),
-        "is_commissioner": True,
-        "is_finance_commissioner": True
-    }))
-    if not finance_commissioner:
-        raise HTTPException(403, "Only the designated Finance Commissioner can reject applications.")
+    fc = await require_payment_controller(request, data.financial_controller_id, "reject")
+    fc_id = fc["student_id"]
 
     # Same atomic-guard pattern as finance_clear_application: fold the
     # "not already cleared / not already resolved" check into the update
@@ -4946,7 +4984,7 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
         {"$set": {
             "status": "denied",
             "finance_rejected": True,
-            "finance_rejected_by": data.commissioner_id,
+            "finance_rejected_by": fc_id,
             "finance_rejected_at": datetime.utcnow(),
             "finance_rejection_reason": data.reason.strip(),
         }}
@@ -4961,15 +4999,16 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
     # standard "Not approved".)
     await _record_denial_snapshot(app_doc, request.state.org_id)
 
-    await log_action("application_finance_rejected", data.commissioner_id,
-                      {"app_id": app_id, "reason": data.reason.strip()}, org_id=request.state.org_id)
+    await log_action("application_finance_rejected", fc_id,
+                      {"app_id": app_id, "reason": data.reason.strip(), **_payment_audit(app_doc, fc)},
+                      org_id=request.state.org_id)
     fee = app_doc.get("fee_required") or 0
     reason = data.reason.strip()[:80]
     await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
         f"{org}: Your nomination for {pos} was rejected because of your payment: {reason}."
         + (f" The required amount is {fmt_ugx(fee)}; incomplete payments are not accepted." if fee else "")
         + " Contact the Electoral Commission."))
-    logger.info(f"Application {app_id} finance-rejected by {data.commissioner_id}.")
+    logger.info(f"Application {app_id} finance-rejected by {fc_id}.")
     return {"status": "denied"}
 
 
@@ -4988,7 +5027,7 @@ async def list_commissioners_for_admins(request: Request):
     async for v in db.voters.find(
         org_query(request, {"is_commissioner": True}),
         {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1,
-         "is_deputy_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1},
+         "is_deputy_chief_commissioner": 1, "commissioner_role": 1},
     ):
         result.append(v)
     return result
@@ -5290,7 +5329,7 @@ async def list_commissioners(request: Request):
     result = []
     async for v in db.voters.find(
         org_query(request, {"is_commissioner": True}),
-        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_deputy_chief_commissioner": 1, "is_finance_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_deputy_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
     ):
         result.append(v)
     return result
@@ -5373,19 +5412,11 @@ async def get_chief_commissioner(request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-finance-commissioner")
 async def set_finance_commissioner(student_id: str, request: Request):
-    """Designate one commissioner as the Finance Commissioner (Treasurer).
-    Only one at a time — mirrors the chief-commissioner exclusivity pattern."""
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
-    if not voter:
-        raise HTTPException(404, "Voter not found.")
-    if not voter.get("is_commissioner"):
-        raise HTTPException(400, "This person is not a commissioner.")
-    await db.voters.update_one(
-        {"_id": voter["_id"]},
-        {"$set": {"is_finance_commissioner": True}}
-    )
-    await log_action("finance_commissioner_set", current_actor(request), {"student_id": student_id}, org_id=request.state.org_id)
-    return {"student_id": student_id, "is_finance_commissioner": True}
+    """RETIRED. Candidate payments are cleared by the Financial Controller, so commissioners can no
+    longer be given finance-clearing power (they vote on the same applications). Grant the
+    Financial Controller role instead: /superadmin/financial-controllers/{student_id}/toggle."""
+    raise HTTPException(410, "Commissioners can no longer clear payments. Make this person a Financial "
+                             "Controller instead (a different person from the commissioners).")
 
 
 @app.post("/superadmin/commissioners/{student_id:path}/clear-finance-commissioner")
@@ -5400,7 +5431,8 @@ async def clear_finance_commissioner(student_id: str, request: Request):
 
 @app.get("/superadmin/finance-commissioner")
 async def get_finance_commissioner(request: Request):
-    """Returns all current finance commissioners (there can be more than one)."""
+    """LEGACY: lists anyone still carrying the retired is_finance_commissioner flag (it no longer grants
+    anything). Empty once migrate_retire_finance_commissioner.py --apply has been run."""
     result = []
     async for fc in db.voters.find(
         org_query(request, {"is_finance_commissioner": True}),
@@ -5922,6 +5954,8 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     await assert_roster_unfrozen(request)
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
+    if data.decision == "deny" and not data.reason.strip():
+        raise HTTPException(400, "A reason is required to deny a request.")
 
     oid = parse_oid(change_id, "change id")
     change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
@@ -6053,12 +6087,14 @@ async def list_financial_controllers(request: Request):
 
 @app.post("/superadmin/financial-controllers/{student_id:path}/toggle")
 async def toggle_financial_controller(student_id: str, request: Request):
-    """Grant or revoke Financial Controller status for any voter. Independent
-    of is_commissioner — this role never touches candidate business."""
+    """Grant or revoke Financial Controller status. The Financial Controller clears voter-register
+    payments AND candidate payments. It may be held together with the commissioner role: the two
+    portals and logins stay separate."""
     voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     new_val = not voter.get("is_financial_controller", False)
+
     await db.voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_financial_controller": new_val, **(await _invalidate_sessions(voter["_id"]))}}

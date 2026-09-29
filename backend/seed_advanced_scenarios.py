@@ -200,12 +200,10 @@ async def seed_nomtest_roles(client: httpx.AsyncClient, token: str) -> dict:
         print(f"  [nomtest] commissioner {sid} / {email} / password={SEED_PASSWORD}")
 
     if commissioner_emails:
-        chief, deputy, finance_comm = COMMISSIONER_IDS[0], COMMISSIONER_IDS[1], COMMISSIONER_IDS[2]
+        chief, deputy = COMMISSIONER_IDS[0], COMMISSIONER_IDS[1]
         await client.post(f"{API_BASE}/superadmin/commissioners/{chief}/set-chief", headers=headers)
         await client.post(f"{API_BASE}/superadmin/commissioners/{deputy}/set-deputy-chief", headers=headers)
-        await client.post(f"{API_BASE}/superadmin/commissioners/{finance_comm}/set-finance-commissioner",
-                           headers=headers)
-        print(f"  [nomtest] chief={chief} deputy={deputy} finance-commissioner={finance_comm}")
+        print(f"  [nomtest] chief={chief} deputy={deputy}  (candidate payments are cleared by the Financial Controller)")
 
     await client.post(f"{API_BASE}/superadmin/it-admins/{IT_ADMIN_ID}/toggle", headers=headers)
     it_email = "itadmin@nomtest.local"
@@ -269,9 +267,10 @@ async def find_application_id(client: httpx.AsyncClient, headers: dict, student_
     return None
 
 
-async def finance_clear(client: httpx.AsyncClient, headers: dict, app_id: str, finance_comm_id: str):
+async def finance_clear(client: httpx.AsyncClient, headers: dict, app_id: str, financial_controller_id: str):
+    """`headers` must be the Financial Controller's own session: commissioners and the superadmin are refused."""
     r = await client.post(f"{API_BASE}/admin/applications/{app_id}/finance-clear",
-                           json={"commissioner_id": finance_comm_id}, headers=headers)
+                           json={"financial_controller_id": financial_controller_id}, headers=headers)
     if r.status_code >= 400:
         print(f"  [nomtest] finance-clear failed for {app_id}: {r.status_code} {r.text[:150]}")
 
@@ -306,10 +305,11 @@ async def seed_nomtest_applications(client: httpx.AsyncClient, token: str, posit
     app_sg = await find_application_id(client, app_headers, APPLICANT_IDS["secgen"])
     app_tr = await find_application_id(client, app_headers, APPLICANT_IDS["treasurer"])
 
-    finance_comm_id = COMMISSIONER_IDS[2]
+    fc_token = await login_role(client, NOMTEST_SLUG, finance_email)
+    fc_headers = admin_headers(fc_token, NOMTEST_SLUG)
     for app_id in (app_a, app_b, app_sg, app_tr):
         if app_id:
-            await finance_clear(client, app_headers, app_id, finance_comm_id)
+            await finance_clear(client, fc_headers, app_id, FINANCE_CONTROLLER_ID)
 
     # President A: 2 of 5 commissioners approved — short of the 3-vote
     # majority. Left for you to log in as a 3rd commissioner and decide it.

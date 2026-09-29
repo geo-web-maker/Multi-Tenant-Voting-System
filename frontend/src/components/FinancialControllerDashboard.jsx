@@ -9,18 +9,40 @@ import ReceiptLink from './ReceiptLink';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 
+// All money in one place: voter-register payments (IT Admin add/remove requests) and candidate
+// nomination payments. Commissioners no longer clear payments, so whoever confirms the money never
+// votes on the candidate.
+
+const SECTION_IDS = ['voters', 'candidates'];
+const SHARED_IDS = SHARED_TAB_DEFS.map(t => t.id);
+
+// Same three views for both sections; only the wording differs.
+const STATUS_LABELS = {
+  voters:     { pending: 'Pending',  approved: 'Approved', denied: 'Denied' },
+  candidates: { pending: 'Awaiting', approved: 'Cleared',  denied: 'Rejected' },
+};
+
+const money = (n) => `UGX ${Number(n).toLocaleString('en-UG')}`;
+const shortDate = (d) => (d ? new Date(d).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 
 export default function FinancialControllerDashboard({ onLogout }) {
   const toast = useToast();
 
-  const [activeTab, setActiveTab]     = usePersistedTab('financial_controller', 'pending');
-  const [changes, setChanges]         = useState([]);
-  const [loading, setLoading]         = useState(false);
-  const [lastSynced, markSynced]      = useLastSynced();
-  const [fcId, setFcId]               = useState('');
-  const [reasons, setReasons]         = useState({});   // { change_id: string }
-  const [showReasonBox, setShowReasonBox] = useState({}); // { change_id: bool }
-  const [deciding, setDeciding]       = useState({});   // { change_id: bool }
+  const [rawTab, setActiveTab]      = usePersistedTab('financial_controller', 'voters');
+  const [statusView, setStatusView] = usePersistedTab('financial_controller_status', 'pending');
+  const [changes, setChanges]       = useState([]);   // voter-register requests
+  const [apps, setApps]             = useState([]);   // candidate applications (payment side only)
+  const [loading, setLoading]       = useState(false);
+  const [lastSynced, markSynced]    = useLastSynced();
+  const [fcId, setFcId]             = useState('');
+  const [reasons, setReasons]       = useState({});   // { id: string }
+  const [showReasonBox, setShowReasonBox] = useState({}); // { id: bool }
+  const [deciding, setDeciding]     = useState({});   // { id: bool }
+
+  // Older sessions stored 'pending' / 'approved' / 'denied' as the tab; fall back to the voter tab.
+  const activeTab = SECTION_IDS.includes(rawTab) || SHARED_IDS.includes(rawTab) ? rawTab : 'voters';
+  const isSection = SECTION_IDS.includes(activeTab);
+  const view = STATUS_LABELS.voters[statusView] ? statusView : 'pending';
 
   // On mount — figure out who this Financial Controller is from sessionStorage
   useEffect(() => {
@@ -32,11 +54,16 @@ export default function FinancialControllerDashboard({ onLogout }) {
   const fetchAll = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const res = await api.get('/admin/student-changes');
-      setChanges(res.data);
-      markSynced();
-    } catch (e) {
-      console.error('Fetch error:', e);
+      // Independent calls: one failing must not blank the other list.
+      const [ch, ap] = await Promise.allSettled([
+        api.get('/admin/student-changes'),
+        api.get('/admin/applications'),
+      ]);
+      if (ch.status === 'fulfilled') setChanges(ch.value.data);
+      else console.error('Fetch error (voter requests):', ch.reason);
+      if (ap.status === 'fulfilled') setApps(ap.value.data);
+      else console.error('Fetch error (candidate payments):', ap.reason);
+      if (ch.status === 'fulfilled' || ap.status === 'fulfilled') markSynced();
     } finally {
       if (!silent) setLoading(false);
     }
@@ -47,48 +74,92 @@ export default function FinancialControllerDashboard({ onLogout }) {
 
   // ── Decisions ──
 
-  const decide = async (changeId, decision) => {
-    if (!fcId.trim()) {
-      toast('Your Financial Controller ID was not found in this session. Please log out and log in again.', { kind: 'error' });
-      return;
-    }
-    setDeciding(prev => ({ ...prev, [changeId]: true }));
+  const missingId = () => {
+    if (fcId.trim()) return false;
+    toast('Your Financial Controller ID was not found in this session. Please log out and log in again.', { kind: 'error' });
+    return true;
+  };
+
+  // A denial / rejection needs a reason (server-enforced too); open the box instead of failing silently.
+  const needReason = (id, what) => {
+    if ((reasons[id] || '').trim()) return false;
+    setShowReasonBox(prev => ({ ...prev, [id]: true }));
+    toast(`Please enter a reason for ${what}.`, { kind: 'error' });
+    return true;
+  };
+
+  const run = async (id, request, failMessage) => {
+    setDeciding(prev => ({ ...prev, [id]: true }));
     try {
-      await api.post(`/admin/student-changes/${changeId}/decide`, {
-        financial_controller_id: fcId,
-        decision,
-        reason: reasons[changeId] || '',
-      });
-      setShowReasonBox(prev => ({ ...prev, [changeId]: false }));
+      await request();
+      setShowReasonBox(prev => ({ ...prev, [id]: false }));
+      setReasons(prev => ({ ...prev, [id]: '' }));
       await fetchAll();
     } catch (e) {
-      toast(e.response?.data?.detail || 'Failed to record decision.', { kind: 'error' });
+      toast(e.response?.data?.detail || failMessage, { kind: 'error' });
     } finally {
-      setDeciding(prev => ({ ...prev, [changeId]: false }));
+      setDeciding(prev => ({ ...prev, [id]: false }));
     }
+  };
+
+  const decideVoterRequest = async (changeId, decision) => {
+    if (missingId()) return;
+    if (decision === 'deny' && needReason(changeId, 'denying this request')) return;
+    await run(changeId, () => api.post(`/admin/student-changes/${changeId}/decide`, {
+      financial_controller_id: fcId,
+      decision,
+      reason: (reasons[changeId] || '').trim(),
+    }), 'Failed to record decision.');
+  };
+
+  const decideCandidatePayment = async (appId, verb) => {
+    if (missingId()) return;
+    if (verb === 'reject' && needReason(appId, 'rejecting this payment')) return;
+    await run(appId, () => api.post(`/admin/applications/${appId}/${verb === 'clear' ? 'finance-clear' : 'finance-reject'}`, {
+      financial_controller_id: fcId,
+      reason: (reasons[appId] || '').trim(),
+    }), verb === 'clear' ? 'Payment clearance failed.' : 'Payment rejection failed.');
   };
 
   // ── Filtered lists ──
 
-  const pending  = changes.filter(c => c.status === 'pending');
-  const approved = changes.filter(c => c.status === 'approved');
-  const denied   = changes.filter(c => c.status === 'denied');
-
-  const listFor = (tab) => {
-    if (tab === 'pending')  return pending;
-    if (tab === 'approved') return approved;
-    if (tab === 'denied')   return denied;
-    return [];
+  const voterLists = {
+    pending:  changes.filter(c => c.status === 'pending'),
+    approved: changes.filter(c => c.status === 'approved'),
+    denied:   changes.filter(c => c.status === 'denied'),
+  };
+  const candidateLists = {
+    pending:  apps.filter(a => a.status === 'pending' && !a.finance_cleared),
+    approved: apps.filter(a => a.finance_cleared),
+    denied:   apps.filter(a => a.finance_rejected),
   };
 
   const tabs = [
-    { id: 'pending',  label: 'Pending',  count: pending.length },
-    { id: 'approved', label: 'Approved', count: approved.length },
-    { id: 'denied',   label: 'Denied',   count: denied.length },
+    { id: 'voters',     label: 'Voter payments',     count: voterLists.pending.length },
+    { id: 'candidates', label: 'Candidate payments', count: candidateLists.pending.length },
     ...SHARED_TAB_DEFS,
   ];
 
-  const currentList = listFor(activeTab);
+  const lists = activeTab === 'candidates' ? candidateLists : voterLists;
+  const labels = STATUS_LABELS[activeTab] || STATUS_LABELS.voters;
+  const currentList = isSection ? lists[view] : [];
+
+  // Reason box + shared "reason" control used by both card types.
+  const reasonBox = (id, placeholder) => showReasonBox[id] && (
+    <div style={{ marginBottom: '10px' }}>
+      <textarea
+        style={{ ...inp, height: '70px', resize: 'vertical' }}
+        placeholder={placeholder}
+        value={reasons[id] || ''}
+        onChange={e => setReasons(prev => ({ ...prev, [id]: e.target.value }))}
+      />
+    </div>
+  );
+  const reasonToggle = (id) => (
+    <button style={ghostBtn} onClick={() => setShowReasonBox(prev => ({ ...prev, [id]: !prev[id] }))}>
+      {showReasonBox[id] ? 'Hide reason' : '+ Add reason'}
+    </button>
+  );
 
   return (
     <div style={outerWrap} className="outer-wrap">
@@ -97,7 +168,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         {/* ── Header ── */}
         <AdminHeader
           title="Financial Controller"
-          subtitle="Verify payment status and decide on student register change requests"
+          subtitle="Verify voter and candidate payments. Every clearance and rejection is logged."
           lastSynced={lastSynced}
           onRefresh={() => fetchAll()}
           refreshing={loading}
@@ -112,6 +183,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
             </p>
             <div style={{ display: 'flex', gap: '10px' }}>
               <input
+                data-fcid-input
                 style={{ ...inp, flex: 1 }}
                 placeholder="e.g. 22/U/IED/1086/GV"
                 onBlur={e => {
@@ -150,18 +222,41 @@ export default function FinancialControllerDashboard({ onLogout }) {
         <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
         <div style={{ marginBottom: '20px' }} />
 
-        {/* ── Empty state ── */}
-        {/* Only for the request-queue tabs — shared tabs (Analytics/Activity Log/Chain Verify)
-            render their own content via SharedTabPanels and have no "list" of their own,
-            so currentList is always [] there too; without this guard the "No X requests"
-            banner incorrectly appeared above that content on every shared tab. */}
-        {['pending', 'approved', 'denied'].includes(activeTab) && currentList.length === 0 && !loading && (
-          <div style={emptyState}>
-            <p style={{ opacity: 0.5 }}>No {activeTab} requests.</p>
-          </div>
+        {/* ── Pending / Approved / Denied view (both money tabs) ── */}
+        {isSection && (
+          <>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+              {['pending', 'approved', 'denied'].map(v => (
+                <button
+                  key={v}
+                  style={pill(view === v)}
+                  onClick={() => setStatusView(v)}
+                >
+                  {labels[v]} ({lists[v].length})
+                </button>
+              ))}
+            </div>
+
+            {activeTab === 'candidates' && view === 'pending' && (
+              <p style={{ margin: '0 0 14px', fontSize: '12px', opacity: 0.6 }}>
+                Commissioners can only vote on a candidate once you clear their payment.
+              </p>
+            )}
+
+            {currentList.length === 0 && !loading && (
+              <div style={emptyState}>
+                <p style={{ opacity: 0.5 }}>
+                  {activeTab === 'candidates'
+                    ? `No ${labels[view].toLowerCase()} candidate payments.`
+                    : `No ${view} requests.`}
+                </p>
+              </div>
+            )}
+          </>
         )}
 
-        {/* ── Request cards ── */}
+        {/* ── Voter-register request cards ── */}
+        {activeTab === 'voters' && (
         <ScrollList>
         {currentList.map(change => {
           const isDecidingNow = deciding[change._id];
@@ -178,9 +273,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
                     {change.status.toUpperCase()}
                   </span>
                 </div>
-                <small style={{ opacity: 0.45 }}>
-                  {new Date(change.requested_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
-                </small>
+                <small style={{ opacity: 0.45 }}>{shortDate(change.requested_at)}</small>
               </div>
 
               <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
@@ -199,7 +292,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
               </p>
 
               {change.payment_method && (
-                <div style={{ marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <div style={payBox}>
                   <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
                     Payment: <strong style={{ color: 'var(--text-color)' }}>{change.payment_method}</strong>
                   </p>
@@ -210,37 +303,23 @@ export default function FinancialControllerDashboard({ onLogout }) {
               {/* ── Pending: decision actions ── */}
               {change.status === 'pending' ? (
                 <div style={{ marginTop: '14px' }}>
-                  {showReasonBox[change._id] && (
-                    <div style={{ marginBottom: '10px' }}>
-                      <textarea
-                        style={{ ...inp, height: '70px', resize: 'vertical' }}
-                        placeholder="Optional reason for this decision…"
-                        value={reasons[change._id] || ''}
-                        onChange={e => setReasons(prev => ({ ...prev, [change._id]: e.target.value }))}
-                      />
-                    </div>
-                  )}
+                  {reasonBox(change._id, 'Reason (required to deny)…')}
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     <button
                       style={{ ...greenBtn, flex: 1 }}
                       disabled={isDecidingNow}
-                      onClick={() => decide(change._id, 'approve')}
+                      onClick={() => decideVoterRequest(change._id, 'approve')}
                     >
                       {isDecidingNow ? 'Submitting…' : <>Approve</>}
                     </button>
                     <button
                       style={{ ...redBtn, flex: 1 }}
                       disabled={isDecidingNow}
-                      onClick={() => decide(change._id, 'deny')}
+                      onClick={() => decideVoterRequest(change._id, 'deny')}
                     >
                       {isDecidingNow ? 'Submitting…' : <>Deny</>}
                     </button>
-                    <button
-                      style={ghostBtn}
-                      onClick={() => setShowReasonBox(prev => ({ ...prev, [change._id]: !prev[change._id] }))}
-                    >
-                      {showReasonBox[change._id] ? 'Hide reason' : '+ Add reason'}
-                    </button>
+                    {reasonToggle(change._id)}
                   </div>
                 </div>
               ) : (
@@ -253,6 +332,94 @@ export default function FinancialControllerDashboard({ onLogout }) {
           );
         })}
         </ScrollList>
+        )}
+
+        {/* ── Candidate payment cards ── */}
+        {activeTab === 'candidates' && (
+        <ScrollList>
+        {currentList.map(app => {
+          const isDecidingNow = deciding[app._id];
+          const state = app.finance_rejected ? 'denied' : app.finance_cleared ? 'approved' : 'pending';
+
+          return (
+            <div key={app._id} style={appCard}>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>{app.full_name}</b>
+                  <span style={{ ...statusBadge(state), marginLeft: '10px' }}>
+                    {labels[state].toUpperCase()}
+                  </span>
+                </div>
+                <small style={{ opacity: 0.45 }}>{shortDate(app.submitted_at)}</small>
+              </div>
+
+              <p style={{ margin: '6px 0 2px', fontSize: '13px', color: 'var(--success)', fontWeight: '600' }}>
+                {app.position_title || app.position_id}
+              </p>
+              <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.55 }}>
+                Student ID: {regNo(app.student_id)}
+              </p>
+
+              <div style={payBox}>
+                {app.payment_method && (
+                  <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
+                    Payment method: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
+                  </p>
+                )}
+                <p style={{ margin: '0 0 6px', fontSize: '13px' }}>
+                  Required amount:{' '}
+                  <strong style={{ color: 'var(--success)' }}>
+                    {app.fee_required ? money(app.fee_required) : 'not set for this position'}
+                  </strong>
+                </p>
+                {app.payment_proof_url
+                  ? <ReceiptLink url={app.payment_proof_url} />
+                  : <small style={{ opacity: 0.5 }}>No receipt attached.</small>}
+              </div>
+
+              {state === 'pending' && (
+                <div style={{ marginTop: '14px' }}>
+                  {reasonBox(app._id, 'Reason (required to reject; optional note when clearing)…')}
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <button
+                      style={{ ...greenBtn, flex: 1 }}
+                      disabled={isDecidingNow}
+                      onClick={() => decideCandidatePayment(app._id, 'clear')}
+                    >
+                      {isDecidingNow ? 'Submitting…' : <>Clear payment</>}
+                    </button>
+                    <button
+                      style={{ ...redBtn, flex: 1 }}
+                      disabled={isDecidingNow}
+                      onClick={() => decideCandidatePayment(app._id, 'reject')}
+                    >
+                      {isDecidingNow ? 'Submitting…' : <>Reject</>}
+                    </button>
+                    {reasonToggle(app._id)}
+                  </div>
+                </div>
+              )}
+
+              {state === 'approved' && (
+                <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.6 }}>
+                  Cleared by: {app.finance_cleared_by === 'superadmin_override' ? 'Superadmin override' : (app.finance_cleared_by || '—')}
+                  {app.finance_clear_note && ` · "${app.finance_clear_note}"`}
+                  {' · '}Application: {app.status}
+                </p>
+              )}
+
+              {state === 'denied' && (
+                <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.6 }}>
+                  Rejected by: {app.finance_rejected_by || '—'}
+                  {app.finance_rejection_reason && ` · "${app.finance_rejection_reason}"`}
+                </p>
+              )}
+            </div>
+          );
+        })}
+        </ScrollList>
+        )}
 
         <SharedTabPanels activeTab={activeTab} />
       </div>
@@ -277,11 +444,18 @@ function statusBadge(status) {
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
+const payBox     = { marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };
 const inp        = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
 const btn        = { padding: '9px 16px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const greenBtn   = { ...btn, backgroundColor: '#2ecc71' };
 const redBtn     = { ...btn, backgroundColor: '#e74c3c' };
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+const pill       = (active) => ({
+  padding: '6px 14px', borderRadius: '999px', cursor: 'pointer', fontSize: '12px', fontWeight: active ? 'bold' : 'normal',
+  border: `1px solid ${active ? 'var(--success)' : 'var(--border-color)'}`,
+  background: active ? 'color-mix(in srgb, var(--success) 15%, transparent)' : 'none',
+  color: active ? 'var(--success)' : 'var(--text-color)',
+});
 const promptBox  = { border: '1px dashed var(--border-color)', borderRadius: '12px', padding: '20px', marginBottom: '20px', backgroundColor: 'var(--bg-color)' };
 const infoPill   = { fontSize: '13px', opacity: 0.7, marginBottom: '18px', padding: '8px 14px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };

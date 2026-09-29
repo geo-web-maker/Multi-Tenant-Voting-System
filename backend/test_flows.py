@@ -614,8 +614,10 @@ async def _apply(e, pos_id, sid="v1", name="Ayebale Elizabeth"):
     return (await e.db.applications.find_one({"student_id": sid}))
 
 
-async def _finance_commissioner(e):
-    await e.db.voters.update_one({"student_id": "com1"}, {"$set": {"is_finance_commissioner": True}})
+async def _financial_controller(e):
+    """Candidate payments are cleared by the Financial Controller (not a commissioner). Returns its headers."""
+    await e.voter("fc1", "Fin Controller", ("256700000009",), is_financial_controller=True)
+    return e.tok("fc1", "financial_controller")
 
 
 async def test_position_fee_is_public_patchable_and_validated(env):
@@ -638,13 +640,13 @@ async def test_application_snapshots_fee_at_submit_time(env):
 
 
 async def test_sms_on_approval_finance_reject_and_denial_and_never_blocks(env):
-    await _finance_commissioner(env)
+    fc = await _financial_controller(env)
     pid = await _mk_position(env, "Speaker", 30000)
 
     # 1) commission approves -> candidate created + SMS
     a1 = await _apply(env, pid)
     aid = str(a1["_id"])
-    assert (await env.client.post(f"/admin/applications/{aid}/finance-clear", headers=env.com1, json={"commissioner_id": "com1"})).status_code == 200
+    assert (await env.client.post(f"/admin/applications/{aid}/finance-clear", headers=fc, json={"financial_controller_id": "fc1"})).status_code == 200
     for who, tok in (("com1", env.com1), ("com2", env.com2)):
         r = await env.client.post(f"/admin/applications/{aid}/vote", headers=tok, json={"commissioner_id": who, "vote": "approve"})
         assert r.status_code == 200, r.text
@@ -656,8 +658,8 @@ async def test_sms_on_approval_finance_reject_and_denial_and_never_blocks(env):
     await env.db.voters.insert_one({"student_id": "v2", "full_name": "Second Person", "phone_numbers": ["256700333444"],
                                     "has_voted": False, "last_status": "idle", "org_id": env.org_id})
     a2 = await _apply(env, pid, "v2", "Second Person")
-    r = await env.client.post(f"/admin/applications/{a2['_id']}/finance-reject", headers=env.com1,
-                              json={"commissioner_id": "com1", "reason": "Receipt shows UGX 10,000 only"})
+    r = await env.client.post(f"/admin/applications/{a2['_id']}/finance-reject", headers=fc,
+                              json={"financial_controller_id": "fc1", "reason": "Receipt shows UGX 10,000 only"})
     assert r.status_code == 200, r.text
     to, text = env.sent[-1]
     assert to.endswith("700333444") and "payment" in text and "UGX 10,000 only" in text and "UGX 30,000" in text and "incomplete" in text
