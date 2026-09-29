@@ -174,10 +174,13 @@ function App() {
   // slow ones. See bootExiting below for the animated hand-off.
   const [bootReady, setBootReady] = useState(false);
   const [bootExiting, setBootExiting] = useState(false);
-  // Flips true once the wait has run past what a warm backend would ever
-  // take — only then does the splash admit it might be a cold start, so a
-  // normal warm load never sees this copy at all.
-  const [bootSlow, setBootSlow] = useState(false);
+  // Where the splash is in its one-way story:
+  //   connecting -> (starting, only if the server is actually cold) -> initializing -> connected
+  // It only ever moves forward. A warm server skips "starting" entirely; a cold one shows it
+  // for as long as it really takes, then flows on to "initializing" and "connected" once
+  // /health answers, instead of flipping back and forth between labels.
+  const [bootStage, setBootStage] = useState('connecting');
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
@@ -214,32 +217,35 @@ useEffect(() => {
   // So this polls /health for real success instead of giving up on a clock,
   // and the copy is honest about *why* it's slow past the point where a
   // warm backend would have already answered.
-  const BOOT_MIN_MS = 500;       // floor so a warm/cached response never flickers
   const POLL_INTERVAL_MS = 2500; // spacing between retries while cold-starting
-  const SLOW_HINT_MS = 6000;     // past this, a warm backend would've answered — say so
+  const COLD_HINT_MS = 1500;     // no answer by now = the server is waking up, not just a slow first paint
+  const INIT_MS = 800;           // how long "initializing secure connection" stays visible
+  const CONNECTED_MS = 600;      // how long "connected" shows before the hand-off
   const EXIT_ANIM_MS = 350;      // must match the CSS transition on the splash
 
-  const bootStart = Date.now();
   let cancelled = false;
   let pollTimer = null;
+  const stageTimers = [];
 
-  const slowHintTimer = setTimeout(() => {
-    if (!cancelled) setBootSlow(true);
-  }, SLOW_HINT_MS);
+  // Only claim "starting server" once the wait has outlasted a warm response.
+  const coldHintTimer = setTimeout(() => {
+    if (!cancelled) setBootStage(st => (st === 'connecting' ? 'starting' : st));
+  }, COLD_HINT_MS);
 
   const finish = () => {
     if (cancelled) return;
     cancelled = true;
-    clearTimeout(slowHintTimer);
+    clearTimeout(coldHintTimer);
     clearTimeout(pollTimer);
-    const elapsed = Date.now() - bootStart;
-    const wait = Math.max(0, BOOT_MIN_MS - elapsed);
-    setTimeout(() => {
+    // /health answered: the server is up. Walk forward through the last two steps.
+    setBootStage('initializing');
+    stageTimers.push(setTimeout(() => setBootStage('connected'), INIT_MS));
+    stageTimers.push(setTimeout(() => {
       // Animate out rather than unmounting straight away, so "ready" reads
       // as a deliberate hand-off instead of a jump-cut.
       setBootExiting(true);
-      setTimeout(() => setBootReady(true), EXIT_ANIM_MS);
-    }, wait);
+      stageTimers.push(setTimeout(() => setBootReady(true), EXIT_ANIM_MS));
+    }, INIT_MS + CONNECTED_MS));
   };
 
   const poll = () => {
@@ -276,7 +282,7 @@ useEffect(() => {
     // showing) is enough if this fails. Silent by design.
   });
 
-  return () => { cancelled = true; clearTimeout(slowHintTimer); clearTimeout(pollTimer); };
+  return () => { cancelled = true; clearTimeout(coldHintTimer); clearTimeout(pollTimer); stageTimers.forEach(clearTimeout); };
 }, []);
   
   useEffect(() => {
@@ -645,7 +651,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   };
 
   if (!bootReady) {
-    return <BootSplash orgName={orgName} logoUrl={logoUrl} exiting={bootExiting} slow={bootSlow} />;
+    return <BootSplash orgName={orgName} logoUrl={logoUrl} exiting={bootExiting} stage={bootStage} />;
   }
 
   // candidate-portal-spec §4.1: a public, token-linked status page, reachable
@@ -786,14 +792,30 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     type="email"
                     autoComplete="email"
                   />
-                  <input
-                    style={inputStyle}
-                    value={name}
-                    onChange={e => { setName(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
-                    placeholder="Password e.g. Comm@2026!"
-                    type="password"
-                    autoComplete="current-password"
-                  />
+                  <div style={{ position: 'relative', marginBottom: '15px' }}>
+                    <input
+                      style={{ ...inputStyle, marginBottom: 0, paddingRight: '46px' }}
+                      value={name}
+                      onChange={e => { setName(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
+                      placeholder="Password e.g. Comm@2026!"
+                      type={showAdminPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminPassword(v => !v)}
+                      aria-label={showAdminPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showAdminPassword}
+                      title={showAdminPassword ? 'Hide password' : 'Show password'}
+                      style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted, #64748b)' }}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
+                        <circle cx="12" cy="12" r="3" />
+                        {showAdminPassword && <line x1="3" y1="3" x2="21" y2="21" />}
+                      </svg>
+                    </button>
+                  </div>
                   {needsTotp && (
                     <input
                       style={inputStyle}
@@ -1039,8 +1061,15 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 // transition. "exiting" drives the hand-off animation to the real app once
 // /health resolves — same pattern as eregistry.ursb.go.ug's
 // "Initializing secure session" screen.
-function BootSplash({ orgName, logoUrl, exiting, slow }) {
-  const known = Boolean(orgName || logoUrl);
+const BOOT_STAGES = {
+  connecting:   { label: 'CONNECTING',                      dot: 'var(--warning, #eab308)', text: 'Loading election details…' },
+  starting:     { label: 'STARTING SERVER',                 dot: 'var(--warning, #eab308)', text: 'The server is waking up after a period of inactivity. This can take up to a minute. Thanks for your patience.' },
+  initializing: { label: 'INITIALIZING SECURE CONNECTION',  dot: 'var(--brand-primary, #2563eb)', text: 'Server is up. Setting up a secure connection…' },
+  connected:    { label: 'CONNECTED',                       dot: 'var(--success, #22c55e)', text: 'Secure connection established.' },
+};
+
+function BootSplash({ orgName, logoUrl, exiting, stage }) {
+  const st = BOOT_STAGES[stage] || BOOT_STAGES.connecting;
   return (
     <div style={{ ...bootWrapStyle, ...(exiting ? bootWrapExitStyle : null) }}>
       <div style={bootCardStyle}>
@@ -1050,16 +1079,10 @@ function BootSplash({ orgName, logoUrl, exiting, slow }) {
             : <span style={bootSpinnerRingStyle} />}
         </div>
         <h1 style={bootTitleStyle}>{orgName || 'Election Portal'}</h1>
-        <p style={bootSubtitleStyle}>
-          {slow
-            ? 'The server is starting up after a period of inactivity — this can take up to a minute. Thanks for your patience.'
-            : known
-              ? 'Central register for this election\u2019s voters and results'
-              : 'Loading election details…'}
-        </p>
-        <div style={bootStatusRowStyle}>
-          <span style={{ ...bootDotStyle, background: slow ? 'var(--warning, #eab308)' : known ? 'var(--success, #22c55e)' : 'var(--warning, #eab308)' }} />
-          {slow ? 'STARTING SERVER' : known ? 'INITIALIZING SECURE SESSION' : 'CONNECTING'}
+        <p style={bootSubtitleStyle} aria-live="polite">{st.text}</p>
+        <div style={bootStatusRowStyle} role="status">
+          <span style={{ ...bootDotStyle, background: st.dot, transition: 'background 0.3s ease' }} />
+          {st.label}
         </div>
       </div>
     </div>
