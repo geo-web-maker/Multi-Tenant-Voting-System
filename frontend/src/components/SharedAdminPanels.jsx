@@ -1371,7 +1371,7 @@ export function RosterStats({ onRegisteredClick }) {
             <div style={{ fontSize: '11px', opacity: 0.7 }}>{c.label}</div>
           </>;
           return clickable ? (
-            <button key={c.label} type="button" onClick={onRegisteredClick} style={{ ...statCard, textAlign: 'left', cursor: 'pointer', color: 'inherit', width: '100%' }}>{body}</button>
+            <button key={c.label} type="button" onClick={onRegisteredClick} style={{ ...statCard, textAlign: 'center', cursor: 'pointer', color: 'inherit', width: '100%' }}>{body}</button>
           ) : <div key={c.label} style={statCard}>{body}</div>;
         })}
       </div>
