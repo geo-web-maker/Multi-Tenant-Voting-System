@@ -282,7 +282,7 @@ useEffect(() => { fetchData(); }, []);
             </span>
           </div>
           <p style={{ fontSize: '11px', opacity: 0.6, margin: '10px 0 0' }}>
-            Open/close and certify are the buttons above — they take effect immediately for
+            Open/close and certify are the buttons above. They take effect immediately for
             every voter. Phase timing (when applications, campaign, voting and results each
             open or close) is configured in the Superadmin Panel's Timeline tab.
           </p>
@@ -628,7 +628,7 @@ const SmsProviderCard = ({ label, sub, data }) => {
         {label} <span style={{ opacity: 0.55 }}>({sub})</span>
       </small>
       <h3 style={{ color: low ? '#e74c3c' : 'inherit' }}>
-        {data?.error ? '—' : <>{data?.balance ?? '—'} <small style={{ fontSize: '10px' }}>{data?.currency}</small></>}
+        {data?.error ? 'N/A' : <>{data?.balance ?? 'N/A'} <small style={{ fontSize: '10px' }}>{data?.currency}</small></>}
       </h3>
       {data?.error && <small style={{ opacity: 0.6 }}>{data.error}</small>}
     </div>

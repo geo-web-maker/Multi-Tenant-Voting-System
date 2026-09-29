@@ -144,14 +144,14 @@ export default function CommissionDashboard({ onLogout }) {
   const majorityRequired = (total) => Math.floor(total / 2) + 1;
 
   const policyHeaderCopy = {
-    unanimous: 'Every commissioner must agree — unanimous approval required.',
+    unanimous: 'Every commissioner must agree. Unanimous approval is required.',
     majority_total: `Resolves once ${majorityRequired(totalCommissioners)} of ${totalCommissioners} commissioners agree (majority of total).`,
-    majority_cast: 'Resolves once every commissioner has voted — whichever side has more wins.',
+    majority_cast: 'Resolves once every commissioner has voted. Whichever side has more wins.',
   }[approvalPolicy] || 'Full consensus required for approval or removal';
 
   const policyTallyCopy = (vc) => {
     if (approvalPolicy === 'unanimous') return `needs all ${totalCommissioners} to agree`;
-    if (approvalPolicy === 'majority_cast') return `${vc.total} of ${totalCommissioners} voted — resolves once everyone's weighed in`;
+    if (approvalPolicy === 'majority_cast') return `${vc.total} of ${totalCommissioners} voted; resolves once everyone's weighed in`;
     return `majority needs ${majorityRequired(totalCommissioners)}`;
   };
 
@@ -274,7 +274,7 @@ export default function CommissionDashboard({ onLogout }) {
         <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
         <div style={container} className="dashboard-shell dash-main">
 
-        {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'} />}
+        {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open. Commissioners cannot vote yet.'} />}
 
         {/* ── Empty state ── */}
         {['pending', 'approved', 'denied', 'removed'].includes(activeTab) && currentList.length === 0 && !loading && (
@@ -364,7 +364,7 @@ export default function CommissionDashboard({ onLogout }) {
                   </span>
                   {app.tied_pending_chief && (
                     <span style={{ opacity: 0.8, fontSize: '12px', color: '#e67e22', fontWeight: 600 }}>
-                      · Tied — awaiting Chief Commissioner tie-break
+                      · Tied: awaiting Chief Commissioner tie-break
                     </span>
                   )}
                 </div>
@@ -388,7 +388,7 @@ export default function CommissionDashboard({ onLogout }) {
                     </div>
                   ) : !vettingOpen ? (
                     <div style={lockedNote}>
-                      {vettingNotice || 'Vetting is not currently open — commissioners cannot vote yet.'}
+                      {vettingNotice || 'Vetting is not currently open. Commissioners cannot vote yet.'}
                     </div>
                   ) : (
                     <>
@@ -444,7 +444,7 @@ export default function CommissionDashboard({ onLogout }) {
               {app.status === 'approved' && myVote && (
                 <div style={{ marginTop: '14px' }}>
                   <div style={myVoteRow(myVote)}>
-                    <Icon name="success" /> Your vote was counted — you voted <strong>{myVote}</strong> on this application.
+                    <Icon name="success" /> Your vote was counted. You voted <strong>{myVote}</strong> on this application.
                   </div>
                 </div>
               )}
@@ -452,7 +452,7 @@ export default function CommissionDashboard({ onLogout }) {
               {/* Superadmin override notice */}
               {app.superadmin_override && (
                 <div style={overrideNote}>
-                  This was decided by the superadmin — commission voting was bypassed.
+                  This was decided by the superadmin. Commission voting was bypassed.
                 </div>
               )}
 
@@ -489,7 +489,7 @@ export default function CommissionDashboard({ onLogout }) {
                   </div>
 
                   <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
-                    <b>Student:</b> {change.full_name} — <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
+                    <b>Student:</b> {change.full_name}: <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
                   </p>
                   {change.change_type === 'add' && (change.phones?.length > 0 || change.phone) && (
                     <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.6 }}>
@@ -520,7 +520,7 @@ export default function CommissionDashboard({ onLogout }) {
                     </div>
                   ) : (
                     <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.6 }}>
-                      Decided by: {change.decided_by || '—'}
+                      Decided by: {change.decided_by || 'N/A'}
                       {change.decision_reason && ` · "${change.decision_reason}"`}
                     </p>
                   )}
@@ -601,7 +601,7 @@ export default function CommissionDashboard({ onLogout }) {
                 ))}
 
                 <p style={{ fontSize: '11px', opacity: 0.4, marginTop: '4px' }}>
-                  Figures are anonymous aggregate tallies — no voter's individual choice is ever linked to their identity here.
+                  Figures are anonymous aggregate tallies. No individual choice is ever linked to a voter's identity.
                 </p>
               </>
             )}

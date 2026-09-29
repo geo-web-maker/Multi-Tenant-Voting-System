@@ -93,9 +93,9 @@ export default function ApplicantPortal() {
   }, 20000, !submitted);
 
   const approvalPolicyCopy = {
-    unanimous: 'Every commissioner must agree — unanimous approval required.',
+    unanimous: 'Every commissioner must agree. Unanimous approval is required.',
     majority_total: 'The commission reviews all applications before any candidate appears on the ballot. A majority of the commission must agree for approval.',
-    majority_cast: 'The commission reviews all applications before any candidate appears on the ballot. Resolves once every commissioner has voted — whichever side has more wins.',
+    majority_cast: 'The commission reviews all applications before any candidate appears on the ballot. Resolves once every commissioner has voted. Whichever side has more wins.',
   }[approvalPolicy] || 'The commission reviews all applications before any candidate appears on the ballot.';
 
   useEffect(() => {
@@ -237,14 +237,18 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
 
         <ClosedNotice text={applicationsNoticeText(electionStatus)} />
 
-        {/* ── How it works ── */}
+        {/* Instructions for Applicants */}
         <div style={{ ...infoBox, marginBottom: '24px' }}>
-          <p style={{ margin: 0, fontSize: '13px', opacity: 0.85, lineHeight: '1.7' }}>
-            <strong>How it works:</strong> Fill in the form below and submit your application.
-            The Election Commission will review it. Once you submit, a link to your <em>candidate portal</em> is sent
-            by SMS to the phone number on your student record — use it to follow your application status and outcome.
-            If you have no number on record, contact the IT administrators.
+          <p style={{ margin: 0, fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', opacity: 0.85 }}>
+            Instructions for Applicants:
           </p>
+          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', opacity: 0.85, lineHeight: '1.9' }}>
+            <li><strong>Fill and Submit Form:</strong> Complete the form below and submit your application.</li>
+            <li><strong>Application Review:</strong> The Election Commission will review your submission.</li>
+            <li><strong>Access Candidate Portal:</strong> Check your registered phone number for an SMS link to your candidate portal.</li>
+            <li><strong>Track Your Status:</strong> Use the portal link to follow your application progress and view the final outcome.</li>
+            <li><strong>Need Help?</strong> If no phone number is listed on your student record, contact the IT administrators for assistance.</li>
+          </ul>
         </div>
 
         <form onSubmit={handleSubmit} style={formCol}>

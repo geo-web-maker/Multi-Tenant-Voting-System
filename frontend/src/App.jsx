@@ -136,7 +136,8 @@ function App() {
   const [captchaKey, setCaptchaKey] = useState(0);
   const [captchaForced, setCaptchaForced] = useState(false);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
-  const [orgName, setOrgName] = useState(import.meta.env.VITE_ELECTION_NAME || "");
+  const [bootName, setBootName] = useState(import.meta.env.VITE_ELECTION_NAME || "");
+  const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(() => (restored.step === 2 ? loadResendSeconds() : 0));
   const [selectedPhone, setSelectedPhone] = useState(restored.selectedPhone || "");
   const [isVerifying, setIsVerifying] = useState(false);
@@ -401,7 +402,7 @@ useEffect(() => {
       show: true,
       title: "Session Expired",
       message: (typeof detail === "string" && detail) ||
-        "Your voting session has expired. Please verify again — your selections have been kept.",
+        "Your voting session has expired. Please verify again. Your selections have been kept.",
       type: "error"
     });
   };
@@ -664,7 +665,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   };
 
   if (!bootReady) {
-    return <BootSplash orgName={orgName} logoUrl={logoUrl} exiting={bootExiting} stage={bootStage} />;
+    return <BootSplash orgName={bootName} logoUrl={logoUrl} exiting={bootExiting} stage={bootStage} />;
   }
 
   // candidate-portal-spec §4.1: a public, token-linked status page, reachable

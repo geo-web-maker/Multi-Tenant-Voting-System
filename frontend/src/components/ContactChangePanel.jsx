@@ -57,7 +57,7 @@ export default function ContactChangePanel({ student = null, compact = false }) 
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ ...box, borderColor: 'var(--warning)' }}>
-        <b style={{ fontSize: 13 }}>Roster frozen — contact changes need approval</b>
+        <b style={{ fontSize: 13 }}>Roster frozen: contact changes need approval</b>
         {!compact && <p style={muted}>Any one commissioner can approve or deny. Never change a number because of a chat message: check the student’s ID card or an official record.</p>}
         {student ? (
           student.has_voted ? <p style={{ ...muted, color: 'var(--danger)' }}>This student has already voted; details can no longer change.</p> : (
@@ -94,11 +94,11 @@ export default function ContactChangePanel({ student = null, compact = false }) 
       {mine.map(c => (
         <div key={c.id} style={{ ...box, marginTop: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-            <b style={{ fontSize: 13 }}>{CHANGE_LABELS[c.change_type]} — <code>{regNo(c.student_id)}</code></b>
+            <b style={{ fontSize: 13 }}>{CHANGE_LABELS[c.change_type]}: <code>{regNo(c.student_id)}</code></b>
             <span style={{ fontSize: 11, fontWeight: 700 }}>{c.status.toUpperCase()}</span>
           </div>
           <p style={muted}>
-            {c.old_masked && <>Old {c.old_masked} → </>}New {c.new_value || '—'}
+            {c.old_masked && <>Old {c.old_masked} → </>}New {c.new_value || 'N/A'}
             {c.decided_by && <> · decided by {c.decided_by}{c.decision_note ? `: ${c.decision_note}` : ''}</>}
             {c.status === 'pending' && c.expires_at && <> · expires {new Date(c.expires_at + 'Z').toLocaleTimeString()}</>}
             {c.status === 'approved' && c.notice_status === 'failed' && <> · notice SMS to old number failed</>}

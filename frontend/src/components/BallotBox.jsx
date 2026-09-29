@@ -156,7 +156,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
         fontWeight: '800',
         border: '1px solid #fecaca' 
       }}>
-        <Icon name="warning" /> SAMPLE BALLOT GUIDE — VOTING DISABLED
+        <Icon name="warning" /> SAMPLE BALLOT GUIDE - VOTING DISABLED
       </div>
     )}
       <h1 style={{ color: '#3b82f6', fontSize: '24px' }}>{orgName ? `${orgName} ELECTION`.toUpperCase() : "ELECTION"}</h1>

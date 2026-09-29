@@ -7,7 +7,7 @@ import { ScrollList } from './UIFeedback';
 import { regNo } from '../regNo';
 import { LoadingBlock } from './Spinner.jsx';
 
-const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocaleString() : '—');
+const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocaleString() : 'N/A');
 
 /**
  * Commission: pending queue with Approve / Deny (any ONE commissioner decides) + the pre-freeze digest.
@@ -98,7 +98,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
 
   return (
     <div>
-      {!readOnly && data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}>The roster is not frozen yet — IT admins still edit directly. Requests appear here from the freeze onward.</div>}
+      {!readOnly && data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}>The roster is not frozen yet. IT admins still edit directly. Requests appear here from the freeze onward.</div>}
       <div style={{ display: 'flex', gap: 8, margin: '12px 0', flexWrap: 'wrap' }}>
         {['pending', 'approved', 'denied', 'expired', 'all'].map(f => (
           <button key={f} onClick={() => setFilter(f)} style={{ ...ghost, ...(filter === f && { borderColor: 'var(--success)', color: 'var(--success)' }) }}>
@@ -112,18 +112,18 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
       {items.map(c => (
         <div key={c.id} style={{ ...box, marginBottom: 10, borderColor: c.breakglass ? 'var(--danger)' : undefined }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <b style={{ fontSize: 14 }}>{CHANGE_LABELS[c.change_type]} — {c.full_name} <code style={{ fontSize: 11 }}>{regNo(c.student_id)}</code></b>
+            <b style={{ fontSize: 14 }}>{CHANGE_LABELS[c.change_type]}: {c.full_name} <code style={{ fontSize: 11 }}>{regNo(c.student_id)}</code></b>
             <span style={{ fontSize: 11, fontWeight: 700 }}>{c.status.toUpperCase()}{c.breakglass ? ' · BREAK-GLASS' : ''}</span>
           </div>
           <p style={muted}>
-            {c.old_masked && <>Old: <code>{c.old_masked}</code> → </>}New: <b><code>{c.new_value || '—'}</code></b>
+            {c.old_masked && <>Old: <code>{c.old_masked}</code> → </>}New: <b><code>{c.new_value || 'N/A'}</code></b>
             {c.otp_in_progress && <> · voter has a code in progress</>}
           </p>
           <p style={muted}>
             Requested by <b>{c.requested_by}</b> · {fmt(c.requested_at)} · evidence: {c.evidence_type.replace(/_/g, ' ')}
-            {c.evidence_note && <> — “{c.evidence_note}”</>}
+            {c.evidence_note && <>, note: “{c.evidence_note}”</>}
           </p>
-          {c.decided_by && <p style={muted}>Decided by <b>{c.decided_by}</b> · {fmt(c.decided_at)}{c.decision_note && <> — {c.decision_note}</>}{c.status === 'approved' && c.notice_status === 'failed' && <> · <b style={{ color: 'var(--danger)' }}>notice to old number failed (follow up)</b></>}</p>}
+          {c.decided_by && <p style={muted}>Decided by <b>{c.decided_by}</b> · {fmt(c.decided_at)}{c.decision_note && <>, note: {c.decision_note}</>}{c.status === 'approved' && c.notice_status === 'failed' && <> · <b style={{ color: 'var(--danger)' }}>notice to old number failed (follow up)</b></>}</p>}
           {c.warnings.map(w => <Flag key={w.code}>{w.message}</Flag>)}
           {c.status === 'pending' && breakGlass && bgEnabled && (
             <>
@@ -156,7 +156,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
           <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
             Pre-freeze digest: every direct contact edit an IT admin has made{digest.freeze_at ? <> before {fmt(digest.freeze_at)}</> : <> so far</>} ({digest.entries.length})
           </summary>
-          <p style={muted}>Covers the full history, not just a recent window — an IT admin can edit a voter at any point before the freeze.</p>
+          <p style={muted}>Covers the full history, not just a recent window. An IT admin can edit a voter at any point before the freeze.</p>
           {digest.entries.length === 0 ? <p style={muted}>No direct contact edits recorded.</p> : (
             <div style={{ overflow: 'auto', maxHeight: '45vh' }}>
               <table style={{ width: '100%', minWidth: digest.can_undo ? '760px' : '640px', fontSize: 12, borderCollapse: 'collapse', marginTop: 8, tableLayout: 'fixed' }}>
@@ -165,11 +165,11 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
                 <tbody>{digest.entries.map((e) => (
                   <tr key={e.id}>
                     <td style={td}>{fmt(e.at)}</td><td style={td}>{regNo(e.student_id)}</td><td style={td}>{EVENT_LABELS[e.event] || e.event.replace(/_/g, ' ')}</td>
-                    <td style={td}>{e.old || '—'}</td><td style={td}>{e.new || '—'}</td><td style={td}>{e.actor}</td><td style={td}>{e.reason}</td>
+                    <td style={td}>{e.old || 'N/A'}</td><td style={td}>{e.new || 'N/A'}</td><td style={td}>{e.actor}</td><td style={td}>{e.reason}</td>
                     {digest.can_undo && (
                       <td style={td}>
                         {e.undone_at ? (
-                          <span style={{ opacity: 0.6 }} title={`Undone by ${e.undone_by || '—'} · ${fmt(e.undone_at)} — ${e.undo_reason || ''}`}>Undone</span>
+                          <span style={{ opacity: 0.6 }} title={`Undone by ${e.undone_by || 'N/A'} · ${fmt(e.undone_at)}: ${e.undo_reason || ''}`}>Undone</span>
                         ) : e.can_undo ? (
                           <button disabled={undoBusy === e.id} style={{ ...ghost, padding: '4px 8px', fontSize: 11, borderColor: 'var(--danger)', color: 'var(--danger)' }} onClick={() => undoEntry(e)}>Undo</button>
                         ) : null}
