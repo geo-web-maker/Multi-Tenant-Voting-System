@@ -8,6 +8,7 @@ import { DEFAULT_TZ, parseUtc, browserTz, utcToZonedInput, zonedInputToUtcISO, f
 import { regNo } from '../regNo';
 import { AdminTurnoutBreakdown } from './TurnoutBreakdown';
 import { LoadingBlock } from './Spinner.jsx';
+import RevealGroup, { useRevealReady } from './RevealGroup';
 
 /*
  * One set of panels, mounted identically in all five dashboards.
@@ -320,6 +321,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
   // or when the form hasn't been touched yet (so the very first load still populates it).
   const [dirty, setDirty] = useState(false);
   const [grants, setGrants] = useState([]);
+  const [grantsLoaded, setGrantsLoaded] = useState(false);
   const [grantForm, setGrantForm] = useState({ student_id: '', phase: 'applications', reason: '', expires_at: '' });
 
   const load = useCallback(async () => {
@@ -350,6 +352,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
       const res = await api.get('/admin/exception-grants');
       setGrants(res.data || []);
     } catch { /* non-fatal: the panel still shows the timeline */ }
+    finally { setGrantsLoaded(true); }
   }, []);
 
   useEffect(() => {
@@ -437,7 +440,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
   };
 
   if (error && !data) return <p style={errStyle}>{error}</p>;
-  if (!data) return <LoadingBlock text="Loading schedule…" />;
+  if (!data || !grantsLoaded) return <LoadingBlock text="Loading schedule…" />;
   const tz = data.timezone || DEFAULT_TZ;
 
   return (
@@ -1116,6 +1119,10 @@ function TurnoutSparkline({ series, bucketType }) {
 }
 
 export function Analytics() {
+  return <RevealGroup text="Loading analytics…"><AnalyticsBody /></RevealGroup>;
+}
+
+function AnalyticsBody() {
   const [velocity, setVelocity] = useState(null);
   const [funnel, setFunnel] = useState(null);
   const [undervote, setUndervote] = useState(null);
@@ -1144,8 +1151,7 @@ export function Analytics() {
   // load() sets the loading flag before fetching; that is the intended pattern here.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); }, [load]);
-
-
+  useRevealReady(velocity !== null || Boolean(error));
 
   return (
     <div>
@@ -1333,6 +1339,7 @@ export function RosterStats() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
+  useRevealReady(Boolean(data) || Boolean(error));
   if (error) return <p style={errStyle}>{error}</p>;
   if (!data) return <LoadingBlock text="Loading…" />;
 
@@ -1391,6 +1398,7 @@ export function RecentActivity({ limit = 6 }) {
     const t = setInterval(load, 30000);
     return () => { alive = false; clearInterval(t); };
   }, [limit]);
+  useRevealReady(entries !== null || Boolean(error));
 
   return (
     <div style={{ marginTop: '20px' }}>

@@ -24,6 +24,7 @@ import PaymentInfoPanel from './PaymentInfoPanel';
 import UploadBypassPanel from './UploadBypassPanel';
 import ViewAsButton from './ViewAsButton';
 import { LoadingBlock } from './Spinner.jsx';
+import RevealGroup from './RevealGroup';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -110,6 +111,8 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [importing, setImporting]           = useState(false);
   const [voterSearch2, setVoterSearch2]     = useState('');
   const [loading, setLoading]               = useState(false);
+  const [electionLoaded, setElectionLoaded] = useState(false);
+  const [smsLoaded, setSmsLoaded]           = useState(false);
   const [lastRefreshed, setLastRefreshed]   = useState(new Date());
 
   //---IT Admin and auditlog---
@@ -219,7 +222,7 @@ export default function SuperAdminDashboard({ onLogout }) {
       setIsCertified(statusRes.data.is_certified || false);
       setLastRefreshed(new Date());
     } catch { /* non-critical: ignore */ }
-    finally { if (!silent) setLoading(false); }
+    finally { if (!silent) setLoading(false); setElectionLoaded(true); }
   };
 
 const fetchVotersList = async () => {
@@ -259,7 +262,7 @@ const fetchVotersList = async () => {
         egosms: { balance: 'N/A', currency: '', error: 'Could not load' },
         mambosms: { balance: 'N/A', currency: '', error: 'Could not load' },
       });
-    }
+    } finally { setSmsLoaded(true); }
   };
 
 const refetchAll = () => {
@@ -1262,7 +1265,8 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
 
         {/* ══════════════ VOTERS TAB ══════════════ */}
-        {activeTab === 'voters' && (
+        {activeTab === 'voters' && (!electionLoaded || !smsLoaded) && <LoadingBlock text="Loading voters…" />}
+        {activeTab === 'voters' && electionLoaded && smsLoaded && (
           <div>
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', width: '100%' }}>
@@ -1345,7 +1349,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ POSITIONS TAB ══════════════ */}
         {activeTab === 'positions' && (
-          <>
+          <RevealGroup text="Loading…">
           <PaymentInfoPanel />
           <div style={twoCol}>
             <div style={card}>
@@ -1417,7 +1421,7 @@ const handleSuperAdminRemoveStudent = async () => {
               </ScrollList>
             </div>
           </div>
-          </>
+          </RevealGroup>
         )}
 
         {/* ══════════════ BRANDING TAB ══════════════ */}
@@ -1822,7 +1826,11 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
         
         {/* ══════════════ IT ADMINS TAB ══════════════ */}
-        {activeTab === 'security' && <><UploadBypassPanel /><SecurityPanel /><VoterFieldsPanel /></>}
+        {activeTab === 'security' && (
+          <RevealGroup text="Loading security settings…">
+            <UploadBypassPanel /><SecurityPanel /><VoterFieldsPanel />
+          </RevealGroup>
+        )}
 
         {activeTab === 'it_admins' && (
           <div style={twoCol}>

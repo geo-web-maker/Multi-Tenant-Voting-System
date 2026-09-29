@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { useRevealReady } from './RevealGroup';
 
 /**
  * Turnout by voter field (gender, programme, any custom field the org switched on).
@@ -35,13 +36,15 @@ function FieldTable({ label, groups, note }) {
 
 export function AdminTurnoutBreakdown() {
   const [data, setData] = useState(null);
+  const [settled, setSettled] = useState(false);
   useEffect(() => {
     let live = true;
-    const load = () => api.get('/admin/analytics/turnout-breakdown').then(r => live && setData(r.data)).catch(() => {});
+    const load = () => api.get('/admin/analytics/turnout-breakdown').then(r => live && setData(r.data)).catch(() => {}).finally(() => live && setSettled(true));
     load();
     const id = setInterval(load, 30000);
     return () => { live = false; clearInterval(id); };
   }, []);
+  useRevealReady(settled);
   if (!data || data.fields.length === 0) return null;
   return (
     <div style={{ ...panel, marginTop: 14 }} className="card-pad">

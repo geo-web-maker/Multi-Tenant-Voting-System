@@ -1,5 +1,6 @@
 import React from 'react';
 import api, { getErrorMessage } from '../api';
+import { useRevealReady } from './RevealGroup';
 
 /**
  * Superadmin switch: lets IT admins add already-paid voters without a reason, proof of payment or
@@ -10,11 +11,14 @@ export default function UploadBypassPanel() {
   const [reason, setReason] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState({ kind: '', text: '' });
+  const [settled, setSettled] = React.useState(false);
 
   React.useEffect(() => {
     api.get('/admin/upload-bypass').then(res => setEnabled(!!res.data.enabled))
-      .catch(() => setMsg({ kind: 'error', text: 'Could not load the current setting.' }));
+      .catch(() => setMsg({ kind: 'error', text: 'Could not load the current setting.' }))
+      .finally(() => setSettled(true));
   }, []);
+  useRevealReady(settled);
 
   const flip = async () => {
     const next = !enabled;

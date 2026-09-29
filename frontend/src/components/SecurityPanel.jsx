@@ -4,6 +4,7 @@ import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
 import { turnstileConfigured } from '../supportLink';
+import { useRevealReady } from './RevealGroup';
 import { DEFAULT_TZ, utcToZonedInput, zonedInputToUtcISO, utcOffsetLabel, fmtZoned } from '../tz';
 
 const ROUTE_LABELS = {
@@ -21,12 +22,13 @@ const ROUTE_SHORT = {
 const AUTO_ORDER = { otp: 'EgoSMS, then MamboSMS if it fails', other: 'MamboSMS, then EgoSMS if it fails' };
 
 /** SMS usage tile (read-only; superadmin / overseer / commission). */
-export function SmsUsageTile() {
-  const [u, setU] = useState(null);
+export function SmsUsageTile({ initial = null }) {
+  const [u, setU] = useState(initial);
   useEffect(() => {
     let live = true;
     const load = () => api.get('/admin/sms-usage').then(r => live && setU(r.data)).catch(() => {});
-    load(); const id = setInterval(load, 30000);
+    if (initial == null) load();   // parent already fetched it in parallel with the rest of the panel
+    const id = setInterval(load, 30000);
     return () => { live = false; clearInterval(id); };
   }, []);
   if (!u) return null;
@@ -71,19 +73,30 @@ export default function SecurityPanel() {
   const [testPhone, setTestPhone] = useState('');
   const [testing, setTesting] = useState('');
   const [balances, setBalances] = useState(null);
+  const [smsUsage, setSmsUsage] = useState(null);
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const r = (await api.get('/superadmin/security-settings')).data;
-      const u = (await api.get('/superadmin/sms-budget')).data;
-      const zone = (await api.get('/admin/schedule')).data.timezone || DEFAULT_TZ;
+      // One parallel round-trip; the panel (including the SMS usage tile) renders only once all are in.
+      const [rr, uu, sched, usage] = await Promise.all([
+        api.get('/superadmin/security-settings'),
+        api.get('/superadmin/sms-budget'),
+        api.get('/admin/schedule'),
+        api.get('/admin/sms-usage').catch(() => ({ data: null })),
+      ]);
+      const r = rr.data;
+      const u = uu.data;
+      const zone = sched.data.timezone || DEFAULT_TZ;
       setTz(zone);
+      setSmsUsage(usage.data);
       setD(r);
       setF({ ...r.settings, roster_freeze_at: utcToZonedInput(r.settings.roster_freeze_at, zone) });
       setBudget({ total: u.budget_total ?? '', mode: u.mode === 'conservation' ? 'conservation' : 'normal', enforce: u.budget_enforced, floor: u.balance_floor_ugx ?? '' });
-    } catch (e) { toast(errMsg(e, 'Could not load security settings.'), { kind: 'error' }); }
+    } catch (e) { setFailed(true); toast(errMsg(e, 'Could not load security settings.'), { kind: 'error' }); }
   }, [toast]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
+  useRevealReady(Boolean(d) || failed);
   if (!d) return null;
 
   const need = () => { if (reason.trim().length < 3) { toast('Enter a reason for this change first.', { kind: 'error' }); return false; } return true; };
@@ -159,7 +172,7 @@ export default function SecurityPanel() {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
-      <SmsUsageTile />
+      <SmsUsageTile initial={smsUsage} />
       {d.banner && <div style={{ ...box, borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
 
       <div style={box}>

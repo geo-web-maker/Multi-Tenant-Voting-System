@@ -3,6 +3,7 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import RevealGroup from './RevealGroup';
 import { RosterStats, RecentActivity } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
@@ -559,8 +560,10 @@ export default function ITAdminDashboard({ onLogout }) {
                 <button style={ghostBtn} onClick={() => setActiveTab('remove')}>Remove Student</button>
               )}
             </div>
-            <RosterStats />
-            <RecentActivity />
+            <RevealGroup text="Loading overview…">
+              <RosterStats />
+              <RecentActivity />
+            </RevealGroup>
           </div>
         )}
         <SharedTabPanels activeTab={activeTab} />

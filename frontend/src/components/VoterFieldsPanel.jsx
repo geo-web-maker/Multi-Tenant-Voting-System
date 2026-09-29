@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import { errMsg } from '../studentEdit';
+import { useRevealReady } from './RevealGroup';
 
 /**
  * Superadmin: which optional voter fields this organisation collects (gender, programme, or any custom
@@ -16,14 +17,16 @@ export default function VoterFieldsPanel() {
   const [reason, setReason] = useState('');
   const [nf, setNf] = useState({ key: '', label: '' });
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const r = (await api.get('/superadmin/voter-fields')).data;
       setD(r); setMinGroup(r.min_group_size);
-    } catch (e) { toast(errMsg(e, 'Could not load voter fields.'), { kind: 'error' }); }
+    } catch (e) { setFailed(true); toast(errMsg(e, 'Could not load voter fields.'), { kind: 'error' }); }
   }, [toast]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
+  useRevealReady(Boolean(d) || failed);
   if (!d) return null;
 
   const save = async (body, okMsg) => {

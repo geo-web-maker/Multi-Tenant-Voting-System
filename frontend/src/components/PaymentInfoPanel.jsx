@@ -1,6 +1,7 @@
 import React from 'react';
 import api, { getErrorMessage } from '../api';
 import { momoLocalDigits } from '../paymentInfo';
+import { useRevealReady } from './RevealGroup';
 
 /**
  * Superadmin form for the Mobile Money number + registered name that applicants are shown under the
@@ -14,6 +15,7 @@ export default function PaymentInfoPanel() {
   const [reason, setReason] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState({ kind: '', text: '' });
+  const [settled, setSettled] = React.useState(false);
 
   const apply = data => {
     const s = { number: momoLocalDigits(data.mobile_money_number), name: data.mobile_money_name || '' };
@@ -22,8 +24,10 @@ export default function PaymentInfoPanel() {
 
   React.useEffect(() => {
     api.get('/payment-info').then(res => apply(res.data))
-      .catch(() => setMsg({ kind: 'error', text: 'Could not load the current payment details.' }));
+      .catch(() => setMsg({ kind: 'error', text: 'Could not load the current payment details.' }))
+      .finally(() => setSettled(true));
   }, []);
+  useRevealReady(settled);
 
   const changed = saved && (number.trim() !== saved.number || name.trim() !== saved.name);
   const canSave = changed && reason.trim().length >= 3 && !busy;
