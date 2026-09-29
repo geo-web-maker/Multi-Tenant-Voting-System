@@ -22,6 +22,7 @@ import AdminHeader from './AdminHeader';
 import VoterImportReview from './VoterImportReview';
 import PaymentInfoPanel from './PaymentInfoPanel';
 import UploadBypassPanel from './UploadBypassPanel';
+import ViewAsButton from './ViewAsButton';
 import { LoadingBlock } from './Spinner.jsx';
 
 // Signed, server-side upload via our own backend — replaces the old
@@ -1158,9 +1159,12 @@ const handleSuperAdminRemoveStudent = async () => {
                     <br />
                     <small style={{ color: 'var(--info)' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
                   </div>
-                    <button style={{ ...redLink, flexShrink: 0 }} onClick={() => handleToggleCommissioner(c.student_id)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={c.student_id} role="commission" />
+                      <button style={{ ...redLink, flexShrink: 0 }} onClick={() => handleToggleCommissioner(c.student_id)}>
                       Revoke
                     </button>
+                    </div>
                   </div>
 
                   <select
@@ -1872,9 +1876,12 @@ const handleSuperAdminRemoveStudent = async () => {
                         </>
                       )}
                     </div>
-                    <button style={redLink} onClick={() => handleToggleItAdmin(a.student_id)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={a.student_id} role="it_admin" />
+                      <button style={redLink} onClick={() => handleToggleItAdmin(a.student_id)}>
                       Revoke
                     </button>
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <input
@@ -2104,9 +2111,12 @@ const handleSuperAdminRemoveStudent = async () => {
                         </>
                       )}
                     </div>
-                    <button style={redLink} onClick={() => handleToggleFinancialController(a.student_id)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={a.student_id} role="financial_controller" />
+                      <button style={redLink} onClick={() => handleToggleFinancialController(a.student_id)}>
                       Revoke
                     </button>
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <input
@@ -2186,9 +2196,12 @@ const handleSuperAdminRemoveStudent = async () => {
                         </>
                       )}
                     </div>
-                    <button style={redLink} onClick={() => handleToggleOverseer(a.student_id)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={a.student_id} role="overseer" />
+                      <button style={redLink} onClick={() => handleToggleOverseer(a.student_id)}>
                       Revoke
                     </button>
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     <input

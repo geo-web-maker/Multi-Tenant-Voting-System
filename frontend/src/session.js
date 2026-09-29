@@ -47,9 +47,47 @@ function decodeJwtClaims(token) {
   }
 }
 
+// ── "View as" (superadmin read-only window into another admin's interface) ──
+// A superadmin's "View" button mints a read-only token server-side, parks it in localStorage under a
+// one-time nonce and opens this app in a new tab with ?view_as=<nonce>. That tab starts with a wiped
+// sessionStorage (so it never inherits the superadmin's own token), loads the read-only session and
+// shows a banner. Actual read-only enforcement is on the server; this is just the plumbing.
+export const VIEW_AS_KEY = 'view_as';
+const VIEW_AS_HANDOFF_PREFIX = 'viewas:';
+
+export const getViewAs = () => {
+  try { return JSON.parse(safeGet(VIEW_AS_KEY) || 'null'); } catch { return null; }
+};
+
+export function consumeViewAsHandoff() {
+  let nonce = null;
+  try { nonce = new URLSearchParams(window.location.search).get(VIEW_AS_KEY); } catch { /* ignore */ }
+  if (!nonce) return;
+  const lsKey = VIEW_AS_HANDOFF_PREFIX + nonce;
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(lsKey) || 'null'); localStorage.removeItem(lsKey); } catch { /* ignore */ }
+  try { window.history.replaceState(null, '', window.location.pathname); } catch { /* ignore */ }
+  if (!d || !d.access_token || Date.now() - (d.ts || 0) > 60000) return;   // one-time, 60s window
+  try { sessionStorage.clear(); } catch { /* ignore */ }   // a new tab may inherit the opener's sessionStorage
+  safeSet('admin_role', d.role);
+  safeSet(ADMIN_TOKEN_KEY, d.access_token);
+  if (d.org_slug) safeSet('superadmin_active_org_slug', d.org_slug);
+  if (d.role === 'commission') safeSet('commissioner_id', d.student_id);
+  if (d.role === 'it_admin') { safeSet('it_admin_id', d.student_id); safeSet('it_admin_name', d.full_name || ''); }
+  if (d.role === 'financial_controller') { safeSet('financial_controller_id', d.student_id); safeSet('financial_controller_name', d.full_name || ''); }
+  if (d.role === 'overseer') { safeSet('overseer_id', d.student_id); safeSet('overseer_name', d.full_name || ''); }
+  safeSet(VIEW_AS_KEY, JSON.stringify({ name: d.full_name || d.student_id, id: d.student_id, role: d.role }));
+}
+
+export function stashViewAsHandoff(data) {
+  const nonce = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
+  localStorage.setItem(VIEW_AS_HANDOFF_PREFIX + nonce, JSON.stringify({ ...data, ts: Date.now() }));
+  return nonce;
+}
+
 export function clearAdminSession() {
   [
-    'admin_role', ADMIN_TOKEN_KEY, 'commissioner_id',
+    VIEW_AS_KEY, 'admin_role', ADMIN_TOKEN_KEY, 'commissioner_id',
     'it_admin_id', 'it_admin_name',
     'financial_controller_id', 'financial_controller_name',
     'overseer_id', 'overseer_name', PW_PENDING_KEY,

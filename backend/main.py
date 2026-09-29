@@ -421,6 +421,11 @@ async def auth_guard_middleware(request: Request, call_next):
     if payload.get("role") not in ADMIN_ROLES:
         return JSONResponse(status_code=403, content={"detail": "Not authorized."})
 
+    # "View as" sessions (minted by /superadmin/view-as) are strictly read-only: enforced here, on
+    # the server, so it holds no matter what the browser does. Only GET/HEAD/OPTIONS get through.
+    if payload.get("view_only") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        return JSONResponse(status_code=403, content={"detail": "Read-only view: this action is disabled."})
+
     # Superadmin-only namespace, even though every caller here already holds
     # a valid admin token.
     if request.url.path.startswith("/superadmin") and payload["role"] != "superadmin":
@@ -6285,6 +6290,45 @@ async def superadmin_force_student_change_deny(change_id: str, request: Request)
         "requested_by": change.get("requested_by", "")
     }, org_id=request.state.org_id)
     return {"status": "force_denied"}
+
+
+# =============================================================================
+# VIEW AS  (superadmin: read-only window into another admin's interface)
+# =============================================================================
+# Mints a short-lived token carrying the target admin's role + id and view_only=True. The frontend
+# opens it in a separate tab, so the real dashboard renders with the real data. The auth guard
+# rejects every non-GET request for such a token, and it cannot reach /superadmin routes because
+# its role is the target's, not superadmin. Each session is audit-logged with who viewed whom.
+
+VIEW_AS_MINUTES = int(os.getenv("VIEW_AS_MINUTES", "30"))
+VIEW_AS_ROLE_FLAGS = {"it_admin": "is_it_admin", "commission": "is_commissioner",
+                      "financial_controller": "is_financial_controller", "overseer": "is_overseer"}
+
+
+class ViewAsRequest(BaseModel):
+    student_id: str
+    role: str
+
+
+@app.post("/superadmin/view-as")
+async def superadmin_view_as(data: ViewAsRequest, request: Request,
+                             admin: dict = Depends(require_role("superadmin"))):
+    flag = VIEW_AS_ROLE_FLAGS.get(data.role)
+    if not flag:
+        raise HTTPException(400, "Unknown admin role.")
+    voter = await db.voters.find_one(org_query(request, {**get_forgiving_filter(data.student_id), flag: True}))
+    if not voter:
+        raise HTTPException(404, "That person does not currently hold this admin role.")
+    token = create_access_token(
+        subject=voter["student_id"], role=data.role, org_id=request.state.org_id,
+        full_name=voter.get("full_name", ""), scope="full", expire_minutes=VIEW_AS_MINUTES,
+        extra_claims={"view_only": True, "viewer": current_actor(request)})
+    await log_action("admin_view_as_started", current_actor(request), {
+        "target": voter["student_id"], "target_name": voter.get("full_name", ""),
+        "role": data.role, "minutes": VIEW_AS_MINUTES}, org_id=request.state.org_id)
+    return {"access_token": token, "role": data.role, "student_id": voter["student_id"],
+            "full_name": voter.get("full_name", ""), "org_slug": request.state.org_slug or "",
+            "expires_in_minutes": VIEW_AS_MINUTES}
 
 
 @app.post("/superadmin/students/add")

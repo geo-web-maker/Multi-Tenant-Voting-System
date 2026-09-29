@@ -36,6 +36,10 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  // "View as" tab: refuse writes before they leave the browser (the server also rejects them).
+  if (sessionStorage.getItem('view_as') && !['get', 'head', 'options'].includes((config.method || 'get').toLowerCase())) {
+    return Promise.reject({ config, response: { status: 403, data: { detail: 'Read-only view: this action is disabled.' } } });
+  }
   const activeSlug = sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG;
   if (activeSlug) {
     config.headers['X-Org-Slug'] = activeSlug;

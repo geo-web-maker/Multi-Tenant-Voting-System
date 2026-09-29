@@ -54,7 +54,8 @@ def set_revocation_check(fn: Callable):
 
 
 def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_name: str = "",
-                         scope: str = "full", expire_minutes: Optional[int] = None) -> str:
+                         scope: str = "full", expire_minutes: Optional[int] = None,
+                         extra_claims: Optional[dict] = None) -> str:
     """`scope` is "full" for a normal session, or "password_change_only" when the account
     still has must_change_password set — main.py's guard then rejects every path for that
     token except /admin/set-password and /admin/logout, so a temp-password login can't be
@@ -74,6 +75,8 @@ def create_access_token(*, subject: str, role: str, org_id: Optional[str], full_
         "iat": now,
         "exp": now + timedelta(minutes=expire_minutes if expire_minutes is not None else JWT_EXPIRE_MINUTES),
     }
+    if extra_claims:   # e.g. {"view_only": True} for superadmin "View as" sessions; can't override core claims
+        payload.update({k: v for k, v in extra_claims.items() if k not in payload})
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
