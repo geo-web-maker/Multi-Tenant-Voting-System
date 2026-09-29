@@ -245,7 +245,7 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
           <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', opacity: 0.85, lineHeight: '1.9' }}>
             <li><strong>Fill and Submit Form:</strong> Complete the form below and submit your application.</li>
             <li><strong>Application Review:</strong> The Election Commission will review your submission.</li>
-            <li><strong>Access to Candidate Portal:</strong> Check your registered phone number for an SMS link to your candidate portal.</li>
+            <li><strong>Access to Portal:</strong> Check your registered phone number for an SMS link to your candidate portal.</li>
             <li><strong>Track Your Status:</strong> Use the portal link to follow your application progress and view the final outcome.</li>
             <li><strong>Need Help?</strong> If no phone number is listed on your student record, contact the IT administrators for assistance.</li>
           </ul>

@@ -136,7 +136,10 @@ function App() {
   const [captchaKey, setCaptchaKey] = useState(0);
   const [captchaForced, setCaptchaForced] = useState(false);
   const [maskedNumbers, setMaskedNumbers] = useState([]);
-  const [bootName, setBootName] = useState(import.meta.env.VITE_ELECTION_NAME || "");
+  // Splash: static build-time values only, never touched by the DB.
+  const bootName = import.meta.env.VITE_ELECTION_NAME || "";
+  const bootLogoUrl = import.meta.env.VITE_LOGO_URL || "";
+  // Header: dynamic branding only, no Vite fallback.
   const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(() => (restored.step === 2 ? loadResendSeconds() : 0));
   const [selectedPhone, setSelectedPhone] = useState(restored.selectedPhone || "");
@@ -163,7 +166,7 @@ function App() {
   // /superadmin/branding is still in flight. The Mongo-backed branding call
   // still runs and can override these (colors, an updated logo, etc.) — env
   // vars just mean there's nothing to wait on for the first frame.
-  const [logoUrl, setLogoUrl] = useState(import.meta.env.VITE_LOGO_URL || "");
+  const [logoUrl, setLogoUrl] = useState("");
   // Gates the very first paint of the real app. "Ready" here means two
   // things are both true: the backend is actually reachable (checked via
   // /health, not /superadmin/branding — a plain ping, unauthenticated,
@@ -269,12 +272,8 @@ useEffect(() => {
       document.documentElement.style.setProperty('--brand-primary', res.data.primary_color);
     if (res.data.accent_color)
       document.documentElement.style.setProperty('--brand-accent', res.data.accent_color);
-    // Don't let the server's org_name override the static build-time name
-    // once we already have one — swapping it mid-load (or later) is what
-    // made the splash/header look broken. Only fall back to the server
-    // value when no static VITE_ELECTION_NAME was baked in.
-    if (res.data.org_name && !import.meta.env.VITE_ELECTION_NAME)
-      setOrgName(res.data.org_name);
+    // Header name always comes from dynamic branding.
+    if (res.data.org_name) setOrgName(res.data.org_name);
 
     // Update browser tab title dynamically
     if (res.data.org_name) document.title = `${res.data.org_name} Election Portal`;
@@ -665,7 +664,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   };
 
   if (!bootReady) {
-    return <BootSplash orgName={bootName} logoUrl={logoUrl} exiting={bootExiting} stage={bootStage} />;
+    return <BootSplash orgName={bootName} logoUrl={bootLogoUrl} exiting={bootExiting} stage={bootStage} />;
   }
 
   // candidate-portal-spec §4.1: a public, token-linked status page, reachable
