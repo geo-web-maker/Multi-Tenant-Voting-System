@@ -423,6 +423,19 @@ const needsCaptcha = !isAdminPath && turnstileConfigured
     && (captchaForced || electionStatus?.turnstile_mode === 'on');
   const captchaPending = needsCaptcha && !captchaToken;
 
+// Voter <-> admin switch. The two forms share the same state (the voter's "full name" field and the
+// admin's password field are the same variable), so without this a typed admin password would show up
+// as plain text in the voter form, and a voter's name would land in the password field where the eye
+// button could reveal it. Wipe every field, the 2FA prompt and the "show password" toggle on every switch.
+const switchLoginMode = () => {
+  setStudentId("");
+  setName("");
+  setTotpCode("");
+  setNeedsTotp(false);
+  setShowAdminPassword(false);
+  setIsAdminPath(prev => !prev);
+};
+
 const handleVerifyIdentity = async (selectedIdx = null) => {
       setIsVerifying(true);
       try {
@@ -785,6 +798,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               {isAdminPath ? (
                 <>
                   <input
+                    key="admin-email"
+                    name="admin-email"
                     style={inputStyle}
                     value={studentId}
                     onChange={e => { setStudentId(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
@@ -794,6 +809,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   />
                   <div style={{ position: 'relative', marginBottom: '15px' }}>
                     <input
+                      key="admin-password"
+                      name="admin-password"
                       style={{ ...inputStyle, marginBottom: 0, paddingRight: '46px' }}
                       value={name}
                       onChange={e => { setName(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
@@ -833,16 +850,22 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               ) : (
                 <>
                   <input
+                    key="voter-reg-no"
+                    name="voter-reg-no"
                     style={inputStyle}
                     value={studentId}
                     onChange={e => setStudentId(e.target.value)}
                     placeholder={`Student Registration Number e.g. ${placeholderText.id}`}
+                    autoComplete="off"
                   />
                   <input
+                    key="voter-full-name"
+                    name="voter-full-name"
                     style={inputStyle}
                     value={name}
                     onChange={e => setName(e.target.value)}
                     placeholder={`Full Name e.g. ${placeholderText.name}`}
+                    autoComplete="off"
                   />
                 </>
               )}
@@ -860,7 +883,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               >
                 {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Log In" : "Verify & Send Code")}
               </button>
-              <button onClick={() => { setIsAdminPath(!isAdminPath); setNeedsTotp(false); setTotpCode(""); }} style={linkBtnStyle}>
+              <button onClick={switchLoginMode} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an admin? Log in here"}
               </button>
               </div>
