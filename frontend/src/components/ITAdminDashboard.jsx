@@ -34,6 +34,7 @@ export default function ITAdminDashboard({ onLogout }) {
   const [paymentProof, setPaymentProof]   = useState(null);
   const [paymentProofPreview, setPaymentProofPreview] = useState(null);
   const [uploadingProof, setUploadingProof] = useState(false);
+  const [bypass, setBypass] = useState(false);   // superadmin's upload-bypass switch
   
   // ── Add student form state ──
   const [addForm, setAddForm] = useState({
@@ -68,6 +69,7 @@ export default function ITAdminDashboard({ onLogout }) {
   useEffect(() => {
     fetchMyRequests();
     fetchVoters();
+    api.get('/admin/upload-bypass').then(r => setBypass(!!r.data.enabled)).catch(() => {});
   // Mount-only.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -117,14 +119,16 @@ export default function ITAdminDashboard({ onLogout }) {
     if (!cleanPhones.length)        { setAddError('At least one phone number is required.'); return; }
     const invalidPhone = cleanPhones.find(p => !previewPhone(p));
     if (invalidPhone)                { setAddError(`"${invalidPhone}" is not a valid phone number.`); return; }
-    if (!addForm.reason.trim())     { setAddError('Reason is required.');     return; }
-    if (!paymentMethod)             { setAddError('Please select a payment method.'); return; }
-    if (!paymentProof)              { setAddError('Please upload proof of payment.'); return; }
+    if (!bypass) {
+      if (!addForm.reason.trim())     { setAddError('Reason is required.');     return; }
+      if (!paymentMethod)             { setAddError('Please select a payment method.'); return; }
+      if (!paymentProof)              { setAddError('Please upload proof of payment.'); return; }
+    }
   
     setAddSubmitting(true);
     try {
       setUploadingProof(true);
-      const payment_proof_url = await uploadToCloudinary(paymentProof);
+      const payment_proof_url = paymentProof ? await uploadToCloudinary(paymentProof) : '';
       setUploadingProof(false);
   
       await api.post('/it-admin/students/request-add', {
@@ -136,7 +140,7 @@ export default function ITAdminDashboard({ onLogout }) {
         payment_method:    paymentMethod,
         payment_proof_url,
       });
-      setAddSuccess('Request submitted.');
+      setAddSuccess(bypass ? 'Voter added.' : 'Request submitted.');
       setAddForm({ student_id: '', full_name: '', phones: [''], reason: '' });
       setPaymentMethod('');
       setPaymentProof(null);
@@ -255,7 +259,8 @@ export default function ITAdminDashboard({ onLogout }) {
         {activeTab === 'add' && !rosterFrozen && (
           <div className="itadmin-split">
             <div style={card}>
-              <h4 style={cardTitle}>Request to Add a Student</h4>
+              <h4 style={cardTitle}>{bypass ? 'Add a Student' : 'Request to Add a Student'}</h4>
+              {bypass && <p style={{ margin: '0 0 10px', fontSize: '12px', opacity: 0.7 }}>Bypass is ON: reason and proof of payment are optional and the voter is added immediately.</p>}
 
               <form onSubmit={handleAddSubmit} style={formCol}>
                 <label style={lbl}>Student Registration Number *</label>
@@ -285,13 +290,13 @@ export default function ITAdminDashboard({ onLogout }) {
                   + Add another phone number
                 </button>
 
-                <label style={{ ...lbl, marginTop: '10px' }}>Reason for Adding *</label>
+                <label style={{ ...lbl, marginTop: '10px' }}>Reason for Adding{bypass ? ' (optional)' : ' *'}</label>
                 <textarea style={{ ...inp, height: '80px', resize: 'vertical' }}
                   placeholder="e.g. Student was missed during initial registration."
                   value={addForm.reason}
                   onChange={e => setAddForm({ ...addForm, reason: e.target.value })} />
                 
-                <label style={{ ...lbl, marginTop: '14px' }}>Payment Method *</label>
+                <label style={{ ...lbl, marginTop: '14px' }}>Payment Method{bypass ? ' (optional)' : ' *'}</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {['Mobile Money (MTN)', 'Mobile Money (Airtel)', 'Bank Transfer', 'Cash Receipt'].map(method => (
                     <div
@@ -309,7 +314,7 @@ export default function ITAdminDashboard({ onLogout }) {
                   ))}
                 </div>
                 
-                <label style={{ ...lbl, marginTop: '10px' }}>Proof of Payment *</label>
+                <label style={{ ...lbl, marginTop: '10px' }}>Proof of Payment{bypass ? ' (optional)' : ' *'}</label>
                 <label style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   border: '2px dashed var(--border-color)', borderRadius: '10px',
@@ -343,7 +348,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 {addSuccess && <div style={successBox}><Icon name="success" /> {addSuccess}</div>}
 
               <button type="submit" style={{ ...greenBtn, marginTop: '14px' }} disabled={addSubmitting}>
-                {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : addSubmitting ? 'Submitting…' : <>Submit Add Request</>}
+                {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : addSubmitting ? 'Submitting…' : <>{bypass ? 'Add Voter' : 'Submit Add Request'}</>}
               </button>
               </form>
             </div>

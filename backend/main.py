@@ -708,7 +708,7 @@ class ITAdminStudentAdd(BaseModel):
     student_id:        str
     full_name:         str
     phones:            list[str]
-    reason:            str
+    reason:            str = ""
     requested_by:      str
     payment_method:    str = ""
     payment_proof_url: str = ""
@@ -5723,6 +5723,25 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
     bind_identity(request, data.requested_by, "IT Admin account")
     data.full_name = normalize_name(data.full_name)
     data.student_id = normalize_student_id(data.student_id)
+    bypass = await upload_bypass_enabled(request)
+    if not bypass and not data.reason.strip():
+        raise HTTPException(400, "A reason is required.")
+    if bypass:
+        # Superadmin has switched the upload bypass on: no reason / proof of payment needed and no
+        # Financial Controller approval step. The voter is added straight away, and the request is
+        # still recorded (approved, flagged bypass) plus audit-logged and written to the roster ledger.
+        now = datetime.utcnow()
+        reason = data.reason.strip() or "Fully paid, receipt issued (upload bypass)"
+        doc = {**data.dict(), "reason": reason, "change_type": "add", "status": "approved",
+               "requested_at": now, "resolved_at": now, "decided_by": "upload_bypass",
+               "decision_reason": "Superadmin upload bypass was enabled", "bypass": True}
+        result = await db.student_changes.insert_one(org_stamp(request, dict(doc)))
+        await _execute_student_change(doc, request.state.org_id)
+        summary = {"student_id": data.student_id, "full_name": data.full_name, "reason": reason, "bypass": True}
+        await log_action("student_added_via_upload_bypass", current_actor(request), summary, org_id=request.state.org_id)
+        await append_ledger(request.state.org_id, "student_added_via_upload_bypass", str(result.inserted_id),
+                            current_actor(request), current_role(request) or "it_admin", summary)
+        return {"status": "added", "id": str(result.inserted_id), "bypass": True}
     # Prevent duplicate pending requests for same student
     existing = await db.student_changes.find_one(org_query(request, {
         "student_id":  data.student_id,
@@ -8292,6 +8311,45 @@ async def superadmin_put_voter_fields(data: VoterFieldsUpdate, request: Request)
 # ── Mobile Money payment details (shown with the nomination fees) ───────────
 # One number + the name it is registered under, per org. Applicants are told to pay this number, so a
 # change is superadmin-only, needs a reason, and is written to the audit log with the old and new value.
+
+# =============================================================================
+# UPLOAD BYPASS  (superadmin switch)
+# =============================================================================
+# When ON, IT admins can add already-paid voters without a reason / proof of payment and without
+# waiting for Financial Controller approval. OFF by default. Every flip is audit-logged + ledgered.
+
+async def upload_bypass_enabled(request: Request) -> bool:
+    doc = await db.settings.find_one(org_query(request, {"name": "upload_bypass"})) or {}
+    return bool(doc.get("enabled"))
+
+
+@app.get("/admin/upload-bypass")
+async def get_upload_bypass(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    return {"enabled": await upload_bypass_enabled(request)}
+
+
+class UploadBypassUpdate(BaseModel):
+    enabled: bool
+    reason: str = Field(..., max_length=300)
+
+
+@app.put("/superadmin/upload-bypass")
+async def superadmin_put_upload_bypass(data: UploadBypassUpdate, request: Request,
+                                       admin: dict = Depends(require_role("superadmin"))):
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every change.")
+    await db.settings.update_one(
+        org_query(request, {"name": "upload_bypass"}),
+        {"$set": org_stamp(request, {"name": "upload_bypass", "enabled": data.enabled,
+                                     "updated_by": current_actor(request), "updated_at": datetime.utcnow()})},
+        upsert=True)
+    details = {"enabled": data.enabled, "reason": reason}
+    await log_action("upload_bypass_changed", current_actor(request), details, org_id=request.state.org_id)
+    await append_ledger(request.state.org_id, "upload_bypass_changed", "roster", current_actor(request),
+                        "superadmin", details)
+    return {"enabled": data.enabled}
+
 
 PAYMENT_NAME_MAX_LEN = 60
 

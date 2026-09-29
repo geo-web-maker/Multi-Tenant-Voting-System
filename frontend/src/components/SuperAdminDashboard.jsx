@@ -21,6 +21,7 @@ import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
 import VoterImportReview from './VoterImportReview';
 import PaymentInfoPanel from './PaymentInfoPanel';
+import UploadBypassPanel from './UploadBypassPanel';
 import { LoadingBlock } from './Spinner.jsx';
 
 // Signed, server-side upload via our own backend — replaces the old
@@ -1847,7 +1848,7 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
         
         {/* ══════════════ IT ADMINS TAB ══════════════ */}
-        {activeTab === 'security' && <><SecurityPanel /><VoterFieldsPanel /></>}
+        {activeTab === 'security' && <><UploadBypassPanel /><SecurityPanel /><VoterFieldsPanel /></>}
 
         {activeTab === 'it_admins' && (
           <div style={twoCol}>
