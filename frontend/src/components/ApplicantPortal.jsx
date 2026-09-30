@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
 import ClosedNotice, { applicationsNoticeText } from './ClosedNotice';
@@ -8,6 +8,7 @@ import { useHelpMenu } from '../context/HelpMenuContext';
 import MobileMoneyNumber from './MobileMoneyNumber';
 import { usePaymentInfo } from '../paymentInfo';
 import { LoadingBlock } from './Spinner.jsx';
+import { trackStep } from '../analytics';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -26,6 +27,7 @@ const MANIFESTO_MAX_CHARS = 3000;
 
 export default function ApplicantPortal() {
   const { openFees } = useHelpMenu();
+  const startedRef = useRef(false);
   const paymentInfo = usePaymentInfo(20000);
 
   // Text fields of an unfinished application survive a page reload. Files
@@ -121,18 +123,20 @@ export default function ApplicantPortal() {
   if (!file) return;
   setPaymentProof(file);
   setPaymentProofPreview(URL.createObjectURL(file));
+  trackStep('apply', 'proof_selected');
   };
   
 const handleSubmit = async (e) => {
   e.preventDefault();
   setError('');
+  trackStep('apply', 'submit_clicked');
 
-if (!form.student_id.trim())  { setError('Student ID is required.');    return; }
-  if (!form.full_name.trim())   { setError('Full name is required.');      return; }
-  if (!form.position_id)        { setError('Please select a position.');   return; }
-  if (!form.manifesto.trim())   { setError('Manifesto cannot be empty.');  return; }
-  if (!paymentMethod) { setError('Please select a payment method.'); return; }
-  if (!paymentProof)  { setError('Please upload proof of payment.'); return; }
+if (!form.student_id.trim())  { setError('Student ID is required.'); trackStep('apply', 'submit_blocked'); return; }
+  if (!form.full_name.trim())   { setError('Full name is required.'); trackStep('apply', 'submit_blocked'); return; }
+  if (!form.position_id)        { setError('Please select a position.'); trackStep('apply', 'submit_blocked'); return; }
+  if (!form.manifesto.trim())   { setError('Manifesto cannot be empty.'); trackStep('apply', 'submit_blocked'); return; }
+  if (!paymentMethod) { setError('Please select a payment method.'); trackStep('apply', 'submit_blocked'); return; }
+  if (!paymentProof)  { setError('Please upload proof of payment.'); trackStep('apply', 'submit_blocked'); return; }
 
   setUploading(true);
   try {
@@ -251,7 +255,8 @@ if (!form.student_id.trim())  { setError('Student ID is required.');    return; 
           </ul>
         </div>
 
-        <form onSubmit={handleSubmit} style={formCol}>
+        <form onSubmit={handleSubmit} style={formCol}
+          onFocus={() => { if (!startedRef.current) { startedRef.current = true; trackStep('apply', 'form_started'); } }}>
 
           {/* ── Personal details ── */}
           <div style={card}>

@@ -40,7 +40,15 @@ API_EDGES = [100, 250, 500, 1000, 2000, 5000]
 LOAD_EDGES = [500, 1000, 2000, 3000, 5000, 8000]
 FIRST_API_EDGES = [300, 700, 1500, 3000, 5000, 10000]
 COLD_MS = 5000
-CAPS = {"pages": 150, "labels": 60, "errors": 40, "routes": 400}
+CAPS = {"pages": 150, "labels": 60, "errors": 40, "routes": 400, "channels": 30}
+# Funnel outcome tracking: server-side attempts per route, split by a short reason code.
+VOTE_ROUTES = {"/vote", "/vote-bulk"}
+FUNNEL_ROUTES = {"/verify-identity", "/verify-otp", "/apply/check-eligibility", "/apply/upload-image", "/apply"} | VOTE_ROUTES
+REASON_RE = re.compile(r"^[a-z0-9_]{2,32}$")
+# Client-reported funnel steps (fixed vocabulary; anything else is dropped).
+CLIENT_STEPS = {"apply": {"form_started", "proof_selected", "submit_clicked", "submit_blocked"}}
+STAFF_PREFIXES = ("/admin", "/superadmin", "/overseer", "/commission", "/verify-admin")
+STAFF_ROUTES = {"/election-results/voter-roll", "/election-results/turnout-breakdown"}
 MAX_SIDS = 50_000
 SKIP_PATHS = {"/analytics/collect", "/health", "/"}
 
@@ -129,7 +137,7 @@ def _clamp(v, lo, hi, default=0):
 
 
 ALLOWED_FIELDS = {"t", "page", "from", "from_dur", "first", "ns", "second", "entry", "label", "gx", "gy",
-                  "dead", "rage", "pct", "dur", "name", "load_ms", "first_api_ms", "net"}
+                  "dead", "rage", "pct", "dur", "name", "load_ms", "first_api_ms", "net", "u", "src", "flow", "step"}
 
 
 def validate_events(payload: Any) -> tuple[str, int, str, list[dict[str, Any]]]:
@@ -152,7 +160,7 @@ def validate_events(payload: Any) -> tuple[str, int, str, list[dict[str, Any]]]:
             continue
         e = {k: v for k, v in raw.items() if k in ALLOWED_FIELDS}
         t, page = e.get("t"), e.get("page")
-        if t not in {"pv", "click", "scroll", "leave", "err", "perf"} or not page_ok(page):
+        if t not in {"pv", "click", "scroll", "leave", "err", "perf", "fs"} or not page_ok(page):
             continue
         if t == "click":
             label = e.get("label")
@@ -165,8 +173,10 @@ def validate_events(payload: Any) -> tuple[str, int, str, list[dict[str, Any]]]:
             e["from"] = frm if frm == "(entry)" or page_ok(frm) else "(entry)"
             e["from_dur"] = int(_clamp(e.get("from_dur"), 0, 1_800_000))
             e["entry"] = e["entry"] if page_ok(e.get("entry")) else page
-            for k in ("first", "ns", "second"):
+            for k in ("first", "ns", "second", "u"):
                 e[k] = bool(e.get(k))
+            src = e.get("src")
+            e["src"] = src if isinstance(src, str) and LABEL_RE.fullmatch(src) else ""
         elif t == "leave":
             e["dur"] = int(_clamp(e.get("dur"), 0, 1_800_000))
         elif t == "scroll":
@@ -174,10 +184,16 @@ def validate_events(payload: Any) -> tuple[str, int, str, list[dict[str, Any]]]:
         elif t == "err":
             name = str(e.get("name", "Error"))
             e["name"] = name if name in NET_ERRORS or ERR_RE.fullmatch(name) else "Error"
+            e["net"] = e.get("net") if e.get("net") in NET_VALUES else "unknown"
         elif t == "perf":
             e["load_ms"] = int(_clamp(e.get("load_ms"), 0, 60000))
             e["first_api_ms"] = int(_clamp(e.get("first_api_ms"), 0, 60000))
             e["net"] = e.get("net") if e.get("net") in NET_VALUES else "unknown"
+        elif t == "fs":
+            flow, step = e.get("flow"), e.get("step")
+            if step not in CLIENT_STEPS.get(flow, ()):
+                continue
+            e["u"] = bool(e.get("u"))
         out.append(e)
     return sid, w, seg, out
 
@@ -308,6 +324,19 @@ def _day_key(now: datetime) -> str:
     return now.strftime("%Y-%m-%d")
 
 
+_seen_channels: dict[str, set] = defaultdict(set)
+
+
+def _channel_ok(org: str, src: str) -> bool:
+    seen = _seen_channels[org]
+    if src in seen:
+        return True
+    if len(seen) >= CAPS["channels"]:
+        return False
+    seen.add(src)
+    return True
+
+
 def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
     day, t, page = _day_key(now), e["t"], e["page"]
     if page not in _seen_pages[org]:
@@ -318,16 +347,19 @@ def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
     if t == "pv":
         h = {f"h.{now.hour}": 1}
         _inc((org, day, "pv", page, ua_key, device, seg),
-             {"n": 1, "uv": 1 if e["first"] else 0, "dur_sum": 0, "dur_n": 0, **h})
+             {"n": 1, "uv": 1 if e["first"] else 0, "u": 1 if e["u"] else 0, "dur_sum": 0, "dur_n": 0, **h})
         _bump(org, "views")
         frm = e["from"]
         _inc((org, day, "trans", frm, page, device, seg), {"n": 1})
         if frm != "(entry)" and e["from_dur"] > 0:  # time spent on the PREVIOUS page
             _inc((org, day, "pv", frm, ua_key, device, seg), {"dur_sum": e["from_dur"], "dur_n": 1})
+        src = e.get("src", "")
         if e["ns"]:
             _inc((org, day, "sess", e["entry"], source, device, seg), {"n": 1, **h})
         if e["second"]:
             _inc((org, day, "sess2", e["entry"], source, device, seg), {"n": 1})
+        if src and (e["ns"] or e["second"]) and _channel_ok(org, src):
+            _inc((org, day, "chan", src, "", device, seg), {"n": 1 if e["ns"] else 0, "s2": 1 if e["second"] else 0})
     elif t == "leave":
         if e["dur"] > 0:
             _inc((org, day, "pv", page, ua_key, device, seg), {"dur_sum": e["dur"], "dur_n": 1})
@@ -353,7 +385,9 @@ def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
                 return
             _seen_errors[org].add(name)
         _inc((org, day, "err", page, name, device, seg), {"n": 1})
-        if name not in NET_ERRORS:
+        if name in NET_ERRORS:
+            _inc((org, day, "neterr", page, e["net"], device, seg), {"n": 1})
+        else:
             _bump(org, "fe")
     elif t == "perf":
         load, api = e["load_ms"], e["first_api_ms"]
@@ -363,10 +397,13 @@ def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
         if api > 0:
             fields[f"c.{_hist_index(api, FIRST_API_EDGES)}"] = 1
         _inc((org, day, "perf", page, "", device, seg), fields)
+        _inc((org, day, "perfnet", e["net"], "", device, seg), fields)
         _inc((org, day, "net", e["net"], "", "all", "all"), {"n": 1})
         _bump(org, "perf_n")
         if api >= COLD_MS:
             _bump(org, "cold")
+    elif t == "fs":
+        _inc((org, day, "fstep", e["flow"], e["step"], device, seg), {"n": 1, "u": 1 if e["u"] else 0})
 
 
 def ingest(org_id: str, sid: str, width: int, seg: str, ua: str, events: list[dict[str, Any]]) -> None:
@@ -528,10 +565,63 @@ def _timeline_buckets(now: datetime, days: int, bucket: str) -> list[str]:
     return [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
 
 
+def _route_outcomes(fout: dict, route: str) -> dict[str, Any]:
+    """Attempts for one funnel route: total, ok, and the non-ok reasons (largest first)."""
+    m = dict(fout.get(route, {}))
+    total, ok = sum(m.values()), m.get("ok", 0)
+    reasons = {k: v for k, v in m.items() if k != "ok"}
+    return {"route": route, "attempts": total, "ok": ok, "failed": total - ok,
+            "reasons": _rows(reasons)}
+
+
+def build_funnels(pages_u: dict, fsteps: dict, fout: dict) -> dict[str, Any]:
+    """Voting and application funnels. 'sessions' steps count distinct browser sessions (client-reported);
+    'attempts' steps count server-side requests, so a retry counts again. The unit is shown per step."""
+    def sess(page): return int(pages_u.get(page, 0))
+    def step(flow, name): return int(fsteps.get((flow, name), {}).get("u", 0))
+    def okc(*routes): return sum(int(fout.get(r, {}).get("ok", 0)) for r in routes)
+    votes = _route_outcomes(fout, "/vote")
+    bulk = _route_outcomes(fout, "/vote-bulk")
+    vote_reasons: dict[str, int] = defaultdict(int)
+    for o in (votes, bulk):
+        for r in o["reasons"]:
+            vote_reasons[r["label"]] += r["value"]
+    identity, otp = _route_outcomes(fout, "/verify-identity"), _route_outcomes(fout, "/verify-otp")
+    elig, submit, upload = (_route_outcomes(fout, r) for r in ("/apply/check-eligibility", "/apply", "/apply/upload-image"))
+    blocked = int(fsteps.get(("apply", "submit_blocked"), {}).get("n", 0))
+    return {
+        "voting": {
+            "steps": [
+                {"key": "identity_page", "label": "Opened the identity page", "value": sess("voter_identity"), "unit": "sessions"},
+                {"key": "otp_sent", "label": "Identity accepted, code sent", "value": identity["ok"], "unit": "attempts"},
+                {"key": "otp_page", "label": "Reached the code page", "value": sess("voter_otp"), "unit": "sessions"},
+                {"key": "otp_verified", "label": "Code verified", "value": otp["ok"], "unit": "attempts"},
+                {"key": "ballot_page", "label": "Reached the ballot", "value": sess("voter_ballot"), "unit": "sessions"},
+                {"key": "vote_cast", "label": "Vote submitted", "value": okc("/vote", "/vote-bulk"), "unit": "attempts"},
+            ],
+            "identity": identity, "otp": otp,
+            "vote": {"route": "/vote", "attempts": votes["attempts"] + bulk["attempts"], "ok": votes["ok"] + bulk["ok"],
+                     "failed": votes["failed"] + bulk["failed"], "reasons": _rows(vote_reasons)},
+            "attempts_per_session": round(identity["attempts"] / sess("voter_identity"), 2) if sess("voter_identity") else 0,
+        },
+        "apply": {
+            "steps": [
+                {"key": "form_page", "label": "Opened the application form", "value": sess("apply"), "unit": "sessions"},
+                {"key": "form_started", "label": "Started filling it in", "value": step("apply", "form_started"), "unit": "sessions"},
+                {"key": "proof_selected", "label": "Added proof of payment", "value": step("apply", "proof_selected"), "unit": "sessions"},
+                {"key": "submit_clicked", "label": "Pressed submit", "value": step("apply", "submit_clicked"), "unit": "sessions"},
+                {"key": "eligible", "label": "Passed the eligibility check", "value": elig["ok"], "unit": "attempts"},
+                {"key": "submitted", "label": "Application submitted", "value": submit["ok"], "unit": "attempts"},
+            ],
+            "eligibility": elig, "submit": submit, "upload": upload, "blocked_by_form": blocked,
+        },
+    }
+
+
 def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | None = None,
                   bucket: str | None = None) -> dict[str, Any]:
     bucket = bucket or ("hour" if days <= 7 else "day")
-    tl = {k: {"t": k, "views": 0, "sessions": 0} for k in _timeline_buckets(now, days, bucket)}
+    tl = {k: {"t": k, "views": 0, "sessions": 0, "votes": 0} for k in _timeline_buckets(now, days, bucket)}
     cutoff = now - timedelta(days=days)
     views = sessions = sess2 = dur_sum = 0
     pages, devices, browsers, oss = (defaultdict(int) for _ in range(4))
@@ -540,6 +630,11 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
     out_trans, entry_by_page = defaultdict(int), defaultdict(int)
     dead = rage = errors = netfail = 0
     err_classes, network = defaultdict(int), defaultdict(int)
+    pages_u, dead_el, rage_el, neterr = (defaultdict(int) for _ in range(4))
+    fsteps = defaultdict(lambda: {"n": 0, "u": 0})
+    fout = defaultdict(lambda: defaultdict(int))
+    chan = defaultdict(lambda: {"n": 0, "s2": 0})
+    perfnet = defaultdict(lambda: {"n": 0, "cold": 0, "l": [0] * 7, "c": [0] * 7})
     api = defaultdict(lambda: {"n": 0, "e401": 0, "e429": 0, "e4": 0, "e5": 0, "b": [0] * 7})
     perf = defaultdict(lambda: {"n": 0, "cold": 0, "l": [0] * 7, "c": [0] * 7})
     hour = [0] * 24
@@ -561,6 +656,7 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
             views += n
             dur_sum += d.get("dur_sum", 0)
             pages[k1] += n
+            pages_u[k1] += d.get("u", 0)
             devices[d.get("device", "desktop")] += n
             b, o = (k2.split("|") + ["Other"])[:2]
             browsers[b] += n
@@ -575,12 +671,13 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
             src_sess[k2] += n
             entries[(k1, k2)] += n
             entry_by_page[k1] += n
-            for i in range(24):
-                h = _sub(d, "h", i)
-                if h:
-                    put(day, i, "sessions", h)
             if bucket == "day":
                 put(day, None, "sessions", n)
+            else:
+                for i in range(24):
+                    h = _sub(d, "h", i)
+                    if h:
+                        put(day, i, "sessions", h)
         elif kind == "sess2":
             sess2 += n
             src_sess2[k2] += n
@@ -592,8 +689,30 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
             elements[(k1, k2)] += n
         elif kind == "dead":
             dead += n
+            dead_el[(k1, k2)] += n
         elif kind == "rage":
             rage += n
+            rage_el[(k1, k2)] += n
+        elif kind == "neterr":
+            neterr[(k1, k2)] += n
+        elif kind == "chan":
+            chan[k1]["n"] += n
+            chan[k1]["s2"] += d.get("s2", 0)
+        elif kind == "fstep":
+            fsteps[(k1, k2)]["n"] += n
+            fsteps[(k1, k2)]["u"] += d.get("u", 0)
+        elif kind == "fout":
+            fout[k1][k2] += n
+            if k1 in VOTE_ROUTES and k2 == "ok":
+                for i in range(24):
+                    h = _sub(d, "h", i)
+                    if h:
+                        put(day, i, "votes", h)
+        elif kind == "perfnet":
+            p = perfnet[k1]
+            p["n"] += n
+            p["cold"] += d.get("cold", 0)
+            p["l"], p["c"] = _add(p["l"], _hist(d, "l")), _add(p["c"], _hist(d, "c"))
         elif kind == "err":
             if k2 in NET_ERRORS:
                 netfail += n
@@ -631,9 +750,9 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
     perf_n = sum(p["n"] for p in perf.values())
     cold_n = sum(p["cold"] for p in perf.values())
     api_rows = []
-    for route, a in sorted(api.items(), key=lambda x: -x[1]["n"])[:50]:
+    for route, a in sorted(api.items(), key=lambda x: -x[1]["n"])[:80]:
         errs = a["e401"] + a["e429"] + a["e4"] + a["e5"]
-        api_rows.append({"route": route, "requests": a["n"], "e401": a["e401"], "e429": a["e429"], "e4": a["e4"],
+        api_rows.append({"route": route, "audience": route_audience(route), "requests": a["n"], "e401": a["e401"], "e429": a["e429"], "e4": a["e4"],
                          "e5": a["e5"], "error_rate": errs / a["n"] if a["n"] else 0,
                          "p50": pct(a["b"], API_EDGES, .5), "p95": pct(a["b"], API_EDGES, .95)})
     return {
@@ -645,7 +764,7 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
         "timeline": {"bucket": bucket, "points": list(tl.values())},
         "hour_of_day": hour,
         "top_pages": [{"label": k, "value": v, "exits": max(0, v - out_trans.get(k, 0)),
-                       "entries": entry_by_page.get(k, 0)} for k, v in sorted(pages.items(), key=lambda x: -x[1])[:15]],
+                       "entries": entry_by_page.get(k, 0), "sessions_reached": pages_u.get(k, 0)} for k, v in sorted(pages.items(), key=lambda x: -x[1])[:15]],
         "devices": _rows(devices), "browsers": _rows(browsers, 10), "os": _rows(oss, 10),
         "entry_sources": [{"label": s, "value": v, "bounce": max(0.0, 1 - src_sess2.get(s, 0) / v) if v else 0}
                           for s, v in sorted(src_sess.items(), key=lambda x: -x[1])],
@@ -666,6 +785,18 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
         "cold_starts": {"sessions": perf_n, "suspected": cold_n, "pct": cold_n / perf_n if perf_n else 0},
         "network": [{"label": k, "value": v, "share": v / max(1, sum(network.values()))}
                     for k, v in sorted(network.items(), key=lambda x: -x[1])],
+        "network_perf": [{"net": k, "sessions": v["n"], "load_p50": pct(v["l"], LOAD_EDGES, .5),
+                          "load_p95": pct(v["l"], LOAD_EDGES, .95), "first_api_p50": pct(v["c"], FIRST_API_EDGES, .5),
+                          "first_api_p95": pct(v["c"], FIRST_API_EDGES, .95), "cold_pct": v["cold"] / v["n"] if v["n"] else 0}
+                         for k, v in sorted(perfnet.items(), key=lambda x: -x[1]["n"])],
+        "friction": {
+            "dead_by_element": [{"page": p, "label": lb, "value": v} for (p, lb), v in sorted(dead_el.items(), key=lambda x: -x[1])[:15]],
+            "rage_by_element": [{"page": p, "label": lb, "value": v} for (p, lb), v in sorted(rage_el.items(), key=lambda x: -x[1])[:15]],
+            "network_failures": [{"label": f"{p} · {n_}", "value": v} for (p, n_), v in sorted(neterr.items(), key=lambda x: -x[1])[:15]],
+        },
+        "channels": [{"label": k, "value": v["n"], "bounce": max(0.0, 1 - v["s2"] / v["n"]) if v["n"] else 0}
+                     for k, v in sorted(chan.items(), key=lambda x: -x[1]["n"])],
+        "funnels": build_funnels(pages_u, fsteps, fout),
         "meta": {"live_is_approximate": True, "dropped_over_capacity": _dropped_over_capacity,
                  "last_flush_at": _last_flush_at, **(meta or {})},
     }
@@ -690,7 +821,7 @@ def _purge_memory(org_id: str) -> None:
     for store in (_deltas, _heat):
         for k in [k for k in store if k[0] == org_id]:
             store.pop(k, None)
-    for store in (_seen_pages, _seen_errors, _minutes):
+    for store in (_seen_pages, _seen_errors, _minutes, _seen_channels):
         store.pop(org_id, None)
     for k in [k for k in _seen_labels if k[0] == org_id]:
         _seen_labels.pop(k, None)
@@ -829,7 +960,22 @@ def set_org_resolver(fn) -> None:
     _org_id_resolver = fn
 
 
-def _record_api(org: str, route: str, status: int, ms: float) -> None:
+def set_reason(request: Any, code: Any) -> None:
+    """Tag the current request with a short outcome reason (e.g. 'name_mismatch'). Never raises."""
+    try:
+        if isinstance(code, str) and REASON_RE.fullmatch(code):
+            request.state.an_reason = code
+    except Exception:
+        pass
+
+
+def route_audience(route: str) -> str:
+    if route in STAFF_ROUTES or route.startswith(STAFF_PREFIXES):
+        return "staff"
+    return "other" if route.startswith("(") else "voter"
+
+
+def _record_api(org: str, route: str, status: int, ms: float, reason: str | None = None) -> None:
     if route not in _seen_routes:
         if len(_seen_routes) >= CAPS["routes"]:
             return
@@ -843,7 +989,14 @@ def _record_api(org: str, route: str, status: int, ms: float) -> None:
         fields["e4"] = 1
     elif status >= 500:
         fields["e5"] = 1
-    _inc((org, _day_key(datetime.now(timezone.utc)), "api", route, "", "all", "all"), fields)
+    now = datetime.now(timezone.utc)
+    _inc((org, _day_key(now), "api", route, "", "all", "all"), fields)
+    if route in FUNNEL_ROUTES:  # attempts split by reason; a tagged 2xx (e.g. needs_phone_choice) is not a plain "ok"
+        code = reason if reason and REASON_RE.fullmatch(reason) else ("ok" if status < 400 else f"http_{status}")
+        ffields = {"n": 1}
+        if route in VOTE_ROUTES and code == "ok":
+            ffields[f"h.{now.hour}"] = 1
+        _inc((org, _day_key(now), "fout", route, code, "all", "all"), ffields)
     if status >= 500:
         _bump(org, "s5", route=route)
     elif status == 429:
@@ -856,7 +1009,8 @@ async def _record_outcome(request: Request, status: int, started: float) -> None
     if not org and slug and _org_id_resolver is not None:
         org = await _org_id_resolver(slug)
     if org:
-        _record_api(org, route_template(request, status), status, (time.monotonic() - started) * 1000)
+        _record_api(org, route_template(request, status), status, (time.monotonic() - started) * 1000,
+                    getattr(request.state, "an_reason", None))
 
 
 async def outcome_middleware(request: Request, call_next):
@@ -878,7 +1032,7 @@ async def outcome_middleware(request: Request, call_next):
 async def _warm_caps(db) -> None:
     """Fill the cardinality sets from existing data so caps survive restarts."""
     cur = db.analytics_counters.aggregate([
-        {"$match": {"kind": {"$in": ["pv", "click", "err", "api"]}}},
+        {"$match": {"kind": {"$in": ["pv", "click", "err", "api", "chan"]}}},
         {"$group": {"_id": {"o": "$org_id", "k": "$kind", "a": "$k1", "b": "$k2"}}},
         {"$limit": 20000}])
     async for r in cur:
@@ -891,6 +1045,8 @@ async def _warm_caps(db) -> None:
             _seen_errors[i["o"]].add(i["b"])
         elif i["k"] == "api":
             _seen_routes.add(i["a"])
+        elif i["k"] == "chan":
+            _seen_channels[i["o"]].add(i["a"])
 
 
 async def start(db) -> None:

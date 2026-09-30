@@ -5,6 +5,7 @@ import RevealGroup from './RevealGroup';
 import { LoadingBlock } from './Spinner.jsx';
 import usePolling from '../hooks/usePolling';
 import { TimelineChart, HourBars, BarRows } from './UsageCharts';
+import { ApplyFunnelPanel, VotingFunnelPanel, FrictionDetail, NetworkPerformance, ChannelsPanel } from './FunnelPanels';
 import { fmtZoned, parseUtc, DEFAULT_TZ } from '../tz';
 
 const HEATMAP_PAGES = ['voter_identity', 'results', 'apply'];
@@ -38,6 +39,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   const [days, setDays] = useState(7);
   const [seg, setSeg] = useState('public');
   const [device, setDevice] = useState('all');
+  const [apiAud, setApiAud] = useState('voter'); // API table: voter-facing | staff | all
   const [auto, setAuto] = useState(false);
   const [compare, setCompare] = useState(false);
   const [selected, setSelected] = useState([]);
@@ -68,6 +70,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   useEffect(() => { api.get('/election-schedule').then((r) => setSchedule(r.data)).catch(() => {}); }, []);
   usePolling(load, 30000, auto);
 
+  const apiRows = (data?.api || []).filter((a) => apiAud === 'all' || a.audience === apiAud);
   const tz = schedule?.timezone || DEFAULT_TZ;
   const points = data?.timeline?.points || [];
   const markers = useMemo(() => {
@@ -166,12 +169,16 @@ export default function AnalyticsPanel({ organizations = [] }) {
               <div style={legend}>
                 <span><i style={{ ...dot, background: 'var(--brand-primary)' }} /> Views</span>
                 <span><i style={{ ...dot, background: 'var(--brand-accent)' }} /> Sessions</span>
+                {points.some((p) => p.votes > 0) && <span><i style={{ ...dot, background: 'var(--success, #2e9e5b)' }} /> Votes cast</span>}
                 {visibleMarkers.map((m) => (
                   <span key={m.label}><i style={{ ...dot, background: 'var(--danger)' }} /> {m.label} {fmtZoned(m.iso, tz)}</span>
                 ))}
               </div>
               <p style={muted}>Chart labels are in UTC. Marker times are shown in {tz}.</p>
             </div>
+
+            <ApplyFunnelPanel funnel={data?.funnels?.apply} />
+            <VotingFunnelPanel funnel={data?.funnels?.voting} />
 
             <div style={panel} className="card-pad">
               <h3 style={h3}>Activity by hour of day</h3>
@@ -180,7 +187,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
             </div>
 
             <div style={grid}>
-              <Card title="Top pages"><BarRows items={data?.top_pages} sub={(x) => `Entries ${x.entries} · exits ${x.exits}`} /></Card>
+              <Card title="Top pages"><BarRows items={data?.top_pages} sub={(x) => `Sessions ${x.sessions_reached} · entries ${x.entries} · exits ${x.exits}`} /></Card>
               <Card title="Devices"><BarRows items={data?.devices} /></Card>
               <Card title="Browsers"><BarRows items={data?.browsers} /></Card>
               <Card title="Operating systems"><BarRows items={data?.os} /></Card>
@@ -209,6 +216,8 @@ export default function AnalyticsPanel({ organizations = [] }) {
               </div>
             </div>
 
+            <ChannelsPanel channels={data?.channels} />
+
             <div style={panel} className="card-pad">
               <h3 style={h3}>Friction</h3>
               <BarRows items={[
@@ -221,17 +230,24 @@ export default function AnalyticsPanel({ organizations = [] }) {
               <BarRows items={data?.error_classes} empty="No errors have been recorded for this period." />
             </div>
 
+            <FrictionDetail friction={data?.friction} />
+
             <div style={panel} className="card-pad">
               <h3 style={h3}>Reliability and performance</h3>
               <p style={{ margin: '0 0 10px', fontSize: 14 }}>
                 Suspected cold starts: {pct(data?.cold_starts?.pct)} of measured sessions ({data?.cold_starts?.suspected || 0} of {data?.cold_starts?.sessions || 0}).
               </p>
               <h4 style={h4}>API outcomes by route</h4>
-              {data?.api?.length ? (
+              <div role="group" aria-label="API audience" style={{ display: 'flex', gap: 4, marginBottom: 8, maxWidth: 420 }}>
+                {[['voter', 'Voter-facing'], ['staff', 'Staff'], ['all', 'All']].map(([v, l]) => (
+                  <button key={v} type="button" aria-pressed={apiAud === v} onClick={() => setApiAud(v)} style={apiAud === v ? segOn : segOff}>{l}</button>
+                ))}
+              </div>
+              {apiRows.length ? (
                 <div className="table-scroll">
                   <table style={table}>
                     <thead><tr>{['Route', 'Requests', '401', '429', 'Other 4xx', '5xx', 'p50', 'p95'].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
-                    <tbody>{data.api.map((a) => (
+                    <tbody>{apiRows.map((a) => (
                       <tr key={a.route}>
                         <td style={{ ...td, overflowWrap: 'anywhere' }}>{a.route}</td><td style={td}>{a.requests}</td><td style={td}>{a.e401}</td>
                         <td style={td}>{a.e429}</td><td style={td}>{a.e4}</td><td style={td}>{a.e5}</td><td style={td}>{ms(a.p50)}</td><td style={td}>{ms(a.p95)}</td>
@@ -243,6 +259,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
               <h4 style={h4}>Page load and first response, by entry page and device</h4>
               <BarRows items={(data?.perf || []).map((p) => ({ label: `${p.page} · ${p.device}`, value: p.sessions, p }))}
                 sub={(x) => `Load p50 ${ms(x.p.load_p50)}, p95 ${ms(x.p.load_p95)} · first API p50 ${ms(x.p.first_api_p50)}, p95 ${ms(x.p.first_api_p95)} · cold ${pct(x.p.cold_pct)}`} />
+              <NetworkPerformance rows={data?.network_perf} />
               <h4 style={h4}>Network quality</h4>
               <BarRows items={data?.network} format={(v) => v} sub={(x) => `${pct(x.share)} of sessions`} />
               <p style={{ ...muted, marginTop: 12 }}>

@@ -5,6 +5,8 @@ const SID_KEY = 'an_sid';
 const PAGES_KEY = 'an_pages';
 const COUNT_KEY = 'an_pv_count';
 const PERF_KEY = 'an_perf_sent';
+const SRC_KEY = 'an_src';
+const STEPS_KEY = 'an_steps';
 const IN_HEATMAP_FRAME = (() => { try { return new URLSearchParams(window.location.search).has('heatmap'); } catch { return false; } })();
 
 let currentPage = null;
@@ -31,6 +33,17 @@ function sid() {
   let v = sessionStorage.getItem(SID_KEY);
   if (!v) { v = crypto.randomUUID(); sessionStorage.setItem(SID_KEY, v); }
   return v;
+}
+// Optional traffic-channel tag from a shared link, e.g. https://site/?src=whatsapp. Lower-case slug only; kept for the tab.
+function channel() {
+  try {
+    const kept = sessionStorage.getItem(SRC_KEY);
+    if (kept !== null) return kept;
+    const raw = (new URLSearchParams(window.location.search).get('src') || '').trim().toLowerCase();
+    const v = /^[a-z0-9_-]{2,40}$/.test(raw) ? raw : '';
+    sessionStorage.setItem(SRC_KEY, v);
+    return v;
+  } catch { return ''; }
 }
 function slug() { return sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG; }
 const visible = () => document.visibilityState === 'visible';
@@ -87,6 +100,7 @@ export function trackPage(name) {
   enqueue({
     t: 'pv', page: name, from: pages.length ? pages[pages.length - 1] : '(entry)', from_dur: fromDur,
     first: count === 0, ns: count === 0, second: count === 1, entry: pages[0] || name,
+    u: !pages.includes(name), src: channel(), // u: first time this session reaches this page
   });
   pages.push(name);
   sessionStorage.setItem(PAGES_KEY, JSON.stringify(pages.slice(-50)));
@@ -94,6 +108,17 @@ export function trackPage(name) {
   maybeSendPerf();
 }
 export const getCurrentPage = () => currentPage;
+
+// Named funnel step inside a page (fixed vocabulary, checked server-side). u = first time this session.
+export function trackStep(flow, step) {
+  if (!currentPage || !allowed()) return;
+  let done = [];
+  try { done = JSON.parse(sessionStorage.getItem(STEPS_KEY) || '[]'); } catch { done = []; }
+  const key = `${flow}:${step}`;
+  const u = !done.includes(key);
+  if (u) { done.push(key); try { sessionStorage.setItem(STEPS_KEY, JSON.stringify(done.slice(-40))); } catch { /* ignore */ } }
+  enqueue({ t: 'fs', page: currentPage, flow, step, u });
+}
 export function onPageChange(cb) { listeners.add(cb); return () => listeners.delete(cb); }
 
 function entryPage() {
@@ -164,7 +189,7 @@ export function initAnalytics() {
   window.addEventListener('pagehide', () => { leaveCurrent(); flush(); }, { capture: true });
   document.addEventListener('click', onClick, true);
   document.addEventListener('scroll', onScroll, { capture: true, passive: true });
-  const err = (name) => enqueue({ t: 'err', page: currentPage, name });
+  const err = (name) => enqueue({ t: 'err', page: currentPage, name, net: navigator.connection?.effectiveType || 'unknown' });
   window.addEventListener('error', (e) => err(e?.error?.constructor?.name || 'Error'));
   window.addEventListener('unhandledrejection', (e) => err(e?.reason?.constructor?.name || 'Error'));
   window.addEventListener('an:api', (e) => { if (firstApiMs === null) { firstApiMs = Number(e.detail?.ms) || 0; maybeSendPerf(); } });

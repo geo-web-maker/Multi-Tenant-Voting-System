@@ -2078,11 +2078,14 @@ async def assert_phase_open(request: Request, phase: str, student_id: str | None
     start, end = window.get("start"), window.get("end")
     if start and now < start:
         detail = f"The {label} period has not opened yet. It opens on {_when(start)}."
+        analytics.set_reason(request, "phase_not_open")
     elif end and now > end:
         detail = (f"The {label} period has ended. It closed on {_when(end)}. "
                   "Contact the Electoral Commission if you believe this is an error.")
+        analytics.set_reason(request, "phase_ended")
     else:
         detail = f"The {label} period is currently closed. Contact the Electoral Commission if you believe this is an error."
+        analytics.set_reason(request, "phase_closed")
     raise HTTPException(status_code=403, detail=detail)
 
 
@@ -2279,6 +2282,7 @@ class ApiError(Exception):
 
 @app.exception_handler(ApiError)
 async def api_error_handler(request: Request, exc: ApiError):
+    analytics.set_reason(request, exc.reason)
     body = {"detail": exc.detail}
     if exc.reason:
         body["reason"] = exc.reason
@@ -2824,6 +2828,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
 
     if status_doc and not status_doc.get("is_open", True):
+        analytics.set_reason(request, "closed")
         raise HTTPException(status_code=403, detail="Election is closed.")
 
     # Timing is governed entirely by the "voting" phase schedule (see PHASE_NAMES / assert_phase_open).
@@ -2832,32 +2837,39 @@ async def verify_identity(data: IdentityCheck, request: Request):
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         await ip_record(request, "fails")
+        analytics.set_reason(request, "not_on_roll")
         raise HTTPException(status_code=404, detail="Student ID not found.")
 
     # LEGACY (OTP_LIMITER_MODE=legacy only): permanent 3-send cap. The new limiter never reads otp_count.
     if legacy and student.get("otp_count", 0) >= 3:
+        analytics.set_reason(request, "legacy_cap")
         raise HTTPException(
             status_code=403,
             detail="Too many attempts. Please check the official register for your details."
         )
 
     if student.get("has_voted"):
+        analytics.set_reason(request, "already_voted")
         raise HTTPException(status_code=400, detail="Already voted.")
 
     if not names_match(student.get("full_name", ""), data.full_name):
         await ip_record(request, "fails")
         logger.warning(f"Name Match Fail: Reg({student.get('full_name','')}) vs Input({data.full_name})")
+        analytics.set_reason(request, "name_mismatch")
         raise HTTPException(status_code=400, detail="Name mismatch. Please provide your full registered names.")
 
     phone_list = student.get("phone_numbers", [])
     if not phone_list:
+        analytics.set_reason(request, "no_phone")
         raise HTTPException(status_code=400, detail="No phone found.")
 
     if len(phone_list) > 1 and data.phone_index is None:
+        analytics.set_reason(request, "phone_choice")  # 200, but no code was sent yet
         return {"status": "needs_selection", "masked_numbers": [f"{p[:6]}****{p[-2:]}" for p in phone_list]}
 
     idx = data.phone_index if data.phone_index is not None else 0
     if not 0 <= idx < len(phone_list):
+        analytics.set_reason(request, "bad_phone_choice")
         raise HTTPException(status_code=400, detail="Invalid phone selection.")
     raw_phone = phone_list[idx]
     sid = student["student_id"]
@@ -2894,6 +2906,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     if outcome == "failed":
         if reservation:
             await rollback_send(request, sid, reservation["snapshot"])      # gateway failure is free
+        analytics.set_reason(request, "sms_failed")
         raise HTTPException(status_code=500, detail="SMS delivery failed.")
 
     # "ok" or "ambiguous": the SMS may well be on its way, so the code must be valid and the cooldown must hold.
@@ -2976,6 +2989,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
     search = org_query(request, get_forgiving_filter(data.student_id))
     voter  = await db.voters.find_one(search)
     if not voter:
+        analytics.set_reason(request, "voter_not_found")
         raise HTTPException(status_code=404, detail="Voter not found.")
 
     record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
@@ -2988,6 +3002,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
         )
         if is_expired:
             await db.otps.delete_one(search)
+            analytics.set_reason(request, "no_live_code")
             raise HTTPException(status_code=400, detail="This code has expired. Please request a new one.")
 
         # Constant-time compare so response timing can't leak how many
@@ -3008,6 +3023,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
             return {"status": "success", "voter_token": voter_token}
 
     await _record_otp_failure(request, data.student_id)
+    analytics.set_reason(request, "wrong_code")
     raise HTTPException(status_code=400, detail="Invalid OTP. Please check your messages and try again.")
 
 
@@ -3019,6 +3035,7 @@ async def verify_otp(data: OTPCheck, request: Request):
     search = org_query(request, get_forgiving_filter(data.student_id))
     voter = await db.voters.find_one(search)
     if not voter:
+        analytics.set_reason(request, "voter_not_found")
         raise HTTPException(status_code=404, detail="Voter not found.")
     sid = voter["student_id"]
 
@@ -3073,8 +3090,13 @@ def _assert_voter_session(request: Request, student: dict):
     expiry, role, student and tenant; the jti must also match the one stored at the LATEST
     OTP verification, so a newer login (or a used token) invalidates older tokens. A 401 here
     is what BallotBox.jsx turns into 'session expired, verify again'."""
-    payload = verify_voter_token(request, normalize_student_id(student.get("student_id", "")), request.state.org_id)
+    try:
+        payload = verify_voter_token(request, normalize_student_id(student.get("student_id", "")), request.state.org_id)
+    except HTTPException:
+        analytics.set_reason(request, "session_expired")
+        raise
     if not student.get("vote_jti") or not secrets.compare_digest(str(payload["jti"]), str(student["vote_jti"])):
+        analytics.set_reason(request, "session_expired")
         raise HTTPException(status_code=401, detail="Your voting session has expired. Please verify your identity again.")
 
 
@@ -3083,6 +3105,7 @@ async def cast_vote(data: VoteRequest, request: Request):
     try:
         candidate_oid = ObjectId(data.candidate_id)
     except Exception:
+        analytics.set_reason(request, "invalid_candidate")
         raise HTTPException(status_code=400, detail="Invalid candidate.")
 
     # Wrapped in a transaction: "mark voter as having voted" and "increment
@@ -3097,6 +3120,7 @@ async def cast_vote(data: VoteRequest, request: Request):
         org_query(request, {"_id": candidate_oid})
     )
     if not candidate_exists:
+        analytics.set_reason(request, "candidate_missing")
         raise HTTPException(status_code=404, detail="Candidate not found.")
 
     await assert_voting_allowed(request, data.student_id)
@@ -3106,8 +3130,10 @@ async def cast_vote(data: VoteRequest, request: Request):
             org_query(request, get_forgiving_filter(data.student_id)), session=session
         )
         if not student or student.get("has_voted"):
+            analytics.set_reason(request, "ineligible")
             raise HTTPException(status_code=400, detail="Ineligible voter.")
         if student.get("last_status") != "authenticated":
+            analytics.set_reason(request, "otp_required")
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
         _assert_voter_session(request, student)
 
@@ -3115,6 +3141,7 @@ async def cast_vote(data: VoteRequest, request: Request):
             org_query(request, {"_id": candidate_oid}), session=session
         )
         if not candidate_still_exists:
+            analytics.set_reason(request, "candidate_missing")
             raise HTTPException(status_code=404, detail="Candidate not found.")
 
         claimed = await db.voters.update_one(
@@ -3123,6 +3150,7 @@ async def cast_vote(data: VoteRequest, request: Request):
             session=session
         )
         if claimed.matched_count != 1:
+            analytics.set_reason(request, "ineligible")
             raise HTTPException(status_code=400, detail="Ineligible voter.")
         # Append-only insert — no shared document for concurrent voters to
         # lock against, unlike the $inc this replaces. No voter_id is stored:
@@ -3163,6 +3191,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     try:
         candidate_oids = [ObjectId(c_id) for c_id in data.candidate_ids]
     except Exception:
+        analytics.set_reason(request, "invalid_candidate")
         raise HTTPException(status_code=400, detail="One or more candidate IDs are invalid.")
 
     # Same id submitted twice used to slip through: the existence check only
@@ -3172,6 +3201,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     # de-duping, since a client sending duplicates is either buggy or
     # tampering with the ballot.
     if len(candidate_oids) != len(set(candidate_oids)):
+        analytics.set_reason(request, "duplicate_pick")
         raise HTTPException(status_code=400, detail="Duplicate candidate selected.")
 
     await assert_voting_allowed(request, data.student_id)
@@ -3185,10 +3215,13 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             org_query(request, get_forgiving_filter(data.student_id)), session=session
         )
         if not student:
+            analytics.set_reason(request, "voter_not_found")
             raise HTTPException(status_code=404, detail="Voter not found.")
         if student.get("has_voted"):
+            analytics.set_reason(request, "already_voted")
             raise HTTPException(status_code=400, detail="You have already cast your vote.")
         if student.get("last_status") != "authenticated":
+            analytics.set_reason(request, "otp_required")
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
         _assert_voter_session(request, student)
 
@@ -3202,6 +3235,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             org_query(request, {"_id": {"$in": candidate_oids}}), session=session
         ).to_list(length=None)
         if len(candidates) != len(set(candidate_oids)):
+            analytics.set_reason(request, "candidate_missing")
             raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
 
         # Nothing previously stopped two candidates for the SAME position
@@ -3210,6 +3244,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         # per position, same as a real ballot.
         positions = [c.get("position") for c in candidates]
         if len(positions) != len(set(positions)):
+            analytics.set_reason(request, "duplicate_pick")
             raise HTTPException(status_code=400, detail="Only one candidate can be selected per position.")
 
         claimed = await db.voters.update_one(
@@ -3218,6 +3253,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             session=session
         )
         if claimed.matched_count != 1:
+            analytics.set_reason(request, "already_voted")
             raise HTTPException(status_code=400, detail="You have already cast your vote.")
         # Same append-only pattern as /vote, batched as one insert_many so a
         # multi-position ballot is still a single round trip inside the
@@ -3425,10 +3461,12 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     await assert_phase_open(request, "applications")
 
     if file.content_type not in ALLOWED_IMAGE_TYPES:
+        analytics.set_reason(request, "bad_file_type")
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP, or GIF images are allowed.")
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
+        analytics.set_reason(request, "too_large")
         raise HTTPException(status_code=400, detail="Image must be under 5MB.")
     _assert_real_image(content)
 
@@ -3440,6 +3478,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
             "Cloudinary upload failing (applicant)",
             f"{type(e).__name__}: {e}\nOrg: {getattr(request.state, 'org_id', None)}",
         )
+        analytics.set_reason(request, "upload_failed")
         raise HTTPException(status_code=502, detail="Image upload failed. Please try again.")
 
     return {"secure_url": result["secure_url"]}
@@ -3450,11 +3489,13 @@ async def check_application_eligibility(data: ApplicationEligibilityCheck, reque
     await assert_phase_open(request, "applications", data.student_id)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
+        analytics.set_reason(request, "not_on_roll")
         raise HTTPException(
             status_code=404,
             detail="Your Student ID was not found on the voter register. Please contact IT support if you believe this is an error."
         )
     if not names_match(student.get("full_name", ""), data.full_name):
+        analytics.set_reason(request, "name_mismatch")
         raise HTTPException(
             status_code=400,
             detail="The name entered doesn't match our records for this Student ID. Please enter your full registered name."
@@ -3468,11 +3509,13 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     await assert_phase_open(request, "applications", data.student_id)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
+        analytics.set_reason(request, "not_on_roll")
         raise HTTPException(
             status_code=404,
             detail="Your Student ID was not found on the voter register. Please contact IT support if you believe this is an error."
         )
     if not names_match(student.get("full_name", ""), data.full_name):
+        analytics.set_reason(request, "name_mismatch")
         raise HTTPException(
             status_code=400,
             detail="The name entered doesn't match our records for this Student ID."
@@ -3485,6 +3528,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
         "position_id": data.position_id
     }))
     if existing:
+        analytics.set_reason(request, "already_applied")
         raise HTTPException(400, "You have already applied for this position.")
 
     round_id = await current_round_id(request)

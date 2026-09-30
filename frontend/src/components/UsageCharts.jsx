@@ -28,7 +28,8 @@ export function TimelineChart({ points = [], markers = [], bucket = 'day', label
   const pad = { l: 34, r: 8, t: 10, b: 26 };
   const iw = w - pad.l - pad.r;
   const ih = h - pad.t - pad.b;
-  const max = Math.max(1, ...points.flatMap((p) => [p.views || 0, p.sessions || 0]));
+  const hasVotes = points.some((p) => (p.votes || 0) > 0);
+  const max = Math.max(1, ...points.flatMap((p) => [p.views || 0, p.sessions || 0, hasVotes ? p.votes || 0 : 0]));
   const range = pointsRange(points);
   const x = (i) => pad.l + (points.length > 1 ? (i / (points.length - 1)) * iw : iw / 2);
   const y = (v) => pad.t + ih - ((v || 0) / max) * ih;
@@ -51,6 +52,7 @@ export function TimelineChart({ points = [], markers = [], bucket = 'day', label
         </g>
       ))}
       {points.length > 1 && <polyline fill="none" stroke="var(--brand-accent)" strokeWidth="2" points={line('sessions')} />}
+      {points.length > 1 && hasVotes && <polyline fill="none" stroke="var(--success, #2e9e5b)" strokeWidth="2" strokeDasharray="5 3" points={line('votes')} />}
       {points.length > 1 && <polyline fill="none" stroke="var(--brand-primary)" strokeWidth="3" points={line('views')} />}
       {points.length === 1 && <circle cx={x(0)} cy={y(points[0].views)} r="4" fill="var(--brand-primary)" />}
       {markers.filter(inRange).map((m, i) => (
