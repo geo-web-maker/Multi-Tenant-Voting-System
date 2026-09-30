@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from './icons.jsx';
+import { trackPage } from '../analytics';
 
 const RAIL_COLLAPSED_KEY = 'tabbar-rail-collapsed';
 
@@ -171,7 +172,7 @@ function PillButton({ t, isActive, onChange, tabRef }) {
       key={t.id}
       ref={tabRef}
       onClick={() => onChange(t.id)}
-      className={`tabbar-pill${isActive ? ' is-active' : ''}`}
+      className={`tabbar-pill${isActive ? ' is-active' : ''}`} data-track={`tab-${t.id}`}
     >
       {t.label}
       {t.count !== undefined && t.count !== null && <span style={countPillStyle}>{t.count}</span>}
@@ -185,7 +186,7 @@ function ListItem({ t, isActive, onChange, tabRef }) {
       key={t.id}
       ref={tabRef}
       onClick={() => onChange(t.id)}
-      className={`tabbar-list-item${isActive ? ' is-active' : ''}`}
+      className={`tabbar-list-item${isActive ? ' is-active' : ''}`} data-track={`tab-${t.id}`}
     >
       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {t.label}
@@ -197,6 +198,10 @@ function ListItem({ t, isActive, onChange, tabRef }) {
 
 export default function TabBar({ tabs, groups, activeTab, onChange, className = '' }) {
   const isMobile = useIsMobile();
+  useEffect(() => {
+    const role = sessionStorage.getItem('admin_role');
+    if (role && activeTab) trackPage(`${role}:${String(activeTab).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 40)}`);
+  }, [activeTab]);
   const flatMode = !groups || groups.length === 0;
   const effectiveGroups = flatMode ? [{ label: null, tabs: tabs || [] }] : groups;
 

@@ -46,6 +46,7 @@ from tabular_import import (
 )
 from regno_audit import audit_reg_numbers
 import otp_limits as ol
+import analytics
 
 from auth import (
     create_access_token,
@@ -192,7 +193,11 @@ async def lifespan(app: FastAPI):
     await db.vote_events.create_index([("org_id", 1), ("cast_at", 1)])
     set_revocation_check(_is_token_revoked)
     await _check_config_on_boot()
+    analytics.set_org_slug_resolver(_org_slug_for_id)
+    analytics.set_org_resolver(_resolve_org_id)
+    await analytics.start(db)
     yield
+    await analytics.stop()
     client.close()
 
 
@@ -328,6 +333,39 @@ except Exception as e:
 # Fail-closed tenancy. Set REQUIRE_ORG_CONTEXT=false ONLY for a legacy single-tenant deployment
 # whose data still has org_id=None.
 REQUIRE_ORG_CONTEXT = os.getenv("REQUIRE_ORG_CONTEXT", "true").strip().lower() == "true"
+ORG_CACHE_TTL_S = float(os.getenv("ORG_CACHE_TTL_S", "60"))
+_ORG_CACHE: dict[str, tuple[str, float]] = {}
+
+async def _resolve_org_id(slug):
+    if not slug:
+        return None
+    now = time.monotonic()
+    hit = _ORG_CACHE.get(slug)
+    if hit and hit[1] > now:
+        return hit[0]
+    if hit:
+        _ORG_CACHE.pop(slug, None)
+    doc = await db.organizations.find_one({"slug": slug}, {"_id": 1})
+    if not doc:
+        return None
+    if len(_ORG_CACHE) >= 200:
+        oldest = min(_ORG_CACHE, key=lambda k: _ORG_CACHE[k][1])
+        _ORG_CACHE.pop(oldest, None)
+    _ORG_CACHE[slug] = (str(doc["_id"]), now + ORG_CACHE_TTL_S)
+    return _ORG_CACHE[slug][0]
+
+def _org_slug_for_id(org_id):
+    for slug, (cached_id, expires_at) in list(_ORG_CACHE.items()):
+        if expires_at > time.monotonic() and cached_id == str(org_id):
+            return slug
+    return None
+
+def _invalidate_org_cache(slug=None):
+    if slug is None:
+        _ORG_CACHE.clear()
+    else:
+        _ORG_CACHE.pop(slug, None)
+
 ORG_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json",
                        "/superadmin/orgs", "/superadmin/mfa", "/verify-admin",
                        # Token/id-scoped, not header-scoped (candidate-portal-spec §3.2/§3.4) —
@@ -342,12 +380,10 @@ async def org_context_middleware(request: Request, call_next):
     request.state.org_id = None
     request.state.org_slug = None
     if org_slug:
-        org_doc = await db.organizations.find_one({"slug": org_slug})
-        if not org_doc:
-            # Unknown slug used to fall through as "no tenant" and org_query() then returned
-            # UNSCOPED filters, i.e. every tenant's data.
+        org_id = await _resolve_org_id(org_slug)
+        if not org_id:
             return JSONResponse(status_code=404, content={"detail": "Unknown organization."})
-        request.state.org_id = str(org_doc["_id"])
+        request.state.org_id = org_id
         request.state.org_slug = org_slug
     elif (REQUIRE_ORG_CONTEXT and request.method != "OPTIONS" and request.url.path != "/"
           and not request.url.path.startswith(ORG_EXEMPT_PREFIXES)):
@@ -376,6 +412,7 @@ PUBLIC_PATHS = {
     "/verify-admin", "/election-results", "/election-results/voter-roll",
     "/election-results/turnout-breakdown",
     "/voter-register", "/voter-register/check-number",
+    "/analytics/collect",
     # Backup triggers: called by an external scheduler with a shared secret
     # (X-Backup-Token, checked in backup_routes.py), not by an admin session.
     "/internal/backup/run", "/internal/backup/status", "/internal/backup/report",
@@ -440,8 +477,7 @@ async def auth_guard_middleware(request: Request, call_next):
     # request.state.org_id isn't set yet: resolve the tenant here. Only the superadmin crosses tenants.
     req_org = getattr(request.state, "org_id", None)
     if req_org is None and request.headers.get("X-Org-Slug"):
-        _od = await db.organizations.find_one({"slug": request.headers["X-Org-Slug"]})
-        req_org = str(_od["_id"]) if _od else None
+        req_org = await _resolve_org_id(request.headers["X-Org-Slug"])
     if payload["role"] != "superadmin" and payload.get("org_id") != req_org:
         await log_action(
             "admin_guard_tenant_mismatch", payload.get("sub", "unknown"),
@@ -576,6 +612,8 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
+app.middleware("http")(analytics.outcome_middleware)
+app.include_router(analytics.build_router(lambda: db, require_role, lambda action, actor, details, org_id=None: log_action(action, actor, details, org_id=org_id)))
 app.include_router(build_backup_router(lambda: db))
 
 # =============================================================================
@@ -5237,6 +5275,7 @@ async def create_organization(data: OrganizationCreate, request: Request):
         }
     }
     result = await db.organizations.insert_one(org_doc)
+    _invalidate_org_cache(slug)
     await log_action("organization_created", current_actor(request), {
         "org_id": str(result.inserted_id), "name": data.name, "slug": slug
     })

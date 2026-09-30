@@ -36,6 +36,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  config.__an_started = performance.now();
   // "View as" tab: refuse writes before they leave the browser (the server also rejects them).
   if (sessionStorage.getItem('view_as') && !['get', 'head', 'options'].includes((config.method || 'get').toLowerCase())) {
     return Promise.reject({ config, response: { status: 403, data: { detail: 'Read-only view: this action is disabled.' } } });
@@ -73,8 +74,19 @@ api.interceptors.request.use((config) => {
 // reloads again. This check is what stops that class of bug from cascading
 // even if a future endpoint is accidentally over-protected again.
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (typeof window !== 'undefined') {
+      const ms = performance.now() - (response.config?.__an_started || performance.now());
+      window.dispatchEvent(new CustomEvent('an:api', { detail: { ms, failed: false } }));
+    }
+    return response;
+  },
   (error) => {
+    if (typeof window !== 'undefined') {
+      const ms = performance.now() - (error.config?.__an_started || performance.now());
+      window.dispatchEvent(new CustomEvent('an:api', { detail: { ms, failed: !error.response } }));
+      if (!error.response) window.dispatchEvent(new CustomEvent('an:netfail', { detail: { kind: error.code === 'ECONNABORTED' ? 'timeout' : 'network' } }));
+    }
     const hadToken = Boolean(error.config?.headers?.Authorization);
     if (error.response && error.response.status === 401 && hadToken) {
       sessionStorage.removeItem(ADMIN_TOKEN_KEY);

@@ -15,6 +15,8 @@ import CandidateStatusPortal from './components/CandidateStatusPortal';
 import VerifyCertificate from './components/VerifyCertificate';
 import { HelpMenuProvider } from './context/HelpMenuContext';
 import HelpPanel from './components/HelpPanel';
+import { initAnalytics, trackPage, pageName } from './analytics';
+import HeatmapOverlay from './components/HeatmapOverlay';
 
 // Detects whether a logo image is mostly dark (e.g. dark linework on a
 // transparent PNG) so it can be inverted to stay visible against the dark
@@ -68,6 +70,18 @@ import {
   clearAdminSession, markPasswordChangePending, clearPasswordChangePending,
 } from './session';
 
+
+// ?heatmap=<page> renders one public page for the heatmap modal. Only for a real superadmin session
+// (the API enforces the role too); tracking is off inside the frame (see analytics.js).
+const HEATMAP_VIEWS = { voter_identity: 'voter', results: 'results', apply: 'apply' };
+const HEATMAP_FRAME = (() => {
+  try {
+    const p = new URLSearchParams(window.location.search).get('heatmap');
+    const ok = p && HEATMAP_VIEWS[p] && sessionStorage.getItem('admin_role') === 'superadmin' && sessionStorage.getItem(ADMIN_TOKEN_KEY);
+    return ok ? { page: p, view: HEATMAP_VIEWS[p] } : null;
+  } catch { return null; }
+})();
+
 // Sample IDs/names cycled in the login placeholder animation.
 const examples = [
   { id: "23/U/BCS/10245/GV", name: "Ayebale Elizabeth" },
@@ -110,8 +124,13 @@ function App() {
     if (vp) return { view: "voter", ...vp };
     return {};
   });
-  const [step, setStep] = useState(restored.step || 1); 
-  const [view, setView] = useState(restored.view || "voter"); 
+  const [step, setStep] = useState(HEATMAP_FRAME ? 1 : (restored.step || 1)); 
+  const [view, setView] = useState(HEATMAP_FRAME ? HEATMAP_FRAME.view : (restored.view || "voter")); 
+  useEffect(() => { initAnalytics(); }, []);
+  useEffect(() => {
+    const name = pageName(view, step);
+    if (name) trackPage(name);
+  }, [view, step]);
   // Mirrors sessionStorage's "admin_role" in React state so the nav can react
   // to it. Lets a logged-in admin who has navigated to Results/Apply/Vote get
   // back to their dashboard with one click, instead of refreshing or hitting
@@ -746,15 +765,15 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+            <button data-track="nav-vote" onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
               Vote Now
             </button>
         
-            <button onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
+            <button data-track="nav-results" onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
               Live Results
             </button>
         
-            <button onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
+            <button data-track="nav-apply" onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
               Apply
             </button>
 
@@ -784,6 +803,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {view === "it_admin" && <ITAdminDashboard onLogout={resetFlow} />}
         {view === "financial_controller" && <FinancialControllerDashboard onLogout={resetFlow} />}
         {view === "overseer" && <OverseerDashboard onLogout={resetFlow} />}
+        {HEATMAP_FRAME
+          ? <HeatmapOverlay embedded page={HEATMAP_FRAME.page} />
+          : window.self === window.top && view !== "voter" && <HeatmapOverlay />}
         
         
         {view === "voter" && (

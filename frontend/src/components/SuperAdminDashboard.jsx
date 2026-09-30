@@ -26,6 +26,7 @@ import UploadBypassPanel from './UploadBypassPanel';
 import ViewAsButton from './ViewAsButton';
 import { LoadingBlock } from './Spinner.jsx';
 import RevealGroup from './RevealGroup';
+import AnalyticsPanel from './AnalyticsPanel';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -830,6 +831,7 @@ const handleSuperAdminRemoveStudent = async () => {
         ...sharedRest,
         ROADMAP_TAB_DEF,
         { id: 'official_doc', label: <>Official Document</>, icon: 'file' },
+        { id: 'usage_analytics', label: <>Site Usage</>, icon: 'chart' },
       ],
     },
   ];
@@ -2231,6 +2233,7 @@ const handleSuperAdminRemoveStudent = async () => {
             superadmin-only route. */}
         <SharedTabPanels activeTab={activeTab} canEditSchedule isChief />
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
+        {activeTab === 'usage_analytics' && <AnalyticsPanel organizations={organizations} />}
 
         </div>
       </div>
