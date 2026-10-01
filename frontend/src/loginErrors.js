@@ -7,7 +7,7 @@ const FORMAT_HINT = 'Use the format 23/U/XXX/00000/GV exactly as on your student
 /**
  * @param {string|object} detail  err.response.data.detail
  * @param {string} [reason]       err.response.data.reason (when present)
- * @returns {{ title: string, message: string, action?: 'check_register'|'contact_change' }}
+ * @returns {{ title: string, message: string, action?: 'check_register'|'contact_change', support?: boolean }}
  */
 export function loginGuidance(detail, reason) {
   const d = typeof detail === 'string' ? detail : '';
@@ -16,7 +16,7 @@ export function loginGuidance(detail, reason) {
   if (reason === 'not_on_roll' || has(/student id not found/i)) {
     return { title: 'Registration number not found',
       message: `We could not find that registration number. ${FORMAT_HINT} Then check the voter register to confirm you are on it.`,
-      action: 'check_register' };
+      action: 'check_register', support: true };
   }
   if (reason === 'name_mismatch' || has(/name mismatch/i)) {
     return { title: 'Names do not match the register',
@@ -25,7 +25,7 @@ export function loginGuidance(detail, reason) {
   }
   if (reason === 'already_voted' || has(/already voted/i)) {
     return { title: 'Already voted',
-      message: 'Our records show this registration number has already voted. If you did not vote, contact support.' };
+      message: 'Our records show this registration number has already voted. If you did not vote, contact support.', support: true };
   }
   if (reason === 'no_phone' || has(/no phone found/i)) {
     return { title: 'No phone number on file',
@@ -34,7 +34,7 @@ export function loginGuidance(detail, reason) {
   }
   if (reason === 'sms_failed' || has(/sms delivery failed/i)) {
     return { title: 'We could not send the code',
-      message: 'We could not send the code. Wait a minute and try again, or contact support.' };
+      message: 'We could not send the code. Wait a minute and try again, or contact support.', support: true };
   }
   if (typeof detail === 'object' && detail) return { title: 'Login Error', message: JSON.stringify(detail) };
   return { title: 'Login Error', message: d || 'Verification Failed' };
