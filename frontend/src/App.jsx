@@ -52,6 +52,7 @@ import { FabTrigger } from './components/HelpTriggers';
 import usePolling from './hooks/usePolling';
 import { Icon } from './components/icons.jsx';
 import TurnstileWidget from './components/TurnstileWidget';
+import VoterLoginInputs from './components/VoterLoginInputs';
 import { turnstileConfigured } from './supportLink';
 import {
   restoreAdminView, loadPublicView, savePublicView,
@@ -88,15 +89,6 @@ const HEATMAP_FRAME = (() => {
     return ok ? { page: p, view: HEATMAP_VIEWS[p] } : null;
   } catch { return null; }
 })();
-
-// Sample IDs/names cycled in the login placeholder animation.
-const examples = [
-  { id: "23/U/BCS/10245/GV", name: "Ayebale Elizabeth" },
-  { id: "22/U/ISD/08940/PD", name: "Namusoke Dorothy Nalwadda" },
-  { id: "23/U/AGE/11223/GV", name: "Kaggwa Paul" },
-  { id: "21/U/BSE/44556/PE", name: "Sserwadda Valentino" },
-  { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
-];
 
 // Matched once per render (cheap, and the pathname doesn't change without a
 // reload in this session-state-driven SPA) rather than as a hook — it must
@@ -874,24 +866,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 </>
               ) : (
                 <>
-                  <input
-                    key="voter-reg-no"
-                    name="voter-reg-no"
-                    style={inputStyle}
-                    value={studentId}
-                    onChange={e => setStudentId(e.target.value)}
-                    placeholder={`Student Registration Number e.g. ${examples[0].id}`}
-                    autoComplete="off"
-                  />
-                  <input
-                    key="voter-full-name"
-                    name="voter-full-name"
-                    style={inputStyle}
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                    placeholder={`Full Name e.g. ${examples[0].name}`}
-                    autoComplete="off"
-                  />
+                  <VoterLoginInputs studentId={studentId} setStudentId={setStudentId} name={name} setName={setName} inputStyle={inputStyle} />
                 </>
               )}
               

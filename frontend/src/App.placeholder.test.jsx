@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 import appSource from './App.jsx?raw';
 
 vi.mock('./api', async (importOriginal) => ({
@@ -21,18 +21,20 @@ describe('WP-6b: no typing-placeholder animation state in App', () => {
     expect(appSource).not.toMatch(/setPlaceholderText|setTypingSpeed|setIsDeleting|setLoopNum/);
   });
 
-  it('login placeholders stay static while idle', async () => {
+  it('login placeholders animate in the child component, and stop once the user types', async () => {
     sessionStorage.clear();
     vi.useFakeTimers();
     render(<App />);
     await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-    const get = () => [
-      screen.getByPlaceholderText(/^Student Registration Number e\.g\. .+/).getAttribute('placeholder'),
-      screen.getByPlaceholderText(/^Full Name e\.g\. .+/).getAttribute('placeholder'),
-    ];
-    const first = get();
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
-    expect(get()).toEqual(first);
+    const reg = () => screen.getByPlaceholderText(/^Student Registration Number e\.g\./);
+    const first = reg().getAttribute('placeholder');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    const second = reg().getAttribute('placeholder');
+    expect(second).not.toEqual(first);
+    fireEvent.change(reg(), { target: { value: '23/U' } });
+    const frozen = reg().getAttribute('placeholder');
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(reg().getAttribute('placeholder')).toEqual(frozen);
     vi.useRealTimers();
   });
 });
