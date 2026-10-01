@@ -15,6 +15,7 @@ vi.mock('./MobileMoneyNumber', () => ({ default: () => null }));
 
 import ApplicantPortal from './ApplicantPortal';
 import { saveDraft } from '../session';
+import { resetBootstrapCache } from '../bootstrap';
 
 const file = (name, size = 1000, type = 'image/jpeg') => {
   const f = new File(['x'], name, { type, lastModified: 1 });
@@ -25,12 +26,16 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 
 let calls;
 beforeEach(() => {
-  cleanup(); mockGet.mockReset(); mockPost.mockReset(); mockTrack.mockReset();
+  cleanup(); mockGet.mockReset(); mockPost.mockReset(); mockTrack.mockReset(); resetBootstrapCache();
   sessionStorage.clear(); localStorage.clear();
   calls = [];
   Element.prototype.scrollIntoView = vi.fn();
+  // Startup now comes from one /public/bootstrap request (E1); same data as the old two endpoints.
+  const POSITIONS = [{ _id: 'p1', title: 'Chairperson', application_fee: 0 }];
+  const STATUS = { approval_policy: 'majority_total' };
   mockGet.mockImplementation((url) => Promise.resolve({
-    data: url === '/positions' ? [{ _id: 'p1', title: 'Chairperson', application_fee: 0 }] : { approval_policy: 'majority_total' },
+    data: url === '/public/bootstrap' ? { branding: {}, status: STATUS, positions: POSITIONS }
+      : url === '/positions' ? POSITIONS : STATUS,
   }));
 });
 afterEach(() => { vi.useRealTimers(); });

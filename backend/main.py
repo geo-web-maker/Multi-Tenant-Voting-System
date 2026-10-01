@@ -439,7 +439,7 @@ def _is_public(path: str, method: str) -> bool:
     # "logged in" anywhere. Branding is logo/colors/org-name/support-contact —
     # nothing sensitive — and is fetched unauthenticated on every page load
     # by App.jsx and Results.jsx for every visitor, not just superadmin.
-    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/superadmin/branding", "/election-schedule", "/election-roadmap"}:
+    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/superadmin/branding", "/election-schedule", "/election-roadmap", "/public/bootstrap"}:
         return True
     # candidate-portal-spec §3.2/§3.4: read-only, token/id-scoped, no admin
     # session involved at all — same reasoning as the voter-facing routes
@@ -3400,6 +3400,20 @@ async def get_candidates(request: Request):
 # =============================================================================
 # PUBLIC ROUTES
 # =============================================================================
+
+@app.get("/public/bootstrap")
+async def public_bootstrap(request: Request, response: Response):
+    """E1: one request for what the public pages need at startup - branding, election status, positions.
+    Each part is produced by the SAME handler the individual endpoint uses, so the shapes cannot drift, every
+    query stays org-scoped, and only already-public fields can appear. The old endpoints keep working."""
+    response.headers["Vary"] = "Origin, X-Org-Slug, Authorization"
+    response.headers["Cache-Control"] = "no-store" if request.headers.get("Authorization") else "public, max-age=15, stale-while-revalidate=30"
+    return {
+        "branding": await get_branding(request),
+        "status": await get_status(request),
+        "positions": await get_positions(request, Response()),
+    }
+
 
 @app.get("/positions")
 async def get_positions(request: Request, response: Response):

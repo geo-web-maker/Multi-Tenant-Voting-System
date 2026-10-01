@@ -4,6 +4,7 @@ import { Icon } from './icons.jsx';
 import ClosedNotice, { applicationsNoticeText } from './ClosedNotice';
 import { loadDraft, saveDraft, clearDraft } from '../session';
 import usePolling from '../hooks/usePolling';
+import { fetchBootstrap } from '../bootstrap';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import MobileMoneyNumber from './MobileMoneyNumber';
 import { usePaymentInfo } from '../paymentInfo';
@@ -78,21 +79,21 @@ export default function ApplicantPortal() {
   const draftRestored = Boolean(savedDraft) && Object.values(savedDraft).some(Boolean);
 
   useEffect(() => {
-    api.get('/positions')
-      .then(res => {
-        setPositions(res.data);
+    // One startup request for positions + status (E1); falls back to the old endpoints inside fetchBootstrap.
+    fetchBootstrap()
+      .then(({ positions: list, status }) => {
+        if (status) { setApprovalPolicy(status.approval_policy || 'majority_total'); setElectionStatus(status); }
+        if (!Array.isArray(list)) { setPositions([]); return; }
+        setPositions(list);
         // A restored draft may point at a position that has since been removed.
         setForm(prev => (
-          prev.position_id && !res.data.some(p => p._id === prev.position_id)
+          prev.position_id && !list.some(p => p._id === prev.position_id)
             ? { ...prev, position_id: '' }
             : prev
         ));
       })
       .catch(() => setPositions([]))
       .finally(() => setPosLoading(false));
-    api.get('/election-status')
-      .then(res => { setApprovalPolicy(res.data.approval_policy || 'majority_total'); setElectionStatus(res.data); })
-      .catch(() => {});
   }, []);
 
   // Warn before leaving mid-upload, and show a "slow" note when the connection drags.
