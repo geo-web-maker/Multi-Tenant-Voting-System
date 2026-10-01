@@ -607,7 +607,7 @@ const handleSubmit = async (e) => {
 }
 
 // ── Styles ──
-const outerWrap     = { width: '100%', minHeight: '100vh', backgroundColor: 'var(--bg-color)', padding: '24px 16px' };
+const outerWrap     = { width: '100%', minHeight: '100vh', backgroundColor: 'var(--bg-color)', padding: '24px 16px 96px' };   // bottom room so the floating Help ? never covers the submit button
 const card          = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--card-bg)', marginBottom: '16px' };
 const formCol       = { display: 'flex', flexDirection: 'column', gap: '0px' };
 const sectionTitle  = { margin: '0 0 14px', color: 'var(--text-color)', fontSize: '14px', fontWeight: '700' };

@@ -9,4 +9,4 @@ B3: `uploadedRef` keyed by name+size+lastModified, so a retry skips files alread
 B4: `imageResize.js` (`fitWithin`, `resizeImage`), one call site in the upload helper; any failure returns the original.
 mutation-checked: removing the upload cache, the busy guard, the fieldset, the uppercase, the abort signal, or the click guard each makes tests fail.
 deviations: see deviations/B-all.md (message table missing from zip; submit_blocked reasons not recorded yet; api:slow not emitted).
-HUMAN: real Android Chrome incl. HEIC/AVIF phones (B4); the ~96 px bottom padding for the Help `?` on the apply container is still not added (noted in A2); wording of the error messages vs the guide's §4.4 table; Cancel and the percent on a throttled 3G connection.
+HUMAN: real Android Chrome incl. HEIC/AVIF phones (B4); check the Help `?` does not cover the submit button (96 px bottom padding now added to the apply container, as A2 asked); wording of the error messages vs the guide's §4.4 table; Cancel and the percent on a throttled 3G connection.
