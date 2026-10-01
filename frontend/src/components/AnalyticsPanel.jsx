@@ -177,6 +177,9 @@ export default function AnalyticsPanel({ organizations = [] }) {
               <p style={muted}>Chart labels are in UTC. Marker times are shown in {tz}.</p>
             </div>
 
+            {data?.tracking_since && (
+              <p style={muted}>Tracking of funnel steps started on {fmtZoned(`${data.tracking_since}T00:00:00Z`, tz).replace(/,\s*\d{2}:\d{2}.*$/, '')}.</p>
+            )}
             <ApplyFunnelPanel funnel={data?.funnels?.apply} />
             <VotingFunnelPanel funnel={data?.funnels?.voting} />
 
