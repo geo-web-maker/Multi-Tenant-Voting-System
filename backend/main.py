@@ -7772,6 +7772,34 @@ async def analytics_turnout_breakdown(request: Request):
     }
 
 
+@app.get("/admin/voters/stats")
+async def admin_voter_stats(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    """CUSTOM-1 (restored): headline voter numbers for the superadmin Voters tab.
+    Counts only - no voter is identified and nothing says how anyone voted. `sections` is registered/voted
+    per enabled voter field (faculty, hostel, ...); field keys come from the org's own config, never the request."""
+    total = await db.voters.count_documents(org_query(request))
+    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    with_phone = await db.voters.count_documents(org_query(request, {"phone_numbers": {"$exists": True, "$ne": []}}))
+    vf = await get_voter_fields(request)
+    sections = []
+    for f in vf["fields"]:
+        if not f.get("enabled"):
+            continue
+        groups = sorted(await _turnout_groups(request, f["key"]), key=lambda g: (-g["registered"], g["label"]))
+        for g in groups:
+            g["pct"] = round(100 * g["voted"] / g["registered"], 1) if g["registered"] else 0
+        sections.append({"key": f["key"], "label": f["label"], "groups": groups})
+    sms = await get_sms_usage(request, {})
+    return {
+        "total": total, "voted": voted, "not_voted": total - voted,
+        "turnout_pct": round(100 * voted / total, 1) if total else 0,
+        "with_phone": with_phone, "without_phone": total - with_phone,
+        "sections": sections,
+        "sms": {k: sms[k] for k in ("sent_total", "sent_otp", "sent_notice", "verified_total", "budget_total",
+                                    "budget_left", "budget_pct_left", "suggested_budget", "mode")},
+    }
+
+
 # =============================================================================
 # OFFICIAL REPORT  (admin-only — declaration, signatures, cc list)
 # =============================================================================
