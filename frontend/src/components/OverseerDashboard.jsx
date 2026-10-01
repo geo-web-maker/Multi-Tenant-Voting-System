@@ -1,0 +1,280 @@
+import React, { useEffect, useState } from 'react';
+import api from '../api';
+import { usePersistedTab } from '../session';
+import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
+import TabBar from './TabBar';
+import ContactChangesQueue from './ContactChangesQueue';
+import { Icon } from './icons.jsx';
+import { ScrollList } from './UIFeedback';
+import usePolling from '../hooks/usePolling';
+import { regNo } from '../regNo';
+import AdminHeader, { useLastSynced } from './AdminHeader';
+import { LoadingBlock } from './Spinner.jsx';
+
+
+export default function OverseerDashboard({ onLogout }) {
+  const overseerId   = sessionStorage.getItem('overseer_id')   || '';
+  const overseerName = sessionStorage.getItem('overseer_name') || '';
+
+  const [data, setData]       = useState(null);
+  const [liveResults, setLiveResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [lastSynced, markSynced] = useLastSynced();
+  const [tab, setTab]         = usePersistedTab('overseer', 'applications');
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only load
+  useEffect(() => { fetchDashboard(); }, []);
+  usePolling(() => fetchDashboard({ silent: true }), 15000);
+
+  const fetchDashboard = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
+    try {
+      const [dashRes, resultsRes] = await Promise.all([
+        api.get('/overseer/dashboard'),
+        api.get('/commission/results/detailed').catch(() => ({ data: null })),
+      ]);
+      setData(dashRes.data);
+      setLiveResults(resultsRes.data);
+      markSynced();
+    } catch (e) {
+      console.error('Failed to fetch overseer dashboard:', e);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
+  const tabs = [
+    { id: 'applications', label: <>Applications</>, count: data?.applications?.length },
+    { id: 'changes',      label: <>Student Changes</>, count: data?.student_changes?.length },
+    { id: 'results',      label: <>Candidate Results</> },
+    { id: 'contact_changes', label: <>Contact Changes</> },
+    // Observer role: read-only visibility only — no write actions are added.
+    ...SHARED_TAB_DEFS,
+  ];
+
+  return (
+    <div style={outerWrap} className="outer-wrap">
+      <div style={container}  className="dashboard-shell">
+
+        {/* ── Header ── */}
+        <AdminHeader
+          title="Overseer Panel"
+          subtitle={<>Logged in as <strong>{overseerName || overseerId}</strong> · read-only</>}
+          lastSynced={lastSynced}
+          onRefresh={() => fetchDashboard()}
+          refreshing={loading}
+          onLogout={onLogout}
+        />
+
+        {!overseerId && (
+          <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
+            <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}>
+              <Icon name="warning" /> Your Overseer session could not be identified. Please log out and log back in.
+            </p>
+          </div>
+        )}
+
+        {!data && loading && (
+          <div style={emptyState}><LoadingBlock text="Loading platform data…" /></div>
+        )}
+
+        {data && (
+          <>
+            {/* ── Summary cards ── */}
+            <div style={summaryGrid}>
+              <div style={summaryCard}>
+                <span style={summaryLabel}>Election Status</span>
+                <span style={summaryValue}>
+                  {data.election_status.is_open ? <><Icon name="dotGreen" /> Open</> : <><Icon name="dotRed" /> Closed</>}
+                  {data.election_status.is_certified && ' · Certified'}
+                </span>
+              </div>
+              <div style={summaryCard}>
+                <span style={summaryLabel}>Voter Turnout</span>
+                <span style={summaryValue}>
+                  {data.voter_turnout.voted_count} / {data.voter_turnout.total_voters} ({data.voter_turnout.turnout_pct}%)
+                </span>
+              </div>
+              <div style={summaryCard}>
+                <span style={summaryLabel}>Commissioners</span>
+                <span style={summaryValue}>{data.total_commissioners}</span>
+              </div>
+            </div>
+
+            {/* ── Tabs ── */}
+            <TabBar tabs={tabs} activeTab={tab} onChange={setTab} />
+            <div style={{ marginBottom: '20px' }} />
+
+            {/* ── Applications (read-only) ── */}
+            {tab === 'applications' && (
+              <div>
+                {data.applications.length === 0 && <div style={emptyState}><p style={{ opacity: 0.5 }}>No applications yet.</p></div>}
+                <ScrollList>
+                {data.applications.map(a => (
+                  <div key={a.id} style={appCard}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                      <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>{a.full_name}</b>
+                      <span style={statusBadge(a.status)}>{a.status.toUpperCase()}</span>
+                    </div>
+                    <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>{a.position_id}</p>
+                    <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
+                      <Icon name="success" /> {a.approve_count} · <Icon name="error" /> {a.deny_count} · {a.votes_cast} vote(s) cast
+                      {a.finance_cleared && <> · Finance cleared</>}
+                    </p>
+                  </div>
+                ))}
+                </ScrollList>
+              </div>
+            )}
+
+            {/* ── Student changes (read-only) ── */}
+            {tab === 'changes' && (
+              <div>
+                {data.student_changes.length === 0 && <div style={emptyState}><p style={{ opacity: 0.5 }}>No student changes yet.</p></div>}
+                <ScrollList>
+                {data.student_changes.map(c => (
+                  <div key={c.id} style={appCard}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={changeTypeBadge(c.change_type)}>
+                          {c.change_type === 'add' ? <><Icon name="plus" /> ADD</> : <><Icon name="minus" /> REMOVE</>}
+                        </span>
+                        <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>
+                          {c.full_name} <code style={{ fontSize: '11px' }}>{regNo(c.student_id)}</code>
+                        </b>
+                      </div>
+                      <span style={statusBadge(c.status)}>{c.status.toUpperCase().replace('_', ' ')}</span>
+                    </div>
+                    <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
+                      Requested by {c.requested_by}{c.decided_by && ` · decided by ${c.decided_by}`}
+                    </p>
+                    {c.reason && (
+                      <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.55 }}>Reason: {c.reason}</p>
+                    )}
+                    {c.requested_at && (
+                      <p style={{ margin: '4px 0', fontSize: '11px', opacity: 0.4 }}>
+                        {new Date(c.requested_at).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                ))}
+                </ScrollList>
+              </div>
+            )}
+
+            {/* ── Candidate results (read-only) ── */}
+            {tab === 'results' && (
+              <div>
+                {!liveResults ? (
+                  <div style={emptyState}><LoadingBlock text="Loading live results…" /></div>
+                ) : (
+                  <>
+                    <div style={{ ...summaryCard, flexDirection: 'row', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                      <span style={{ opacity: 0.6, fontSize: '12px' }}>Voter turnout:</span>
+                      <span style={{ color: '#2ecc71', fontWeight: '700', fontSize: '15px' }}>
+                        {liveResults.voter_turnout.voted_count} / {liveResults.voter_turnout.total_voters}
+                      </span>
+                      <span style={{ opacity: 0.6, fontSize: '13px' }}>({liveResults.voter_turnout.turnout_pct}%)</span>
+                      <span style={{ opacity: 0.5, fontSize: '12px' }}>
+                        · {liveResults.voter_turnout.total_voters - liveResults.voter_turnout.voted_count} remaining
+                      </span>
+                    </div>
+
+                    {liveResults.positions.length === 0 && (
+                      <div style={emptyState}><p style={{ opacity: 0.5 }}>No candidates on the ballot yet.</p></div>
+                    )}
+
+                    {liveResults.positions.map(pos => (
+                      <div key={pos.position} style={appCard}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{pos.position}</b>
+                          <small style={{ opacity: 0.5 }}>
+                            {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
+                            {pos.candidates.length > 1 && (
+                              <span style={{ marginLeft: '8px', color: '#2ecc71', fontWeight: '600' }}>
+                                +{pos.candidates[0].votes - pos.candidates[1].votes} lead
+                                {' '}({(pos.candidates[0].pct_of_position - pos.candidates[1].pct_of_position).toFixed(1)}%)
+                              </span>
+                            )}
+                          </small>
+                        </div>
+                        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          {pos.candidates.map((c, idx) => (
+                            <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                                <span style={{ fontSize: '12px', opacity: 0.5, width: '16px', flexShrink: 0 }}>{idx + 1}.</span>
+                                <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
+                                  {c.name}
+                                </span>
+                                {c.unopposed && <span style={{ fontSize: '10px', opacity: 0.5, flexShrink: 0 }}>unopposed</span>}
+                                <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-color)', flexShrink: 0 }}>
+                                  {c.votes} ({c.pct_of_position}%)
+                                </span>
+                              </div>
+                              <div style={{ marginLeft: '24px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                                <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+
+                    <p style={{ fontSize: '11px', opacity: 0.4, marginTop: '4px' }}>
+                      Figures are anonymous aggregate tallies — no voter's individual choice is ever linked to their identity here.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === 'contact_changes' && <ContactChangesQueue readOnly />}
+
+        <SharedTabPanels activeTab={tab} />
+      </div>
+    </div>
+  );
+}
+
+// ── Helpers ──
+// Deliberately uses blue/grey, not green/red, so it can never be mistaken
+// for the approved/denied status badge next to it.
+function changeTypeBadge(changeType) {
+  const isAdd = changeType === 'add';
+  return {
+    fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
+    display: 'inline-flex', alignItems: 'center', gap: '3px',
+    background: isAdd
+      ? 'color-mix(in srgb, var(--info) 20%, transparent)'
+      : '#95a5a620',
+    color: isAdd ? 'var(--info)' : '#7f8c8d',
+  };
+}
+
+function statusBadge(status) {
+  const map = {
+    pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
+    approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
+    force_approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
+    denied:         { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
+    force_denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
+    cancelled:      { background: '#95a5a620', color: '#95a5a6' },
+  };
+  return {
+    fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
+    ...(map[status] || {}),
+  };
+}
+
+// ── Styles ──
+const outerWrap    = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
+const container    = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const summaryGrid   = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '20px' };
+const summaryCard   = { padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '10px', backgroundColor: 'var(--bg-color)', display: 'flex', flexDirection: 'column', gap: '4px' };
+const summaryLabel  = { fontSize: '11px', opacity: 0.55, fontWeight: '600', textTransform: 'uppercase' };
+const summaryValue  = { fontSize: '15px', fontWeight: '700', color: 'var(--text-color)' };
+const appCard       = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
+const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
+const emptyState    = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };

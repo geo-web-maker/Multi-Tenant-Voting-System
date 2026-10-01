@@ -1,0 +1,56 @@
+# ==========================================
+# Node.js & Frontend
+# ==========================================
+node_modules/
+.pnp
+.pnp.js
+coverage/
+dist/
+dist-ssr/
+*.local
+
+# Vite / React build outputs
+.vite/
+*.tsbuildinfo
+
+# ==========================================
+# Python & Backend
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Database & SQLite files
+*.sqlite3
+*.db
+
+# ==========================================
+# Environment Variables & Secrets
+# ==========================================
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ==========================================
+# OS & IDE Files
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.jsonnode_modules
+dist

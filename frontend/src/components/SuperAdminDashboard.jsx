@@ -1,0 +1,2281 @@
+import React, { useEffect, useState } from 'react';
+import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
+import { useToast, useConfirm, ScrollList } from './UIFeedback';
+import { toggleElection, electionToggleFeedback } from '../electionControls';
+import {
+  SHARED_TAB_DEFS, ROADMAP_TAB_DEF, SharedTabPanels, OfficialCertificationBlock,
+} from './SharedAdminPanels';
+import TabBar from './TabBar';
+import { Icon } from './icons.jsx';
+import { faceCropUrl } from '../cloudinaryImage';
+import SuperAdminStudentEdit from './SuperAdminStudentEdit';
+import VoterList from './VoterList';
+import SecurityPanel from './SecurityPanel';
+import VoterFieldsPanel from './VoterFieldsPanel';
+import usePolling from '../hooks/usePolling';
+import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
+import ReceiptLink from './ReceiptLink';
+import ManifestoText from './ManifestoText';
+import ContactChangesQueue from './ContactChangesQueue';
+import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
+import { regNo } from '../regNo';
+import AdminHeader from './AdminHeader';
+import VoterImportReview from './VoterImportReview';
+import PaymentInfoPanel from './PaymentInfoPanel';
+import UploadBypassPanel from './UploadBypassPanel';
+import ViewAsButton from './ViewAsButton';
+import { LoadingBlock } from './Spinner.jsx';
+import RevealGroup from './RevealGroup';
+import AnalyticsPanel from './AnalyticsPanel';
+import ExportModeControl from './ExportModeControl';
+import { setItAdminExportMode } from '../registerExport';
+
+// Signed, server-side upload via our own backend — replaces the old
+// unsigned Cloudinary preset upload that ran straight from the browser.
+// Goes through the shared `api` instance so the admin session token and
+// org header are attached automatically.
+async function uploadToCloudinary(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await api.post('/admin/upload-image', formData);
+  return res.data.secure_url;
+}
+
+// Safely turns any backend error shape (string detail, FastAPI 422 validation
+// array, or a network failure with no response at all) into a readable string.
+function getErrorMessage(e, fallback = 'Failed.') {
+  const detail = e?.response?.data?.detail;
+  if (Array.isArray(detail)) {
+    return detail.map(d => d?.msg || JSON.stringify(d)).join(', ');
+  }
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+  if (detail && typeof detail === 'object') {
+    return JSON.stringify(detail);
+  }
+  return fallback;
+}
+
+export default function SuperAdminDashboard({ onLogout }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  const [activeTab, setActiveTab] = useState('candidates');
+  const roster = useRosterStatus();
+  const rosterFrozen = Boolean(roster?.frozen);
+
+  // --- Org switcher: which organization's data this session is scoped to ---
+  const [activeOrgSlug, setActiveOrgSlug] = useState(
+    sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ''
+  );
+  const [switchingOrg, setSwitchingOrg] = useState(false);
+
+  // --- Branding state ---
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', support_phone: '', support_contacts: [], cc_list: [], signatories: [] });
+  const [brandSaving, setBrandSaving] = useState(false);
+
+  // --- Positions state ---
+  const [positions, setPositions]   = useState([]);
+  const [newPosition, setNewPosition] = useState({ title: '', description: '', order: 0, application_fee: '' });
+  const [posLoading, setPosLoading]   = useState(false);
+  const [editingPositionId, setEditingPositionId] = useState(null);
+  const [editPositionForm, setEditPositionForm] = useState({ title: '', description: '', order: 0, application_fee: '' });
+  const [editPosSaving, setEditPosSaving] = useState(false);
+
+  // --- Candidates state (mirrored from AdminDashboard) ---
+  const [candidates, setCandidates] = useState([]);
+  const [newCandidate, setNewCandidate] = useState({ name: '', position: '', image: null, order: 0 });
+  const [uploading, setUploading]   = useState(false);
+  const [editingId, setEditingId]   = useState(null);
+  const [editForm, setEditForm]     = useState({ name: '', position: '', order: 0, newImage: null });
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+
+  // --- Ported from AdminDashboard ---
+  const [, setSmsBalance] = useState({
+    egosms: { balance: null, currency: 'UGX' },
+    mambosms: { balance: null, currency: 'UGX' },
+  });
+  
+  // --- Applications state ---
+  const [applications, setApplications] = useState([]);
+  const [appsLoading, setAppsLoading]   = useState(false);
+  const [appFilter, setAppFilter]       = useState('all');
+
+  // --- Commissioners state ---
+  const [voters, setVoters]             = useState([]);
+  const [commissioners, setCommissioners] = useState([]);
+  const [voterSearch, setVoterSearch]   = useState('');
+  
+  // --- Voters / election state ---
+  const [, setElectionVoters] = useState([]);
+  const [isElectionOpen, setIsElectionOpen] = useState(true);
+  const [isCertified, setIsCertified]       = useState(false);
+  const [loading, setLoading]               = useState(false);
+  const [, setElectionLoaded]         = useState(false);
+  const [, setSmsLoaded]                = useState(false);
+  const [lastRefreshed, setLastRefreshed]   = useState(new Date());
+
+  //---IT Admin and auditlog---
+  const [itAdmins, setItAdmins]             = useState([]);
+  const [exportSaving, setExportSaving]     = useState({});
+  const [itAdminSearch, setItAdminSearch]   = useState('');
+  const [studentChanges, setStudentChanges] = useState([]);
+  const [scFilter, setScFilter]             = useState('all');
+  const [itCredEmail, setItCredEmail]   = useState({});   // { student_id: email }
+  const [commCredEmail, setCommCredEmail] = useState({}); // { student_id: email }
+  const [resetting, setResetting]       = useState({});   // { student_id: bool }
+  const [saDirectAdd, setSaDirectAdd]       = useState({ student_id: '', full_name: '', phone: '', attrs: {}, reason: '', requested_by: 'superadmin' });
+  const [voterFields, setVoterFields] = useState([]);
+  const [selectedStudentId, setSelectedStudentId] = useState('');
+  const [saDirectRemove, setSaDirectRemove] = useState({ student_id: '', reason: '', requested_by: 'superadmin' });
+
+  //--Financial Controllers, Overseers, Organizations--
+  const [financialControllers, setFinancialControllers] = useState([]);
+  const [overseers, setOverseers]                       = useState([]);
+  const [organizations, setOrganizations]                = useState([]);
+  const [fcCredEmail, setFcCredEmail]     = useState({}); // { student_id: email }
+  const [ovCredEmail, setOvCredEmail]     = useState({}); // { student_id: email }
+  const [fcSearch, setFcSearch]           = useState('');
+  const [ovSearch, setOvSearch]           = useState('');
+  const [orgForm, setOrgForm]             = useState({ name: '', slug: '' });
+  const [orgCreating, setOrgCreating]     = useState(false);
+
+  //--Remove Students--
+  const [removeSearch, setRemoveSearch]         = useState('');
+  const [showRemoveDropdown, setShowRemoveDropdown] = useState(false);
+  
+  // ── Fetch helpers ──
+
+  const handleSetCommissionerCredentials = async (studentId) => {
+    const email = commCredEmail[studentId];
+    if (!email) {
+      toast('Email is required.');
+      return;
+    }
+    try {
+      const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-credentials`, {
+        email
+      });
+      toast(res.data.sms_notified
+        ? 'Email saved. A temporary password was sent via SMS.'
+        : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
+      setCommCredEmail(prev => ({ ...prev, [studentId]: '' }));
+      fetchCommissioners();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+  const handleResetCommissionerPassword = async (studentId) => {
+    if (!(await confirm('Send a new temporary password to this commissioner via SMS?'))) return;
+    setResetting(prev => ({ ...prev, [studentId]: true }));
+    try {
+      const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/reset-password`);
+      toast(res.data.sms_notified
+        ? 'New temporary password sent via SMS.'
+        : 'Password reset, but SMS failed to send.');
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+    finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+  };
+  
+  const fetchBranding = async () => {
+    try {
+      const res = await api.get(`/superadmin/branding-full`);
+      setBranding(res.data);
+    } catch { /* use defaults */ }
+  };
+
+  const fetchPositions = async () => {
+    try {
+      const res = await api.get(`/positions`);
+      setPositions(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchCandidates = async () => {
+    try {
+      const res = await api.get(`/candidates`);
+      setCandidates(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchApplications = async ({ silent = false } = {}) => {
+    if (!silent) setAppsLoading(true);
+    try {
+      const res = await api.get(`/admin/applications`);
+      setApplications(res.data);
+    } catch { /* non-critical: ignore */ }
+    finally { if (!silent) setAppsLoading(false); }
+  };
+
+  const fetchCommissioners = async () => {
+    try {
+      const res = await api.get(`/superadmin/commissioners`);
+      setCommissioners(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchElectionData = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
+    try {
+      const [voterRes, statusRes] = await Promise.all([
+        api.get(`/admin/voters`),
+        api.get(`/election-status`),
+      ]);
+      setElectionVoters(voterRes.data);
+      setIsElectionOpen(statusRes.data.is_open);
+      setIsCertified(statusRes.data.is_certified || false);
+      setLastRefreshed(new Date());
+    } catch { /* non-critical: ignore */ }
+    finally { if (!silent) setLoading(false); setElectionLoaded(true); }
+  };
+
+const fetchVotersList = async () => {
+    try {
+      const res = await api.get(`/admin/voters`);
+      setVoters(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchFinancialControllers = async () => {
+    try {
+      const res = await api.get('/superadmin/financial-controllers');
+      setFinancialControllers(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchOverseers = async () => {
+    try {
+      const res = await api.get('/superadmin/overseers');
+      setOverseers(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchOrganizations = async () => {
+    try {
+      const res = await api.get('/superadmin/orgs');
+      setOrganizations(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const fetchSmsBalance = async () => {
+    try {
+      const res = await api.get('/admin/sms-balance');
+      setSmsBalance(res.data);
+    } catch {
+      setSmsBalance({
+        egosms: { balance: 'N/A', currency: '', error: 'Could not load' },
+        mambosms: { balance: 'N/A', currency: '', error: 'Could not load' },
+      });
+    } finally { setSmsLoaded(true); }
+  };
+
+const refetchAll = () => {
+    fetchBranding();
+    fetchPositions();
+    fetchCandidates();
+    fetchApplications();
+    fetchCommissioners();
+    fetchElectionData();
+    fetchVotersList();
+    api.get('/admin/voter-fields').then(r => setVoterFields(r.data)).catch(() => {});
+    fetchItAdmins();
+    fetchStudentChanges();
+    fetchFinancialControllers();
+    fetchOverseers();
+    fetchSmsBalance();
+  };
+
+  const handleSwitchOrg = (slug) => {
+    setSwitchingOrg(true);
+    if (slug) {
+      sessionStorage.setItem(SUPERADMIN_ORG_OVERRIDE_KEY, slug);
+    } else {
+      sessionStorage.removeItem(SUPERADMIN_ORG_OVERRIDE_KEY);
+    }
+    setActiveOrgSlug(slug);
+    setActiveTab('candidates');
+    refetchAll();
+    setSwitchingOrg(false);
+  };
+
+  useEffect(() => {
+    refetchAll();
+    fetchOrganizations();
+  // Mount-only: fetchers are recreated each render and must not retrigger this effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Live refresh of whatever the superadmin is looking at, plus the always-visible election state.
+  // Only the open tab's data is re-fetched (cheap), and nothing here touches forms being edited.
+  usePolling(() => {
+    fetchElectionData({ silent: true });
+    switch (activeTab) {
+      case 'candidates':             return fetchCandidates();
+      case 'applications':           return Promise.all([fetchApplications({ silent: true }), fetchCandidates()]);
+      case 'commissioners':          return fetchCommissioners();
+      case 'it_admins':              return fetchItAdmins();
+      case 'student_changes':        return fetchStudentChanges();
+      case 'financial_controllers':  return fetchFinancialControllers();
+      case 'overseers':              return fetchOverseers();
+      default:                       return undefined;
+    }
+  }, 15000);
+  
+  // ── Branding ──
+
+  const handleSaveBranding = async () => {
+    setBrandSaving(true);
+    try {
+      await api.post(`/superadmin/branding`, branding);
+      // Apply immediately without reload
+      document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
+      document.documentElement.style.setProperty('--brand-accent',  branding.accent_color);
+      toast('Branding saved!', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to save branding.'), { kind: 'error' }); }
+    finally { setBrandSaving(false); }
+  };
+
+  // ── Positions ──
+
+  const handleAddPosition = async () => {
+    if (!newPosition.title.trim()) return toast('Position title is required.');
+    setPosLoading(true);
+    try {
+      await api.post(`/positions`, { ...newPosition, application_fee: parseInt(newPosition.application_fee, 10) || 0 });
+      setNewPosition({ title: '', description: '', order: 0, application_fee: '' });
+      fetchPositions();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to add position.'), { kind: 'error' }); }
+    finally { setPosLoading(false); }
+  };
+
+  const handleStartEditPosition = (p) => {
+    setEditingPositionId(p._id);
+    setEditPositionForm({
+      title: p.title || '',
+      description: p.description || '',
+      order: p.order ?? 0,
+      application_fee: String(p.application_fee ?? 0),
+    });
+  };
+
+  const handleCancelEditPosition = () => {
+    setEditingPositionId(null);
+  };
+
+  const handleSaveEditPosition = async (id) => {
+    if (!editPositionForm.title.trim()) return toast('Position title is required.');
+    const fee = parseInt(String(editPositionForm.application_fee).replace(/[^\d]/g, ''), 10) || 0;
+    setEditPosSaving(true);
+    try {
+      await api.patch(`/positions/${id}`, {
+        title: editPositionForm.title.trim(),
+        description: editPositionForm.description,
+        order: parseInt(editPositionForm.order, 10) || 0,
+        application_fee: fee,
+      });
+      setEditingPositionId(null);
+      fetchPositions();
+      toast('Position updated!', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to update position.'), { kind: 'error' }); }
+    finally { setEditPosSaving(false); }
+  };
+
+  const handleDeletePosition = async (id) => {
+    if (!(await confirm('Delete this position? Existing candidates under this position are unaffected.'))) return;
+    try {
+      await api.delete(`/positions/${id}`);
+      fetchPositions();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to delete position.'), { kind: 'error' }); }
+  };
+
+  // ── Candidates ──
+
+  const handleAddCandidate = async (e) => {
+    e.preventDefault();
+    setUploading(true);
+    try {
+      let imageUrl = 'https://via.placeholder.com/150';
+      if (newCandidate.image) imageUrl = await uploadToCloudinary(newCandidate.image);
+      await api.post(`/candidates`, {
+        name: newCandidate.name,
+        position: newCandidate.position,
+        image_url: imageUrl,
+        order: parseInt(newCandidate.order) || 0,
+      });
+      setNewCandidate({ name: '', position: '', image: null, order: 0 });
+      fetchCandidates();
+    } catch (e) { toast(getErrorMessage(e, 'Error adding candidate.'), { kind: 'error' }); }
+    finally { setUploading(false); }
+  };
+
+  const handleUpdateCandidate = async (id) => {
+    setUploading(true);
+    try {
+      let imageUrl = null;
+      if (editForm.newImage) imageUrl = await uploadToCloudinary(editForm.newImage);
+      await api.put(`/candidates/${id}`, {
+        name:     editForm.name,
+        position: editForm.position,
+        order:    parseInt(editForm.order) || 0,
+        ...(imageUrl && { image_url: imageUrl }),
+      });
+      setEditingId(null);
+      fetchCandidates();
+    } catch (e) { toast(getErrorMessage(e, 'Update failed.'), { kind: 'error' }); }
+    finally { setUploading(false); }
+  };
+
+  const handleRemoveCandidateOverride = async (candidateId) => {
+    if (!(await confirm('Remove this candidate instantly from the ballot?'))) return;
+    try {
+      await api.post(`/superadmin/candidates/${candidateId}/remove`);
+      fetchCandidates();
+      fetchApplications();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to remove candidate.'), { kind: 'error' }); }
+  };
+
+  // ── Applications ──
+
+  const handleForceApprove = async (appId) => {
+    if (!(await confirm('Force-approve this application instantly? The candidate will appear on the ballot immediately.'))) return;
+    try {
+      await api.post(`/superadmin/applications/${appId}/force-approve`);
+      fetchApplications();
+      fetchCandidates();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+  const handleForceDeny = async (appId) => {
+    if (!(await confirm('Force-deny this application?'))) return;
+    try {
+      await api.post(`/superadmin/applications/${appId}/force-deny`);
+      fetchApplications();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+  // Resend is about SMS delivery, not a vetting decision, so it's available
+  // regardless of application status (pending/approved/denied alike) —
+  // candidate-portal-spec §4.3.
+  const handleRevokeStatusLink = async (studentId) => {
+    if (!(await confirm('Revoke this candidate\'s status link? The current link stops working immediately. Use "Resend status link" afterwards to send a new one.'))) return;
+    try {
+      await api.post(`/superadmin/candidates/${encodeURIComponent(studentId)}/revoke-status-link`);
+      toast('Status link revoked.', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to revoke status link.'), { kind: 'error' }); }
+  };
+
+  const handleResendStatusLink = async (studentId) => {
+    try {
+      await api.post(`/superadmin/candidates/${encodeURIComponent(studentId)}/resend-status-link`);
+      toast('Status link resent.', { kind: 'success' });
+    } catch (e) { toast(getErrorMessage(e, 'Failed to resend status link.'), { kind: 'error' }); }
+  };
+
+  // ── Commissioners ──
+
+  const handleToggleCommissioner = async (studentId) => {
+    try {
+      const res = await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/toggle`);
+      toast(`${regNo(studentId)} is now ${res.data.is_commissioner ? 'a commissioner' : 'no longer a commissioner'}.`, { kind: 'success' });
+      fetchCommissioners();
+      fetchVotersList();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to toggle commissioner.'), { kind: 'error' }); }
+  };
+
+  const handleSetChief = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-chief`);
+  fetchCommissioners();
+};
+
+const handleClearChief = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-chief`);
+  fetchCommissioners();
+};
+
+const handleSetDeputyChief = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-deputy-chief`);
+  fetchCommissioners();
+};
+
+const handleClearDeputyChief = async (studentId) => {
+  await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/clear-deputy-chief`);
+  fetchCommissioners();
+};
+
+const handleSetRole = async (studentId, role) => {
+  try {
+    await api.post(`/superadmin/commissioners/${encodeURIComponent(studentId)}/set-role`, { role_label: role });
+    fetchCommissioners();
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+};
+
+// ── Financial Controllers ──
+
+const handleToggleFinancialController = async (studentId) => {
+  try {
+    const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/toggle`);
+    toast(`${regNo(studentId)} is now ${res.data.is_financial_controller ? 'a Financial Controller' : 'no longer a Financial Controller'}.`, { kind: 'success' });
+    fetchFinancialControllers();
+    fetchVotersList();
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+};
+
+const handleSetFinancialControllerCredentials = async (studentId) => {
+  const email = fcCredEmail[studentId];
+  if (!email) { toast('Email is required.'); return; }
+  try {
+    const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/set-credentials`, { email });
+    toast(res.data.sms_notified
+      ? 'Email saved. A temporary password was sent via SMS.'
+      : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
+    setFcCredEmail(prev => ({ ...prev, [studentId]: '' }));
+    fetchFinancialControllers();
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+};
+
+const handleResetFinancialControllerPassword = async (studentId) => {
+  if (!(await confirm('Send a new temporary password to this Financial Controller via SMS?'))) return;
+  setResetting(prev => ({ ...prev, [studentId]: true }));
+  try {
+    const res = await api.post(`/superadmin/financial-controllers/${encodeURIComponent(studentId)}/reset-password`);
+    toast(res.data.sms_notified
+      ? 'New temporary password sent via SMS.'
+      : 'Password reset, but SMS failed to send.');
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+};
+
+// ── Overseers ──
+
+const handleToggleOverseer = async (studentId) => {
+  try {
+    const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/toggle`);
+    toast(`${studentId} is now ${res.data.is_overseer ? 'an Overseer' : 'no longer an Overseer'}.`, { kind: 'success' });
+    fetchOverseers();
+    fetchVotersList();
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+};
+
+const handleSetOverseerCredentials = async (studentId) => {
+  const email = ovCredEmail[studentId];
+  if (!email) { toast('Email is required.'); return; }
+  try {
+    const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/set-credentials`, { email });
+    toast(res.data.sms_notified
+      ? 'Email saved. A temporary password was sent via SMS.'
+      : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
+    setOvCredEmail(prev => ({ ...prev, [studentId]: '' }));
+    fetchOverseers();
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+};
+
+const handleResetOverseerPassword = async (studentId) => {
+  if (!(await confirm('Send a new temporary password to this Overseer via SMS?'))) return;
+  setResetting(prev => ({ ...prev, [studentId]: true }));
+  try {
+    const res = await api.post(`/superadmin/overseers/${encodeURIComponent(studentId)}/reset-password`);
+    toast(res.data.sms_notified
+      ? 'New temporary password sent via SMS.'
+      : 'Password reset, but SMS failed to send.');
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+};
+
+// ── Organizations ──
+
+const handleCreateOrg = async (e) => {
+  e.preventDefault();
+  if (!orgForm.name.trim()) { toast('Organisation name is required.'); return; }
+  setOrgCreating(true);
+  try {
+    const res = await api.post('/superadmin/orgs', { name: orgForm.name.trim(), slug: orgForm.slug.trim() });
+    toast(`Organisation "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`, { kind: 'success' });
+    setOrgForm({ name: '', slug: '' });
+    fetchOrganizations();
+  } catch (e) { toast(getErrorMessage(e, 'Failed to create organisation.'), { kind: 'error' }); }
+  finally { setOrgCreating(false); }
+};
+
+  // ── Election controls ──
+
+  const handleToggleElection = async () => {
+    if (!isElectionOpen && isCertified) {
+      toast('Results are certified. Revoke certification before starting the election.', { kind: 'error' });
+      return;
+    }
+    try {
+      const data = await toggleElection(api, prompt);
+      if (!data) return; // cancelled at the early-stop reason prompt
+      setIsElectionOpen(data.is_open);
+      const fb = electionToggleFeedback(data);
+      toast(fb.text, { kind: fb.kind });
+    } catch (e) { toast(getErrorMessage(e, 'Could not change the election status. Please try again.'), { kind: 'error' }); }
+  };
+
+  const handleToggleCertification = async () => {
+    if (isElectionOpen) { toast('Stop the election before certifying results.'); return; }
+    const msg = isCertified
+      ? "Remove the 'Official' stamp from results?"
+      : 'Mark results as FINAL and BINDING?';
+    if (!(await confirm(msg))) return;
+    try {
+      const res = await api.post(`/admin/toggle-certification`);
+      setIsCertified(res.data.is_certified);
+      toast(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
+    } catch (e) { toast(getErrorMessage(e, 'Failed.'), { kind: 'error' }); }
+  };
+
+  const handleResetElection = async () => {
+    const proceed = await confirm(
+      <><Icon name="warning" /> DANGER: This will permanently delete ALL votes and reset the election. This cannot be undone.</>,
+      { danger: true, confirmText: 'Delete everything', requireText: 'RESET' }
+    );
+    if (!proceed) return;
+    try {
+      await api.post(`/admin/reset-election`);
+      toast('Election reset.', { kind: 'success' });
+      fetchElectionData();
+    } catch (e) { toast(getErrorMessage(e, 'Reset failed.'), { kind: 'error' }); }
+  };
+
+  //--IT Admin changes
+  const fetchItAdmins = async () => {
+  try {
+      const res = await api.get(`/superadmin/it-admins`);
+      setItAdmins(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+const fetchStudentChanges = async () => {
+  try {
+      const res = await api.get(`/superadmin/student-changes`);
+      setStudentChanges(res.data);
+    } catch { /* non-critical: ignore */ }
+  };
+
+  const handleSetExportMode = async (a, mode) => {
+    if (mode === 'full' && !(await confirm(
+      `Allow ${a.full_name} to export the FULL voter register, including complete phone numbers? ` +
+      `Every export is recorded in the activity log.`))) return;
+    setExportSaving((p) => ({ ...p, [a.student_id]: true }));
+    try {
+      await setItAdminExportMode(a.student_id, mode);
+      toast(`Export for ${a.full_name}: ${mode === 'none' ? 'turned off' : mode}.`, { kind: 'success' });
+      await fetchItAdmins();
+    } catch (e) {
+      toast(e?.response?.data?.detail || 'Could not change the export setting.', { kind: 'error' });
+    } finally {
+      setExportSaving((p) => ({ ...p, [a.student_id]: false }));
+    }
+  };
+
+  const handleToggleItAdmin = async (studentId) => {
+  try {
+      const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/toggle`);
+      toast(`${studentId} is now ${res.data.is_it_admin ? 'an IT admin' : 'no longer an IT admin'}.`, { kind: 'success' });
+      fetchItAdmins();
+      fetchVotersList();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+const handleSetItAdminCredentials = async (studentId) => {
+  const email = itCredEmail[studentId];
+  if (!email) {
+    toast('Email is required.');
+    return;
+  }
+  try {
+    const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/set-credentials`, {
+      email
+    });
+    toast(res.data.sms_notified
+      ? 'Email saved. A temporary password was sent via SMS.'
+      : 'Email saved, but SMS notification failed to send.', { kind: 'success' });
+    setItCredEmail(prev => ({ ...prev, [studentId]: '' }));
+    fetchItAdmins();
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+};
+
+const handleResetItAdminPassword = async (studentId) => {
+  if (!(await confirm('Send a new temporary password to this IT admin via SMS?'))) return;
+  setResetting(prev => ({ ...prev, [studentId]: true }));
+  try {
+    const res = await api.post(`/superadmin/it-admins/${encodeURIComponent(studentId)}/reset-password`);
+    toast(res.data.sms_notified
+      ? 'New temporary password sent via SMS.'
+      : 'Password reset, but SMS failed to send.');
+  } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
+};
+
+const handleForceStudentChange = async (changeId, action) => {
+  const endpoint = action === 'approve'
+      ? `/superadmin/student-changes/${changeId}/force-approve`
+      : `/superadmin/student-changes/${changeId}/force-deny`;
+    if (!(await confirm(`Force ${action} this request?`))) return;
+    try {
+      await api.post(endpoint);
+      fetchStudentChanges();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+const handleSuperAdminAddStudent = async (e) => {
+  e.preventDefault();
+  try {
+      await api.post('/superadmin/students/add', {
+        ...saDirectAdd,
+        phones: saDirectAdd.phone.split(',').map(p => p.trim()).filter(Boolean),
+        attrs: saDirectAdd.attrs,
+      });
+      toast('Student added.', { kind: 'success' });
+      setSaDirectAdd({ student_id: '', full_name: '', phone: '', attrs: {}, reason: '', requested_by: 'superadmin' });
+      fetchElectionData();
+      fetchVotersList();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+const handleSuperAdminRemoveStudent = async () => {
+  if (!saDirectRemove.student_id) { toast('Please search and select a student from the list first.'); return; }
+  if (!(await confirm('Remove this student from the voter register?'))) return;
+  try {
+      await api.post('/superadmin/students/remove', saDirectRemove);
+      toast('Student removed.', { kind: 'success' });
+      setSaDirectRemove({ student_id: '', reason: '' });
+      setRemoveSearch('');
+      fetchElectionData();
+      fetchVotersList();
+    } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
+  };
+
+  // ── Derived ──
+
+  const commisssionerIds = new Set(commissioners.map(c => c.student_id));
+  const filteredVoterList = voters.filter(v =>
+    v.full_name?.toLowerCase().includes(voterSearch.toLowerCase()) ||
+    v.student_id?.toLowerCase().includes(voterSearch.toLowerCase())
+  );
+  const filteredApps = appFilter === 'all'
+    ? applications
+    : applications.filter(a => a.status === appFilter);
+
+  // The old inline 'audit_log' tab is superseded by the shared Activity Log
+  // panel, which every dashboard now mounts from one implementation.
+  const sharedChain = SHARED_TAB_DEFS.find(t => t.id === 'shared_chain');
+  const sharedRest = SHARED_TAB_DEFS.filter(t => t.id !== 'shared_chain');
+
+  const tabGroups = [
+    {
+      label: 'Election Setup',
+      icon: 'vote',
+      tabs: [
+        { id: 'candidates',   label: <>Candidates</>,   icon: 'award' },
+        { id: 'positions',    label: <>Positions</>,    icon: 'clipboard' },
+        { id: 'applications', label: <>Applications</>, icon: 'file' },
+        { id: 'branding',     label: <>Branding</>,     icon: 'palette' },
+        { id: 'election',     label: <>Election</>,     icon: 'calendar' },
+      ],
+    },
+    {
+      label: 'People & Roles',
+      icon: 'users',
+      tabs: [
+        { id: 'commissioners', label: <>Commission</>, icon: 'institution' },
+        { id: 'voters',        label: <>Voters</>, icon: 'user' },
+        { id: 'it_admins',     label: <>IT Admins</>, icon: 'monitor' },
+        { id: 'financial_controllers', label: <>Financial Controllers</>, icon: 'wallet' },
+        { id: 'overseers',     label: <>Overseers</>, icon: 'eye' },
+        { id: 'organizations', label: <>Organisations</>, icon: 'building' },
+      ],
+    },
+    {
+      label: 'Requests & Access',
+      icon: 'inbox',
+      tabs: [
+        { id: 'student_changes', label: <>Student Changes</>, icon: 'log' },
+        { id: 'contact_changes', label: <>Contact Changes</>, icon: 'phone' },
+        { id: 'reset_otp',       label: <>Reset OTP</>, icon: 'refresh' },
+      ],
+    },
+    {
+      label: 'Security',
+      icon: 'shield',
+      tabs: [
+        { id: 'security', label: <>Security &amp; SMS</>, icon: 'secure' },
+        sharedChain,
+      ],
+    },
+    {
+      label: 'Platform',
+      icon: 'settings',
+      tabs: [
+        ...sharedRest,
+        ROADMAP_TAB_DEF,
+        { id: 'official_doc', label: <>Official Document</>, icon: 'file' },
+        { id: 'usage_analytics', label: <>Site Usage</>, icon: 'chart' },
+      ],
+    },
+  ];
+
+  return (
+    <div style={outerWrap} className="outer-wrap">
+      {/* ── Header ── */}
+      <AdminHeader
+        title="Superadmin Panel"
+        lastSynced={lastRefreshed}
+        onRefresh={refetchAll}
+        refreshing={loading}
+        onLogout={onLogout}
+        actions={<>
+          <button
+            onClick={handleToggleElection}
+            aria-disabled={!isElectionOpen && isCertified}
+            title={!isElectionOpen && isCertified ? 'Revoke certification before starting the election' : undefined}
+            style={{
+              ...btn,
+              backgroundColor: isElectionOpen ? '#e67e22' : 'var(--success)',
+              opacity: !isElectionOpen && isCertified ? 0.5 : 1,
+              cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {isElectionOpen ? <>Stop Election</> : <>Start Election</>}
+          </button>
+          <button
+            onClick={handleToggleCertification}
+            disabled={isElectionOpen}
+            style={{
+              ...btn,
+              backgroundColor: isCertified ? '#10b981' : '#f59e0b',
+              opacity: isElectionOpen ? 0.5 : 1,
+              cursor: isElectionOpen ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {isCertified ? <>Certified</> : <>Certify Results</>}
+          </button>
+        </>}
+      />
+
+      {/* ── Org switcher ── */}
+      <div style={orgSwitcherBar} className="no-print org-switcher-bar">
+        <span style={{ fontSize: '12px', opacity: 0.6, whiteSpace: 'nowrap' }}>
+          Managing:
+        </span>
+        <select
+          style={{ ...inp, width: 'auto', minWidth: '220px', fontSize: '13px' }}
+          value={activeOrgSlug}
+          onChange={e => handleSwitchOrg(e.target.value)}
+          disabled={switchingOrg}
+        >
+          <option value="">— All / Legacy (unscoped) —</option>
+          {organizations.map(o => (
+            <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>
+          ))}
+        </select>
+        {activeOrgSlug ? (
+          <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
+            <Icon name="check" /> Viewing only this organisation's data
+          </span>
+        ) : (
+          <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
+            <Icon name="warning" /> Unscoped — showing data across all organisations combined
+          </span>
+        )}
+      </div>
+
+      <div className="dash-body">
+        {/* ── Rail: independent of the content card, not nested inside it ── */}
+        <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
+
+        <div style={container} className="dashboard-shell dash-main">
+
+        {/* ══════════════ CANDIDATES TAB ══════════════ */}
+        {activeTab === 'candidates' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Add Candidate Directly</h4>
+              <form onSubmit={handleAddCandidate} style={formCol}>
+                <input style={inp} placeholder="Full Name" value={newCandidate.name}
+                  onChange={e => setNewCandidate({ ...newCandidate, name: e.target.value })} required />
+                <select style={inp} value={newCandidate.position}
+                  onChange={e => setNewCandidate({ ...newCandidate, position: e.target.value })} required>
+                  <option value="">— Select position —</option>
+                  {positions.map(p => (
+                    <option key={p._id} value={p.title}>{p.title}</option>
+                  ))}
+                </select>
+                <input style={inp} type="number" placeholder="Display order (0 = first)"
+                  value={newCandidate.order}
+                  onChange={e => setNewCandidate({ ...newCandidate, order: e.target.value })} />
+                <label style={fileLabel}>
+                  Photo: <input type="file" accept="image/*"
+                    onChange={e => setNewCandidate({ ...newCandidate, image: e.target.files[0] })} />
+                </label>
+                <button type="submit" style={greenBtn} disabled={uploading}>
+                  {uploading ? 'Uploading…' : '+ Add to Ballot'}
+                </button>
+              </form>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h4 style={{ ...cardTitle, marginBottom: '5px' }}>
+                  Current Ballot ({candidates.length} candidates)
+                </h4>
+                <button style={ghostBtn} onClick={() => setIsPreviewOpen(true)}>Preview Ballot</button>
+              </div>
+              <ScrollList>
+              {candidates.map(c => (
+                <div key={c._id} style={rowCard}>
+                  {editingId === c._id ? (
+                    <div style={{ ...formCol, width: '100%' }}>
+                      <input style={inp} value={editForm.name}
+                        onChange={e => setEditForm({ ...editForm, name: e.target.value })} />
+                      <select style={inp} value={editForm.position}
+                        onChange={e => setEditForm({ ...editForm, position: e.target.value })}>
+                        <option value="">— Select position —</option>
+                        {positions.map(p => (
+                          <option key={p._id} value={p.title}>{p.title}</option>
+                        ))}
+                      </select>
+                      <input style={inp} type="number" value={editForm.order}
+                        onChange={e => setEditForm({ ...editForm, order: e.target.value })} />
+                      <label style={fileLabel}>
+                        New photo: <input type="file" accept="image/*"
+                          onChange={e => setEditForm({ ...editForm, newImage: e.target.files[0] })} />
+                      </label>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button style={greenBtn} onClick={() => handleUpdateCandidate(c._id)} disabled={uploading}>Save</button>
+                        <button style={ghostBtn} onClick={() => setEditingId(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <img src={faceCropUrl(c.image_url, 44, 44)} alt="" style={avatar} />
+                        <div>
+                          <b style={{ color: 'var(--text-color)' }}>{c.name}</b>
+                          <br />
+                          <small style={{ color: 'var(--success)' }}>{c.position}</small>
+                          {c.application_id && (
+                            <span style={badge}>via application</span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button style={editLink}
+                          onClick={() => { setEditingId(c._id); setEditForm({ name: c.name, position: c.position, order: c.order || 0, newImage: null }); }}>
+                          Edit
+                        </button>
+                        <button style={redLink} onClick={() => handleRemoveCandidateOverride(c._id)}>
+                          Remove
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+              </ScrollList>
+            </div>
+          </div>
+        )}
+
+        {/* Ported from AdminDashboard: ballot preview modal */}
+        {isPreviewOpen && (
+          <div className="overlay-fade-in" style={modalOverlay}>
+            <div className="panel-fade-in" style={modalContent}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
+                <h3 style={{ margin: 0, color: 'var(--text-color)' }}>Ballot Preview</h3>
+                <button onClick={() => setIsPreviewOpen(false)} style={redLink}>Close</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                {candidates.map((c, idx) => (
+                  <div key={c._id} style={{ ...statCard, textAlign: 'left', display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 'bold', opacity: 0.3 }}>{idx + 1}</span>
+                    <img src={faceCropUrl(c.image_url, 44, 44)} style={avatar} alt="" />
+                    <div><div style={{ fontWeight: 'bold', color: 'var(--text-color)' }}>{c.name}</div><small style={{ color: 'var(--success)' }}>{c.position}</small></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ APPLICATIONS TAB ══════════════ */}
+        {activeTab === 'applications' && (
+          <div>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+              {['all','pending','approved','denied','removed'].map(f => (
+                <button key={f} onClick={() => setAppFilter(f)}
+                  style={{ ...ghostBtn, ...(appFilter === f && { borderColor: '#2ecc71', color: '#2ecc71' }) }}>
+                  {f.charAt(0).toUpperCase() + f.slice(1)}
+                  {' '}({f === 'all' ? applications.length : applications.filter(a => a.status === f).length})
+                </button>
+              ))}
+            </div>
+
+            {appsLoading && <LoadingBlock text="Loading…" />}
+
+            {filteredApps.length === 0 && !appsLoading && (
+              <p style={{ opacity: 0.5, textAlign: 'center', marginTop: '40px' }}>No applications in this category.</p>
+            )}
+
+            <ScrollList>
+            {filteredApps.map(app => (
+              <div key={app._id} style={appCard}>
+                <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+                  {app.image_url && (
+                    <img src={faceCropUrl(app.image_url, 60, 60)} alt="" style={{ ...avatar, width: '60px', height: '60px', flexShrink: 0 }} />
+                  )}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <div>
+                        <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>{app.full_name}</b>
+                        <span style={{ ...statusBadge(app.status), marginLeft: '10px' }}>
+                          {app.status.toUpperCase()}
+                          {app.superadmin_override && ' (SA)'}
+                        </span>
+                      </div>
+                      <small style={{ opacity: 0.5 }}>
+                        {new Date(app.submitted_at).toLocaleDateString()}
+                      </small>
+                    </div>
+                    <p style={{ margin: '4px 0', fontSize: '13px', color: 'var(--success)' }}>
+                      Position: {app.position_title || app.position_id}
+                    </p>
+                    <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
+                      ID: {regNo(app.student_id)}
+                    </p>
+                    <ManifestoText text={app.manifesto} />
+                    {app.payment_method && (
+                      <div style={{ marginTop: '8px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                        <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
+                          Payment: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
+                          {' · '}Required: <strong style={{ color: 'var(--success)' }}>
+                            {app.fee_required ? `UGX ${Number(app.fee_required).toLocaleString('en-UG')}` : 'not set'}
+                          </strong>
+                        </p>
+                        <ReceiptLink url={app.payment_proof_url} />
+                      </div>
+                    )}
+                    {app.votes && Object.keys(app.votes).length > 0 && (
+                      <p style={{ margin: '6px 0 0', fontSize: '11px', opacity: 0.5 }}>
+                        Commission votes: {Object.entries(app.votes).map(([k,v]) => `${k}: ${v}`).join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Superadmin action buttons — always available */}
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+                  {app.status !== 'approved' && app.status !== 'removed' && (
+                    <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceApprove(app._id)}>
+                      Force Approve
+                    </button>
+                  )}
+                  {app.status !== 'denied' && app.status !== 'removed' && (
+                    <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceDeny(app._id)}>
+                      Force Deny
+                    </button>
+                  )}
+                  {app.status === 'approved' && (
+                    <button style={{ ...redBtn, flex: 1 }} onClick={async () => {
+                      if (await confirm('Remove this approved candidate from the ballot?', { danger: true, confirmText: 'Remove' })) {
+                        // Find matching candidate by application_id and remove
+                        const cand = candidates.find(c => c.application_id === app._id);
+                        if (cand) handleRemoveCandidateOverride(cand._id);
+                        else toast('Candidate not found in ballot — may have been removed already.', { kind: 'error' });
+                      }
+                    }}>
+                      Remove from Ballot
+                    </button>
+                  )}
+                  <button style={ghostBtn} onClick={() => handleResendStatusLink(app.student_id)}>
+                    Resend status link
+                  </button>
+                  <button style={ghostBtn} onClick={() => handleRevokeStatusLink(app.student_id)}>
+                    Revoke status link
+                  </button>
+                </div>
+              </div>
+            ))}
+            </ScrollList>
+          </div>
+        )}
+
+        {/* ══════════════ COMMISSIONERS TAB ══════════════ */}
+        {activeTab === 'commissioners' && (
+          <div style={twoCol}>
+            <div style={card} className="card-pad">
+              <h4 style={cardTitle}>Current Commissioners ({commissioners.length})</h4>
+              {commissioners.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No commissioners assigned yet. Find voters below and toggle them.</p>
+              )}
+              <ScrollList maxHeight="50vh">
+              {commissioners.map(c => (
+                <div key={c.student_id} style={{ ...rowCard, marginBottom: '8px', flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  {/* Header: identity on the left, Revoke pinned top-right (same layout as the IT Admin / Finance / Overseer cards) */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
+                      {c.is_chief_commissioner && (
+                       <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Chief
+                        </span>
+                      )}
+                      {c.is_deputy_chief_commissioner && (
+                       <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Deputy Chief
+                        </span>
+                      )}
+                    </div>
+                    <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
+                    <br />
+                    <small style={{ color: 'var(--info)' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
+                  </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={c.student_id} role="commission" />
+                      <button style={{ ...redLink, flexShrink: 0 }} onClick={() => handleToggleCommissioner(c.student_id)}>
+                      Revoke
+                    </button>
+                    </div>
+                  </div>
+
+                  <select
+                    className="comm-select"
+                    value={c.commissioner_role || 'Commissioner'}
+                    onChange={e => handleSetRole(c.student_id, e.target.value)}
+                    style={{ ...inp, width: 'auto', fontSize: '12px', padding: '6px 8px', alignSelf: 'flex-start' }}
+                  >
+                    <option value="Chairperson EC">Chairperson EC</option>
+                    <option value="Secretary EC">Secretary EC</option>
+                    <option value="Commissioner">Commissioner</option>
+                    <option value="Treasurer">Treasurer</option>
+                    <option value="Deputy Treasurer">Deputy Treasurer</option>
+                    <option value="Returning Officer">Returning Officer</option>
+                    <option value="Polling Assistant">Polling Assistant</option>
+                    <option value="Presiding Officer">Presiding Officer</option>
+                  </select>
+              
+                  <div className="comm-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {c.is_chief_commissioner ? (
+                      <button
+                        onClick={() => handleClearChief(c.student_id)}
+                        style={{ ...ghostBtn, color: 'var(--warning)', borderColor: 'var(--warning)', fontSize: '12px' }}>
+                        Clear Chief
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleSetChief(c.student_id)}
+                        style={{ ...ghostBtn, fontSize: '12px' }}>
+                        Set Chief
+                      </button>
+                    )}
+                    {c.is_deputy_chief_commissioner ? (
+                      <button
+                        onClick={() => handleClearDeputyChief(c.student_id)}
+                        style={{ ...ghostBtn, color: 'var(--info)', borderColor: 'var(--info)', fontSize: '12px' }}>
+                        Clear Deputy
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleSetDeputyChief(c.student_id)}
+                        style={{ ...ghostBtn, fontSize: '12px' }}>
+                        Set Deputy
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Credentials section */}
+                  <div style={{ width: '100%', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
+                    <small style={{ opacity: 0.5, fontSize: '11px' }}>
+                      {c.commissioner_email
+                        ? <>{c.commissioner_email} — password set by commissioner <Icon name="check" /></>
+                        : <><Icon name="warning" /> No login credentials set yet</>}
+                    </small>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                      <input
+                        style={{ ...inp, flex: 1, minWidth: '180px', fontSize: '12px', padding: '6px 8px' }}
+                        placeholder="Email e.g. comm@example.com"
+                        type="email"
+                        value={commCredEmail[c.student_id] ?? c.commissioner_email ?? ''}
+                        onChange={e => setCommCredEmail(prev => ({ ...prev, [c.student_id]: e.target.value }))}
+                      />
+                      <button
+                        style={{ ...greenBtn, fontSize: '12px', padding: '6px 12px' }}
+                        onClick={() => handleSetCommissionerCredentials(c.student_id)}
+                      >
+                        Send Credentials
+                      </button>
+                      {c.commissioner_email && (
+                        <button
+                          style={{ ...ghostBtn, fontSize: '12px', padding: '6px 12px' }}
+                          disabled={resetting[c.student_id]}
+                          onClick={() => handleResetCommissionerPassword(c.student_id)}
+                        >
+                          {resetting[c.student_id] ? 'Sending…' : <>Reset Password</>}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              </ScrollList>
+            </div>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant Commissioner Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={voterSearch}
+                onChange={e => setVoterSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).map(v => (
+                  <div key={v.student_id} style={rowCard} className="grant-row">
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
+                    </div>
+                    <button style={greenBtn} onClick={() => handleToggleCommissioner(v.student_id)}>
+                      + Make Commissioner
+                    </button>
+                  </div>
+                ))}
+                {filteredVoterList.filter(v => !commisssionerIds.has(v.student_id)).length === 0 && (
+                  <p style={{ textAlign: 'center', opacity: 0.4, padding: '20px' }}>
+                    {voterSearch ? 'No matching voters.' : 'All voters are already commissioners or no voters imported yet.'}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ VOTERS TAB ══════════════ */}
+        {activeTab === 'voters' && (
+          <VoterList
+            showStatus
+            onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
+            onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
+          />
+        )}
+
+        {activeTab === 'positions' && (
+          <RevealGroup text="Loading…">
+          <PaymentInfoPanel />
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Add New Position</h4>
+              <div style={formCol}>
+                <input style={inp} placeholder="Position title (e.g. Guild President)"
+                  value={newPosition.title}
+                  onChange={e => setNewPosition({ ...newPosition, title: e.target.value })} />
+                <input style={inp} placeholder="Description (optional)"
+                  value={newPosition.description}
+                  onChange={e => setNewPosition({ ...newPosition, description: e.target.value })} />
+                <input style={inp} type="number" min="0" placeholder="Nomination fee in UGX (optional, e.g. 50000)"
+                  value={newPosition.application_fee}
+                  onChange={e => setNewPosition({ ...newPosition, application_fee: e.target.value })} />
+                <input style={inp} type="number" placeholder="Ballot order (0 = first)"
+                  value={newPosition.order}
+                  onChange={e => setNewPosition({ ...newPosition, order: parseInt(e.target.value) || 0 })} />
+                <button style={greenBtn} onClick={handleAddPosition} disabled={posLoading}>
+                  {posLoading ? 'Saving…' : '+ Add Position'}
+                </button>
+              </div>
+            </div>
+            <div>
+              <h4 style={cardTitle}>Current Positions ({positions.length})</h4>
+              {positions.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No positions yet. Add one to allow applicants to apply.</p>
+              )}
+              <ScrollList maxHeight="50vh">
+              {positions.map(p => (
+                editingPositionId === p._id ? (
+                  <div key={p._id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                    <input style={inp} placeholder="Position title"
+                      value={editPositionForm.title}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, title: e.target.value })} />
+                    <input style={inp} placeholder="Description (optional)"
+                      value={editPositionForm.description}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, description: e.target.value })} />
+                    <input style={inp} type="number" min="0" placeholder="Nomination fee in UGX (0 = none)"
+                      value={editPositionForm.application_fee}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, application_fee: e.target.value })} />
+                    <input style={inp} type="number" placeholder="Ballot order (0 = first)"
+                      value={editPositionForm.order}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, order: e.target.value })} />
+                    <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+                      <button style={redLink} onClick={handleCancelEditPosition}>Cancel</button>
+                      <button style={greenBtn} onClick={() => handleSaveEditPosition(p._id)} disabled={editPosSaving}>
+                        {editPosSaving ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div key={p._id} style={rowCard}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{p.title}</b>
+                      {p.description && <><br /><small style={{ opacity: 0.6 }}>{p.description}</small></>}
+                      <br />
+                      <small style={{ color: 'var(--info)' }}>Order: {p.order}</small>
+                      <small style={{ marginLeft: 10, color: 'var(--success)' }}>
+                        Fee: {p.application_fee ? `UGX ${Number(p.application_fee).toLocaleString('en-UG')}` : 'none'}
+                      </small>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                      <button style={{ ...redLink, color: 'var(--info)' }} onClick={() => handleStartEditPosition(p)}>Edit</button>
+                      <button style={redLink} onClick={() => handleDeletePosition(p._id)}>Delete</button>
+                    </div>
+                  </div>
+                )
+              ))}
+              </ScrollList>
+            </div>
+          </div>
+          </RevealGroup>
+        )}
+
+        {/* ══════════════ BRANDING TAB ══════════════ */}
+        {activeTab === 'branding' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Logo & Colour Scheme</h4>
+              <div style={formCol}>
+                <label style={{ fontSize: '12px', opacity: 0.7 }}>Organisation / Union Name</label>
+                <input
+                  style={inp}
+                  placeholder="e.g. KYUCCU"
+                  value={branding.org_name || ''}
+                  onChange={e => setBranding({ ...branding, org_name: e.target.value })}
+                />
+        
+                <label style={{ fontSize: '12px', opacity: 0.7 }}>Logo</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {/* Hidden file input */}
+                  <input
+                    type="file"
+                    id="logo-upload"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={async e => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      try {
+                        setBrandSaving(true);
+                        const url = await uploadToCloudinary(file);
+                        setBranding({ ...branding, logo_url: url });
+                      } catch {
+                        toast('Logo upload failed. Please try again, and contact the system administrator if the problem continues.', { kind: 'error' });
+                      } finally {
+                        setBrandSaving(false);
+                      }
+                    }}
+                  />
+                  {/* Upload button */}
+                  <label
+                    htmlFor="logo-upload"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '9px 16px',
+                      borderRadius: '8px',
+                      border: '1.5px dashed rgba(255,255,255,0.3)',
+                      cursor: brandSaving ? 'wait' : 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      color: 'inherit',
+                      transition: 'border-color 0.2s',
+                      width: 'fit-content',
+                      opacity: brandSaving ? 0.5 : 1,
+                    }}
+                  >
+                    {brandSaving ? <><Icon name="loading" /> Uploading…</> : <>Choose logo image</>}
+                  </label>
+                          
+                  {/* Preview or placeholder */}
+                  {branding.logo_url ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <img
+                        src={branding.logo_url}
+                        alt="Logo preview"
+                        style={{ height: '72px', objectFit: 'contain', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', padding: '4px' }}
+                      />
+                      <button
+                        onClick={() => setBranding({ ...branding, logo_url: '' })}
+                        style={{
+                          background: 'rgba(255,80,80,0.15)',
+                          border: 'none',
+                          borderRadius: '6px',
+                          padding: '5px 10px',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                          color: '#ff6b6b',
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{
+                      height: '72px', borderRadius: '8px',
+                      background: 'rgba(255,255,255,0.04)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '12px', opacity: 0.4,
+                    }}>
+                      No logo selected
+                    </div>
+                  )}
+                </div>
+        
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Primary Colour</label>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <input type="color" value={branding.primary_color}
+                    onChange={e => setBranding({ ...branding, primary_color: e.target.value })}
+                    style={{ width: '48px', height: '40px', border: 'none', cursor: 'pointer', borderRadius: '6px' }} />
+                  <input style={{ ...inp, flex: 1 }} value={branding.primary_color}
+                    onChange={e => setBranding({ ...branding, primary_color: e.target.value })} />
+                </div>
+        
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Accent Colour</label>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <input type="color" value={branding.accent_color}
+                    onChange={e => setBranding({ ...branding, accent_color: e.target.value })}
+                    style={{ width: '48px', height: '40px', border: 'none', cursor: 'pointer', borderRadius: '6px' }} />
+                  <input style={{ ...inp, flex: 1 }} value={branding.accent_color}
+                    onChange={e => setBranding({ ...branding, accent_color: e.target.value })} />
+                </div>
+        
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>University / Institution Name</label>
+                <input
+                  style={inp}
+                  placeholder="e.g. Kyambogo University"
+                  value={branding.university_name || ''}
+                  onChange={e => setBranding({ ...branding, university_name: e.target.value })}
+                />
+
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>University Logo</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <input
+                    type="file"
+                    id="university-logo-upload"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={async e => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      try {
+                        setBrandSaving(true);
+                        const url = await uploadToCloudinary(file);
+                        setBranding({ ...branding, university_logo_url: url });
+                      } catch {
+                        toast('University logo upload failed. Please try again, and contact the system administrator if the problem continues.', { kind: 'error' });
+                      } finally {
+                        setBrandSaving(false);
+                      }
+                    }}
+                  />
+                  <label
+                    htmlFor="university-logo-upload"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '9px 16px',
+                      borderRadius: '8px',
+                      border: '1.5px dashed rgba(255,255,255,0.3)',
+                      cursor: brandSaving ? 'wait' : 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      color: 'inherit',
+                      width: 'fit-content',
+                      opacity: brandSaving ? 0.5 : 1,
+                    }}
+                  >
+                    {brandSaving ? <><Icon name="loading" /> Uploading…</> : <>Choose university logo</>}
+                  </label>
+
+                  {branding.university_logo_url ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <img
+                        src={branding.university_logo_url}
+                        alt="University logo preview"
+                        style={{ height: '72px', objectFit: 'contain', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', padding: '4px' }}
+                      />
+                      <button
+                        onClick={() => setBranding({ ...branding, university_logo_url: '' })}
+                        style={{
+                          background: 'rgba(255,80,80,0.15)',
+                          border: 'none',
+                          borderRadius: '6px',
+                          padding: '5px 10px',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                          color: '#ff6b6b',
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{
+                      height: '72px', borderRadius: '8px',
+                      background: 'rgba(255,255,255,0.04)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '12px', opacity: 0.4,
+                    }}>
+                      No university logo selected
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={card}>
+              <h4 style={cardTitle}>Support & Sign-off</h4>
+              <div style={formCol}>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>General WhatsApp support number (digits only, with country code)</label>
+                <input
+                  style={inp}
+                  placeholder="e.g. 256745707723"
+                  value={branding.support_phone || ''}
+                  onChange={e => setBranding({ ...branding, support_phone: e.target.value })}
+                />
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  Shown as “Contact Support” in the voter Help menu and on the code screen, and named in the notice SMS
+                  sent when a phone number is changed.
+                </small>
+
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Support Contacts by Reason</label>
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  One card per reason, e.g. “Editing contact details”, “Reporting an issue”, “System guidance”. Add one
+                  or more named contacts under a reason — a voter who taps a reason with several contacts sees their
+                  names and picks who to message. Each reason appears as its own button in the voter Help menu.
+                </small>
+                {(branding.support_contacts || []).map((g, gi) => (
+                  <div key={gi} style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        style={{ ...inp, flex: '1 1 auto' }}
+                        placeholder="Reason"
+                        aria-label="Support contact reason"
+                        value={g.reason || ''}
+                        onChange={e => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, reason: e.target.value } : x) })}
+                      />
+                      <button
+                        type="button"
+                        aria-label="Remove reason"
+                        onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.filter((_, j) => j !== gi) })}
+                        style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: '#ff6b6b' }}
+                      >
+                        Remove reason
+                      </button>
+                    </div>
+                    {(g.contacts || []).map((c, ci) => (
+                      <div key={ci} style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', paddingLeft: '12px' }}>
+                        <input
+                          style={{ ...inp, flex: '1 1 120px' }}
+                          placeholder="Name (e.g. Aisha)"
+                          aria-label="Contact name"
+                          value={c.name || ''}
+                          onChange={e => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.map((y, k) => k === ci ? { ...y, name: e.target.value } : y) } : x) })}
+                        />
+                        <input
+                          style={{ ...inp, flex: '2 1 200px' }}
+                          placeholder="256745707723 or https://wa.me/…"
+                          aria-label="WhatsApp number or link"
+                          value={c.link || ''}
+                          onChange={e => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.map((y, k) => k === ci ? { ...y, link: e.target.value } : y) } : x) })}
+                        />
+                        <button
+                          type="button"
+                          aria-label="Remove contact"
+                          onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.filter((_, k) => k !== ci) } : x) })}
+                          style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: '#ff6b6b' }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      style={{ ...ghostBtn, width: 'fit-content', marginLeft: '12px' }}
+                      disabled={(g.contacts || []).length >= 6}
+                      onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: [...(x.contacts || []), { name: '', link: '' }] } : x) })}
+                    >
+                      + Add contact
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  style={{ ...ghostBtn, width: 'fit-content' }}
+                  disabled={(branding.support_contacts || []).length >= 12}
+                  onClick={() => setBranding({ ...branding, support_contacts: [...(branding.support_contacts || []), { reason: '', contacts: [{ name: '', link: '' }] }] })}
+                >
+                  + Add reason
+                </button>
+
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Cc List (one per line)</label>
+                <textarea
+                  placeholder={`e.g.\n${branding.org_name || 'Organisation'} Patron\n${branding.org_name || 'Organisation'} President\nDean of Students`}
+                  value={(branding.cc_list || []).join('\n')}
+                  onChange={e => setBranding({
+                    ...branding,
+                    cc_list: e.target.value.split('\n').map(l => l.trim()).filter(Boolean)
+                  })}
+                  rows={5}
+                  style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  {(branding.cc_list || []).length} entries — these appear at the bottom of the official printed report
+                </small>
+
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Signatories (one per line, "Name — Role")</label>
+                <textarea
+                  placeholder={`e.g.\nJane Doe — Chairperson EC\nJohn Smith — Deputy Chairperson EC\n— Dean of Students`}
+                  value={(branding.signatories || []).map(s => [s.full_name, s.role].filter(Boolean).join(' — ')).join('\n')}
+                  onChange={e => setBranding({
+                    ...branding,
+                    signatories: e.target.value.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+                      const [full_name = '', role = ''] = line.split('—').map(p => p.trim());
+                      return { full_name, role };
+                    })
+                  })}
+                  rows={5}
+                  style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  {(branding.signatories || []).length} entries — these appear on the signature grid of the official
+                  certified report, in this exact order. Leave the name blank for someone who signs by hand
+                  (e.g. "— Dean of Students") — they don't need an account in this system. Leave the whole list
+                  empty to fall back to every commissioner on record, listed automatically.
+                </small>
+                <div style={{
+                  marginTop: '14px', padding: '12px 16px', borderRadius: '8px',
+                  backgroundColor: branding.primary_color, display: 'flex', gap: '10px', alignItems: 'center'
+                }}>
+                  <span style={{ color: '#fff', fontWeight: 'bold', fontSize: '13px' }}>Preview nav bar</span>
+                  <span style={{
+                    backgroundColor: branding.accent_color, color: branding.primary_color,
+                    padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold'
+                  }}>Active button</span>
+                </div>
+        
+                <button style={{ ...greenBtn, marginTop: '14px' }} onClick={handleSaveBranding} disabled={brandSaving}>
+                  {brandSaving ? 'Saving…' : <>Save Branding</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ ELECTION TAB ══════════════ */}
+        {activeTab === 'election' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Election Status</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '13px', opacity: 0.8 }}>Election</span>
+                  <span style={{
+                    fontSize: '12px', fontWeight: 700, padding: '3px 10px', borderRadius: '999px',
+                    backgroundColor: isElectionOpen ? 'rgba(230, 126, 34, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                    color: isElectionOpen ? '#e67e22' : 'var(--success)',
+                  }}>
+                    {isElectionOpen ? 'OPEN' : 'CLOSED'}
+                  </span>
+                </div>
+                <p style={{ fontSize: '12px', opacity: 0.6, margin: 0 }}>
+                  {isElectionOpen
+                    ? 'Voters can authenticate and cast ballots, subject to the phase schedule below.'
+                    : 'No voter can start the login flow while the election is closed, regardless of phase schedule — this is the master switch.'}
+                </p>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                  <span style={{ fontSize: '13px', opacity: 0.8 }}>Results</span>
+                  <span style={{
+                    fontSize: '12px', fontWeight: 700, padding: '3px 10px', borderRadius: '999px',
+                    backgroundColor: isCertified ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                    color: isCertified ? 'var(--success)' : '#f59e0b',
+                  }}>
+                    {isCertified ? 'CERTIFIED' : 'NOT CERTIFIED'}
+                  </span>
+                </div>
+                <p style={{ fontSize: '12px', opacity: 0.6, margin: 0 }}>
+                  {isCertified
+                    ? 'Results are locked in as official. A certified election cannot be reset.'
+                    : 'Once you certify, results are marked official and the election can no longer be reset. Certifying requires the election to be closed first.'}
+                </p>
+              </div>
+
+              <p style={{ fontSize: '11px', opacity: 0.5, margin: '16px 0 0', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+                Open/close and certify are the two buttons at the top of this page — they act
+                immediately across every voter. Timing (when each phase opens or closes on its
+                own schedule) is configured separately, in the <strong>Timeline</strong> tab.
+              </p>
+            </div>
+
+            <div style={{ ...card, marginTop: '16px', borderColor: '#e74c3c' }}>
+              <h4 style={{ ...cardTitle, color: '#e74c3c' }}>Danger Zone</h4>
+              <p style={{ fontSize: '13px', opacity: 0.7, margin: '0 0 12px' }}>
+                Full election reset — deletes ALL votes permanently. Certified elections cannot be reset.
+              </p>
+              <button
+                onClick={handleResetElection}
+                disabled={isCertified}
+                style={{
+                  ...btn, backgroundColor: '#d63031',
+                  opacity: isCertified ? 0.4 : 1,
+                  cursor: isCertified ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {isCertified ? 'Cannot Reset — Results Certified' : 'Full Election Reset'}
+              </button>
+            </div>
+          </div>
+        )}
+        
+        {/* ══════════════ IT ADMINS TAB ══════════════ */}
+        {activeTab === 'security' && (
+          <RevealGroup text="Loading security settings…">
+            <UploadBypassPanel /><SecurityPanel /><VoterFieldsPanel />
+          </RevealGroup>
+        )}
+
+        {activeTab === 'it_admins' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Current IT Admins ({itAdmins.length})</h4>
+              {itAdmins.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No IT admins assigned yet. Find voters below and toggle them.</p>
+              )}
+              <ScrollList maxHeight="50vh">
+              {itAdmins.map(a => (
+                <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{regNo(a.student_id)}</small>
+                      {a.it_admin_email && (
+                        <>
+                          <br />
+                          <small style={{ color: 'var(--info)' }}>{a.it_admin_email}</small>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={a.student_id} role="it_admin" />
+                      <button style={redLink} onClick={() => handleToggleItAdmin(a.student_id)}>
+                      Revoke
+                    </button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <ExportModeControl name={a.full_name} mode={a.it_admin_export_mode || 'none'}
+                      disabled={!!exportSaving[a.student_id]} onChange={(m) => handleSetExportMode(a, m)} />
+                    <input
+                      style={{ ...inp, flex: 1, minWidth: '180px' }}
+                      placeholder="Email"
+                      value={itCredEmail[a.student_id] || ''}
+                      onChange={e => setItCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
+                    />
+                    <button style={greenBtn} onClick={() => handleSetItAdminCredentials(a.student_id)}>
+                      Send Credentials
+                    </button>
+                    {a.it_admin_email && (
+                      <button
+                        style={ghostBtn}
+                        disabled={resetting[a.student_id]}
+                        onClick={() => handleResetItAdminPassword(a.student_id)}
+                      >
+                        {resetting[a.student_id] ? 'Sending…' : <>Reset Password</>}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              </ScrollList>
+            </div>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant IT Admin Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={itAdminSearch}
+                onChange={e => setItAdminSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {voters
+                  .filter(v => !itAdmins.some(a => a.student_id === v.student_id))
+                  .filter(v =>
+                    v.full_name?.toLowerCase().includes(itAdminSearch.toLowerCase()) ||
+                    v.student_id?.toLowerCase().includes(itAdminSearch.toLowerCase())
+                  )
+                  .map(v => (
+                    <div key={v.student_id} style={rowCard} className="grant-row">
+                      <div>
+                        <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                        <br />
+                        <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
+                      </div>
+                      <button style={greenBtn} onClick={() => handleToggleItAdmin(v.student_id)}>
+                        + Make IT Admin
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ STUDENT CHANGES TAB (superadmin view) ══════════════ */}
+        {activeTab === 'student_changes' && (
+          <div>
+            <SuperAdminStudentEdit initialStudentId={selectedStudentId} />
+            {rosterFrozen && <div style={{ ...card, margin: '16px 0', borderColor: 'var(--warning)' }}>Direct add / remove is disabled while the roster is frozen.</div>}
+            {!rosterFrozen && <div style={twoCol}>
+              <div style={card}>
+                <h4 style={cardTitle}>Add Student Directly</h4>
+                <form onSubmit={handleSuperAdminAddStudent} style={formCol}>
+                  <input style={inp} placeholder="Student ID" value={saDirectAdd.student_id}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, student_id: e.target.value })} required />
+                  <input style={inp} placeholder="Full Name" value={saDirectAdd.full_name}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, full_name: e.target.value })} required />
+                  <input style={inp} placeholder="Phone Number(s), comma-separated" value={saDirectAdd.phone}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, phone: e.target.value })} required />
+                  {voterFields.map(f => (
+                    <input key={f.key} style={inp} maxLength={60} placeholder={`${f.label} (optional)`} value={saDirectAdd.attrs[f.key] || ''}
+                      onChange={e => setSaDirectAdd({ ...saDirectAdd, attrs: { ...saDirectAdd.attrs, [f.key]: e.target.value } })} />
+                  ))}
+                  <input style={inp} placeholder="Reason" value={saDirectAdd.reason}
+                    onChange={e => setSaDirectAdd({ ...saDirectAdd, reason: e.target.value })} required />
+                  <button type="submit" style={greenBtn}>+ Add Student Instantly</button>
+                </form>
+              </div>
+
+              <div style={card}>
+                <h4 style={cardTitle}>Remove Student Directly</h4>
+                <div style={formCol}>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      style={inp}
+                      placeholder="Search by name or student ID…"
+                      value={removeSearch}
+                      onChange={e => {
+                        setRemoveSearch(e.target.value);
+                        setSaDirectRemove({ ...saDirectRemove, student_id: '' });
+                        setShowRemoveDropdown(true);
+                      }}
+                      onFocus={() => setShowRemoveDropdown(true)}
+                    />
+                    {showRemoveDropdown && removeSearch && (
+                      <div style={dropdownList}>
+                        {voters
+                          .filter(v =>
+                            v.full_name?.toLowerCase().includes(removeSearch.toLowerCase()) ||
+                            v.student_id?.toLowerCase().includes(removeSearch.toLowerCase())
+                          )
+                          .slice(0, 8)
+                          .map(v => (
+                            <div
+                              key={v.student_id}
+                              style={dropdownItem}
+                              onClick={() => {
+                                setSaDirectRemove({ ...saDirectRemove, student_id: v.student_id });
+                                setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`);
+                                setShowRemoveDropdown(false);
+                              }}
+                            >
+                              <b>{v.full_name}</b> — <span style={{ opacity: 0.6, fontSize: '12px' }}>{regNo(v.student_id)}</span>
+                            </div>
+                          ))}
+                        {voters.filter(v =>
+                          v.full_name?.toLowerCase().includes(removeSearch.toLowerCase()) ||
+                          v.student_id?.toLowerCase().includes(removeSearch.toLowerCase())
+                        ).length === 0 && (
+                          <div style={{ ...dropdownItem, opacity: 0.5, cursor: 'default' }}>No matching students.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {saDirectRemove.student_id && (
+                    <p style={{ fontSize: '11px', color: 'var(--success)', margin: '2px 0 0' }}>
+                      <Icon name="check" /> Selected: {regNo(saDirectRemove.student_id)}
+                    </p>
+                  )}
+                  <input style={inp} placeholder="Reason" value={saDirectRemove.reason}
+                    onChange={e => setSaDirectRemove({ ...saDirectRemove, reason: e.target.value })} />
+                  <button style={redBtn} onClick={handleSuperAdminRemoveStudent}>
+                    Remove Student Instantly
+                  </button>
+                </div>
+              </div>
+            </div>}
+
+            <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
+              {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
+                <button key={f} onClick={() => setScFilter(f)}
+                  style={{ ...ghostBtn, ...(scFilter === f && { borderColor: 'var(--success)', color: 'var(--success)' }) }}>
+                  {f.replace('_', ' ')}
+                  {' '}({f === 'all' ? studentChanges.length : studentChanges.filter(c => c.status === f).length})
+                </button>
+              ))}
+            </div>
+
+            <ScrollList>
+            {(scFilter === 'all' ? studentChanges : studentChanges.filter(c => c.status === scFilter)).map(change => (
+              <div key={change._id} style={appCard}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                  <div>
+                    <b style={{ color: 'var(--text-color)' }}>
+                      {change.change_type === 'add' ? <>Add</> : <>Remove</>}
+                    </b>
+                    <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
+                      {change.status.toUpperCase().replace('_', ' ')}
+                    </span>
+                  </div>
+                  <small style={{ opacity: 0.45 }}>
+                    {new Date(change.requested_at).toLocaleDateString()}
+                  </small>
+                </div>
+                <p style={{ margin: '8px 0 2px', fontSize: '13px', color: 'var(--text-color)' }}>
+                  <b>{change.full_name}</b> — <code style={{ fontSize: '12px' }}>{regNo(change.student_id)}</code>
+                </p>
+                {change.attrs && Object.keys(change.attrs).length > 0 && (
+                  <div style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>
+                    {Object.entries(change.attrs).map(([k, v]) => <div key={k}><b>{k}:</b> {v}</div>)}
+                  </div>
+                )}
+                <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
+                  Reason: {change.reason}
+                </p>
+                <p style={{ margin: '2px 0', fontSize: '11px', opacity: 0.5 }}>
+                  Requested by: {change.requested_by}
+                </p>
+                
+                {change.payment_method && (
+                  <div style={{ marginTop: '8px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
+                      Payment: <strong style={{ color: 'var(--text-color)' }}>{change.payment_method}</strong>
+                    </p>
+                    <ReceiptLink url={change.payment_proof_url} />
+                  </div>
+                )}
+
+                {change.status === 'pending' && (
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'approve')}>
+                      Force Approve
+                    </button>
+                    <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'deny')}>
+                      Force Deny
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+            </ScrollList>
+          </div>
+        )}
+
+        {/* ══════════════ CONTACT CHANGES TAB ══════════════ */}
+        {/* readOnly: decisions on pending requests stay commission-only, but SuperAdmin
+            still gets the full pre-freeze digest and, as Chief/Deputy Chief also do, the
+            Undo control on it — gated server-side, not by this prop. */}
+        {activeTab === 'contact_changes' && <ContactChangesQueue readOnly breakGlass />}
+
+        {/* ══════════════ RESET OTP LIMITS TAB ══════════════ */}
+        {activeTab === 'reset_otp' && <ResetOtpLimitsPanel canOverrideCaps initialStudentId={selectedStudentId} />}
+
+        {/* ══════════════ FINANCIAL CONTROLLERS TAB ══════════════ */}
+        {activeTab === 'financial_controllers' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Current Financial Controllers ({financialControllers.length})</h4>
+              {financialControllers.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No Financial Controllers assigned yet. Find voters below and toggle them.</p>
+              )}
+              <ScrollList maxHeight="50vh">
+              {financialControllers.map(a => (
+                <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{regNo(a.student_id)}</small>
+                      {a.financial_controller_email && (
+                        <>
+                          <br />
+                          <small style={{ color: 'var(--info)' }}>{a.financial_controller_email}</small>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={a.student_id} role="financial_controller" />
+                      <button style={redLink} onClick={() => handleToggleFinancialController(a.student_id)}>
+                      Revoke
+                    </button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      style={{ ...inp, flex: 1, minWidth: '180px' }}
+                      placeholder="Email"
+                      value={fcCredEmail[a.student_id] || ''}
+                      onChange={e => setFcCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
+                    />
+                    <button style={greenBtn} onClick={() => handleSetFinancialControllerCredentials(a.student_id)}>
+                      Send Credentials
+                    </button>
+                    {a.financial_controller_email && (
+                      <button
+                        style={ghostBtn}
+                        disabled={resetting[a.student_id]}
+                        onClick={() => handleResetFinancialControllerPassword(a.student_id)}
+                      >
+                        {resetting[a.student_id] ? 'Sending…' : <>Reset Password</>}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              </ScrollList>
+            </div>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant Financial Controller Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={fcSearch}
+                onChange={e => setFcSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {voters
+                  .filter(v => !financialControllers.some(a => a.student_id === v.student_id))
+                  .filter(v =>
+                    v.full_name?.toLowerCase().includes(fcSearch.toLowerCase()) ||
+                    v.student_id?.toLowerCase().includes(fcSearch.toLowerCase())
+                  )
+                  .map(v => (
+                    <div key={v.student_id} style={rowCard} className="grant-row">
+                      <div>
+                        <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                        <br />
+                        <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
+                      </div>
+                      <button style={greenBtn} onClick={() => handleToggleFinancialController(v.student_id)}>
+                        + Make Financial Controller
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ OVERSEERS TAB ══════════════ */}
+        {activeTab === 'overseers' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Current Overseers ({overseers.length})</h4>
+              {overseers.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No Overseers assigned yet. Find voters below and toggle them.</p>
+              )}
+              <ScrollList maxHeight="50vh">
+              {overseers.map(a => (
+                <div key={a.student_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{a.full_name}</b>
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{regNo(a.student_id)}</small>
+                      {a.overseer_email && (
+                        <>
+                          <br />
+                          <small style={{ color: 'var(--info)' }}>{a.overseer_email}</small>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <ViewAsButton studentId={a.student_id} role="overseer" />
+                      <button style={redLink} onClick={() => handleToggleOverseer(a.student_id)}>
+                      Revoke
+                    </button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      style={{ ...inp, flex: 1, minWidth: '180px' }}
+                      placeholder="Email"
+                      value={ovCredEmail[a.student_id] || ''}
+                      onChange={e => setOvCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
+                    />
+                    <button style={greenBtn} onClick={() => handleSetOverseerCredentials(a.student_id)}>
+                      Send Credentials
+                    </button>
+                    {a.overseer_email && (
+                      <button
+                        style={ghostBtn}
+                        disabled={resetting[a.student_id]}
+                        onClick={() => handleResetOverseerPassword(a.student_id)}
+                      >
+                        {resetting[a.student_id] ? 'Sending…' : <>Reset Password</>}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              </ScrollList>
+            </div>
+
+            <div>
+              <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Grant Overseer Access</h4>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search voters by name or ID…"
+                value={ovSearch}
+                onChange={e => setOvSearch(e.target.value)} />
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+                {voters
+                  .filter(v => !overseers.some(a => a.student_id === v.student_id))
+                  .filter(v =>
+                    v.full_name?.toLowerCase().includes(ovSearch.toLowerCase()) ||
+                    v.student_id?.toLowerCase().includes(ovSearch.toLowerCase())
+                  )
+                  .map(v => (
+                    <div key={v.student_id} style={rowCard} className="grant-row">
+                      <div>
+                        <b style={{ color: 'var(--text-color)' }}>{v.full_name}</b>
+                        <br />
+                        <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
+                      </div>
+                      <button style={greenBtn} onClick={() => handleToggleOverseer(v.student_id)}>
+                        + Make Overseer
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ ORGANIZATIONS TAB (multi-tenancy) ══════════════ */}
+        {activeTab === 'organizations' && (
+          <div style={twoCol}>
+            <div style={card}>
+              <h4 style={cardTitle}>Provision New Organisation</h4>
+              <form onSubmit={handleCreateOrg} style={formCol}>
+                <input
+                  style={inp}
+                  placeholder="Organisation name (e.g. KYUCCU)"
+                  value={orgForm.name}
+                  onChange={e => setOrgForm(prev => ({ ...prev, name: e.target.value }))}
+                />
+                <input
+                  style={inp}
+                  placeholder="Slug (optional — auto-generated if blank)"
+                  value={orgForm.slug}
+                  onChange={e => setOrgForm(prev => ({ ...prev, slug: e.target.value }))}
+                />
+                <button type="submit" style={greenBtn} disabled={orgCreating}>
+                  {orgCreating ? 'Provisioning…' : '+ Create Organisation'}
+                </button>
+              </form>
+              <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.55 }}>
+                The returned slug is what gets set as <code>VITE_ORG_SLUG</code> in that org's frontend deployment.
+              </p>
+            </div>
+
+            <div style={card}>
+              <h4 style={cardTitle}>Provisioned Organisations ({organizations.length})</h4>
+              {organizations.length === 0 && (
+                <p style={{ opacity: 0.5 }}>No organisations provisioned yet.</p>
+              )}
+              <ScrollList maxHeight="50vh">
+              {organizations.map(o => (
+                <div key={o._id} style={rowCard}>
+                  <div>
+                    <b style={{ color: 'var(--text-color)' }}>{o.name}</b>
+                    <br />
+                    <small style={{ opacity: 0.6 }}>slug: <code>{o.slug}</code></small>
+                  </div>
+                  <small style={{ opacity: 0.45 }}>
+                    {new Date(o.created_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </small>
+                </div>
+              ))}
+              </ScrollList>
+            </div>
+          </div>
+        )}
+
+        {/* The audit table that used to live inline here is now the shared
+            ActivityLog panel — one implementation, mounted in all five
+            dashboards, reading /admin/audit-log instead of the
+            superadmin-only route. */}
+        <SharedTabPanels activeTab={activeTab} canEditSchedule isChief />
+        {activeTab === 'official_doc' && <OfficialCertificationBlock />}
+        {activeTab === 'usage_analytics' && <AnalyticsPanel organizations={organizations} />}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Status badge helper ──
+function statusBadge(status) {
+  const map = {
+    pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
+    approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
+    denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
+    removed:  { background: '#95a5a620', color: '#95a5a6' },
+  };
+  return {
+    fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
+    ...(map[status] || { background: '#ffffff20', color: '#fff' }),
+  };
+}
+
+// ── Styles ──
+const dropdownList = { position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto', zIndex: 20 };
+const dropdownItem = { padding: '10px 12px', fontSize: '13px', color: 'var(--text-color)', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' };
+const outerWrap   = { width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'flex-start', backgroundColor: 'var(--bg-color)', padding: '20px' };
+// The rail (TabBar) now lives outside the content card as its own
+// independent box (see .dash-body in index.css) instead of being nested
+// inside it, so the "sane ultrawide cap" belongs on that whole row — rail
+// + card together — not on the card alone. Capping only the card left the
+// rail floating independently with no matching limit, and doesn't reflect
+// that the two are meant to read as one layout.
+const container   = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
+const orgSwitcherBar = { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px', padding: '10px 14px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '10px' };
+const twoCol      = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' };
+const card        = { padding: '20px', border: '1px solid var(--border-color)', borderRadius: '12px', backgroundColor: 'var(--bg-color)' };
+const cardTitle   = { margin: '0 0 14px', color: 'var(--text-color)', fontSize: '15px', fontWeight: '600' };
+const rowCard     = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', borderBottom: '1px solid var(--border-color)', gap: '10px' };
+const appCard     = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
+const formCol     = { display: 'flex', flexDirection: 'column', gap: '10px' };
+const inp         = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
+const fileLabel   = { fontSize: '12px', opacity: 0.7 };
+const btn         = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const greenBtn    = { ...btn, backgroundColor: 'var(--success)' };
+const redBtn      = { ...btn, backgroundColor: '#e74c3c' };
+const ghostBtn    = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+const editLink    = { background: 'none', border: 'none', color: 'var(--info)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const redLink     = { background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const badge       = { marginLeft: '8px', fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 6px', borderRadius: '4px' };
+const avatar      = { width: '44px', height: '44px', borderRadius: '6px', objectFit: 'cover' };
+const statCard    = { padding: '14px', border: '1px solid var(--border-color)', borderRadius: '10px', textAlign: 'center', color: 'var(--text-color)' };
+
+// Two SMS providers (EgoSMS = primary, MamboSMS = fallback) each get their
+// own card, clearly labeled, instead of one ambiguous "SMS Balance" number —
+// admins topping up need to know which account to actually fund.
+const SmsProviderCard = ({ label, sub, data }) => (
+  <div style={statCard}>
+    <small>{label}<span style={{ opacity: 0.55 }}> ({sub})</span></small>
+    <h3>{data?.error ? '—' : `${data?.balance ?? '—'} ${data?.currency || ''}`}</h3>
+    {data?.error && <small style={{ opacity: 0.6 }}>{data.error}</small>}
+  </div>
+);
+const modalOverlay = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
+const modalContent = { backgroundColor: 'var(--card-bg)', padding: '30px', borderRadius: '16px', width: '90%', maxWidth: '700px', maxHeight: '85vh', overflowY: 'auto' };
