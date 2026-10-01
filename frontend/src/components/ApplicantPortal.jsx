@@ -367,9 +367,10 @@ const handleSubmit = async (e) => {
               <div data-field="position_id" tabIndex={-1} role="radiogroup" aria-label="Position"
                 aria-invalid={fieldErrors.position_id ? 'true' : undefined}
                 style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderRadius: '10px', outline: 'none', ...(fieldErrors.position_id ? { boxShadow: '0 0 0 2px var(--danger)' } : null) }}>
-                {positions.map(p => (
+                {positions.map((p, idx) => (
                   <div
                     key={p._id}
+                    data-track={`apply-position-${idx + 1}`}
                     onClick={() => { if (uploading) return; clearField('position_id'); setForm(prev => ({ ...prev, position_id: p._id })); }}
                     style={{
                       ...positionOption,
@@ -437,7 +438,7 @@ const handleSubmit = async (e) => {
               <div style={{ ...infoBox, marginBottom: '16px' }}>
                 <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
                   Select a position above to see the nomination fee you must pay, or{' '}
-                  <button type="button" onClick={openFees} style={linkBtn}>check every position's fee first</button>.
+                  <button type="button" data-track="apply-fee-link" onClick={openFees} style={linkBtn}>check every position's fee first</button>.
                 </p>
               </div>
             ) : requiredFee > 0 ? (
@@ -451,7 +452,7 @@ const handleSubmit = async (e) => {
                   <strong>Important:</strong> your receipt must show a payment of this full amount. Applications with
                   an incomplete or incorrect payment amount will be rejected.
                 </p>
-                <button type="button" onClick={openFees} style={{ ...linkBtn, display: 'block', marginTop: '8px' }}>
+                <button type="button" data-track="apply-fee-link" onClick={openFees} style={{ ...linkBtn, display: 'block', marginTop: '8px' }}>
                   See fees for other positions
                 </button>
               </div>
@@ -465,6 +466,7 @@ const handleSubmit = async (e) => {
               {['Mobile Money (MTN)', 'Mobile Money (Airtel)', 'Bank Transfer', 'Cash Receipt'].map(method => (
                 <div
                   key={method}
+                  data-track="apply-payment-method"
                   onClick={() => { if (uploading) return; clearField('payment_method'); setPaymentMethod(method); }}
                   style={{
                     ...positionOption,
@@ -501,7 +503,7 @@ const handleSubmit = async (e) => {
                 Re-attach your receipt. Your typed answers were restored, but files cannot be saved.
               </p>
             )}
-            <label data-field="payment_proof" tabIndex={-1} aria-invalid={fieldErrors.payment_proof ? 'true' : undefined}
+            <label data-track="apply-proof-upload" data-field="payment_proof" tabIndex={-1} aria-invalid={fieldErrors.payment_proof ? 'true' : undefined}
               style={{ ...photoUploadArea, minHeight: '120px', ...(fieldErrors.payment_proof ? { border: '2px dashed var(--danger)' } : null) }}>
               {paymentProofPreview ? (
                 <img src={paymentProofPreview} alt="Payment proof preview" className="panel-fade-in"
@@ -585,6 +587,7 @@ const handleSubmit = async (e) => {
             </div>
             <button
               type="submit"
+              data-track="apply-submit"
               style={{ ...greenBtn, width: '100%', padding: '14px', fontSize: '15px' }}
               disabled={uploading || positions.length === 0}
               aria-busy={uploading}

@@ -63,6 +63,7 @@ export default function OtpInput({
       <div style={{ marginTop: '30px', display: 'flex', gap: '15px', justifyContent: 'center' }}>
         <button onClick={onBack} style={secondaryBtnStyle}>Back</button>
         <button
+          data-track="otp-submit"
           onClick={onVerify} disabled={disabled}
           style={{
             backgroundColor: disabled ? 'var(--surface-2)' : '#2ecc71', color: 'white', padding: '12px 30px',

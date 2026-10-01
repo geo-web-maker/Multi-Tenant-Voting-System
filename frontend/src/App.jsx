@@ -877,6 +877,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               
               {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
               <button
+                data-track="login-submit"
                 onClick={() => handleVerifyIdentity()}
                 disabled={(!isElectionOpen && !isAdminPath) || isVerifying || captchaPending}
                 style={{
@@ -888,7 +889,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               >
                 {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Log In" : "Verify & Send Code")}
               </button>
-              <button onClick={switchLoginMode} style={linkBtnStyle}>
+              <button data-track="login-switch-admin" onClick={switchLoginMode} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an admin? Log in here"}
               </button>
               </div>
@@ -925,7 +926,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   ) : (
                     <>
                       {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
-                      <button onClick={() => handleVerifyIdentity(phoneIdxRef.current)} disabled={captchaPending || isVerifying}
+                      <button data-track="otp-resend" onClick={() => handleVerifyIdentity(phoneIdxRef.current)} disabled={captchaPending || isVerifying}
                         style={{ ...resendBtnStyle, opacity: captchaPending ? 0.5 : 1 }}>Resend SMS</button>
                     </>
                   )}
