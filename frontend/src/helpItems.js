@@ -11,3 +11,13 @@ export const helpItemsFor = (page) => [...(ITEMS[page] || ITEMS.voter)];
 
 // Ballot page (voter step 3) owns its own inline Help in its footer bar, so no floating button there.
 export const showHelpFab = (view, step) => (view === 'voter' && step !== 3) || view === 'apply';
+
+// Contact reasons offered on each page. Voter keeps the single generic "Contact Support" entry.
+export const supportReasonsFor = (page) => (page === 'apply' ? ['Application problem', 'Payment'] : []);
+
+// data-track ids (WP-7b); all satisfy the tracker's ^[a-z0-9_-]{2,40}$ rule.
+export const HELP_TRACK = { fab: 'help-fab', fees: 'help-fees', timeline: 'help-timeline', support: 'help-support' };
+
+// The FAB fades out while one of these has focus (the phone keyboard is then open).
+export const isTextEntry = (el) => !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
+  && !/^(button|submit|checkbox|radio|reset|image|file)$/i.test(el.type || '');

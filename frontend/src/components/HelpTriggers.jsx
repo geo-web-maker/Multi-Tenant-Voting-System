@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import { Icon } from './icons.jsx';
+import { HELP_TRACK, isTextEntry } from '../helpItems';
 
 /**
  * Floating pill button — the default Help affordance on pages that have
@@ -10,13 +11,31 @@ import { Icon } from './icons.jsx';
 export function FabTrigger({ compact = false }) {
   const { open, toggle } = useHelpMenu();
   const narrow = useNarrowScreen(400);
+  const typing = useTextEntryFocus();
   const iconOnly = compact || narrow;
+  // Fade (and ignore taps) while a text field has focus, so the ? never sits over the keyboard or the field.
+  // Stays visible while the menu is open so it can still be closed.
+  const faded = typing && !open;
   return (
-    <button onClick={toggle} style={iconOnly ? { ...fabStyle, ...fabIconOnlyStyle } : fabStyle} aria-label="Help">
+    <button onClick={toggle} data-track={HELP_TRACK.fab} aria-label="Help" aria-hidden={faded || undefined} tabIndex={faded ? -1 : undefined}
+      style={{ ...(iconOnly ? { ...fabStyle, ...fabIconOnlyStyle } : fabStyle), ...(faded ? fabFadedStyle : null) }}>
       <span className="help-fab-label" style={fabLabelStyle}>{open ? <Icon name="close" /> : '?'}</span>
       {!iconOnly && <span className="help-fab-label" style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>}
     </button>
   );
+}
+
+// True while a text input, textarea or select has focus.
+function useTextEntryFocus() {
+  const [typing, setTyping] = useState(() => typeof document !== 'undefined' && isTextEntry(document.activeElement));
+  useEffect(() => {
+    const on = () => setTyping(isTextEntry(document.activeElement));
+    const onIn = (e) => setTyping(isTextEntry(e.target));
+    document.addEventListener('focusin', onIn);
+    document.addEventListener('focusout', on);
+    return () => { document.removeEventListener('focusin', onIn); document.removeEventListener('focusout', on); };
+  }, []);
+  return typing;
 }
 
 // True while the viewport is narrower than `px`. Safe where matchMedia is missing (older browsers, jsdom).
@@ -68,6 +87,7 @@ const fabStyle = {
 };
 
 const fabLabelStyle = { fontSize: '14px' };
+const fabFadedStyle = { opacity: 0, pointerEvents: 'none' };
 
 // Icon-only: a 48 px circle, still above the 44 px touch-target minimum.
 const fabIconOnlyStyle = { width: '48px', height: '48px', padding: 0, justifyContent: 'center', right: '16px' };
