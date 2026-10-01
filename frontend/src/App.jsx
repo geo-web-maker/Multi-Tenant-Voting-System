@@ -722,6 +722,16 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     savePublicView(null);
   };
 
+  // "Vote Now" is a full sign-out (resetFlow). A signed-in admin who taps it by accident would lose
+  // their session, so ask first. No admin token -> no dialog (plain voter reset). (WP-7c)
+  const handleVoteNow = () => {
+    if (sessionStorage.getItem(ADMIN_TOKEN_KEY)
+      && !window.confirm("Going to Vote Now will sign you out of your admin session. Continue?")) {
+      return;
+    }
+    resetFlow();
+  };
+
   if (!bootReady) {
     if (!bootSplashDue) return null;   // still inside the warm-server grace period
     return <BootSplash orgName={bootName} logoUrl={bootLogoUrl} exiting={bootExiting} stage={bootStage} />;
@@ -806,7 +816,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button data-track="nav-vote" onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+            <button data-track="nav-vote" onClick={handleVoteNow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
               Vote Now
             </button>
         
