@@ -298,6 +298,15 @@ def _alert_config() -> dict[str, float]:
             "spike_min": 150, "cold_pct": f("ANALYTICS_ALERT_COLD_PCT", "0.30"), "cold_min_sessions": 20}
 
 
+def current_alerts(org: str, now_min: int | None = None) -> list[dict[str, Any]]:
+    """Read-only view of this org's live alert state for the summary response (empty list = healthy).
+    Same evaluation as `_send_alerts`, but returned instead of emailed. Never creates `_minutes` entries."""
+    now_min = int(time.time() // 60) if now_min is None else now_min
+    stats = build_window_stats(_minutes.get(org, {}), now_min)
+    return [{k: a[k] for k in ("kind", "level", "metric", "value", "threshold")}
+            for a in evaluate_alerts(stats, _alert_config())]
+
+
 # ============================== in-memory aggregation ==============================
 def _inc(key: tuple, fields: dict[str, int]) -> None:
     d = _deltas.setdefault(key, {})
@@ -912,6 +921,7 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         docs = [d async for d in cursor]
         out = build_summary(docs, days, now, live=live_now(org))
         out["tracking_since"] = await tracking_since(get_db(), org)
+        out["alerts"] = current_alerts(org)
         return out
 
     @router.get("/superadmin/analytics/heatmap")
