@@ -5,6 +5,8 @@ import FinalReport from './FinalReport';
 import { Icon } from './icons.jsx';
 import { PublicTurnoutBreakdown } from './TurnoutBreakdown';
 import { LoadingBlock } from './Spinner.jsx';
+import { resultsState, notStartedMessage } from '../resultsState';
+import { fmtZoned, DEFAULT_TZ } from '../tz';
 
 // 1. SHUFFLE UTILITY (Outside the component)
 const shuffleArray = (array) => {
@@ -28,6 +30,7 @@ export default function Results() {
   const [loading, setLoading] = useState(true);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified] = useState(false); 
+  const [statusInfo, setStatusInfo] = useState({});   // /election-status payload, for resultsState()
   const [lastSynced, setLastSynced] = useState(new Date());
   const [logoUrl, setLogoUrl] = useState("");
   const [orgName, setOrgName] = useState("");
@@ -88,6 +91,7 @@ const fetchData = async ({ force = false } = {}) => {
 
     setIsElectionOpen(statusRes.data.is_open);
     setIsCertified(statusRes.data.is_certified || false);
+    setStatusInfo(statusRes.data || {});
     setLastSynced(new Date());
     setLoading(false);
 
@@ -183,6 +187,10 @@ const fetchData = async ({ force = false } = {}) => {
     group.candidates.push(candidate);
   });
 
+  const pageState = resultsState({ ...statusInfo, is_open: isElectionOpen }, electionData);
+  const notStarted = pageState === 'not_started';
+  const noVotes = pageState === 'no_votes';
+
   if (loading) return <div style={{textAlign: 'center', padding: '50px'}}><LoadingBlock text="Loading Live Tally…" /></div>;
 
   return (
@@ -202,7 +210,17 @@ const fetchData = async ({ force = false } = {}) => {
               </div>
           )}
         
+        {notStarted && (
+          <div style={{ textAlign: 'center', padding: '30px 20px', color: '#475569', border: '1px dashed #ccc', borderRadius: '10px', marginBottom: '20px' }}>
+            <Icon name="alarm" />
+            <div style={{ marginTop: '8px', fontWeight: 600 }}>
+              {notStartedMessage(statusInfo.voting_opens_at ? fmtZoned(statusInfo.voting_opens_at, DEFAULT_TZ) : '')}
+            </div>
+          </div>
+        )}
+
         {/* Banner reflects Certification status */}
+        {!notStarted && (
         <div style={bannerStyle(isElectionOpen, isCertified)}>
           <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#666', fontWeight: 'bold' }}>
             {isElectionOpen ? <><Icon name="dot" /> Live Tallying</> : (isCertified ? <><Icon name="success" /> Official Certified Results</> : "Provisional Standings")}
@@ -212,8 +230,13 @@ const fetchData = async ({ force = false } = {}) => {
           </div>
           <div style={{ fontSize: '13px', color: '#666' }}>Total Verified Ballots Cast</div>
         </div>
+        )}
 
-        {!electionData.results_released ? (
+        {noVotes && (
+          <div style={{ textAlign: 'center', padding: '20px', color: '#666', marginBottom: '20px' }}>No votes yet.</div>
+        )}
+
+        {notStarted || noVotes ? null : !electionData.results_released ? (
           <div style={{ textAlign: 'center', padding: '30px 20px', color: '#666', border: '1px dashed #ccc', borderRadius: '10px', marginBottom: '20px' }}>
             <Icon name="lock" />
             <div style={{ marginTop: '8px', fontWeight: 600 }}>Candidate results not yet published</div>
@@ -303,6 +326,7 @@ const fetchData = async ({ force = false } = {}) => {
           })
         )}
         
+        {!notStarted && !noVotes && (
         <div style={voterRollSectionStyle}>
           <h3 style={{ fontSize: '18px', color: 'var(--text-color)', marginBottom: '15px' }}>Voter Participation Roll</h3>
           {rollUnlocked && displayedVoters.length > 0 ? (
@@ -371,13 +395,16 @@ const fetchData = async ({ force = false } = {}) => {
             </div>
           )}
         </div>
+        )}
 
-        <PublicTurnoutBreakdown />
+        {!notStarted && !noVotes && <PublicTurnoutBreakdown />}
 
         <div style={{ marginTop: '40px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
+          {!notStarted && (
           <button onClick={handlePrint} style={printBtnStyle} className="print-btn">
             Download Public Results Report
           </button>
+          )}
           <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '10px' }}>
             Syncing live from Server... Last update: {lastSynced.toLocaleTimeString()}
           </p>
