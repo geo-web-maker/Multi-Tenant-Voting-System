@@ -4,6 +4,7 @@ import ElectionTimeline from './ElectionTimeline';
 import FeeSchedule from './FeeSchedule';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import { buildSupportLink } from '../supportLink';
+import { helpItemsFor } from '../helpItems';
 
 const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(4px)' };
 const modalContentStyle = {
@@ -20,26 +21,28 @@ const modalContentStyle = {
  * --bottom-bar-height CSS var (see useReportedHeight), so it never needs
  * to know which page it's on.
  */
-export default function HelpPanel({ supportPhone, supportContacts = [], orgName = '', onShowGuide }) {
+export default function HelpPanel({ supportPhone, supportContacts = [], orgName = '', onShowGuide, page = 'voter' }) {
   const { open, close, showRegister, openRegister, closeRegister, showTimeline, openTimeline, closeTimeline, showFees, openFees, closeFees } = useHelpMenu();
   // Which reason's contact submenu is open (null = showing the main list). Reset whenever the
   // main panel closes so re-opening Help never lands on a stale submenu.
   const [subReason, setSubReason] = React.useState(null);
   React.useEffect(() => { if (!open) setSubReason(null); }, [open]);
 
+  const shown = helpItemsFor(page);
+  const has = (key) => shown.includes(key);
   const items = [
-    { label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } },
-    { label: 'Check Voter Register', onClick: openRegister },
-    { label: 'Election Timeline', onClick: openTimeline },
-    { label: 'Nomination Fees', onClick: openFees },
+    ...(has('sample-ballot') ? [{ label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } }] : []),
+    ...(has('register') ? [{ label: 'Check Voter Register', onClick: openRegister }] : []),
+    ...(has('timeline') ? [{ label: 'Election Timeline', onClick: openTimeline }] : []),
+    ...(has('fees') ? [{ label: 'Nomination Fees', onClick: openFees }] : []),
     // General number first, then one entry per configured reason (Branding → Support contacts).
     // A reason with exactly one contact behind it is a direct link; more than one opens a small
     // submenu (below) listing each contact by name so the voter picks who to message.
-    ...(supportPhone ? [{
+    ...(has('support') && supportPhone ? [{
       label: 'Contact Support', color: '#25D366',
       href: buildSupportLink(supportPhone, orgName, '', 'describe your problem here (never send your code)'),
     }] : []),
-    ...supportContacts.filter(g => g?.reason && (g?.contacts || []).some(c => c?.link)).map(g => {
+    ...(has('support') ? supportContacts : []).filter(g => g?.reason && (g?.contacts || []).some(c => c?.link)).map(g => {
       const contacts = (g.contacts || []).filter(c => c?.link);
       return contacts.length === 1
         ? { label: g.reason, color: '#25D366', href: buildSupportLink(contacts[0].link, orgName, '', `${g.reason} (never send your code)`) }
@@ -70,10 +73,12 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
             </>
           ) : (
             <>
+              {has('code-note') && (
               <div style={{ padding: '8px 12px', fontSize: '12px', opacity: 0.8, lineHeight: 1.5, maxWidth: '260px' }}>
                 <b>Code not arriving?</b> Keep your phone on and wait for the countdown before tapping Resend. The same code is sent again while it is valid.
                 Still stuck, or need a detail changed? Use Contact Support below. Never send your code.
               </div>
+              )}
               {items.map((it, i) => it.href ? (
                 <a key={i} href={it.href} target="_blank" rel="noopener noreferrer" style={{ ...menuItemStyle, color: it.color || 'var(--text-color)' }}>
                   {it.label}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import { Icon } from './icons.jsx';
 
@@ -7,14 +7,32 @@ import { Icon } from './icons.jsx';
  * no other fixed bottom UI competing for that corner (e.g. the voter
  * login screen, results page).
  */
-export function FabTrigger() {
+export function FabTrigger({ compact = false }) {
   const { open, toggle } = useHelpMenu();
+  const narrow = useNarrowScreen(400);
+  const iconOnly = compact || narrow;
   return (
-    <button onClick={toggle} style={fabStyle} aria-label="Help">
+    <button onClick={toggle} style={iconOnly ? { ...fabStyle, ...fabIconOnlyStyle } : fabStyle} aria-label="Help">
       <span className="help-fab-label" style={fabLabelStyle}>{open ? <Icon name="close" /> : '?'}</span>
-      <span className="help-fab-label" style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>
+      {!iconOnly && <span className="help-fab-label" style={fabLabelStyle}>{open ? 'Close' : 'Help'}</span>}
     </button>
   );
+}
+
+// True while the viewport is narrower than `px`. Safe where matchMedia is missing (older browsers, jsdom).
+function useNarrowScreen(px) {
+  const query = `(max-width: ${px - 1}px)`;
+  const read = () => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(query).matches : false);
+  const [narrow, setNarrow] = useState(read);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia(query);
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener?.('change', on);
+    on();
+    return () => mq.removeEventListener?.('change', on);
+  }, [query]);
+  return narrow;
 }
 
 /**
@@ -50,6 +68,9 @@ const fabStyle = {
 };
 
 const fabLabelStyle = { fontSize: '14px' };
+
+// Icon-only: a 48 px circle, still above the 44 px touch-target minimum.
+const fabIconOnlyStyle = { width: '48px', height: '48px', padding: 0, justifyContent: 'center', right: '16px' };
 
 const inlineBtnStyle = {
   padding: '10px 18px',
