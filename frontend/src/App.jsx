@@ -5,6 +5,7 @@ import { loginGuidance, UNCONFIRMED_DELIVERY_NOTE } from './loginErrors';
 import OtpInput from './components/OtpInput';
 import ClosedNotice, { votingNoticeText } from './components/ClosedNotice';
 import { HelpMenuProvider } from './context/HelpMenuContext';
+import LoginErrorActions from './components/LoginErrorActions';
 import HelpPanel from './components/HelpPanel';
 import { initAnalytics, trackPage, pageName } from './analytics';
 
@@ -520,7 +521,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         const guide = isAdminPath
           ? { title: "Login Error", message: typeof errorData === 'object' ? JSON.stringify(errorData) : errorData }
           : loginGuidance(errorData, err.response?.data?.reason);
-        setStatusModal({ show: true, title: guide.title, message: guide.message, type: "error" });
+        setStatusModal({ show: true, title: guide.title, message: guide.message, type: "error", action: guide.action, support: guide.support });
       } finally {
         setIsVerifying(false);
         if (!isAdminPath) { setCaptchaToken(""); setCaptchaKey(k => k + 1); }
@@ -1014,6 +1015,11 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 {statusModal.title}
               </h2>
               <p style={{ textAlign: 'center', marginBottom: '20px', color: 'var(--text-muted)' }}>{statusModal.message}</p>
+              {statusModal.type !== 'success' && (
+                <LoginErrorActions action={statusModal.action} support={statusModal.support}
+                  supportContact={supportPhone || supportContacts[0]?.contacts?.[0]?.link || ''} orgName={orgName} studentId={studentId}
+                  onNavigate={() => setStatusModal({ ...statusModal, show: false })} />
+              )}
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
                 style={{ ...primaryBtnStyle, backgroundColor: statusModal.type === 'success' ? 'var(--success)' : 'var(--info)' }}
