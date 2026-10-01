@@ -10,6 +10,8 @@ import { fmtZoned, parseUtc, DEFAULT_TZ } from '../tz';
 import { loadTestAdvice, busiestHourShare } from '../loadTestAdvice';
 import { defaultRangeDays } from '../chartTime';
 import AlertPanel from './AlertPanel';
+import InsightsCard from './InsightsCard';
+import LinkBuilder from './LinkBuilder';
 
 const HEATMAP_PAGES = ['voter_identity', 'results', 'apply'];
 const FRAME_WIDTHS = [390, 820, 1280];
@@ -192,6 +194,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
               <p style={muted}>Tracking of funnel steps started on {fmtZoned(`${data.tracking_since}T00:00:00Z`, tz).replace(/,\s*\d{2}:\d{2}.*$/, '')}.</p>
             )}
             <AlertPanel alerts={data?.alerts} />
+            <InsightsCard summary={data} />
             <ApplyFunnelPanel funnel={data?.funnels?.apply} />
             <VotingFunnelPanel funnel={data?.funnels?.voting} />
 
@@ -232,6 +235,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
             </div>
 
             <ChannelsPanel channels={data?.channels} />
+            <LinkBuilder />
 
             <div style={panel} className="card-pad">
               <h3 style={h3}>Friction</h3>
