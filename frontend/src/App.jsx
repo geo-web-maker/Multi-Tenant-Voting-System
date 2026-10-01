@@ -142,10 +142,6 @@ function App() {
   const [studentId, setStudentId] = useState(restored.studentId || "");
   const [name, setName] = useState("");
   const [otp, setOtp] = useState("");
-  const [placeholderText, setPlaceholderText] = useState({ id: "", name: "" });
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [loopNum, setLoopNum] = useState(0);
-  const [typingSpeed, setTypingSpeed] = useState(150);
   const [isAdminPath, setIsAdminPath] = useState(false);
   useEffect(() => {
     const name = pageName(view, step, isAdminPath);
@@ -329,52 +325,6 @@ useEffect(() => {
 
   return () => { cancelled = true; clearTimeout(coldHintTimer); clearTimeout(pollTimer); clearTimeout(splashTimer); stageTimers.forEach(clearTimeout); };
 }, []);
-  
-  useEffect(() => {
-    // Stop the animation if the user has already started typing
-    if (studentId !== "" || name !== "") return;
-  
-    const handleTyping = () => {
-      const i = loopNum % examples.length;
-      const fullId = examples[i].id;
-      const fullName = examples[i].name;
-  
-      // 1. Calculate the next step for both strings
-      const nextId = isDeleting 
-        ? fullId.substring(0, placeholderText.id.length - 1) 
-        : fullId.substring(0, placeholderText.id.length + 1);
-
-      const nextName = isDeleting 
-        ? fullName.substring(0, placeholderText.name.length - 1) 
-        : fullName.substring(0, placeholderText.name.length + 1);
-
-      setPlaceholderText({ id: nextId, name: nextName });
-  
-      // 2. Determine if the ENTIRE sequence is done
-      const finishedTyping = !isDeleting && nextId === fullId && nextName === fullName;
-      const finishedErasing = isDeleting && nextId === "" && nextName === "";
-
-      // 3. Speed Logic (Fixes the 'nextSpeed' declaration error)
-      let speed = isDeleting ? 40 : 120; 
-  
-      if (finishedTyping) {
-        // Hold the full text for 2 seconds so students can read it
-        speed = 2000;
-        setIsDeleting(true);
-      } else if (finishedErasing) {
-        // Move to the next person in the list
-        setIsDeleting(false);
-        setLoopNum(loopNum + 1);
-        speed = 500;
-      }
-  
-      setTypingSpeed(speed);
-    };
-  
-    const timer = setTimeout(handleTyping, typingSpeed);
-    return () => clearTimeout(timer);
-
-  }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name]);
   
   useEffect(() => {
     const checkStatus = async () => {
@@ -930,7 +880,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     style={inputStyle}
                     value={studentId}
                     onChange={e => setStudentId(e.target.value)}
-                    placeholder={`Student Registration Number e.g. ${placeholderText.id}`}
+                    placeholder={`Student Registration Number e.g. ${examples[0].id}`}
                     autoComplete="off"
                   />
                   <input
@@ -939,7 +889,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     style={inputStyle}
                     value={name}
                     onChange={e => setName(e.target.value)}
-                    placeholder={`Full Name e.g. ${placeholderText.name}`}
+                    placeholder={`Full Name e.g. ${examples[0].name}`}
                     autoComplete="off"
                   />
                 </>
