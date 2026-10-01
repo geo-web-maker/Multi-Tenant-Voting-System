@@ -123,6 +123,25 @@ export function trackStep(flow, step) {
 }
 export function onPageChange(cb) { listeners.add(cb); return () => listeners.delete(cb); }
 
+// Guide 5.3: "usable" = the voter login form is on screen and can take input. First moment wins.
+const USABLE_SELECTOR = 'input[name="voter-reg-no"]';
+export function markUsable() {
+  try {
+    if (!performance.getEntriesByName('usable').length) performance.mark('usable');
+  } catch { /* performance.mark unsupported: usable_ms is simply omitted */ }
+}
+export function usableMs() {
+  try { return Math.round(performance.getEntriesByName('usable')[0]?.startTime || 0); } catch { return 0; }
+}
+function watchForUsable() {
+  if (document.querySelector(USABLE_SELECTOR)) { markUsable(); return; }
+  const mo = new MutationObserver(() => {
+    if (document.querySelector(USABLE_SELECTOR)) { markUsable(); mo.disconnect(); }
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+  setTimeout(() => mo.disconnect(), 20000); // entry pages other than voter login never match: stop watching
+}
+
 function entryPage() {
   try { return JSON.parse(sessionStorage.getItem(PAGES_KEY) || '[]')[0] || currentPage; } catch { return currentPage; }
 }
@@ -133,6 +152,7 @@ function maybeSendPerf(force = false) {
   const nav = performance.getEntriesByType('navigation')[0];
   enqueue({
     t: 'perf', page: entryPage(), load_ms: Math.round(nav?.loadEventEnd || 0), first_api_ms: Math.round(firstApiMs || 0),
+    usable_ms: usableMs(),
     net: navigator.connection?.effectiveType || 'unknown',
   });
 }
@@ -183,6 +203,7 @@ export function initAnalytics() {
   initialized = true;
   if (!allowed()) return;
   sid();
+  watchForUsable();
   setInterval(flush, 30000);
   document.addEventListener('visibilitychange', () => {
     if (visible()) { visibleSince = performance.now(); return; }
