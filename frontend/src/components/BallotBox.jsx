@@ -345,6 +345,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
             <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
               <button onClick={() => setShowSummary(false)} style={cancelBtnStyle}>Change Selections</button>
               <button 
+                data-track="ballot-submit"
                 onClick={submitFinalBallot} 
                 disabled={isVoting || countdown > 0} 
                 style={{
