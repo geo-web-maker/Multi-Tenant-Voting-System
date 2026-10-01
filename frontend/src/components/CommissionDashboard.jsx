@@ -47,6 +47,7 @@ export default function CommissionDashboard({ onLogout }) {
   useEffect(() => {
     setCommissionerId(sessionStorage.getItem('commissioner_id') || '');
     fetchAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only load
   }, []);
 
   // `silent` = background poll: no "Syncing…" flicker.

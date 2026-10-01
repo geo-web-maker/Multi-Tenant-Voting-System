@@ -10,6 +10,8 @@ import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
+import VoterStats from './VoterStats';
+import { SmsUsageTile } from './SecurityPanel';
 import SecurityPanel from './SecurityPanel';
 import VoterFieldsPanel from './VoterFieldsPanel';
 import usePolling from '../hooks/usePolling';
@@ -27,6 +29,8 @@ import ViewAsButton from './ViewAsButton';
 import { LoadingBlock } from './Spinner.jsx';
 import RevealGroup from './RevealGroup';
 import AnalyticsPanel from './AnalyticsPanel';
+import ExportModeControl from './ExportModeControl';
+import { setItAdminExportMode } from '../registerExport';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -60,6 +64,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const confirm = useConfirm();
 
   const [activeTab, setActiveTab] = useState('candidates');
+  const [voterSubTab, setVoterSubTab] = useState('register');
   const roster = useRosterStatus();
   const rosterFrozen = Boolean(roster?.frozen);
 
@@ -106,19 +111,17 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [voterSearch, setVoterSearch]   = useState('');
   
   // --- Voters / election state ---
-  const [electionVoters, setElectionVoters] = useState([]);
+  const [, setElectionVoters] = useState([]);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified]       = useState(false);
-  const [importFile, setImportFile] = useState(null);
-  const [importing, setImporting]           = useState(false);
-  const [voterSearch2, setVoterSearch2]     = useState('');
   const [loading, setLoading]               = useState(false);
-  const [electionLoaded, setElectionLoaded] = useState(false);
-  const [smsLoaded, setSmsLoaded]           = useState(false);
+  const [, setElectionLoaded]         = useState(false);
+  const [, setSmsLoaded]                = useState(false);
   const [lastRefreshed, setLastRefreshed]   = useState(new Date());
 
   //---IT Admin and auditlog---
   const [itAdmins, setItAdmins]             = useState([]);
+  const [exportSaving, setExportSaving]     = useState({});
   const [itAdminSearch, setItAdminSearch]   = useState('');
   const [studentChanges, setStudentChanges] = useState([]);
   const [scFilter, setScFilter]             = useState('all');
@@ -638,26 +641,6 @@ const handleCreateOrg = async (e) => {
     } catch (e) { toast(getErrorMessage(e, 'Reset failed.'), { kind: 'error' }); }
   };
 
-  // Picking a file only opens the review screen (a dry-run diff against the
-  // live roster); nothing is written until the admin confirms there.
-  const handleImportVoters = (e) => {
-    const file = e.target.files[0];
-    e.target.value = null;
-    if (file) setImportFile(file);
-  };
-
-  const handleImportDone = (r) => {
-    const parts = [`${r.added} added`, `${r.updated} updated`];
-      if (r.skipped_changes) parts.push(`${r.skipped_changes} left unchanged`);
-      if (r.removed) parts.push(`${r.removed} removed`);
-      if (r.blocked_removals) parts.push(`${r.blocked_removals} protected voter(s) kept`);
-    if (r.staff_changes_skipped) parts.push(`${r.staff_changes_skipped} admin/commissioner change(s) need a superadmin`);
-      toast(`Voter update applied: ${parts.join(', ')}.`, { kind: 'success', duration: 7000 });
-    setImportFile(null);
-    fetchElectionData();
-    fetchVotersList();
-  };
-  
   //--IT Admin changes
   const fetchItAdmins = async () => {
   try {
@@ -671,6 +654,22 @@ const fetchStudentChanges = async () => {
       const res = await api.get(`/superadmin/student-changes`);
       setStudentChanges(res.data);
     } catch { /* non-critical: ignore */ }
+  };
+
+  const handleSetExportMode = async (a, mode) => {
+    if (mode === 'full' && !(await confirm(
+      `Allow ${a.full_name} to export the FULL voter register, including complete phone numbers? ` +
+      `Every export is recorded in the activity log.`))) return;
+    setExportSaving((p) => ({ ...p, [a.student_id]: true }));
+    try {
+      await setItAdminExportMode(a.student_id, mode);
+      toast(`Export for ${a.full_name}: ${mode === 'none' ? 'turned off' : mode}.`, { kind: 'success' });
+      await fetchItAdmins();
+    } catch (e) {
+      toast(e?.response?.data?.detail || 'Could not change the export setting.', { kind: 'error' });
+    } finally {
+      setExportSaving((p) => ({ ...p, [a.student_id]: false }));
+    }
   };
 
   const handleToggleItAdmin = async (studentId) => {
@@ -753,10 +752,6 @@ const handleSuperAdminRemoveStudent = async () => {
 
   // ── Derived ──
 
-  const filteredVoters = electionVoters.filter(v =>
-    v.full_name?.toLowerCase().includes(voterSearch2.toLowerCase()) ||
-    v.student_id?.toLowerCase().includes(voterSearch2.toLowerCase())
-  );
   const commisssionerIds = new Set(commissioners.map(c => c.student_id));
   const filteredVoterList = voters.filter(v =>
     v.full_name?.toLowerCase().includes(voterSearch.toLowerCase()) ||
@@ -765,18 +760,6 @@ const handleSuperAdminRemoveStudent = async () => {
   const filteredApps = appFilter === 'all'
     ? applications
     : applications.filter(a => a.status === appFilter);
-
-  const turnout = electionVoters.length > 0
-    ? ((electionVoters.filter(v => v.has_voted).length / electionVoters.length) * 100).toFixed(1)
-    : 0;
-
-  // --- Ported from AdminDashboard: funnel + duplicate detection ---
-  const stage1 = electionVoters.filter(v => v.last_status === "otp_sent").length;
-  const stage2 = electionVoters.filter(v => v.last_status === "authenticated").length;
-  const stage3 = electionVoters.filter(v => v.has_voted || v.last_status === "completed").length;
-  const duplicateIds = electionVoters
-    .map(v => v.student_id)
-    .filter((id, index, array) => array.indexOf(id) !== index);
 
   // The old inline 'audit_log' tab is superseded by the shared Activity Log
   // panel, which every dashboard now mounts from one implementation.
@@ -1273,11 +1256,36 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ VOTERS TAB ══════════════ */}
         {activeTab === 'voters' && (
-          <VoterList
-            showStatus
-            onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
-            onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
-          />
+          <>
+            {/* CUSTOM-1: voter statistics restored as sub-tabs (see DEVIATIONS.md / progress/CUSTOM-1.md) */}
+            <div role="tablist" aria-label="Voters sections" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+              {[['register', 'Register'], ['stats', 'Statistics'], ['sms', 'SMS']].map(([id, label]) => (
+                <button key={id} role="tab" aria-selected={voterSubTab === id} onClick={() => setVoterSubTab(id)}
+                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: 13,
+                    background: voterSubTab === id ? 'var(--info)' : 'transparent', color: voterSubTab === id ? '#fff' : 'inherit' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {voterSubTab === 'register' && (
+              <VoterList
+                showStatus
+                onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
+                onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
+              />
+            )}
+            {voterSubTab === 'stats' && <VoterStats />}
+            {voterSubTab === 'sms' && (
+              <>
+                {/* Live provider balances: GET /admin/sms-balance (already fetched by fetchSmsBalance on load) */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 14 }}>
+                  <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />
+                  <SmsProviderCard label="MamboSMS" sub="fallback" data={smsBalance.mambosms} />
+                </div>
+                <SmsUsageTile />
+              </>
+            )}
+          </>
         )}
 
         {activeTab === 'positions' && (
@@ -1794,6 +1802,8 @@ const handleSuperAdminRemoveStudent = async () => {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <ExportModeControl name={a.full_name} mode={a.it_admin_export_mode || 'none'}
+                      disabled={!!exportSaving[a.student_id]} onChange={(m) => handleSetExportMode(a, m)} />
                     <input
                       style={{ ...inp, flex: 1, minWidth: '180px' }}
                       placeholder="Email"
@@ -2295,7 +2305,5 @@ const SmsProviderCard = ({ label, sub, data }) => (
     {data?.error && <small style={{ opacity: 0.6 }}>{data.error}</small>}
   </div>
 );
-const th          = { padding: '10px 14px', textAlign: 'left', color: '#fff', fontSize: '11px', textTransform: 'uppercase' };
-const td          = { padding: '10px 14px', color: 'var(--text-color)', fontSize: '13px' };
 const modalOverlay = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
 const modalContent = { backgroundColor: 'var(--card-bg)', padding: '30px', borderRadius: '16px', width: '90%', maxWidth: '700px', maxHeight: '85vh', overflowY: 'auto' };

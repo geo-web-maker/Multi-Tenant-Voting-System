@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api';
+import { startPolling } from '../hooks/usePolling';
 import FinalReport from './FinalReport';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { askEarlyReason } from '../electionControls';
@@ -360,8 +361,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
     loadGrants();
     // Re-fetch rather than counting down locally off a stale clock, so the
     // countdown stays anchored to server time.
-    const t = setInterval(load, 30000);
-    return () => clearInterval(t);
+    return startPolling(load, 30000);
   }, [load, loadGrants]);
 
   const saveSchedule = async () => {
@@ -1335,8 +1335,8 @@ export function RosterStats({ onRegisteredClick }) {
       }
     };
     load();
-    const t = setInterval(load, 30000);
-    return () => { alive = false; clearInterval(t); };
+    const stop = startPolling(load, 30000);
+    return () => { alive = false; stop(); };
   }, []);
 
   useRevealReady(Boolean(data) || Boolean(error));
@@ -1399,8 +1399,8 @@ export function RecentActivity({ limit = 6 }) {
       }
     };
     load();
-    const t = setInterval(load, 30000);
-    return () => { alive = false; clearInterval(t); };
+    const stop = startPolling(load, 30000);
+    return () => { alive = false; stop(); };
   }, [limit]);
   useRevealReady(entries !== null || Boolean(error));
 

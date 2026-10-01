@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
+import { startPolling } from '../hooks/usePolling';
 import { Icon } from './icons.jsx';
 import {
   submitContactChange, listContactChanges, cancelContactChange,
@@ -21,7 +22,7 @@ export default function ContactChangePanel({ student = null, compact = false }) 
   const load = useCallback(async () => {
     try { setMine((await listContactChanges()).items); } catch { /* non-critical */ }
   }, []);
-  useEffect(() => { load(); const id = setInterval(load, 20000); return () => clearInterval(id); }, [load]);
+  useEffect(() => { load(); return startPolling(load, 20000); }, [load]);
   useEffect(() => { setForm(f => ({ ...f, index: 0, new_value: '' })); setError(''); }, [student?.student_id]);
 
   const needsIndex = form.change_type === 'phone_change' || form.change_type === 'phone_remove';

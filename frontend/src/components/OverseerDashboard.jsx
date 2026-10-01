@@ -22,6 +22,7 @@ export default function OverseerDashboard({ onLogout }) {
   const [lastSynced, markSynced] = useLastSynced();
   const [tab, setTab]         = usePersistedTab('overseer', 'applications');
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only load
   useEffect(() => { fetchDashboard(); }, []);
   usePolling(() => fetchDashboard({ silent: true }), 15000);
 

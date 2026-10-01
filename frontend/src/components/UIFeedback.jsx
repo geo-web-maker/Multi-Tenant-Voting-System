@@ -47,16 +47,6 @@ export function UIFeedbackProvider({ children }) {
   const [dialog, setDialog] = useState(null); // { mode: 'confirm'|'prompt', message, danger, confirmText, cancelText, requireText, inputValue }
   const resolverRef = useRef(null);
 
-  const toast = useCallback((message, opts = {}) => {
-    const id = ++toastIdCounter;
-    const kind = opts.kind || 'info'; // 'info' | 'success' | 'error'
-    setToasts(prev => [...prev, { id, message, kind, exiting: false }]);
-    const duration = opts.duration ?? 5000;
-    if (duration > 0) {
-      setTimeout(() => dismissToast(id), duration);
-    }
-  }, []);
-
   // Marks the toast as exiting (triggers the slide/fade-out), then removes
   // it from state once that animation has had time to finish.
   const dismissToast = useCallback((id) => {
@@ -65,6 +55,16 @@ export function UIFeedbackProvider({ children }) {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, TOAST_EXIT_MS);
   }, []);
+
+  const toast = useCallback((message, opts = {}) => {
+    const id = ++toastIdCounter;
+    const kind = opts.kind || 'info'; // 'info' | 'success' | 'error'
+    setToasts(prev => [...prev, { id, message, kind, exiting: false }]);
+    const duration = opts.duration ?? 5000;
+    if (duration > 0) {
+      setTimeout(() => dismissToast(id), duration);
+    }
+  }, [dismissToast]);
 
   // confirm(message, { danger, confirmText, cancelText, requireText }) -> Promise<boolean>
   // requireText: if set, the confirm button stays disabled until the admin

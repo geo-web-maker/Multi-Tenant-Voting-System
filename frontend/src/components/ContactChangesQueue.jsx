@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
+import { startPolling } from '../hooks/usePolling';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import { listContactChanges, decideContactChange, breakGlassApprove, undoDigestEntry, CHANGE_LABELS, EVENT_LABELS, errMsg } from '../studentEdit';
@@ -36,7 +37,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
   const load = useCallback(async () => {
     try { setData(await listContactChanges()); } catch (e) { toast(errMsg(e, 'Could not load contact changes.'), { kind: 'error' }); }
   }, [toast]);
-  useEffect(() => { load(); const id = setInterval(load, 15000); return () => clearInterval(id); }, [load]);
+  useEffect(() => { load(); return startPolling(load, 15000); }, [load]);
   useEffect(() => { loadDigest(); }, [loadDigest]);
   useEffect(() => {
     if (!breakGlass) return;

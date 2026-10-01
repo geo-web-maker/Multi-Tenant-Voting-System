@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components */
+// (Exports a hook next to the component on purpose; splitting the file would touch every importer.)
 import React, { useCallback, useState } from 'react';
 
 /**

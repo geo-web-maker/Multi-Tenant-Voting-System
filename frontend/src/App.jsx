@@ -1,22 +1,13 @@
-import React, { useState, useEffect } from 'react'; 
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'; 
 import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
+import { LoadingBlock } from './components/Spinner';
+import { loginGuidance, UNCONFIRMED_DELIVERY_NOTE } from './loginErrors';
 import OtpInput from './components/OtpInput';
-import BallotBox from './components/BallotBox';
-import Results from './components/Results';
-import AdminDashboard from './components/AdminDashboard';
-import SuperAdminDashboard from './components/SuperAdminDashboard';
-import CommissionDashboard from './components/CommissionDashboard';
-import ApplicantPortal from './components/ApplicantPortal';
-import ClosedNotice, { votingNoticeText } from './components/ClosedNotice';
-import ITAdminDashboard from './components/ITAdminDashboard';
-import FinancialControllerDashboard from './components/FinancialControllerDashboard';
-import OverseerDashboard from './components/OverseerDashboard';
-import CandidateStatusPortal from './components/CandidateStatusPortal';
-import VerifyCertificate from './components/VerifyCertificate';
+import PhaseBanner from './components/PhaseBanner';
 import { HelpMenuProvider } from './context/HelpMenuContext';
+import LoginErrorActions from './components/LoginErrorActions';
 import HelpPanel from './components/HelpPanel';
 import { initAnalytics, trackPage, pageName } from './analytics';
-import HeatmapOverlay from './components/HeatmapOverlay';
 
 // Detects whether a logo image is mostly dark (e.g. dark linework on a
 // transparent PNG) so it can be inverted to stay visible against the dark
@@ -59,9 +50,12 @@ function useLogoNeedsInvert(logoUrl, theme) {
   return Boolean(logoUrl) && theme === 'dark' && result.url === logoUrl && result.invert;
 }
 import { FabTrigger } from './components/HelpTriggers';
+import { showHelpFab } from './helpItems';
 import usePolling from './hooks/usePolling';
+import { fetchBootstrap } from './bootstrap';
 import { Icon } from './components/icons.jsx';
 import TurnstileWidget from './components/TurnstileWidget';
+import VoterLoginInputs from './components/VoterLoginInputs';
 import { turnstileConfigured } from './supportLink';
 import {
   restoreAdminView, loadPublicView, savePublicView,
@@ -69,6 +63,23 @@ import {
   saveVoterToken, clearVoterToken, loadResendSeconds, saveResendDeadline,
   clearAdminSession, markPasswordChangePending, clearPasswordChangePending,
 } from './session';
+
+// Heavy, role-specific screens load on demand so a voter's first paint isn't paying for every dashboard.
+const BallotBoxLazy = lazy(() => import('./components/BallotBox'));
+// Wrapper so both call sites (real ballot, sample-ballot preview) get a Suspense boundary without JSX changes.
+function BallotBox(props) {
+  return <Suspense fallback={<LoadingBlock text="Loading ballot…" />}><BallotBoxLazy {...props} /></Suspense>;
+}
+const Results = lazy(() => import('./components/Results'));
+const SuperAdminDashboard = lazy(() => import('./components/SuperAdminDashboard'));
+const CommissionDashboard = lazy(() => import('./components/CommissionDashboard'));
+const ApplicantPortal = lazy(() => import('./components/ApplicantPortal'));
+const ITAdminDashboard = lazy(() => import('./components/ITAdminDashboard'));
+const FinancialControllerDashboard = lazy(() => import('./components/FinancialControllerDashboard'));
+const OverseerDashboard = lazy(() => import('./components/OverseerDashboard'));
+const CandidateStatusPortal = lazy(() => import('./components/CandidateStatusPortal'));
+const VerifyCertificate = lazy(() => import('./components/VerifyCertificate'));
+const HeatmapOverlay = lazy(() => import('./components/HeatmapOverlay'));
 
 
 // ?heatmap=<page> renders one public page for the heatmap modal. Only for a real superadmin session
@@ -81,15 +92,6 @@ const HEATMAP_FRAME = (() => {
     return ok ? { page: p, view: HEATMAP_VIEWS[p] } : null;
   } catch { return null; }
 })();
-
-// Sample IDs/names cycled in the login placeholder animation.
-const examples = [
-  { id: "23/U/BCS/10245/GV", name: "Ayebale Elizabeth" },
-  { id: "22/U/ISD/08940/PD", name: "Namusoke Dorothy Nalwadda" },
-  { id: "23/U/AGE/11223/GV", name: "Kaggwa Paul" },
-  { id: "21/U/BSE/44556/PE", name: "Sserwadda Valentino" },
-  { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
-];
 
 // Matched once per render (cheap, and the pathname doesn't change without a
 // reload in this session-state-driven SPA) rather than as a hook — it must
@@ -127,10 +129,6 @@ function App() {
   const [step, setStep] = useState(HEATMAP_FRAME ? 1 : (restored.step || 1)); 
   const [view, setView] = useState(HEATMAP_FRAME ? HEATMAP_FRAME.view : (restored.view || "voter")); 
   useEffect(() => { initAnalytics(); }, []);
-  useEffect(() => {
-    const name = pageName(view, step);
-    if (name) trackPage(name);
-  }, [view, step]);
   // Mirrors sessionStorage's "admin_role" in React state so the nav can react
   // to it. Lets a logged-in admin who has navigated to Results/Apply/Vote get
   // back to their dashboard with one click, instead of refreshing or hitting
@@ -139,11 +137,11 @@ function App() {
   const [studentId, setStudentId] = useState(restored.studentId || "");
   const [name, setName] = useState("");
   const [otp, setOtp] = useState("");
-  const [placeholderText, setPlaceholderText] = useState({ id: "", name: "" });
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [loopNum, setLoopNum] = useState(0);
-  const [typingSpeed, setTypingSpeed] = useState(150);
   const [isAdminPath, setIsAdminPath] = useState(false);
+  useEffect(() => {
+    const name = pageName(view, step, isAdminPath);
+    if (name) trackPage(name);
+  }, [view, step, isAdminPath]);
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
@@ -162,6 +160,11 @@ function App() {
   const [orgName, setOrgName] = useState("");
   const [timer, setTimer] = useState(() => (restored.step === 2 ? loadResendSeconds() : 0));
   const [selectedPhone, setSelectedPhone] = useState(restored.selectedPhone || "");
+  // Which number the voter picked (multi-phone voters). Resend must repeat it, or the server answers
+  // needs_selection and bounces them back to the picker instead of sending a new SMS (guide 4.8 #5).
+  const phoneIdxRef = useRef(null);
+  // Last /verify-otp failure (wrong code, tries left, lockout countdown) shown inline by OtpInput (guide 4.8 #1).
+  const [otpFeedback, setOtpFeedback] = useState(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [statusModal, setStatusModal] = useState({ 
     show: false, 
@@ -197,6 +200,8 @@ function App() {
   // slow ones. See bootExiting below for the animated hand-off.
   const [bootReady, setBootReady] = useState(false);
   const [bootExiting, setBootExiting] = useState(false);
+  // The splash is only worth showing if the server is NOT answering straight away (see the boot effect).
+  const [bootSplashDue, setBootSplashDue] = useState(false);
   // Where the splash is in its one-way story:
   //   connecting -> (starting, only if the server is actually cold) -> initializing -> connected
   // It only ever moves forward. A warm server skips "starting" entirely; a cold one shows it
@@ -245,10 +250,20 @@ useEffect(() => {
   const INIT_MS = 800;           // how long "initializing secure connection" stays visible
   const CONNECTED_MS = 600;      // how long "connected" shows before the hand-off
   const EXIT_ANIM_MS = 350;      // must match the CSS transition on the splash
+  const WARM_MS = 500;           // /health answered inside this = warm server: skip the splash entirely
 
   let cancelled = false;
   let pollTimer = null;
   const stageTimers = [];
+
+  // Warm server: /health comes back almost instantly, so flashing a ~2s splash would only slow people
+  // down. Hold the splash back for WARM_MS; if /health answers first, go straight to the app.
+  let splashShown = false;
+  const splashTimer = setTimeout(() => {
+    if (cancelled) return;
+    splashShown = true;
+    setBootSplashDue(true);
+  }, WARM_MS);
 
   // Only claim "starting server" once the wait has outlasted a warm response.
   const coldHintTimer = setTimeout(() => {
@@ -260,6 +275,8 @@ useEffect(() => {
     cancelled = true;
     clearTimeout(coldHintTimer);
     clearTimeout(pollTimer);
+    clearTimeout(splashTimer);
+    if (!splashShown) { setBootReady(true); return; }   // warm: nothing was ever shown, nothing to animate out
     // /health answered: the server is up. Walk forward through the last two steps.
     setBootStage('initializing');
     stageTimers.push(setTimeout(() => setBootStage('connected'), INIT_MS));
@@ -272,13 +289,15 @@ useEffect(() => {
   };
 
   const poll = () => {
-    api.get('/health').then(finish).catch(() => {
+    api.get('/health', { __noRetry: true }).then(finish).catch(() => {
       if (!cancelled) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
     });
   };
   poll();
 
-  api.get('/superadmin/branding').then(res => {
+  fetchBootstrap().then(boot => {
+    const res = { data: boot.branding };
+    if (!res.data) return;
     if (res.data.support_phone) setSupportPhone(res.data.support_phone);
     if (Array.isArray(res.data.support_contacts)) setSupportContacts(res.data.support_contacts);
     if (res.data.logo_url) {
@@ -301,61 +320,16 @@ useEffect(() => {
     // showing) is enough if this fails. Silent by design.
   });
 
-  return () => { cancelled = true; clearTimeout(coldHintTimer); clearTimeout(pollTimer); stageTimers.forEach(clearTimeout); };
+  return () => { cancelled = true; clearTimeout(coldHintTimer); clearTimeout(pollTimer); clearTimeout(splashTimer); stageTimers.forEach(clearTimeout); };
 }, []);
-  
-  useEffect(() => {
-    // Stop the animation if the user has already started typing
-    if (studentId !== "" || name !== "") return;
-  
-    const handleTyping = () => {
-      const i = loopNum % examples.length;
-      const fullId = examples[i].id;
-      const fullName = examples[i].name;
-  
-      // 1. Calculate the next step for both strings
-      const nextId = isDeleting 
-        ? fullId.substring(0, placeholderText.id.length - 1) 
-        : fullId.substring(0, placeholderText.id.length + 1);
-
-      const nextName = isDeleting 
-        ? fullName.substring(0, placeholderText.name.length - 1) 
-        : fullName.substring(0, placeholderText.name.length + 1);
-
-      setPlaceholderText({ id: nextId, name: nextName });
-  
-      // 2. Determine if the ENTIRE sequence is done
-      const finishedTyping = !isDeleting && nextId === fullId && nextName === fullName;
-      const finishedErasing = isDeleting && nextId === "" && nextName === "";
-
-      // 3. Speed Logic (Fixes the 'nextSpeed' declaration error)
-      let speed = isDeleting ? 40 : 120; 
-  
-      if (finishedTyping) {
-        // Hold the full text for 2 seconds so students can read it
-        speed = 2000;
-        setIsDeleting(true);
-      } else if (finishedErasing) {
-        // Move to the next person in the list
-        setIsDeleting(false);
-        setLoopNum(loopNum + 1);
-        speed = 500;
-      }
-  
-      setTypingSpeed(speed);
-    };
-  
-    const timer = setTimeout(handleTyping, typingSpeed);
-    return () => clearTimeout(timer);
-
-  }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name]);
   
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const res = await api.get('/election-status');
-        setIsElectionOpen(res.data.is_open);
-        setElectionStatus(res.data);
+        const { status } = await fetchBootstrap();   // shares the one startup request with branding (E1)
+        if (!status) throw new Error('no status');
+        setIsElectionOpen(status.is_open);
+        setElectionStatus(status);
       } catch {
         console.error("Could not fetch election status");
       }
@@ -368,7 +342,7 @@ useEffect(() => {
     const res = await api.get('/election-status');
     setIsElectionOpen(res.data.is_open);
     setElectionStatus(res.data);
-  }, 30000);
+  }, 60000);   // phases change on the scale of hours/days; 60 s is plenty (guide 3.3)
 
   useEffect(() => {
     let interval = null;
@@ -382,7 +356,9 @@ useEffect(() => {
     return () => clearInterval(interval);
   }, [timer]);
 
+    // Only needed for the sample-ballot guide, so fetch when it is opened rather than for every visitor.
     useEffect(() => {
+      if (!showGuide) return;
       const fetchCandidates = async () => {
         try {
           const res = await api.get('/candidates');
@@ -392,11 +368,14 @@ useEffect(() => {
         }
       };
       fetchCandidates();
-    }, []);
+    }, [showGuide]);
 
   // --- SESSION PERSISTENCE ---
   // Remember which public page is open so a reload doesn't bounce off it.
   useEffect(() => { savePublicView(view); }, [view]);
+
+  // The voter is one OTP away from the ballot: fetch its chunk now so stepping to it is instant (guide 3.1).
+  useEffect(() => { if (step === 2) import('./components/BallotBox').catch(() => {}); }, [step]);
 
   // Remember the voter's place in the flow (never the OTP itself). Going back
   // to step 1 / 1.5 means the session is over, so forget it.
@@ -456,6 +435,7 @@ const switchLoginMode = () => {
 };
 
 const handleVerifyIdentity = async (selectedIdx = null) => {
+      if (selectedIdx !== null && selectedIdx !== undefined) phoneIdxRef.current = selectedIdx;
       setIsVerifying(true);
       try {
         const endpoint = isAdminPath ? "/verify-admin" : "/verify-identity";
@@ -510,10 +490,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             setSelectedPhone(res.data.phone);
           }
           
+          setOtpFeedback(null);   // a fresh code: forget the previous attempt's error
           setStatusModal({
             show: true,
             title: "Code Sent!",
-            message: res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}.`,
+            message: (res.data.message || `We sent a verification code to ${res.data.phone || 'your phone'}.`)
+              + (res.data.delivery === "unconfirmed" ? UNCONFIRMED_DELIVERY_NOTE : ""),
             type: "success"
           });
           
@@ -533,18 +515,18 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           return;
         }
         if (!isAdminPath && err.response?.data?.reason === "captcha_required") setCaptchaForced(true);
-        const errorData = err.response?.data?.detail || "Verification Failed";
+        const errorData = err.response?.data?.detail || (err.response ? "Verification Failed"
+          : (navigator.onLine === false ? "You are offline. Reconnect and try again." : "No response from the server. Check your connection and try again."));
         // The schedule changed after this page loaded: re-read the status so the notice says
         // the right thing (not started yet vs. ended) instead of guessing from the error text.
         if (!isAdminPath && err.response?.status === 403 && /closed|has ended/i.test(String(errorData))) {
           api.get('/election-status').then(r => { setIsElectionOpen(r.data.is_open); setElectionStatus(r.data); }).catch(() => {});
         }
-        setStatusModal({
-          show: true,
-          title: "Login Error",
-          message: typeof errorData === 'object' ? JSON.stringify(errorData) : errorData,
-          type: "error"
-        });
+        // Voter path: say what to DO next, not just what went wrong (guide 4.3). Admin path keeps the raw text.
+        const guide = isAdminPath
+          ? { title: "Login Error", message: typeof errorData === 'object' ? JSON.stringify(errorData) : errorData }
+          : loginGuidance(errorData, err.response?.data?.reason);
+        setStatusModal({ show: true, title: guide.title, message: guide.message, type: "error", action: guide.action, support: guide.support });
       } finally {
         setIsVerifying(false);
         if (!isAdminPath) { setCaptchaToken(""); setCaptchaKey(k => k + 1); }
@@ -564,6 +546,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
       if (!isAdminPath && otpRes.data?.voter_token) saveVoterToken(otpRes.data.voter_token);
   
       setOtp("");
+      setOtpFeedback(null);
   
       if (isAdminPath) {
         setStatusModal({
@@ -585,14 +568,19 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         setStep(3);
       }
     } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Invalid or expired code. Please try again.";
-      setStatusModal({
-        show: true,
-        title: "Verification Failed",
-        message: errorMsg,
-        type: "error"
-      });
-      setOtp("");
+      const data = err.response?.data || {};
+      if (['wrong_code', 'guess_lock', 'no_live_code'].includes(data.reason)) {
+        // Shown inline by OtpInput (red border, tries left, live lockout countdown). The typed code stays in the
+        // field so a single wrong digit can be fixed instead of retyping all six.
+        setOtpFeedback({
+          reason: data.reason, message: data.detail, attempts_remaining: data.attempts_remaining,
+          lock_until: data.reason === 'guess_lock' && data.retry_after ? Date.now() + data.retry_after * 1000 : undefined,
+        });
+      } else {
+        const errorMsg = data.detail || (err.response ? "Invalid or expired code. Please try again."
+          : "No response from the server. Check your connection and try again.");
+        setStatusModal({ show: true, title: "Verification Failed", message: errorMsg, type: "error" });
+      }
     } finally {
       setIsVerifying(false);
     }
@@ -682,7 +670,18 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     savePublicView(null);
   };
 
+  // "Vote Now" is a full sign-out (resetFlow). A signed-in admin who taps it by accident would lose
+  // their session, so ask first. No admin token -> no dialog (plain voter reset). (WP-7c)
+  const handleVoteNow = () => {
+    if (sessionStorage.getItem(ADMIN_TOKEN_KEY)
+      && !window.confirm("You will be signed out. Continue?")) {
+      return;
+    }
+    resetFlow();
+  };
+
   if (!bootReady) {
+    if (!bootSplashDue) return null;   // still inside the warm-server grace period
     return <BootSplash orgName={bootName} logoUrl={bootLogoUrl} exiting={bootExiting} stage={bootStage} />;
   }
 
@@ -693,11 +692,11 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   // catch-all already rewrites any path to /index.html, so a cold hit here
   // loads the app shell before this check runs; no Vercel config change needed.
   if (statusToken) {
-    return <CandidateStatusPortal token={statusToken} />;
+    return <Suspense fallback={<LoadingBlock text="Loading…" />}><CandidateStatusPortal token={statusToken} /></Suspense>;
   }
   // What a certificate's QR code opens — public, read-only (see VerifyCertificate).
   if (verifyId) {
-    return <VerifyCertificate certificateId={verifyId} />;
+    return <Suspense fallback={<LoadingBlock text="Loading…" />}><VerifyCertificate certificateId={verifyId} /></Suspense>;
   }
 
   return (
@@ -710,15 +709,14 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             supportContacts={supportContacts}
             orgName={orgName}
             onShowGuide={() => setShowGuide(true)}
+            page={view}
           />
           {/* Ballot page (step 3) puts Help inside its own footer bar via
               <InlineHelpButton /> — see BallotBox.jsx — so the floating
               trigger only renders when nothing else owns that space.
-              On the Apply page there's no ballot footer, but the applicant
-              flow has its own inline "check every position's fee first"
-              link (see ApplicantPortal.jsx) rather than this FAB, so it's
-              still skipped there. */}
-          {view === "voter" && step !== 3 && <FabTrigger />}
+              The Apply page has no ballot footer, so it gets the floating
+              trigger too, icon-only (see showHelpFab in helpItems.js). */}
+          {showHelpFab(view, step) && <FabTrigger compact={view === "apply"} />}
         </>
       )}
       <div style={{ 
@@ -765,7 +763,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           </span>
           
           <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button data-track="nav-vote" onClick={resetFlow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+            <button data-track="nav-vote" onClick={handleVoteNow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
               Vote Now
             </button>
         
@@ -796,6 +794,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           </div>
         </nav>
 
+        <Suspense fallback={<LoadingBlock text="Loading…" />}>
         {view === "results" && <Results apiBase={API_BASE} />}
         {view === "superadmin" && <SuperAdminDashboard onLogout={resetFlow} />}
         {view === "commission" && <CommissionDashboard onLogout={resetFlow} />}
@@ -805,7 +804,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {view === "overseer" && <OverseerDashboard onLogout={resetFlow} />}
         {HEATMAP_FRAME
           ? <HeatmapOverlay embedded page={HEATMAP_FRAME.page} />
-          : window.self === window.top && view !== "voter" && <HeatmapOverlay />}
+          : window.self === window.top && view !== "voter" && sessionStorage.getItem('admin_role') === 'superadmin' && <HeatmapOverlay />}
+        </Suspense>
         
         
         {view === "voter" && (
@@ -815,7 +815,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <h1 style={{ textAlign: 'center', color: 'var(--text-color)' }}>
                 {isAdminPath ? "Admin Login" : "Voter Login"}
               </h1>
-              {!isAdminPath && <ClosedNotice text={votingNoticeText(electionStatus)} />}
+              {!isAdminPath && <PhaseBanner status={electionStatus} onApply={() => setView("apply")} />}
               
               {isAdminPath ? (
                 <>
@@ -871,29 +871,13 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 </>
               ) : (
                 <>
-                  <input
-                    key="voter-reg-no"
-                    name="voter-reg-no"
-                    style={inputStyle}
-                    value={studentId}
-                    onChange={e => setStudentId(e.target.value)}
-                    placeholder={`Student Registration Number e.g. ${placeholderText.id}`}
-                    autoComplete="off"
-                  />
-                  <input
-                    key="voter-full-name"
-                    name="voter-full-name"
-                    style={inputStyle}
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                    placeholder={`Full Name e.g. ${placeholderText.name}`}
-                    autoComplete="off"
-                  />
+                  <VoterLoginInputs studentId={studentId} setStudentId={setStudentId} name={name} setName={setName} inputStyle={inputStyle} />
                 </>
               )}
               
               {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
               <button
+                data-track="login-submit"
                 onClick={() => handleVerifyIdentity()}
                 disabled={(!isElectionOpen && !isAdminPath) || isVerifying || captchaPending}
                 style={{
@@ -905,7 +889,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               >
                 {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Log In" : "Verify & Send Code")}
               </button>
-              <button onClick={switchLoginMode} style={linkBtnStyle}>
+              <button data-track="login-switch-admin" onClick={switchLoginMode} style={linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an admin? Log in here"}
               </button>
               </div>
@@ -932,7 +916,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
             {step === 2 && (
               <div style={cardStyle}>
-               <OtpInput otp={otp} setOtp={setOtp} onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying}
+               <OtpInput otp={otp} feedback={otpFeedback}
+                 setOtp={(v) => { setOtp(v); setOtpFeedback(f => (f && !f.lock_until ? null : f)); }}   // editing clears a plain error, never a lockout
+                 onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying}
                  supportPhone={supportPhone || supportContacts[0]?.contacts?.[0]?.link || ''} orgName={orgName} studentId={studentId} />
                 <div style={{ marginTop: '20px', textAlign: 'center' }}>
                   {timer > 0 ? (
@@ -940,7 +926,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                   ) : (
                     <>
                       {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
-                      <button onClick={() => handleVerifyIdentity()} disabled={captchaPending || isVerifying}
+                      <button data-track="otp-resend" onClick={() => handleVerifyIdentity(phoneIdxRef.current)} disabled={captchaPending || isVerifying}
                         style={{ ...resendBtnStyle, opacity: captchaPending ? 0.5 : 1 }}>Resend SMS</button>
                     </>
                   )}
@@ -954,7 +940,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 onVoteSuccess={handleVoteSuccess}
                 onSessionExpired={handleSessionExpired}
                 apiBase={API_BASE} 
-                propCandidates={candidates}
+                propCandidates={candidates.length ? candidates : undefined}   // undefined => BallotBox shows its own loading state and fetches
                 orgName={orgName}
               />
             )}
@@ -1034,6 +1020,11 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 {statusModal.title}
               </h2>
               <p style={{ textAlign: 'center', marginBottom: '20px', color: 'var(--text-muted)' }}>{statusModal.message}</p>
+              {statusModal.type !== 'success' && (
+                <LoginErrorActions action={statusModal.action} support={statusModal.support}
+                  supportContact={supportPhone || supportContacts[0]?.contacts?.[0]?.link || ''} orgName={orgName} studentId={studentId}
+                  onNavigate={() => setStatusModal({ ...statusModal, show: false })} />
+              )}
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
                 style={{ ...primaryBtnStyle, backgroundColor: statusModal.type === 'success' ? 'var(--success)' : 'var(--info)' }}

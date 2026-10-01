@@ -16,6 +16,7 @@ import './ITAdminDashboard.css';
 import { regNo } from '../regNo';
 import VoterList from './VoterList';
 import AdminHeader, { useLastSynced } from './AdminHeader';
+import VoterRegisterExport from './VoterRegisterExport';
 
 
 export default function ITAdminDashboard({ onLogout }) {
@@ -390,11 +391,14 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {/* ══════════════ EDIT STUDENT ══════════════ */}
         {activeTab === 'voters' && (
-          <VoterList
-            onEdit={(sid) => { setEditStudentId(sid); setActiveTab('edit'); }}
-            onRemove={!rosterFrozen ? (v) => { setRemoveForm({ ...removeForm, student_id: v.student_id }); setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`); setActiveTab('remove'); } : undefined}
-            onResetOtp={(sid) => { setEditStudentId(sid); setActiveTab('reset_otp'); }}
-          />
+          <>
+            <VoterRegisterExport />
+            <VoterList
+              onEdit={(sid) => { setEditStudentId(sid); setActiveTab('edit'); }}
+              onRemove={!rosterFrozen ? (v) => { setRemoveForm({ ...removeForm, student_id: v.student_id }); setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`); setActiveTab('remove'); } : undefined}
+              onResetOtp={(sid) => { setEditStudentId(sid); setActiveTab('reset_otp'); }}
+            />
+          </>
         )}
 
         {activeTab === 'edit' && <ITAdminStudentEdit initialStudentId={editStudentId} />}

@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 import secrets
 from collections import Counter
@@ -9,6 +10,7 @@ import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
 from pymongo import UpdateOne
 import os
+import copy
 import csv
 import io
 import re
@@ -182,6 +184,15 @@ async def lifespan(app: FastAPI):
     await db.voter_import_previews.create_index("preview_id", unique=True)
     await db.roster_ledger.create_index([("org_id", 1), ("event", 1), ("ref_id", 1), ("ts", -1)])
     await db.voters.create_index([("has_voted", 1), ("sms_sends_total", 1)])
+    # Hot-path lookups. Non-unique on purpose, and wrapped so an index problem can never stop the app
+    # from booting (guide 3.4). Indexes hand-made in Atlas with the same keys are simply reused.
+    try:
+        await db.settings.create_index([("org_id", 1), ("name", 1)])
+        await db.positions.create_index([("org_id", 1), ("order", 1)])
+        await db.candidates.create_index([("org_id", 1), ("order", 1)])
+        await db.voters.create_index([("org_id", 1), ("student_id", 1)])
+    except Exception:
+        logger.exception("Could not create hot-path indexes (continuing without them)")
     # Phase exception grants — looked up on every gated action.
     await db.exception_grants.create_index([("org_id", 1), ("student_id", 1), ("phase", 1)])
     # The activity log is read by every admin role now, filtered and sorted.
@@ -407,7 +418,7 @@ async def org_context_middleware(request: Request, call_next):
 
 PUBLIC_PATHS = {
     "/", "/health", "/election-status",
-    "/verify-identity", "/verify-otp", "/vote", "/vote-bulk",
+    "/verify-identity", "/verify-otp", "/vote", "/vote-bulk", "/vote-status",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
     "/verify-admin", "/election-results", "/election-results/voter-roll",
     "/election-results/turnout-breakdown",
@@ -428,7 +439,7 @@ def _is_public(path: str, method: str) -> bool:
     # "logged in" anywhere. Branding is logo/colors/org-name/support-contact —
     # nothing sensitive — and is fetched unauthenticated on every page load
     # by App.jsx and Results.jsx for every visitor, not just superadmin.
-    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/superadmin/branding", "/election-schedule", "/election-roadmap"}:
+    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/superadmin/branding", "/election-schedule", "/election-roadmap", "/public/bootstrap"}:
         return True
     # candidate-portal-spec §3.2/§3.4: read-only, token/id-scoped, no admin
     # session involved at all — same reasoning as the voter-facing routes
@@ -545,13 +556,18 @@ ALLOWED_ORIGINS = (
 #   ALLOWED_ORIGIN_REGEX=https://.*\.vercel\.app
 ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX") or None
 
+# Compress JSON/text responses (big rosters, results, exports) — a real saving on 3G. Registered BEFORE
+# CORS so CORS stays the outermost layer and still stamps headers on every response.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Org-Slug", "X-Voter-Token"],
-    max_age=600,
+    expose_headers=["Content-Disposition", "X-Export-Mode", "X-Export-Rows"],
+    max_age=7200,    # Chrome's ceiling (2 h); removes most repeat preflights on slow links
 )
 
 # =============================================================================
@@ -2004,7 +2020,7 @@ def voting_window_state(schedule: dict, now: datetime) -> dict:
 
 
 async def get_phase_schedule(request: Request) -> dict:
-    doc = await db.settings.find_one(org_query(request, {"name": "election_phases"}))
+    doc = await cached_setting(request.state.org_id, "election_phases")
     phases = (doc or {}).get("phases", {})
     return {
         "round_id": (doc or {}).get("round_id", DEFAULT_ROUND_ID),
@@ -2263,6 +2279,43 @@ _SEC_DEFAULTS = {
 VALID_APPROVAL_POLICIES = {"unanimous", "majority_total", "majority_cast"}
 
 
+# -----------------------------------------------------------------------------------------------
+# Short-TTL cache of the RAW settings documents read on every public hit (/election-status and the
+# security settings read by /verify-identity). Raw documents, not computed responses: the phase
+# position depends on "now", so the response itself must always be recomputed.
+#
+# Every handler that WRITES election_config / election_phases / security_settings calls
+# invalidate_settings(org_id) after the write, so an admin's change is visible at once on that
+# instance; other instances catch up within the TTL. Casting a ballot deliberately does NOT use this
+# cache (assert_voting_open reads the DB directly), so closing/certifying takes effect immediately
+# for votes. SETTINGS_CACHE_TTL_S=0 disables the cache (tests do this unless they test the cache).
+# -----------------------------------------------------------------------------------------------
+_SETTINGS_TTL = float(os.getenv("SETTINGS_CACHE_TTL_S", "5"))
+_SETTINGS_CACHE: dict = {}
+
+
+async def cached_setting(org_id, name: str):
+    """find_one({"name": name, org scope}) with a short TTL. Returns a private copy (callers may mutate)."""
+    key = (str(org_id), name)
+    if _SETTINGS_TTL > 0:
+        hit = _SETTINGS_CACHE.get(key)
+        if hit and hit[0] > time.monotonic():
+            return copy.deepcopy(hit[1])
+    doc = await db.settings.find_one(_oq(org_id, {"name": name}))
+    if _SETTINGS_TTL > 0:
+        _SETTINGS_CACHE[key] = (time.monotonic() + _SETTINGS_TTL, copy.deepcopy(doc))
+    return doc
+
+
+def invalidate_settings(org_id=None, name: str | None = None) -> None:
+    """Drop cached settings for one org (optionally one name). org_id=None drops everything."""
+    if org_id is None and name is None:
+        _SETTINGS_CACHE.clear()
+        return
+    for k in [k for k in _SETTINGS_CACHE if (org_id is None or k[0] == str(org_id)) and (name is None or k[1] == name)]:
+        _SETTINGS_CACHE.pop(k, None)
+
+
 def _oq(org_id, extra: dict | None = None) -> dict:
     """org_query for code that has an org_id but no request (same semantics)."""
     q = dict(extra) if extra else {}
@@ -2323,7 +2376,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 async def security_settings_for(org_id) -> dict:
-    doc = await db.settings.find_one(_oq(org_id, {"name": "security_settings"})) or {}
+    doc = await cached_setting(org_id, "security_settings") or {}
     out = dict(_SEC_DEFAULTS)
     out.update({k: doc[k] for k in _SEC_DEFAULTS if doc.get(k) is not None})
     if not isinstance(out.get("cap_overrides"), dict):
@@ -2581,6 +2634,19 @@ async def ip_flagged(request: Request) -> bool:
     return ol.ip_needs_captcha(d.get("sends", []), d.get("verifies", []), d.get("fails", []), datetime.utcnow())
 
 
+async def _turnstile_verify(token: str, ip: str | None):
+    """True = passed, False = rejected, None = Cloudflare unreachable / not configured (caller decides)."""
+    if not TURNSTILE_SECRET:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post("https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                                  data={"secret": TURNSTILE_SECRET, "response": token, "remoteip": ip or ""})
+        return bool(r.json().get("success"))
+    except Exception:
+        return None
+
+
 async def enforce_turnstile(request: Request, token: str | None, sec: dict, mode_now: str, flagged: bool):
     """Modes: off | adaptive (challenge flagged IPs / under attack) | on. Fails OPEN if Cloudflare is
     unreachable (voters first), except under_attack, which fails closed."""
@@ -2755,7 +2821,7 @@ async def health_check():
 
 @app.get("/election-status")
 async def get_status(request: Request):
-    status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    status_doc = await cached_setting(request.state.org_id, "election_config")
     schedule = await get_phase_schedule(request)
     voting_phase_open = _phase_is_open(schedule["phases"]["voting"], datetime.utcnow())
     sec = await get_security_settings(request)
@@ -3186,6 +3252,22 @@ async def cast_vote(data: VoteRequest, request: Request):
     return {"status": "success"}
 
 
+@app.get("/vote-status")
+async def vote_status(student_id: str, request: Request, response: Response):
+    """"Did my vote count?" for a voter whose /vote-bulk response was lost (guide 4.8 #2).
+
+    Authenticated by the voter's own token — signature, expiry, tenant and student are checked, but the
+    one-time jti is deliberately NOT compared: a successful vote clears vote_jti, so the very token that cast
+    the ballot must still be able to ask. Only reveals whether THIS voter has voted; never choices."""
+    sid = normalize_student_id(student_id)
+    verify_voter_token(request, sid, request.state.org_id)
+    student = await db.voters.find_one(org_query(request, get_forgiving_filter(sid)), {"has_voted": 1})
+    if not student:
+        raise HTTPException(status_code=404, detail="Voter not found.")
+    response.headers["Cache-Control"] = "no-store"
+    return {"has_voted": bool(student.get("has_voted"))}
+
+
 @app.post("/vote-bulk")
 async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     try:
@@ -3319,8 +3401,30 @@ async def get_candidates(request: Request):
 # PUBLIC ROUTES
 # =============================================================================
 
+@app.get("/public/bootstrap")
+async def public_bootstrap(request: Request, response: Response):
+    """E1: one request for what the public pages need at startup - branding, election status, positions.
+    Each part is produced by the SAME handler the individual endpoint uses, so the shapes cannot drift, every
+    query stays org-scoped, and only already-public fields can appear. The old endpoints keep working."""
+    response.headers["Vary"] = "Origin, X-Org-Slug, Authorization"
+    response.headers["Cache-Control"] = "no-store" if request.headers.get("Authorization") else "public, max-age=15, stale-while-revalidate=30"
+    return {
+        "branding": await get_branding(request),
+        "status": await get_status(request),
+        "positions": await get_positions(request, Response()),
+    }
+
+
 @app.get("/positions")
-async def get_positions(request: Request):
+async def get_positions(request: Request, response: Response):
+    # Near-static and public, so let browsers/CDNs reuse it briefly. Vary on X-Org-Slug is REQUIRED — the tenant
+    # comes from that header, and without it one organisation's positions could be served to another.
+    # Authenticated (admin) callers just edited something and must see it at once, so they get no-store.
+    if request.headers.get("Authorization"):
+        response.headers["Cache-Control"] = "no-store"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=15, stale-while-revalidate=30"
+    response.headers["Vary"] = "Origin, X-Org-Slug, Authorization"
     positions = []
     async for p in db.positions.find(org_query(request)).sort("order", 1):
         p["_id"] = str(p["_id"])
@@ -4013,6 +4117,7 @@ async def toggle_election(request: Request, data: ElectionToggle | None = None,
         {"$set": org_stamp(request, {"is_open": new_status, "name": "election_config"})},
         upsert=True
     )
+    invalidate_settings(request.state.org_id)
     # Was hardcoded actor="superadmin" — this route sits under /admin/*, so
     # ANY admin role could trigger it and the log would still name superadmin.
     details = {"is_open": new_status, "role": current_role(request)}
@@ -4114,6 +4219,7 @@ async def toggle_certification(request: Request, admin: dict = Depends(require_c
         {"$set": {"is_certified": new_status}},
         upsert=True
     )
+    invalidate_settings(request.state.org_id)
     # Was hardcoded actor="superadmin". Certification is the single most
     # consequential action in the system; it has to name the real signer.
     await log_action("results_certified", current_actor(request), {
@@ -6188,8 +6294,9 @@ async def list_it_admins(request: Request):
     result = []
     async for v in db.voters.find(
         org_query(request, {"is_it_admin": True}),
-        {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1, "it_admin_export_mode": 1}
     ):
+        v["it_admin_export_mode"] = normalize_export_mode(v.get("it_admin_export_mode"))
         result.append(v)
     return result
 
@@ -6202,12 +6309,162 @@ async def toggle_it_admin(student_id: str, request: Request):
     new_val = not voter.get("is_it_admin", False)
     await db.voters.update_one(
         {"_id": voter["_id"]},
-        {"$set": {"is_it_admin": new_val, **(await _invalidate_sessions(voter["_id"]))}}
+        {"$set": {"is_it_admin": new_val, **(await _invalidate_sessions(voter["_id"]))},
+         "$unset": {"it_admin_export_mode": "", "it_admin_export_mode_set_by": "", "it_admin_export_mode_set_at": ""}}
     )
     await log_action("it_admin_toggled", current_actor(request), {
         "student_id": student_id, "is_it_admin": new_val
     }, org_id=request.state.org_id)
+
     return {"student_id": student_id, "is_it_admin": new_val}
+
+
+# ── IT admin voter-register export ───────────────────────────────────────────
+EXPORT_MODES = ("none", "redacted", "full")
+EXPORT_MAX_ROWS = int(os.getenv("VOTER_EXPORT_MAX_ROWS", "50000"))
+EXPORT_RATE_LIMIT = 6
+EXPORT_RATE_WINDOW_S = 600
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")   # spreadsheet formula-injection triggers
+
+
+def normalize_export_mode(raw) -> str:
+    """Fail closed: anything other than exactly 'redacted' or 'full' is 'none'."""
+    return raw if raw in ("redacted", "full") else "none"
+
+
+def _csv_safe(value) -> str:
+    """Neutralise spreadsheet formula injection: a cell that would be read as a formula gets a leading '."""
+    s = "" if value is None else str(value)
+    return "'" + s if s.startswith(_FORMULA_PREFIXES) else s
+
+
+def _export_row(v: dict, mode: str, enabled_fields: list[dict], max_phones: int) -> list[str]:
+    if mode not in ("redacted", "full"):          # explicit raise, not assert (asserts vanish under python -O)
+        raise ValueError("export mode must be redacted or full")
+    phones = [str(p) for p in (v.get("phone_numbers") or [])]
+    if mode == "redacted":
+        phones = [_mask_phone(p) for p in phones]   # SAME function the on-screen list uses
+    phones += [""] * (max_phones - len(phones))
+    attrs = v.get("attrs") or {}
+    return [str(v.get("student_id", "")).upper(), v.get("full_name", "") or "", *phones,
+            *[attrs.get(f["key"], "") for f in enabled_fields]]
+
+
+async def _it_admin_export_mode(request: Request, admin: dict) -> str:
+    """Read the caller's mode from the DB on EVERY call. Never from the JWT, never cached."""
+    doc = await db.voters.find_one(
+        org_query(request, {"student_id": admin.get("sub"), "is_it_admin": True}),
+        {"_id": 0, "it_admin_export_mode": 1})
+    return normalize_export_mode((doc or {}).get("it_admin_export_mode"))
+
+
+class ExportModeUpdate(BaseModel):
+    mode: str
+
+
+@app.put("/superadmin/it-admins/{student_id:path}/export-mode")
+async def set_it_admin_export_mode(student_id: str, data: ExportModeUpdate, request: Request,
+                                   admin: dict = Depends(require_role("superadmin"))):
+    if data.mode not in EXPORT_MODES:
+        raise HTTPException(400, "Mode must be none, redacted or full.")
+    voter = await db.voters.find_one(org_query(request, {**get_forgiving_filter(student_id), "is_it_admin": True}))
+    if not voter:
+        raise HTTPException(404, "That person is not an IT admin.")
+    old = normalize_export_mode(voter.get("it_admin_export_mode"))
+    if data.mode == old:
+        return {"student_id": voter["student_id"], "it_admin_export_mode": old, "changed": False}
+    await db.voters.update_one({"_id": voter["_id"]}, {"$set": {
+        "it_admin_export_mode": data.mode,
+        "it_admin_export_mode_set_by": current_actor(request),
+        "it_admin_export_mode_set_at": datetime.utcnow()}})
+    await log_action("it_admin_export_mode_changed", current_actor(request),
+                     {"student_id": voter["student_id"], "old": old, "new": data.mode},
+                     org_id=request.state.org_id)
+    return {"student_id": voter["student_id"], "it_admin_export_mode": data.mode, "changed": True}
+
+
+@app.get("/admin/voters/export/permission")
+async def voter_export_permission(request: Request, admin: dict = Depends(require_role("it_admin"))):
+    mode = await _it_admin_export_mode(request, admin)
+    return {"mode": mode, "formats": ["xlsx", "csv"] if mode != "none" else [], "max_rows": EXPORT_MAX_ROWS}
+
+
+class VoterExportRequest(BaseModel):
+    format: str = "xlsx"
+
+
+@app.post("/admin/voters/export")
+async def export_voter_register(data: VoterExportRequest, request: Request,
+                                admin: dict = Depends(require_role("it_admin"))):
+    org_id, actor = request.state.org_id, current_actor(request)
+    fmt = (data.format or "").strip().lower()
+    if fmt not in ("csv", "xlsx"):
+        raise HTTPException(400, "Format must be csv or xlsx.")
+
+    mode = await _it_admin_export_mode(request, admin)           # fresh DB read, every call
+    if mode == "none":
+        await log_action("voter_register_export_denied", actor, {"reason": "mode_none"}, org_id=org_id)
+        raise HTTPException(403, "Voter register export is not enabled for your account. Ask the superadmin to enable it.")
+
+    await _check_rate_limit(request, bucket=f"voter_export:{actor}", limit=EXPORT_RATE_LIMIT,
+                            window_s=EXPORT_RATE_WINDOW_S,
+                            message="Too many exports. Please wait a few minutes and try again.")
+
+    query = org_query(request)                                   # tenant scope: mandatory
+    if await db.voters.count_documents(query) > EXPORT_MAX_ROWS:
+        await log_action("voter_register_export_denied", actor, {"reason": "too_many_rows"}, org_id=org_id)
+        raise HTTPException(413, f"The register is larger than the {EXPORT_MAX_ROWS:,}-row export limit.")
+
+    fields = await get_voter_fields(request)
+    enabled = [f for f in fields["fields"] if f.get("enabled")]
+    projection = {"_id": 0, "full_name": 1, "student_id": 1, "phone_numbers": 1, "attrs": 1}   # allowlist
+    voters = [v async for v in db.voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)])]
+
+    max_phones = max([1] + [len(v.get("phone_numbers") or []) for v in voters])
+    header = ["Registration Number", "Full Name", *[f"Phone {i}" for i in range(1, max_phones + 1)],
+              *[f["label"] for f in enabled]]
+    rows = [_export_row(v, mode, enabled, max_phones) for v in voters]
+
+    if fmt == "csv":
+        buf = io.StringIO(newline="")
+        w = csv.writer(buf)
+        w.writerow([_csv_safe(h) for h in header])
+        for r in rows:
+            w.writerow([_csv_safe(c) for c in r])
+        body = buf.getvalue().encode("utf-8-sig")                # BOM so Excel reads UTF-8 names correctly
+        media = "text/csv; charset=utf-8"
+    else:
+        from openpyxl import Workbook
+        from openpyxl.cell import WriteOnlyCell
+        wb = Workbook(write_only=True)
+        ws = wb.create_sheet("Voter register")
+
+        def _text_row(values):
+            cells = []
+            for x in values:
+                c = WriteOnlyCell(ws, value="" if x is None else str(x))
+                c.data_type = "s"                                # force TEXT: never a formula, never a number
+                cells.append(c)
+            return cells
+        ws.append(_text_row(header))
+        for r in rows:
+            ws.append(_text_row(r))
+        bio = io.BytesIO()
+        wb.save(bio)
+        body = bio.getvalue()
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    # Audit BEFORE releasing data. No names/phones/reg numbers/search text: this log is readable by every admin role.
+    await log_action("voter_register_export", actor, {"mode": mode, "format": fmt, "rows": len(rows)}, org_id=org_id)
+
+    slug = re.sub(r"[^a-z0-9-]", "", (getattr(request.state, "org_slug", "") or "org").lower()) or "org"
+    filename = f"voter-register-{slug}-{mode}-{datetime.utcnow().strftime('%Y%m%d-%H%M')}.{fmt}"
+    return Response(content=body, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store", "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+        "X-Export-Mode": mode, "X-Export-Rows": str(len(rows)),
+    })
 
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-credentials")
@@ -7076,6 +7333,7 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
         })},
         upsert=True,
     )
+    invalidate_settings(request.state.org_id)
     await log_action("phases_scheduled", current_actor(request), {
         "round_id": data.round_id, "timezone": tz_name,
         "phases": {k: {"enforced": v["enforced"], "start_utc": v["start"].isoformat() if v["start"] else None,
@@ -7528,6 +7786,34 @@ async def analytics_turnout_breakdown(request: Request):
     }
 
 
+@app.get("/admin/voters/stats")
+async def admin_voter_stats(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    """CUSTOM-1 (restored): headline voter numbers for the superadmin Voters tab.
+    Counts only - no voter is identified and nothing says how anyone voted. `sections` is registered/voted
+    per enabled voter field (faculty, hostel, ...); field keys come from the org's own config, never the request."""
+    total = await db.voters.count_documents(org_query(request))
+    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    with_phone = await db.voters.count_documents(org_query(request, {"phone_numbers": {"$exists": True, "$ne": []}}))
+    vf = await get_voter_fields(request)
+    sections = []
+    for f in vf["fields"]:
+        if not f.get("enabled"):
+            continue
+        groups = sorted(await _turnout_groups(request, f["key"]), key=lambda g: (-g["registered"], g["label"]))
+        for g in groups:
+            g["pct"] = round(100 * g["voted"] / g["registered"], 1) if g["registered"] else 0
+        sections.append({"key": f["key"], "label": f["label"], "groups": groups})
+    sms = await get_sms_usage(request, {})
+    return {
+        "total": total, "voted": voted, "not_voted": total - voted,
+        "turnout_pct": round(100 * voted / total, 1) if total else 0,
+        "with_phone": with_phone, "without_phone": total - with_phone,
+        "sections": sections,
+        "sms": {k: sms[k] for k in ("sent_total", "sent_otp", "sent_notice", "verified_total", "budget_total",
+                                    "budget_left", "budget_pct_left", "suggested_budget", "mode")},
+    }
+
+
 # =============================================================================
 # OFFICIAL REPORT  (admin-only — declaration, signatures, cc list)
 # =============================================================================
@@ -7807,6 +8093,7 @@ async def _save_security(request: Request, updates: dict):
         org_query(request, {"name": "security_settings"}),
         {"$set": org_stamp(request, {"name": "security_settings", **updates, "updated_at": datetime.utcnow()})},
         upsert=True)
+    invalidate_settings(request.state.org_id)
 
 
 async def _is_chief(request: Request) -> bool:

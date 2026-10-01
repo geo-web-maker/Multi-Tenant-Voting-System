@@ -628,3 +628,19 @@ def test_new_documents_hold_no_identifiers():
     a._record_api("org1", "/apply", 400, 10, "already_applied")
     dumped = json.dumps([[list(k), v] for k, v in a._deltas.items()], default=str)
     assert SID not in dumped and "1.2.3.4" not in dumped
+
+
+# ---- guide 5.4: the API table is split by audience so the Public/Staff switch really filters it ----
+def test_api_records_are_split_by_segment_and_summed_in_the_summary():
+    a._record_api("o", "/positions", 200, 50, None, "public")
+    a._record_api("o", "/positions", 200, 60, None, "staff")
+    a._record_api("o", "/positions", 200, 70)                       # old-style caller: still stored as "all"
+    assert {k[6] for k in a._deltas if k[2] == "api"} == {"public", "staff", "all"}
+    s = a.build_summary(docs_from_deltas(), 1, datetime.now(timezone.utc))
+    assert [r["requests"] for r in s["api"] if r["route"] == "/positions"] == [3]
+
+
+def test_segment_query_still_matches_documents_stored_before_the_split():
+    q = a._counter_query(["o"], 7, "public", "all", datetime.now(timezone.utc))
+    assert q["seg"] == {"$in": ["public", "all"]}
+    assert "seg" not in a._counter_query(["o"], 7, "all", "all", datetime.now(timezone.utc))

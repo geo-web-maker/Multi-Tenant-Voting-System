@@ -17,3 +17,14 @@ def _reset_org_cache():
     main._ORG_CACHE.clear()
     yield
     main._ORG_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _settings_cache_off_by_default(monkeypatch):
+    """Tests mutate db.settings directly and expect the next request to see it, so the settings cache is
+    disabled unless a test opts in (tests/test_settings_cache.py sets _SETTINGS_TTL itself)."""
+    import main
+    monkeypatch.setattr(main, "_SETTINGS_TTL", 0.0)
+    main.invalidate_settings()
+    yield
+    main.invalidate_settings()

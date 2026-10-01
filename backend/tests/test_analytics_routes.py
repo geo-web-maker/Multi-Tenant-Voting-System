@@ -72,3 +72,11 @@ async def test_phase_closed_and_vote_reasons(env):
                         1, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
     assert s["funnels"]["voting"]["vote"]["ok"] == 1
     assert {"label": "already_voted", "value": 1} in s["funnels"]["voting"]["vote"]["reasons"]
+
+
+async def test_api_outcomes_are_tagged_public_or_staff_by_the_request(env):
+    a._deltas.clear(); a._seen_routes.clear()
+    assert (await env.client.get("/positions")).status_code == 200                 # no Authorization: a voter/applicant
+    assert (await env.client.get("/positions", headers=env.sa)).status_code == 200  # admin session
+    segs = sorted(k[6] for k in a._deltas if k[2] == "api" and k[3] == "/positions")
+    assert segs == ["public", "staff"]

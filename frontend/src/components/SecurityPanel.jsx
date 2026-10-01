@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
+import { startPolling } from '../hooks/usePolling';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
@@ -28,8 +29,9 @@ export function SmsUsageTile({ initial = null }) {
     let live = true;
     const load = () => api.get('/admin/sms-usage').then(r => live && setU(r.data)).catch(() => {});
     if (initial == null) load();   // parent already fetched it in parallel with the rest of the panel
-    const id = setInterval(load, 30000);
-    return () => { live = false; clearInterval(id); };
+    const stop = startPolling(load, 30000);
+    return () => { live = false; stop(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `initial` is only the first-render seed
   }, []);
   if (!u) return null;
   const modeColor = { normal: 'var(--success)', conservation: '#e67e22', under_attack: 'var(--danger)' }[u.mode];

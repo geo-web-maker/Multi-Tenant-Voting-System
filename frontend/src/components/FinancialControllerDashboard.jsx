@@ -49,6 +49,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
     const stored = sessionStorage.getItem('financial_controller_id') || '';
     setFcId(stored);
     fetchAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only load
   }, []);
 
   const fetchAll = async ({ silent = false } = {}) => {

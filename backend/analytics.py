@@ -39,6 +39,7 @@ BROWSERS = (("Edge", re.compile(r"Edg/")), ("Opera", re.compile(r"OPR/")),
 API_EDGES = [100, 250, 500, 1000, 2000, 5000]
 LOAD_EDGES = [500, 1000, 2000, 3000, 5000, 8000]
 FIRST_API_EDGES = [300, 700, 1500, 3000, 5000, 10000]
+USABLE_EDGES = [500, 1000, 2000, 3000, 5000, 8000]  # login form interactive (guide 5.3)
 COLD_MS = 5000
 CAPS = {"pages": 150, "labels": 60, "errors": 40, "routes": 400, "channels": 30}
 # Funnel outcome tracking: server-side attempts per route, split by a short reason code.
@@ -137,7 +138,7 @@ def _clamp(v, lo, hi, default=0):
 
 
 ALLOWED_FIELDS = {"t", "page", "from", "from_dur", "first", "ns", "second", "entry", "label", "gx", "gy",
-                  "dead", "rage", "pct", "dur", "name", "load_ms", "first_api_ms", "net", "u", "src", "flow", "step"}
+                  "dead", "rage", "pct", "dur", "name", "load_ms", "first_api_ms", "usable_ms", "net", "u", "src", "flow", "step"}
 
 
 def validate_events(payload: Any) -> tuple[str, int, str, list[dict[str, Any]]]:
@@ -188,6 +189,7 @@ def validate_events(payload: Any) -> tuple[str, int, str, list[dict[str, Any]]]:
         elif t == "perf":
             e["load_ms"] = int(_clamp(e.get("load_ms"), 0, 60000))
             e["first_api_ms"] = int(_clamp(e.get("first_api_ms"), 0, 60000))
+            e["usable_ms"] = int(_clamp(e.get("usable_ms"), 0, 60000))
             e["net"] = e.get("net") if e.get("net") in NET_VALUES else "unknown"
         elif t == "fs":
             flow, step = e.get("flow"), e.get("step")
@@ -296,6 +298,15 @@ def _alert_config() -> dict[str, float]:
             "spike_min": 150, "cold_pct": f("ANALYTICS_ALERT_COLD_PCT", "0.30"), "cold_min_sessions": 20}
 
 
+def current_alerts(org: str, now_min: int | None = None) -> list[dict[str, Any]]:
+    """Read-only view of this org's live alert state for the summary response (empty list = healthy).
+    Same evaluation as `_send_alerts`, but returned instead of emailed. Never creates `_minutes` entries."""
+    now_min = int(time.time() // 60) if now_min is None else now_min
+    stats = build_window_stats(_minutes.get(org, {}), now_min)
+    return [{k: a[k] for k in ("kind", "level", "metric", "value", "threshold")}
+            for a in evaluate_alerts(stats, _alert_config())]
+
+
 # ============================== in-memory aggregation ==============================
 def _inc(key: tuple, fields: dict[str, int]) -> None:
     d = _deltas.setdefault(key, {})
@@ -396,6 +407,8 @@ def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
             fields[f"l.{_hist_index(load, LOAD_EDGES)}"] = 1
         if api > 0:
             fields[f"c.{_hist_index(api, FIRST_API_EDGES)}"] = 1
+        if e["usable_ms"] > 0:
+            fields[f"us.{_hist_index(e['usable_ms'], USABLE_EDGES)}"] = 1
         _inc((org, day, "perf", page, "", device, seg), fields)
         _inc((org, day, "perfnet", e["net"], "", device, seg), fields)
         _inc((org, day, "net", e["net"], "", "all", "all"), {"n": 1})
@@ -634,9 +647,9 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
     fsteps = defaultdict(lambda: {"n": 0, "u": 0})
     fout = defaultdict(lambda: defaultdict(int))
     chan = defaultdict(lambda: {"n": 0, "s2": 0})
-    perfnet = defaultdict(lambda: {"n": 0, "cold": 0, "l": [0] * 7, "c": [0] * 7})
+    perfnet = defaultdict(lambda: {"n": 0, "cold": 0, "l": [0] * 7, "c": [0] * 7, "us": [0] * 7})
     api = defaultdict(lambda: {"n": 0, "e401": 0, "e429": 0, "e4": 0, "e5": 0, "b": [0] * 7})
-    perf = defaultdict(lambda: {"n": 0, "cold": 0, "l": [0] * 7, "c": [0] * 7})
+    perf = defaultdict(lambda: {"n": 0, "cold": 0, "l": [0] * 7, "c": [0] * 7, "us": [0] * 7})
     hour = [0] * 24
     peak, peak_at = 0, None
 
@@ -713,6 +726,7 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
             p["n"] += n
             p["cold"] += d.get("cold", 0)
             p["l"], p["c"] = _add(p["l"], _hist(d, "l")), _add(p["c"], _hist(d, "c"))
+            p["us"] = _add(p["us"], _hist(d, "us"))
         elif kind == "err":
             if k2 in NET_ERRORS:
                 netfail += n
@@ -732,6 +746,7 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
             p["n"] += n
             p["cold"] += d.get("cold", 0)
             p["l"], p["c"] = _add(p["l"], _hist(d, "l")), _add(p["c"], _hist(d, "c"))
+            p["us"] = _add(p["us"], _hist(d, "us"))
         elif kind == "conc":
             for i in range(288):
                 m = _sub(d, "m", i)
@@ -780,6 +795,7 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
         "perf": [{"page": k[0], "device": k[1], "sessions": v["n"], "load_p50": pct(v["l"], LOAD_EDGES, .5),
                   "load_p95": pct(v["l"], LOAD_EDGES, .95), "first_api_p50": pct(v["c"], FIRST_API_EDGES, .5),
                   "first_api_p95": pct(v["c"], FIRST_API_EDGES, .95),
+                  "usable_p50": pct(v["us"], USABLE_EDGES, .5), "usable_p95": pct(v["us"], USABLE_EDGES, .95),
                   "cold_pct": v["cold"] / v["n"] if v["n"] else 0}
                  for k, v in sorted(perf.items(), key=lambda x: -x[1]["n"])[:30]],
         "cold_starts": {"sessions": perf_n, "suspected": cold_n, "pct": cold_n / perf_n if perf_n else 0},
@@ -787,7 +803,8 @@ def build_summary(docs, days: int, now: datetime, live: int = 0, meta: dict | No
                     for k, v in sorted(network.items(), key=lambda x: -x[1])],
         "network_perf": [{"net": k, "sessions": v["n"], "load_p50": pct(v["l"], LOAD_EDGES, .5),
                           "load_p95": pct(v["l"], LOAD_EDGES, .95), "first_api_p50": pct(v["c"], FIRST_API_EDGES, .5),
-                          "first_api_p95": pct(v["c"], FIRST_API_EDGES, .95), "cold_pct": v["cold"] / v["n"] if v["n"] else 0}
+                          "first_api_p95": pct(v["c"], FIRST_API_EDGES, .95),
+                          "usable_p50": pct(v["us"], USABLE_EDGES, .5), "usable_p95": pct(v["us"], USABLE_EDGES, .95), "cold_pct": v["cold"] / v["n"] if v["n"] else 0}
                          for k, v in sorted(perfnet.items(), key=lambda x: -x[1]["n"])],
         "friction": {
             "dead_by_element": [{"page": p, "label": lb, "value": v} for (p, lb), v in sorted(dead_el.items(), key=lambda x: -x[1])[:15]],
@@ -837,6 +854,17 @@ async def purge_org_analytics(db, org_id: str) -> None:
 
 # ============================== router ==============================
 VALID_DAYS, VALID_SEG, VALID_DEVICE = {1, 7, 30, 90}, {"public", "staff", "all"}, {"all", "mobile", "tablet", "desktop"}
+
+
+async def tracking_since(db, org_id: str) -> str | None:
+    """Earliest counter `day` (YYYY-MM-DD) recorded for this org, or None. Per-org, ignores the summary window.
+    Best-effort: a failed lookup must never break the dashboard, so it degrades to None."""
+    try:
+        async for d in db.analytics_counters.find({"org_id": org_id}, {"day": 1, "_id": 0}).sort("day", 1).limit(1):
+            return d.get("day")
+    except Exception:
+        log.debug("tracking_since lookup failed", exc_info=True)
+    return None
 
 
 def _check_filters(days, seg, device) -> None:
@@ -891,7 +919,10 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         org, now = active_org(request), datetime.now(timezone.utc)
         cursor = get_db().analytics_counters.find(_counter_query(org, days, seg, device, now))
         docs = [d async for d in cursor]
-        return build_summary(docs, days, now, live=live_now(org))
+        out = build_summary(docs, days, now, live=live_now(org))
+        out["tracking_since"] = await tracking_since(get_db(), org)
+        out["alerts"] = current_alerts(org)
+        return out
 
     @router.get("/superadmin/analytics/heatmap")
     async def heatmap(request: Request, page: str, device: str = "all", kind: str = "click", seg: str = "all",
@@ -975,7 +1006,9 @@ def route_audience(route: str) -> str:
     return "other" if route.startswith("(") else "voter"
 
 
-def _record_api(org: str, route: str, status: int, ms: float, reason: str | None = None) -> None:
+def _record_api(org: str, route: str, status: int, ms: float, reason: str | None = None, seg: str = "all") -> None:
+    """seg is "public" | "staff" for live traffic so the dashboard's Public/Staff switch really filters this
+    table (guide 5.4). Readers match {seg, "all"}, so documents written before this change (seg="all") still show."""
     if route not in _seen_routes:
         if len(_seen_routes) >= CAPS["routes"]:
             return
@@ -990,7 +1023,7 @@ def _record_api(org: str, route: str, status: int, ms: float, reason: str | None
     elif status >= 500:
         fields["e5"] = 1
     now = datetime.now(timezone.utc)
-    _inc((org, _day_key(now), "api", route, "", "all", "all"), fields)
+    _inc((org, _day_key(now), "api", route, "", "all", seg), fields)
     if route in FUNNEL_ROUTES:  # attempts split by reason; a tagged 2xx (e.g. needs_phone_choice) is not a plain "ok"
         code = reason if reason and REASON_RE.fullmatch(reason) else ("ok" if status < 400 else f"http_{status}")
         ffields = {"n": 1}
@@ -1009,8 +1042,12 @@ async def _record_outcome(request: Request, status: int, started: float) -> None
     if not org and slug and _org_id_resolver is not None:
         org = await _org_id_resolver(slug)
     if org:
-        _record_api(org, route_template(request, status), status, (time.monotonic() - started) * 1000,
-                    getattr(request.state, "an_reason", None))
+        route = route_template(request, status)
+        # Staff = a request carrying an admin Authorization header, or a route only staff use. Voters and
+        # applicants authenticate with X-Voter-Token / nothing, so they are "public".
+        seg = "staff" if (request.headers.get("Authorization") or route_audience(route) == "staff") else "public"
+        _record_api(org, route, status, (time.monotonic() - started) * 1000,
+                    getattr(request.state, "an_reason", None), seg)
 
 
 async def outcome_middleware(request: Request, call_next):

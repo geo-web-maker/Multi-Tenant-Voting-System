@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components */
+// (Exports a hook next to the component on purpose; splitting the file would touch every importer.)
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { LoadingBlock } from './Spinner.jsx';
 
@@ -37,6 +39,7 @@ export default function RevealGroup({ children, text = 'Loading…', timeoutMs =
   // Checked in an effect (not inside report) so every child has registered before we decide.
   useEffect(() => {
     if (revealed || regs.current.size === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: `regs` is a ref (not reactive), so this effect is where we read it
     if ([...regs.current.values()].every(Boolean)) setRevealed(true);
   }, [version, revealed]);
 

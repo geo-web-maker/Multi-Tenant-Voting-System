@@ -1,4 +1,5 @@
 import React from 'react';
+import { bucketLabel } from '../chartTime';
 
 // Hand-built responsive SVG charts (same approach as TurnoutSparkline). CSS variables only.
 function useIsNarrowViewport() {
@@ -21,7 +22,7 @@ function pointsRange(points) {
   return { start, end: pointMs(points[points.length - 1].t) + step };
 }
 
-export function TimelineChart({ points = [], markers = [], bucket = 'day', label = 'Site usage timeline' }) {
+export function TimelineChart({ points = [], markers = [], bucket = 'day', label = 'Site usage timeline', tz = 'Africa/Kampala' }) {
   const narrow = useIsNarrowViewport();
   const w = narrow ? 360 : 1000;
   const h = narrow ? 300 : 260;
@@ -35,12 +36,7 @@ export function TimelineChart({ points = [], markers = [], bucket = 'day', label
   const y = (v) => pad.t + ih - ((v || 0) / max) * ih;
   const line = (key) => points.map((p, i) => `${x(i)},${y(p[key])}`).join(' ');
   const ticks = points.length ? [...new Set([0, 1, 2, 3, 4].map((k) => Math.round((k / 4) * (points.length - 1))))] : [];
-  const fmt = (t) => {
-    const d = new Date(pointMs(t));
-    return bucket === 'hour'
-      ? `${d.getUTCDate()}/${d.getUTCMonth() + 1} ${String(d.getUTCHours()).padStart(2, '0')}h`
-      : `${d.getUTCDate()}/${d.getUTCMonth() + 1}`;
-  };
+  const fmt = (t) => bucketLabel(t, bucket, tz);
   const inRange = (m) => range && m.t >= range.start && m.t <= range.end;
   const mx = (m) => pad.l + ((m.t - range.start) / (range.end - range.start)) * iw;
   return (

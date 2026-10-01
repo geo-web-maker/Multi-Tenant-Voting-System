@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
+import { startPolling } from '../hooks/usePolling';
 import { useRevealReady } from './RevealGroup';
 
 /**
@@ -41,8 +42,8 @@ export function AdminTurnoutBreakdown() {
     let live = true;
     const load = () => api.get('/admin/analytics/turnout-breakdown').then(r => live && setData(r.data)).catch(() => {}).finally(() => live && setSettled(true));
     load();
-    const id = setInterval(load, 30000);
-    return () => { live = false; clearInterval(id); };
+    const stop = startPolling(load, 30000);
+    return () => { live = false; stop(); };
   }, []);
   useRevealReady(settled);
   if (!data || data.fields.length === 0) return null;
@@ -60,15 +61,15 @@ export function AdminTurnoutBreakdown() {
 export function PublicTurnoutBreakdown() {
   const [data, setData] = useState(null);
   useEffect(() => {
-    let live = true, id = null;
+    let live = true, stop = null;
     const load = () => api.get('/election-results/turnout-breakdown').then(r => {
       if (!live) return;
       setData(r.data);
-      if (r.data.available && id) clearInterval(id);     // final once closed: stop polling
+      if (r.data.available && stop) stop();     // final once closed: stop polling
     }).catch(() => {});
     load();
-    id = setInterval(load, 60000);
-    return () => { live = false; clearInterval(id); };
+    stop = startPolling(load, 60000);
+    return () => { live = false; stop(); };
   }, []);
   if (!data?.available || data.fields.length === 0) return null;
   return (

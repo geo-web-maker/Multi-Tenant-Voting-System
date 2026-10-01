@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import RevealGroup from './RevealGroup';
@@ -7,6 +7,11 @@ import usePolling from '../hooks/usePolling';
 import { TimelineChart, HourBars, BarRows } from './UsageCharts';
 import { ApplyFunnelPanel, VotingFunnelPanel, FrictionDetail, NetworkPerformance, ChannelsPanel } from './FunnelPanels';
 import { fmtZoned, parseUtc, DEFAULT_TZ } from '../tz';
+import { loadTestAdvice, busiestHourShare } from '../loadTestAdvice';
+import { defaultRangeDays } from '../chartTime';
+import AlertPanel from './AlertPanel';
+import InsightsCard from './InsightsCard';
+import LinkBuilder from './LinkBuilder';
 
 const HEATMAP_PAGES = ['voter_identity', 'results', 'apply'];
 const FRAME_WIDTHS = [390, 820, 1280];
@@ -37,6 +42,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [days, setDays] = useState(7);
+  const rangeChosen = useRef(false);   // true once the first-load default was applied or the user picked a range
   const [seg, setSeg] = useState('public');
   const [device, setDevice] = useState('all');
   const [apiAud, setApiAud] = useState('voter'); // API table: voter-facing | staff | all
@@ -48,6 +54,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   const [schedule, setSchedule] = useState(null);
   const [loading, setLoading] = useState(true);
   const [frame, setFrame] = useState(null); // { page, width }
+  const [voterCount, setVoterCount] = useState('');   // eligible voters, typed by the superadmin, for load-test advice
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +67,11 @@ export default function AnalyticsPanel({ organizations = [] }) {
       } else {
         const r = await api.get('/superadmin/analytics/summary', { params });
         setData(r.data);
+        if (!rangeChosen.current) {
+          rangeChosen.current = true;
+          const d = defaultRangeDays(r.data?.tracking_since, new Date());
+          if (d !== days) setDays(d);
+        }
       }
     } catch (e) {
       toast(getErrorMessage(e, 'Unable to load Site Usage.'), { kind: 'error' });
@@ -94,13 +106,14 @@ export default function AnalyticsPanel({ organizations = [] }) {
 
   if (loading && !data && !cmp) return <LoadingBlock text="Loading Site Usage…" />;
   const t = data?.totals || {};
+  const advice = loadTestAdvice({ voters: voterCount, shareBusiestHour: busiestHourShare(data?.hour_of_day), avgSessionSeconds: t.average_session_seconds });
 
   return (
     <RevealGroup>
       <div style={{ display: 'grid', gap: 16 }}>
         <div style={panel} className="card-pad">
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <select aria-label="Date range" value={days} onChange={(e) => setDays(Number(e.target.value))} style={inputStyle}>
+            <select aria-label="Date range" value={days} onChange={(e) => { rangeChosen.current = true; setDays(Number(e.target.value)); }} style={inputStyle}>
               {[1, 7, 30, 90].map((d) => <option key={d} value={d}>{d === 1 ? 'Last 24 hours' : `Last ${d} days`}</option>)}
             </select>
             <div role="group" aria-label="Audience" style={{ display: 'flex', flex: '1 1 200px', gap: 4 }}>
@@ -165,7 +178,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
 
             <div style={panel} className="card-pad">
               <h3 style={h3}>Views and sessions</h3>
-              <TimelineChart points={points} markers={markers} bucket={data?.timeline?.bucket} />
+              <TimelineChart points={points} markers={markers} bucket={data?.timeline?.bucket} tz={tz} />
               <div style={legend}>
                 <span><i style={{ ...dot, background: 'var(--brand-primary)' }} /> Views</span>
                 <span><i style={{ ...dot, background: 'var(--brand-accent)' }} /> Sessions</span>
@@ -174,9 +187,14 @@ export default function AnalyticsPanel({ organizations = [] }) {
                   <span key={m.label}><i style={{ ...dot, background: 'var(--danger)' }} /> {m.label} {fmtZoned(m.iso, tz)}</span>
                 ))}
               </div>
-              <p style={muted}>Chart labels are in UTC. Marker times are shown in {tz}.</p>
+              <p style={muted}>Hourly chart labels and marker times are shown in {tz}. Daily totals are grouped by UTC day.</p>
             </div>
 
+            {data?.tracking_since && (
+              <p style={muted}>Tracking of funnel steps started on {fmtZoned(`${data.tracking_since}T00:00:00Z`, tz).replace(/,\s*\d{2}:\d{2}.*$/, '')}.</p>
+            )}
+            <AlertPanel alerts={data?.alerts} />
+            <InsightsCard summary={data} />
             <ApplyFunnelPanel funnel={data?.funnels?.apply} />
             <VotingFunnelPanel funnel={data?.funnels?.voting} />
 
@@ -217,6 +235,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
             </div>
 
             <ChannelsPanel channels={data?.channels} />
+            <LinkBuilder />
 
             <div style={panel} className="card-pad">
               <h3 style={h3}>Friction</h3>
@@ -266,6 +285,15 @@ export default function AnalyticsPanel({ organizations = [] }) {
                 Peak concurrency: {t.peak_concurrency || 0}{t.peak_concurrency_time ? ` at ${fmtZoned(t.peak_concurrency_time, tz)}` : ''}.
                 {' '}Use about 1.5 × this value ({Math.ceil((t.peak_concurrency || 0) * 1.5)}) as the number of users in <code>backend/loadtest/locustfile.py</code>.
               </p>
+              <label style={{ ...check, marginTop: 8 }}>
+                Eligible voters (to plan a load test)
+                <input type="number" min="0" inputMode="numeric" value={voterCount} onChange={(e) => setVoterCount(e.target.value)} style={{ ...inputStyle, width: 110 }} aria-label="Eligible voters" />
+              </label>
+              {advice.expected > 0 && (
+                <p style={muted}>
+                  Expected people online at once in the busiest hour: about {advice.expected}. Test with {advice.low} to {advice.high} users in <code>backend/loadtest/locustfile.py</code>.
+                </p>
+              )}
             </div>
 
             <div style={panel} className="card-pad">
@@ -310,10 +338,10 @@ const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
 const h3 = { margin: '0 0 10px', fontSize: 15 };
 const h4 = { margin: '14px 0 6px', fontSize: 13, color: 'var(--text-muted)' };
 const inputStyle = { minHeight: 44, padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, flex: '1 1 140px' };
-const btn = { minHeight: 44, padding: '0 16px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--brand-primary)', color: 'var(--card-bg)', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
+const btn = { minHeight: 44, padding: '0 16px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--brand-primary)', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
 const dangerBtn = { ...btn, background: 'var(--danger)' };
 const segOff = { flex: 1, minHeight: 44, padding: '0 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
-const segOn = { ...segOff, background: 'var(--brand-primary)', color: 'var(--card-bg)', borderColor: 'var(--brand-primary)' };
+const segOn = { ...segOff, background: 'var(--brand-primary)', color: '#fff', borderColor: 'var(--brand-primary)' };
 const check = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 44, fontSize: 13 };
 const chip = { padding: '0 12px', border: '1px solid var(--border-color)', borderRadius: 8, background: 'var(--surface-2)' };
 const legend = { display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 12, margin: '8px 0' };

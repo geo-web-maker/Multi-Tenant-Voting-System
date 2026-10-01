@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { buildSupportLink, fmtWait } from '../supportLink';
+import { cleanOtp } from '../loginErrors';
 
 /**
  * feedback = { message, attempts_remaining, retry_after, reason } from the last /verify-otp response.
@@ -35,9 +36,9 @@ export default function OtpInput({
       </h2>
 
       <input
-        ref={inputRef} type="text" inputMode="numeric" maxLength="6" value={otp}
+        ref={inputRef} type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="one-time-code" value={otp}
         placeholder="· · · · · ·" disabled={locked}
-        onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+        onChange={(e) => setOtp(cleanOtp(e.target.value))}   // no maxLength: a pasted "123 456" must not be cut to 5 digits
         style={{
           fontSize: '32px', width: '220px', textAlign: 'center', padding: '12px',
           backgroundColor: 'var(--surface-2)', border: hasError ? '2px solid #e74c3c' : '2px solid var(--border-color)',
@@ -62,6 +63,7 @@ export default function OtpInput({
       <div style={{ marginTop: '30px', display: 'flex', gap: '15px', justifyContent: 'center' }}>
         <button onClick={onBack} style={secondaryBtnStyle}>Back</button>
         <button
+          data-track="otp-submit"
           onClick={onVerify} disabled={disabled}
           style={{
             backgroundColor: disabled ? 'var(--surface-2)' : '#2ecc71', color: 'white', padding: '12px 30px',

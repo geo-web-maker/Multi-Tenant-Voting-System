@@ -31,15 +31,50 @@ export const VOTER_TOKEN_KEY = 'voter_token';
 // instead of importing axios directly, so every request automatically
 // carries the org context and admin session token without each call site
 // having to remember to add it.
+// Timeouts. Without one, a request on a dead 3G link hangs forever and the UI just spins. These are
+// deliberately generous — the backend can take 30-50s to cold-start — and reads are retried below, so a
+// slow first attempt that times out is followed by one that finds the server awake.
+export const DEFAULT_TIMEOUT_MS = 30000;
+const UPLOAD_TIMEOUT_MS = 120000;   // multipart bodies (photos, rosters) need far longer on slow links
+const VOTE_TIMEOUT_MS = 60000;      // a cast ballot is never auto-retried, so give it room to finish
+
+// Retry policy: ONLY idempotent reads (GET/HEAD/OPTIONS), ONLY for "the network or gateway hiccuped"
+// failures, at most MAX_RETRIES extra attempts. Writes (and above all /vote) are never retried here — a
+// replayed POST can double-apply; a human re-submitting after a clear error message is the safe path.
+// Opt a single call out with { __noRetry: true } (e.g. /health, which has its own polling loop).
+export const retryConfig = { max: 2, baseMs: 400 };
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
+const IDEMPOTENT = new Set(['get', 'head', 'options']);
+
 const api = axios.create({
   baseURL: API_BASE,
+  timeout: DEFAULT_TIMEOUT_MS,
 });
+
+// Analytics hygiene (guide 5.1/5.2): the route without its query string, and a network-failure report that is
+// neither triggered by the boot /health wake-up loop (which retries every 2.5 s by design) nor repeated for every
+// retry of the same call — at most one per route per 30 s.
+const routeOf = (config) => String(config?.url || '').split('?')[0];
+const NETFAIL_GAP_MS = 30000;
+const lastNetFail = new Map();
+export function shouldReportNetFail(url, now = Date.now()) {
+  if (url === '/health') return false;
+  if (lastNetFail.has(url) && now - lastNetFail.get(url) < NETFAIL_GAP_MS) return false;
+  lastNetFail.set(url, now);
+  return true;
+}
+export const _resetNetFailForTests = () => lastNetFail.clear();
 
 api.interceptors.request.use((config) => {
   config.__an_started = performance.now();
   // "View as" tab: refuse writes before they leave the browser (the server also rejects them).
   if (sessionStorage.getItem('view_as') && !['get', 'head', 'options'].includes((config.method || 'get').toLowerCase())) {
     return Promise.reject({ config, response: { status: 403, data: { detail: 'Read-only view: this action is disabled.' } } });
+  }
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    config.timeout = Math.max(config.timeout || 0, UPLOAD_TIMEOUT_MS);
+  } else if (config.url && config.url.startsWith('/vote')) {
+    config.timeout = Math.max(config.timeout || 0, VOTE_TIMEOUT_MS);
   }
   const activeSlug = sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG;
   if (activeSlug) {
@@ -77,15 +112,16 @@ api.interceptors.response.use(
   (response) => {
     if (typeof window !== 'undefined') {
       const ms = performance.now() - (response.config?.__an_started || performance.now());
-      window.dispatchEvent(new CustomEvent('an:api', { detail: { ms, failed: false } }));
+      window.dispatchEvent(new CustomEvent('an:api', { detail: { ms, failed: false, ok: true, url: routeOf(response.config) } }));
     }
     return response;
   },
   (error) => {
     if (typeof window !== 'undefined') {
       const ms = performance.now() - (error.config?.__an_started || performance.now());
-      window.dispatchEvent(new CustomEvent('an:api', { detail: { ms, failed: !error.response } }));
-      if (!error.response) window.dispatchEvent(new CustomEvent('an:netfail', { detail: { kind: error.code === 'ECONNABORTED' ? 'timeout' : 'network' } }));
+      const url = routeOf(error.config);
+      window.dispatchEvent(new CustomEvent('an:api', { detail: { ms, failed: !error.response, ok: false, url } }));
+      if (!error.response && shouldReportNetFail(url)) window.dispatchEvent(new CustomEvent('an:netfail', { detail: { kind: error.code === 'ECONNABORTED' ? 'timeout' : 'network' } }));
     }
     const hadToken = Boolean(error.config?.headers?.Authorization);
     if (error.response && error.response.status === 401 && hadToken) {
@@ -98,6 +134,24 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// Registered AFTER the handler above on purpose: that one sees (and reports) every individual attempt,
+// this one decides whether to try again. Backoff is exponential with jitter so a fleet of phones that all
+// lost signal together doesn't hammer the server in lockstep when it returns.
+api.interceptors.response.use(undefined, async (error) => {
+  const cfg = error?.config;
+  if (!cfg || cfg.__noRetry || !IDEMPOTENT.has((cfg.method || 'get').toLowerCase())) return Promise.reject(error);
+  if (error.code === 'ERR_CANCELED') return Promise.reject(error);
+  const transient = error.response ? RETRYABLE_STATUS.has(error.response.status) : true;
+  if (!transient) return Promise.reject(error);
+  // Offline: retrying can't help. Polling / the browser's 'online' event will refresh when signal returns.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return Promise.reject(error);
+  cfg.__retries = (cfg.__retries || 0) + 1;
+  if (cfg.__retries > retryConfig.max) return Promise.reject(error);
+  const wait = retryConfig.baseMs * 2 ** (cfg.__retries - 1) * (0.75 + Math.random() * 0.5);
+  await new Promise((resolve) => setTimeout(resolve, wait));
+  return api.request(cfg);
+});
 
 // Shared helper so every catch block surfaces the backend's actual error
 // detail (e.g. "This code has expired. Please request a new one.") instead

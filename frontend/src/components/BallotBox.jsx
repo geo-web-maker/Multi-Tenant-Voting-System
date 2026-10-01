@@ -1,14 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
 import { loadBallot, saveBallot, clearBallot } from '../session';
 import { faceCropUrl } from '../cloudinaryImage';
 import { LoadingBlock } from './Spinner.jsx';
+import { castBallot, checkVoteStatus } from '../voteOutcome';
 
 export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
   const [loading, setLoading] = useState(!propCandidates); // Don't show loading if we already have data
   const [isVoting, setIsVoting] = useState(false);
+  const castingRef = useRef(false);               // synchronous lock: state alone can't stop a fast double tap
+  const [slowCast, setSlowCast] = useState(false);  // 'Still sending…' after 6 s
+  const [checking, setChecking] = useState(false);
   // Selections survive a page reload (kept per voter, only until the ballot is
   // submitted or the tab is closed). The sample-ballot preview never persists.
   const [ballot, setBallot] = useState(() => (isPreview ? {} : loadBallot(studentId)));
@@ -100,38 +104,61 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
     setShowSummary(true);
   };
 
-  const submitFinalBallot = async () => {
-    const selectedIds = Object.values(ballot);
-    setIsVoting(true);
+  const finishVote = () => {
+    // The ballot is in — discard the saved selections before moving on.
+    clearBallot(studentId);
+    onVoteSuccess();
+  };
+
+  const showError = (title, message, action = null) =>
+    setStatusModal({ show: true, title, message, type: 'error', action });
+
+  // Ask the server whether this voter's ballot is recorded. Used when a reply was lost, so the voter is
+  // never left guessing and never told a counted vote "failed".
+  const confirmVoteStatus = async () => {
+    setChecking(true);
     try {
-      const res = await api.post(`/vote-bulk`, {
-        student_id: studentId,
-        candidate_ids: selectedIds
-      });
-      
-      if (res.data.status === "success") {
-        // The ballot is in — discard the saved selections before moving on.
-        clearBallot(studentId);
-        // SKIP THE MODAL: Go straight to the success screen
-        onVoteSuccess(); 
-      }
-    } catch (err) {
-      setIsVoting(false);
-      setShowSummary(false);
-      // 401 on this endpoint means the voting session token is missing,
-      // expired, or replaced by a newer login. Retrying can't help — send the
-      // voter back to verify again (their picks are kept).
-      if (err.response?.status === 401 && onSessionExpired) {
-        onSessionExpired(err.response?.data?.detail);
+      const voted = await checkVoteStatus(api, studentId);
+      if (voted === true) { setStatusModal(m => ({ ...m, show: false })); finishVote(); return; }
+      if (voted === false) {
+        showError('Your vote was not recorded',
+          'Nothing was saved, so you can safely tap “Confirm & Cast Vote” again.');
         return;
       }
-      // Keep the Error Modal so they know why it failed
-      setStatusModal({
-        show: true,
-        title: "Submission Error",
-        message: err.response?.data?.detail || "Connection failed.",
-        type: "error"
-      });
+      showError('Still could not confirm',
+        'We still cannot reach the server. Do not vote again yet. Check your connection and tap “Check status”.',
+        { label: 'Check status', run: confirmVoteStatus });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const submitFinalBallot = async () => {
+    if (castingRef.current) return;               // double tap / double Enter
+    castingRef.current = true;
+    setIsVoting(true);
+    setSlowCast(false);
+    const slowTimer = setTimeout(() => setSlowCast(true), 6000);
+    try {
+      const outcome = await castBallot(api, studentId, Object.values(ballot));
+      if (outcome.kind === 'success' || outcome.kind === 'already_recorded') { finishVote(); return; }
+
+      setIsVoting(false);
+      setShowSummary(false);
+      // 401 = the voting session token is missing, expired, or replaced by a newer login. Retrying can't
+      // help — send the voter back to verify again (their picks are kept).
+      if (outcome.kind === 'session_expired' && onSessionExpired) { onSessionExpired(outcome.detail); return; }
+      if (outcome.kind === 'no_response') {
+        // Outcome unknown: the request may have been counted. Find out before offering a retry.
+        showError('Checking your vote…', 'The connection dropped. Please wait while we confirm whether your vote was recorded.');
+        await confirmVoteStatus();
+        return;
+      }
+      showError('Submission Error', outcome.message || 'Submission failed. Please try again.');
+    } finally {
+      clearTimeout(slowTimer);
+      setSlowCast(false);
+      castingRef.current = false;
     }
   };
 
@@ -318,6 +345,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
             <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
               <button onClick={() => setShowSummary(false)} style={cancelBtnStyle}>Change Selections</button>
               <button 
+                data-track="ballot-submit"
                 onClick={submitFinalBallot} 
                 disabled={isVoting || countdown > 0} 
                 style={{
@@ -325,8 +353,13 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                     backgroundColor: (isVoting || countdown > 0) ? '#94a3b8' : '#10b981'
                 }}
               >
-                {isVoting ? "Casting..." : countdown > 0 ? `Wait (${countdown}s)` : "Confirm & Cast Vote"}
+                {isVoting ? (slowCast ? "Still sending…" : "Casting...") : countdown > 0 ? `Wait (${countdown}s)` : "Confirm & Cast Vote"}
               </button>
+              {isVoting && slowCast && (
+                <p role="status" style={{ marginTop: '10px', fontSize: '14px', color: 'var(--text-muted)' }}>
+                  Still sending. Do not close this page or vote again.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -341,6 +374,14 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
               <h2 style={{ color: '#e11d48' }}>{statusModal.title}</h2>
               <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>{statusModal.message}</p>
         
+              {statusModal.action && (
+                <button
+                  onClick={statusModal.action.run} disabled={checking}
+                  style={{ ...confirmBtnStyle, backgroundColor: '#10b981', width: '100%', marginBottom: '10px' }}
+                >
+                  {checking ? 'Checking…' : statusModal.action.label}
+                </button>
+              )}
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
                 style={{
@@ -349,7 +390,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                   width: '100%'
                 }}
               >
-                Try Again
+                {statusModal.action ? 'Close' : 'Try Again'}
               </button>
             </div>
           </div>

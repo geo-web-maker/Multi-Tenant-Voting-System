@@ -273,7 +273,7 @@ async def test_freeze_blocks_every_roster_route_and_expires_pending(env):
     csv = ("student_id,full_name,phone\nz1,Zed Zed,0700123456\n").encode()
     r = await env.client.post("/admin/import-voters", headers=env.it, files={"file": ("v.csv", csv)})
     assert r.status_code == 409 and r.json()["reason"] == "roster_frozen"
-    body = {"student_id": "n2", "full_name": "New Person", "phone": "0700123456", "reason": "late", "requested_by": "it1"}
+    body = {"student_id": "n2", "full_name": "New Person", "phones": ["0700123456"], "reason": "late", "requested_by": "it1"}
     assert (await env.client.post("/superadmin/students/add", headers=env.sa, json=body)).status_code == 409
     assert (await env.client.post("/superadmin/students/remove", headers=env.sa, json={"student_id": "v1", "reason": "x", "requested_by": "root"})).status_code == 409
     assert (await env.client.post("/it-admin/students/request-add", headers=env.it, json=body)).status_code == 409
@@ -438,11 +438,15 @@ async def test_breakglass_and_caps_and_quota(env):
 
 async def test_add_path_regression_keeps_vote_and_roles(env):
     await env.db.voters.update_one({"student_id": "v1"}, {"$set": {"has_voted": True, "is_commissioner": True}})
-    body = {"student_id": "v1", "full_name": "Ayebale Elizabeth", "phone": "0700123456", "reason": "dup", "requested_by": "root"}
-    assert (await env.client.post("/superadmin/students/add", headers=env.sa, json=body)).status_code == 200
+    body = {"student_id": "v1", "full_name": "Ayebale Elizabeth", "phones": ["0700123456"], "reason": "dup", "requested_by": "root"}
+    # The add endpoint now refuses an existing registration number (409, "use Edit Student"), so a duplicate
+    # add can no longer overwrite anything. The invariant this test guards (vote + roles kept) must still hold.
+    assert (await env.client.post("/superadmin/students/add", headers=env.sa, json=body)).status_code == 409
     v = await env.db.voters.find_one({"student_id": "v1"})
     assert v["has_voted"] is True and v["is_commissioner"] is True
-    await main._execute_student_change({"change_type": "add", "student_id": "v1", "full_name": "A E", "phone": "0700123456"}, env.org_id)
+    with pytest.raises(main.HTTPException) as exc:      # the approval path refuses duplicates too
+        await main._execute_student_change({"change_type": "add", "student_id": "v1", "full_name": "A E", "phones": ["0700123456"]}, env.org_id)
+    assert exc.value.status_code == 409
     v = await env.db.voters.find_one({"student_id": "v1"})
     assert v["has_voted"] is True and v["is_commissioner"] is True
 
@@ -554,10 +558,122 @@ async def test_schedule_timezone_stored_validated_and_returned(env):
     assert (await env.client.post("/admin/schedule/phases", headers=env.sa, json=body)).status_code == 200
     j = (await env.client.get("/admin/schedule", headers=env.it)).json()
     assert j["timezone"] == "Africa/Kampala"
-    assert j["phases"][2]["start"].startswith("2026-01-12T05:00")          # stored as UTC, unchanged
+    voting = next(p for p in j["phases"] if p["name"] == "voting")   # located by name: the list now has 5 phases
+    assert voting["start"].startswith("2026-01-12T05:00")          # stored as UTC, unchanged
     bad = {**body, "timezone": "Mars/Olympus"}
     assert (await env.client.post("/admin/schedule/phases", headers=env.sa, json=bad)).status_code == 400
     body.pop("timezone")                                                    # omitted -> keeps the current zone
     body["timezone"] = None
     await env.client.post("/admin/schedule/phases", headers=env.sa, json=body)
     assert (await env.client.get("/admin/schedule", headers=env.it)).json()["timezone"] == "Africa/Kampala"
+
+
+async def set_applications(e, start, end, enforced=True):
+    await e.db.settings.update_one(
+        {"name": "election_phases", "org_id": e.org_id},
+        {"$set": {"name": "election_phases", "org_id": e.org_id, "round_id": "round-1", "timezone": "Africa/Kampala",
+                  "phases": {"applications": {"start": start, "end": end, "enforced": enforced}}}}, upsert=True)
+
+
+async def _apply_check(e):
+    return await e.client.post("/apply/check-eligibility", json={"student_id": "v1", "full_name": "Ayebale Elizabeth"})
+
+
+async def test_applications_closed_message_says_too_early_with_open_date(env):
+    await set_applications(env, START + timedelta(days=2), START + timedelta(days=5))
+    r = await _apply_check(env)
+    assert r.status_code == 403
+    d = r.json()["detail"]
+    assert "not opened yet" in d and "12 Jan 2026, 15:00 EAT" in d          # 12:00 UTC + 2d, shown in Kampala time (UTC+3)
+    assert "period is closed" not in d
+
+
+async def test_applications_closed_message_says_too_late_with_close_date(env):
+    await set_applications(env, START - timedelta(days=5), START - timedelta(days=1))
+    d = (await _apply_check(env)).json()["detail"]
+    assert "has ended" in d and "9 Jan 2026, 15:00 EAT" in d and "Electoral Commission" in d
+
+
+async def test_applications_open_window_passes_and_election_status_exposes_close_times(env):
+    await set_applications(env, START - timedelta(days=1), START + timedelta(days=1))
+    assert (await _apply_check(env)).status_code == 200
+    await set_applications(env, START - timedelta(days=5), START - timedelta(days=1))
+    j = (await env.client.get("/election-status")).json()
+    assert j["applications_phase"] == "ended" and j["applications_closes_at"].startswith("2026-01-09T12:00")
+
+
+# ---- Nomination fee + applicant SMS -------------------------------------------------------------
+
+async def _mk_position(e, title="President", fee=50000):
+    r = await e.client.post("/positions", headers=e.sa, json={"title": title, "order": 1, "application_fee": fee})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _apply(e, pos_id, sid="v1", name="Ayebale Elizabeth"):
+    await e.db.settings.delete_many({"name": "election_phases"})           # applications unscheduled = open
+    r = await e.client.post("/apply", json={"student_id": sid, "full_name": name, "position_id": pos_id,
+                                            "manifesto": "m", "payment_method": "Cash Receipt",
+                                            "payment_proof_url": "https://x/y.png"})
+    assert r.status_code == 200, r.text
+    return (await e.db.applications.find_one({"student_id": sid}))
+
+
+async def _financial_controller(e):
+    """Candidate payments are cleared by the Financial Controller (not a commissioner). Returns its headers."""
+    await e.voter("fc1", "Fin Controller", ("256700000009",), is_financial_controller=True)
+    return e.tok("fc1", "financial_controller")
+
+
+async def test_position_fee_is_public_patchable_and_validated(env):
+    pid = await _mk_position(env, fee=45000)
+    pos = [p for p in (await env.client.get("/positions")).json() if p["_id"] == pid][0]
+    assert pos["application_fee"] == 45000                                   # applicants can read it (public GET)
+    assert (await env.client.patch(f"/positions/{pid}", headers=env.sa, json={"application_fee": 40000})).status_code == 200
+    assert [p for p in (await env.client.get("/positions")).json() if p["_id"] == pid][0]["application_fee"] == 40000
+    assert (await env.client.patch(f"/positions/{pid}", headers=env.sa, json={"application_fee": -5})).status_code == 422
+    assert (await env.client.patch(f"/positions/{pid}", headers=env.sa, json={})).status_code == 400
+    assert (await env.client.patch(f"/positions/{pid}", headers=env.com1, json={"application_fee": 1})).status_code == 403
+
+
+async def test_application_snapshots_fee_at_submit_time(env):
+    pid = await _mk_position(env, fee=50000)
+    app_doc = await _apply(env, pid)
+    assert app_doc["fee_required"] == 50000
+    await env.client.patch(f"/positions/{pid}", headers=env.sa, json={"application_fee": 99000})
+    assert (await env.db.applications.find_one({"_id": app_doc["_id"]}))["fee_required"] == 50000   # old applicant keeps what they were told
+
+
+async def test_sms_on_approval_finance_reject_and_denial_and_never_blocks(env):
+    fc = await _financial_controller(env)
+    pid = await _mk_position(env, "Speaker", 30000)
+
+    # 1) commission approves -> candidate created + SMS
+    a1 = await _apply(env, pid)
+    aid = str(a1["_id"])
+    assert (await env.client.post(f"/admin/applications/{aid}/finance-clear", headers=fc, json={"financial_controller_id": "fc1"})).status_code == 200
+    for who, tok in (("com1", env.com1), ("com2", env.com2)):
+        r = await env.client.post(f"/admin/applications/{aid}/vote", headers=tok, json={"commissioner_id": who, "vote": "approve"})
+        assert r.status_code == 200, r.text
+    assert (await env.db.applications.find_one({"_id": a1["_id"]}))["status"] == "approved"
+    to, text = env.sent[-1]
+    assert to.endswith("700111222") and "approved" in text and "Speaker" in text and "T1" in text
+
+    # 2) finance rejects -> SMS carries the reason and the required amount
+    await env.db.voters.insert_one({"student_id": "v2", "full_name": "Second Person", "phone_numbers": ["256700333444"],
+                                    "has_voted": False, "last_status": "idle", "org_id": env.org_id})
+    a2 = await _apply(env, pid, "v2", "Second Person")
+    r = await env.client.post(f"/admin/applications/{a2['_id']}/finance-reject", headers=fc,
+                              json={"financial_controller_id": "fc1", "reason": "Receipt shows UGX 10,000 only"})
+    assert r.status_code == 200, r.text
+    to, text = env.sent[-1]
+    assert to.endswith("700333444") and "payment" in text and "UGX 10,000 only" in text and "UGX 30,000" in text and "incomplete" in text
+
+    # 3) SMS failure or a voter with no phone must never break the decision
+    env.behaviour["result"] = "failed"
+    await env.db.voters.insert_one({"student_id": "v3", "full_name": "Third Person", "phone_numbers": [],
+                                    "has_voted": False, "last_status": "idle", "org_id": env.org_id})
+    a3 = await _apply(env, pid, "v3", "Third Person")
+    r = await env.client.post(f"/superadmin/applications/{a3['_id']}/force-approve", headers=env.sa)
+    assert r.status_code == 200, r.text
+    assert (await env.db.applications.find_one({"_id": a3["_id"]}))["status"] == "approved"

@@ -45,6 +45,7 @@ export default function ITAdminStudentEdit({ initialStudentId = '' }) {
   useEffect(() => {
     if (!initialStudentId) return;
     lookupStudents(initialStudentId).then(rows => { const s = rows.find(x => x.student_id === initialStudentId) || rows[0]; if (s) pick(s); }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when the incoming id changes
   }, [initialStudentId]);
 
   const setAttr = (key, value) => setDraft(d => ({ ...d, attrs: { ...d.attrs, [key]: value } }));

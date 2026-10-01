@@ -33,7 +33,7 @@ export default function AdminDashboard({ onLogout }) {
   // Form & Upload States
   const [newCandidate, setNewCandidate] = useState({ name: '', position: '', image: null, order: 0 });
   const [uploading, setUploading] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [importing] = useState(false);
   const [importFile, setImportFile] = useState(null);
 
   // Editing State

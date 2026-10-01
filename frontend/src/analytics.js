@@ -48,7 +48,9 @@ function channel() {
 function slug() { return sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG; }
 const visible = () => document.visibilityState === 'visible';
 
-export function pageName(view, step) {
+export function pageName(view, step, adminLogin = false) {
+  // The staff login reuses the voter screens; name it separately so it stops inflating voter_identity (guide 5.7).
+  if (view === 'voter' && adminLogin) return 'admin_login';
   if (view === 'voter') return ({ 1: 'voter_identity', 1.5: 'voter_otp', 2: 'voter_otp', 3: 'voter_ballot' })[step] || null;
   if (view === 'results') return 'results';
   if (view === 'apply') return 'apply';
@@ -121,6 +123,25 @@ export function trackStep(flow, step) {
 }
 export function onPageChange(cb) { listeners.add(cb); return () => listeners.delete(cb); }
 
+// Guide 5.3: "usable" = the voter login form is on screen and can take input. First moment wins.
+const USABLE_SELECTOR = 'input[name="voter-reg-no"]';
+export function markUsable() {
+  try {
+    if (!performance.getEntriesByName('usable').length) performance.mark('usable');
+  } catch { /* performance.mark unsupported: usable_ms is simply omitted */ }
+}
+export function usableMs() {
+  try { return Math.round(performance.getEntriesByName('usable')[0]?.startTime || 0); } catch { return 0; }
+}
+function watchForUsable() {
+  if (document.querySelector(USABLE_SELECTOR)) { markUsable(); return; }
+  const mo = new MutationObserver(() => {
+    if (document.querySelector(USABLE_SELECTOR)) { markUsable(); mo.disconnect(); }
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+  setTimeout(() => mo.disconnect(), 20000); // entry pages other than voter login never match: stop watching
+}
+
 function entryPage() {
   try { return JSON.parse(sessionStorage.getItem(PAGES_KEY) || '[]')[0] || currentPage; } catch { return currentPage; }
 }
@@ -131,6 +152,7 @@ function maybeSendPerf(force = false) {
   const nav = performance.getEntriesByType('navigation')[0];
   enqueue({
     t: 'perf', page: entryPage(), load_ms: Math.round(nav?.loadEventEnd || 0), first_api_ms: Math.round(firstApiMs || 0),
+    usable_ms: usableMs(),
     net: navigator.connection?.effectiveType || 'unknown',
   });
 }
@@ -181,6 +203,7 @@ export function initAnalytics() {
   initialized = true;
   if (!allowed()) return;
   sid();
+  watchForUsable();
   setInterval(flush, 30000);
   document.addEventListener('visibilitychange', () => {
     if (visible()) { visibleSince = performance.now(); return; }
@@ -192,7 +215,12 @@ export function initAnalytics() {
   const err = (name) => enqueue({ t: 'err', page: currentPage, name, net: navigator.connection?.effectiveType || 'unknown' });
   window.addEventListener('error', (e) => err(e?.error?.constructor?.name || 'Error'));
   window.addEventListener('unhandledrejection', (e) => err(e?.reason?.constructor?.name || 'Error'));
-  window.addEventListener('an:api', (e) => { if (firstApiMs === null) { firstApiMs = Number(e.detail?.ms) || 0; maybeSendPerf(); } });
+  // First API timing = the first SUCCESSFUL call to a data route. The boot /health poll is slow exactly when the
+  // server is cold and fails repeatedly while it wakes, so counting it measured wake-up, not the page (guide 5.1).
+  window.addEventListener('an:api', (e) => {
+    const d = e.detail || {};
+    if (firstApiMs === null && d.ok === true && d.url && d.url !== '/health') { firstApiMs = Number(d.ms) || 0; maybeSendPerf(); }
+  });
   window.addEventListener('an:netfail', (e) => err(e.detail?.kind === 'timeout' ? 'net:timeout' : 'net:network'));
   const onLoaded = () => { pageLoaded = true; maybeSendPerf(); setTimeout(() => maybeSendPerf(true), 15000); };
   if (document.readyState === 'complete') setTimeout(onLoaded, 0);
