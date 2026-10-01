@@ -3,7 +3,7 @@ import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
 import { LoadingBlock } from './components/Spinner';
 import { loginGuidance, UNCONFIRMED_DELIVERY_NOTE } from './loginErrors';
 import OtpInput from './components/OtpInput';
-import ClosedNotice, { votingNoticeText } from './components/ClosedNotice';
+import PhaseBanner from './components/PhaseBanner';
 import { HelpMenuProvider } from './context/HelpMenuContext';
 import LoginErrorActions from './components/LoginErrorActions';
 import HelpPanel from './components/HelpPanel';
@@ -811,7 +811,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <h1 style={{ textAlign: 'center', color: 'var(--text-color)' }}>
                 {isAdminPath ? "Admin Login" : "Voter Login"}
               </h1>
-              {!isAdminPath && <ClosedNotice text={votingNoticeText(electionStatus)} />}
+              {!isAdminPath && <PhaseBanner status={electionStatus} onApply={() => setView("apply")} />}
               
               {isAdminPath ? (
                 <>
