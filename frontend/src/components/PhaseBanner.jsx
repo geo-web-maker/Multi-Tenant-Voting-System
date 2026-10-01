@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { derivePhase, formatCountdown } from '../phase';
 import { parseUtc } from '../tz';
-import { Icon } from './icons.jsx';
 
 // One prominent notice on the voter card. Informational only: the login form below is untouched and
 // the server stays the authority (exception grants can still let a specific student through).
 const THEME = {
-  apply_open:    { icon: 'inbox',    bg: '#e8f1ff', fg: '#0b3d91', border: '#b6d0ff' },
-  voting_soon:   { icon: 'calendar', bg: '#fff3cd', fg: '#664d03', border: '#ffe08a' },
-  voting_open:   { icon: 'vote',     bg: '#e6f6ec', fg: '#0f5132', border: '#a7dbbd' },
-  voting_closed: { icon: 'lock',     bg: '#f1f3f5', fg: '#343a40', border: '#ced4da' },
+  apply_open:    { bg: '#e8f1ff', fg: '#0b3d91', border: '#b6d0ff' },
+  voting_soon:   { bg: '#fff3cd', fg: '#664d03', border: '#ffe08a' },
+  voting_open:   { bg: '#e6f6ec', fg: '#0f5132', border: '#a7dbbd' },
+  voting_closed: { bg: '#f1f3f5', fg: '#343a40', border: '#ced4da' },
 };
 
 function copy(state, d) {
@@ -57,21 +56,26 @@ export default function PhaseBanner({ status, onApply, style }) {
         padding: '10px 12px', marginBottom: 14, fontSize: 16, lineHeight: 1.35, ...style,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700 }}>
-        <Icon name={t.icon} size="1.2em" />
-        <span>{c.title}</span>
+      {/* Colour is set explicitly on the title: in dark mode a global text colour was winning over the
+          banner's own, leaving light text on the light-blue box (unreadable). */}
+      <div style={{ textAlign: 'center', color: t.fg }}>
+        <span style={{ color: t.fg, fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{c.title}</span>
       </div>
       {(c.detail || c.extra) && (
-        <div style={{ marginTop: 2 }}>{[c.detail, c.extra].filter(Boolean).join(' ')}</div>
+        <div style={{ marginTop: 6, color: t.fg }}>{[c.detail, c.extra].filter(Boolean).join(' ')}</div>
       )}
-      {left && <div style={{ marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>Voting opens in {left}</div>}
+      {left && (
+        <div style={{ marginTop: 6, color: t.fg, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+          Voting opens in {left}
+        </div>
+      )}
       {state === 'apply_open' && (
         <button
           type="button"
           data-track="phase-apply-now"
           onClick={onApply}
           style={{
-            marginTop: 8, width: '100%', minHeight: 44, fontSize: 16, fontWeight: 700, border: 'none',
+            marginTop: 12, width: '100%', minHeight: 44, fontSize: 16, fontWeight: 700, border: 'none',
             borderRadius: 6, background: t.fg, color: '#fff', cursor: 'pointer',
           }}
         >

@@ -24,7 +24,7 @@ describe('A1: PhaseBanner', () => {
       const all = container.querySelectorAll('[data-phase]');
       expect(all.length).toBe(1);
       expect(all[0].getAttribute('data-phase')).toBe(state);
-      expect(all[0].querySelector('svg')).toBeTruthy(); // icon, not colour alone
+      expect(all[0].textContent.trim().length).toBeGreaterThan(0); // state is stated in words, not colour alone
     });
   }
 
