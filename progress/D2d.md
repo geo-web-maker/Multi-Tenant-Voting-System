@@ -1,10 +1,8 @@
 # D2d — WP-9.4 Alert panel (card D2d)
-status: blocked
-branch: improvements/D2d
-commits: see git log on this branch
-tests added: none
-results: no code changed (baseline backend 287 · frontend 106)
-baseline at branch cut: backend 287 · frontend 106
-deviations: see deviations/D2d.md (alert state is not exposed by any endpoint; needs a small backend card first)
-HUMAN checks pending: approve or change the proposed D2d-be card
-next step: add `alerts` to the analytics summary in backend/analytics.py, then build the read-only panel
+status: done
+branch: improvements/D2d-panel (the original improvements/D2d branch only holds the earlier blocked note)
+commits: see git log; backend half merged first as D2d-be
+tests added: frontend/src/alertState.test.js (3), frontend/src/components/AlertPanel.test.jsx (5)
+results: backend 293 passed · frontend 125 passed (117 + 8) · lint 0 · vite build OK
+change: new `alertState.js` (pure state/label mapping), new `AlertPanel.jsx` (read-only), mounted in AnalyticsPanel.jsx above the funnels. Labels: Healthy / Warning / Critical; hidden when the backend sends no `alerts` field.
+HUMAN checks pending: look at the panel once in the real analytics tab, and confirm the Warning colour (`--warning` falls back to #d98e04) suits your theme.

@@ -9,6 +9,7 @@ import { ApplyFunnelPanel, VotingFunnelPanel, FrictionDetail, NetworkPerformance
 import { fmtZoned, parseUtc, DEFAULT_TZ } from '../tz';
 import { loadTestAdvice, busiestHourShare } from '../loadTestAdvice';
 import { defaultRangeDays } from '../chartTime';
+import AlertPanel from './AlertPanel';
 
 const HEATMAP_PAGES = ['voter_identity', 'results', 'apply'];
 const FRAME_WIDTHS = [390, 820, 1280];
@@ -190,6 +191,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
             {data?.tracking_since && (
               <p style={muted}>Tracking of funnel steps started on {fmtZoned(`${data.tracking_since}T00:00:00Z`, tz).replace(/,\s*\d{2}:\d{2}.*$/, '')}.</p>
             )}
+            <AlertPanel alerts={data?.alerts} />
             <ApplyFunnelPanel funnel={data?.funnels?.apply} />
             <VotingFunnelPanel funnel={data?.funnels?.voting} />
 
