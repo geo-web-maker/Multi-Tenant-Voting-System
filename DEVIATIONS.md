@@ -126,7 +126,7 @@ Not browser-tested: the deleted code was confirmed unreferenced by lint, and bui
 |---|---|
 | Why | The Voters tab became a table only; total voters, voters per section and SMS amount were no longer visible. |
 | Backend | New `GET /admin/voters/stats` (superadmin only): totals, voted, phone coverage, per-enabled-field registered/voted, SMS headline numbers taken from the existing `get_sms_usage`. Counts only. |
-| Frontend | `VoterStats.jsx` (new); `SuperAdminDashboard.jsx` Voters tab split into Register / Statistics / SMS sub-tabs. SMS reuses `SmsUsageTile`. |
+| Frontend | `VoterStats.jsx` (new); `SuperAdminDashboard.jsx` Voters tab split into Register / Statistics / SMS sub-tabs. SMS shows live EgoSMS/MamboSMS balances (existing `/admin/sms-balance`, existing `SmsProviderCard`, previously fetched but never rendered) plus `SmsUsageTile`. |
 | Tests | +2 backend, +2 frontend. Totals now backend 295 / frontend 256. |
 | Caveat | Rebuilt from current data; git has no earlier copy of the removed statistics. Details in `progress/CUSTOM-1.md`. |
 

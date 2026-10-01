@@ -95,7 +95,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
   // --- Ported from AdminDashboard ---
-  const [, setSmsBalance] = useState({
+  const [smsBalance, setSmsBalance] = useState({
     egosms: { balance: null, currency: 'UGX' },
     mambosms: { balance: null, currency: 'UGX' },
   });
@@ -1275,7 +1275,16 @@ const handleSuperAdminRemoveStudent = async () => {
               />
             )}
             {voterSubTab === 'stats' && <VoterStats />}
-            {voterSubTab === 'sms' && <SmsUsageTile />}
+            {voterSubTab === 'sms' && (
+              <>
+                {/* Live provider balances: GET /admin/sms-balance (already fetched by fetchSmsBalance on load) */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 14 }}>
+                  <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />
+                  <SmsProviderCard label="MamboSMS" sub="fallback" data={smsBalance.mambosms} />
+                </div>
+                <SmsUsageTile />
+              </>
+            )}
           </>
         )}
 
