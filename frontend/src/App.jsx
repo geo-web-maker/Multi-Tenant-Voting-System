@@ -50,6 +50,7 @@ function useLogoNeedsInvert(logoUrl, theme) {
   return Boolean(logoUrl) && theme === 'dark' && result.url === logoUrl && result.invert;
 }
 import { FabTrigger } from './components/HelpTriggers';
+import { showHelpFab } from './helpItems';
 import usePolling from './hooks/usePolling';
 import { Icon } from './components/icons.jsx';
 import TurnstileWidget from './components/TurnstileWidget';
@@ -704,15 +705,14 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             supportContacts={supportContacts}
             orgName={orgName}
             onShowGuide={() => setShowGuide(true)}
+            page={view}
           />
           {/* Ballot page (step 3) puts Help inside its own footer bar via
               <InlineHelpButton /> — see BallotBox.jsx — so the floating
               trigger only renders when nothing else owns that space.
-              On the Apply page there's no ballot footer, but the applicant
-              flow has its own inline "check every position's fee first"
-              link (see ApplicantPortal.jsx) rather than this FAB, so it's
-              still skipped there. */}
-          {view === "voter" && step !== 3 && <FabTrigger />}
+              The Apply page has no ballot footer, so it gets the floating
+              trigger too, icon-only (see showHelpFab in helpItems.js). */}
+          {showHelpFab(view, step) && <FabTrigger compact={view === "apply"} />}
         </>
       )}
       <div style={{ 
