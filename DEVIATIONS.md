@@ -116,3 +116,17 @@ Correction: my earlier note said the 27 were all unused variables. That was wron
 | Hook exported next to component | `AdminHeader.jsx`, `RevealGroup.jsx` | Same file-level disable `UIFeedback.jsx` already used |
 | set-state-in-effect | `RevealGroup.jsx` | Targeted disable: the effect reads a ref, which is not reactive |
 Not browser-tested: the deleted code was confirmed unreferenced by lint, and build + 18 Vitest tests pass, but no UI click-through was done.
+
+---
+
+# Custom tasks (owner-requested, outside the runbook lanes)
+
+## CUSTOM-1 · Voter statistics restored in the superadmin Voters section
+| Item | Detail |
+|---|---|
+| Why | The Voters tab became a table only; total voters, voters per section and SMS amount were no longer visible. |
+| Backend | New `GET /admin/voters/stats` (superadmin only): totals, voted, phone coverage, per-enabled-field registered/voted, SMS headline numbers taken from the existing `get_sms_usage`. Counts only. |
+| Frontend | `VoterStats.jsx` (new); `SuperAdminDashboard.jsx` Voters tab split into Register / Statistics / SMS sub-tabs. SMS reuses `SmsUsageTile`. |
+| Tests | +2 backend, +2 frontend. Totals now backend 295 / frontend 256. |
+| Caveat | Rebuilt from current data; git has no earlier copy of the removed statistics. Details in `progress/CUSTOM-1.md`. |
+

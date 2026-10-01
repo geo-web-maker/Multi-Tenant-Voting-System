@@ -10,6 +10,8 @@ import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
+import VoterStats from './VoterStats';
+import { SmsUsageTile } from './SecurityPanel';
 import SecurityPanel from './SecurityPanel';
 import VoterFieldsPanel from './VoterFieldsPanel';
 import usePolling from '../hooks/usePolling';
@@ -62,6 +64,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const confirm = useConfirm();
 
   const [activeTab, setActiveTab] = useState('candidates');
+  const [voterSubTab, setVoterSubTab] = useState('register');
   const roster = useRosterStatus();
   const rosterFrozen = Boolean(roster?.frozen);
 
@@ -1253,11 +1256,27 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ VOTERS TAB ══════════════ */}
         {activeTab === 'voters' && (
-          <VoterList
-            showStatus
-            onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
-            onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
-          />
+          <>
+            {/* CUSTOM-1: voter statistics restored as sub-tabs (see DEVIATIONS.md / progress/CUSTOM-1.md) */}
+            <div role="tablist" aria-label="Voters sections" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+              {[['register', 'Register'], ['stats', 'Statistics'], ['sms', 'SMS']].map(([id, label]) => (
+                <button key={id} role="tab" aria-selected={voterSubTab === id} onClick={() => setVoterSubTab(id)}
+                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: 13,
+                    background: voterSubTab === id ? 'var(--info)' : 'transparent', color: voterSubTab === id ? '#fff' : 'inherit' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {voterSubTab === 'register' && (
+              <VoterList
+                showStatus
+                onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
+                onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
+              />
+            )}
+            {voterSubTab === 'stats' && <VoterStats />}
+            {voterSubTab === 'sms' && <SmsUsageTile />}
+          </>
         )}
 
         {activeTab === 'positions' && (

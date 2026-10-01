@@ -223,6 +223,13 @@ Format: **Goal** · **FILES** (only these may change) · **Playbook** (line rang
 - **FILES:** `backend/main.py`, the startup fetch in `App.jsx` and `ApplicantPortal.jsx`, new backend and frontend tests. **Playbook:** 1171–1246, rules A1.6 (lines 11–22), A4 (87–101).
 - **Tests:** cross-tenant case (org A response never contains org B data); the old endpoints still work; response contains only public fields.
 
+### Custom tasks (added by the owner, not part of the lane plan)
+
+#### CUSTOM-1 · Voter statistics back in the superadmin Voters section — size S — **done**
+- **FILES:** `backend/main.py` (new `GET /admin/voters/stats`), `frontend/src/components/VoterStats.jsx` (new), `SuperAdminDashboard.jsx` (Voters sub-tabs), two new test files.
+- **Result:** Voters tab = Register / Statistics / SMS. Totals backend 295, frontend 256. Record: `progress/CUSTOM-1.md`, `DEVIATIONS.md` ("Custom tasks"), branch `improvements/custom-voter-stats`.
+- **Merge:** like any card (§5). Touches `SuperAdminDashboard.jsx`, so merge it before any later card that edits the Voters tab.
+
 ### Lane F — Closers (after everything else, one at a time)
 
 #### F1 · WP-7f · `data-track` names (§4.5, 4.6) — size M (touches many files, so it goes last)
