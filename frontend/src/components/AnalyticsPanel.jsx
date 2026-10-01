@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import RevealGroup from './RevealGroup';
@@ -8,6 +8,7 @@ import { TimelineChart, HourBars, BarRows } from './UsageCharts';
 import { ApplyFunnelPanel, VotingFunnelPanel, FrictionDetail, NetworkPerformance, ChannelsPanel } from './FunnelPanels';
 import { fmtZoned, parseUtc, DEFAULT_TZ } from '../tz';
 import { loadTestAdvice, busiestHourShare } from '../loadTestAdvice';
+import { defaultRangeDays } from '../chartTime';
 
 const HEATMAP_PAGES = ['voter_identity', 'results', 'apply'];
 const FRAME_WIDTHS = [390, 820, 1280];
@@ -38,6 +39,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [days, setDays] = useState(7);
+  const rangeChosen = useRef(false);   // true once the first-load default was applied or the user picked a range
   const [seg, setSeg] = useState('public');
   const [device, setDevice] = useState('all');
   const [apiAud, setApiAud] = useState('voter'); // API table: voter-facing | staff | all
@@ -62,6 +64,11 @@ export default function AnalyticsPanel({ organizations = [] }) {
       } else {
         const r = await api.get('/superadmin/analytics/summary', { params });
         setData(r.data);
+        if (!rangeChosen.current) {
+          rangeChosen.current = true;
+          const d = defaultRangeDays(r.data?.tracking_since, new Date());
+          if (d !== days) setDays(d);
+        }
       }
     } catch (e) {
       toast(getErrorMessage(e, 'Unable to load Site Usage.'), { kind: 'error' });
@@ -103,7 +110,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
       <div style={{ display: 'grid', gap: 16 }}>
         <div style={panel} className="card-pad">
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <select aria-label="Date range" value={days} onChange={(e) => setDays(Number(e.target.value))} style={inputStyle}>
+            <select aria-label="Date range" value={days} onChange={(e) => { rangeChosen.current = true; setDays(Number(e.target.value)); }} style={inputStyle}>
               {[1, 7, 30, 90].map((d) => <option key={d} value={d}>{d === 1 ? 'Last 24 hours' : `Last ${d} days`}</option>)}
             </select>
             <div role="group" aria-label="Audience" style={{ display: 'flex', flex: '1 1 200px', gap: 4 }}>
@@ -168,7 +175,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
 
             <div style={panel} className="card-pad">
               <h3 style={h3}>Views and sessions</h3>
-              <TimelineChart points={points} markers={markers} bucket={data?.timeline?.bucket} />
+              <TimelineChart points={points} markers={markers} bucket={data?.timeline?.bucket} tz={tz} />
               <div style={legend}>
                 <span><i style={{ ...dot, background: 'var(--brand-primary)' }} /> Views</span>
                 <span><i style={{ ...dot, background: 'var(--brand-accent)' }} /> Sessions</span>
@@ -177,7 +184,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
                   <span key={m.label}><i style={{ ...dot, background: 'var(--danger)' }} /> {m.label} {fmtZoned(m.iso, tz)}</span>
                 ))}
               </div>
-              <p style={muted}>Chart labels are in UTC. Marker times are shown in {tz}.</p>
+              <p style={muted}>Hourly chart labels and marker times are shown in {tz}. Daily totals are grouped by UTC day.</p>
             </div>
 
             {data?.tracking_since && (
