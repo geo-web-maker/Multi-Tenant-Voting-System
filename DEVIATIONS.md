@@ -53,7 +53,7 @@ This section is the second pass, done with the guide in hand. The WP-12 review f
 | 4.4 | Step labels, upload percent, validate-all-fields, reuse uploaded files, error mapping table | only gaps 1-3 done |
 | 4.5, 4.6 | Dead-click fix and `data-track` names | not started |
 | 4.8 | Auto-verify on the 6th digit (optional) | skipped on purpose |
-| 3.3 | ApplicantPortal polling changes, single `/public/bootstrap` | not started |
+| 3.3 | ApplicantPortal polling changes, single `/public/bootstrap` | polling done (B5); `/public/bootstrap` done (E1, `progress/E1.md`) |
 | 3.6 | Typing placeholder re-render, image resize on the phone | not started |
 | 5.3 | `usable_ms` | needs backend histogram changes |
 | 5.6 | Chart time zone, default range, load-test formula | not started |
@@ -129,4 +129,13 @@ Not browser-tested: the deleted code was confirmed unreferenced by lint, and bui
 | Frontend | `VoterStats.jsx` (new); `SuperAdminDashboard.jsx` Voters tab split into Register / Statistics / SMS sub-tabs. SMS shows live EgoSMS/MamboSMS balances (existing `/admin/sms-balance`, existing `SmsProviderCard`, previously fetched but never rendered) plus `SmsUsageTile`. |
 | Tests | +2 backend, +2 frontend. Totals now backend 295 / frontend 256. |
 | Caveat | Rebuilt from current data; git has no earlier copy of the removed statistics. Details in `progress/CUSTOM-1.md`. |
+
+## E1 · Single `/public/bootstrap`
+| Item | Detail |
+|---|---|
+| Spec | The improvement guide (§3.3 item 5) is not in the zip, and the playbook says only "out of scope unless the human asks". Built from the runbook card: one request, org-scoped, cache keyed by org, no secrets or voter data. |
+| Backend | `GET /public/bootstrap` composes the existing branding, status and positions handlers. The auth guard (`PUBLIC` GET list in `_is_public`) blocked it until it was added there; a test now covers it. |
+| Frontend | `bootstrap.js` with a 10 s shared request and a fallback to the old endpoints. Used by `App.jsx` (mount) and `ApplicantPortal.jsx` (mount). |
+| Existing test changed | `ApplicantPortal.apply.test.jsx`: the shared API mock now also answers `/public/bootstrap` with the same data, and the bootstrap cache is reset in `beforeEach`. Reason: startup no longer calls the two old endpoints. No assertion was changed or removed. |
+| Not changed | Polling still calls `/election-status` and `/positions` directly. |
 

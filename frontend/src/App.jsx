@@ -52,6 +52,7 @@ function useLogoNeedsInvert(logoUrl, theme) {
 import { FabTrigger } from './components/HelpTriggers';
 import { showHelpFab } from './helpItems';
 import usePolling from './hooks/usePolling';
+import { fetchBootstrap } from './bootstrap';
 import { Icon } from './components/icons.jsx';
 import TurnstileWidget from './components/TurnstileWidget';
 import VoterLoginInputs from './components/VoterLoginInputs';
@@ -294,7 +295,9 @@ useEffect(() => {
   };
   poll();
 
-  api.get('/superadmin/branding').then(res => {
+  fetchBootstrap().then(boot => {
+    const res = { data: boot.branding };
+    if (!res.data) return;
     if (res.data.support_phone) setSupportPhone(res.data.support_phone);
     if (Array.isArray(res.data.support_contacts)) setSupportContacts(res.data.support_contacts);
     if (res.data.logo_url) {
@@ -323,9 +326,10 @@ useEffect(() => {
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const res = await api.get('/election-status');
-        setIsElectionOpen(res.data.is_open);
-        setElectionStatus(res.data);
+        const { status } = await fetchBootstrap();   // shares the one startup request with branding (E1)
+        if (!status) throw new Error('no status');
+        setIsElectionOpen(status.is_open);
+        setElectionStatus(status);
       } catch {
         console.error("Could not fetch election status");
       }

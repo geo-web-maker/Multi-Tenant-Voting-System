@@ -218,7 +218,7 @@ Format: **Goal** · **FILES** (only these may change) · **Playbook** (line rang
 
 ### Lane E — Bootstrap endpoint (optional, after A and B merged)
 
-#### E1 · §3.3 · Single `/public/bootstrap` — size M
+#### E1 · §3.3 · Single `/public/bootstrap` — size M — **done** (`progress/E1.md`)
 - **Goal:** one request replaces several startup calls. **Tenant-scoped with `org_query`, cache keyed by org, no secrets or voter data in the response.**
 - **FILES:** `backend/main.py`, the startup fetch in `App.jsx` and `ApplicantPortal.jsx`, new backend and frontend tests. **Playbook:** 1171–1246, rules A1.6 (lines 11–22), A4 (87–101).
 - **Tests:** cross-tenant case (org A response never contains org B data); the old endpoints still work; response contains only public fields.
