@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { helpItemsFor, showHelpFab } from './helpItems';
+import { helpItemsFor, showHelpFab, supportReasonsFor, HELP_TRACK, isTextEntry } from './helpItems';
 
 describe('A2: helpItemsFor', () => {
   it('voter list', () => {
@@ -36,5 +36,26 @@ describe('A2: showHelpFab', () => {
   it('other views do not', () => {
     expect(showHelpFab('results', 1)).toBe(false);
     expect(showHelpFab('admin', 1)).toBe(false);
+  });
+});
+
+describe('A2 extras: helpers', () => {
+  it('support reasons: two on apply, none on voter', () => {
+    expect(supportReasonsFor('apply')).toEqual(['Application problem', 'Payment']);
+    expect(supportReasonsFor('voter')).toEqual([]);
+  });
+  it('track ids are the agreed four and pass the tracker label rule', () => {
+    expect(HELP_TRACK).toEqual({ fab: 'help-fab', fees: 'help-fees', timeline: 'help-timeline', support: 'help-support' });
+    Object.values(HELP_TRACK).forEach((id) => expect(/^[a-z0-9_-]{2,40}$/.test(id)).toBe(true));
+  });
+  it('isTextEntry: text-like fields yes, buttons and checkboxes no', () => {
+    const el = (tagName, type) => ({ tagName, type });
+    expect(isTextEntry(el('INPUT', 'text'))).toBe(true);
+    expect(isTextEntry(el('TEXTAREA'))).toBe(true);
+    expect(isTextEntry(el('SELECT', 'select-one'))).toBe(true);
+    expect(isTextEntry(el('INPUT', 'checkbox'))).toBe(false);
+    expect(isTextEntry(el('INPUT', 'file'))).toBe(false);
+    expect(isTextEntry(el('BUTTON', 'submit'))).toBe(false);
+    expect(isTextEntry(null)).toBe(false);
   });
 });
