@@ -839,6 +839,17 @@ async def purge_org_analytics(db, org_id: str) -> None:
 VALID_DAYS, VALID_SEG, VALID_DEVICE = {1, 7, 30, 90}, {"public", "staff", "all"}, {"all", "mobile", "tablet", "desktop"}
 
 
+async def tracking_since(db, org_id: str) -> str | None:
+    """Earliest counter `day` (YYYY-MM-DD) recorded for this org, or None. Per-org, ignores the summary window.
+    Best-effort: a failed lookup must never break the dashboard, so it degrades to None."""
+    try:
+        async for d in db.analytics_counters.find({"org_id": org_id}, {"day": 1, "_id": 0}).sort("day", 1).limit(1):
+            return d.get("day")
+    except Exception:
+        log.debug("tracking_since lookup failed", exc_info=True)
+    return None
+
+
 def _check_filters(days, seg, device) -> None:
     if days not in VALID_DAYS or seg not in VALID_SEG or device not in VALID_DEVICE:
         raise HTTPException(400, "Invalid analytics filters.")
@@ -891,7 +902,9 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         org, now = active_org(request), datetime.now(timezone.utc)
         cursor = get_db().analytics_counters.find(_counter_query(org, days, seg, device, now))
         docs = [d async for d in cursor]
-        return build_summary(docs, days, now, live=live_now(org))
+        out = build_summary(docs, days, now, live=live_now(org))
+        out["tracking_since"] = await tracking_since(get_db(), org)
+        return out
 
     @router.get("/superadmin/analytics/heatmap")
     async def heatmap(request: Request, page: str, device: str = "all", kind: str = "click", seg: str = "all",
