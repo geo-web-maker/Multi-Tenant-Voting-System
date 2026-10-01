@@ -56,10 +56,11 @@ export default function PhaseBanner({ status, onApply, style }) {
         padding: '10px 12px', marginBottom: 14, fontSize: 16, lineHeight: 1.35, ...style,
       }}
     >
-      {/* Colour is set explicitly on the title: in dark mode a global text colour was winning over the
-          banner's own, leaving light text on the light-blue box (unreadable). */}
-      <div style={{ textAlign: 'center', color: t.fg }}>
-        <span style={{ color: t.fg, fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{c.title}</span>
+      {/* The title is a <div>, not a <span>: index.css has a global rule (@media screen) that forces the theme text colour
+          on every h1/h2/p/span with !important, which no inline style can beat. That left light text on this
+          light-blue box. */}
+      <div style={{ textAlign: 'center', color: t.fg, fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>
+        {c.title}
       </div>
       {(c.detail || c.extra) && (
         <div style={{ marginTop: 6, color: t.fg }}>{[c.detail, c.extra].filter(Boolean).join(' ')}</div>
