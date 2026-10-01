@@ -7,6 +7,7 @@ import usePolling from '../hooks/usePolling';
 import { TimelineChart, HourBars, BarRows } from './UsageCharts';
 import { ApplyFunnelPanel, VotingFunnelPanel, FrictionDetail, NetworkPerformance, ChannelsPanel } from './FunnelPanels';
 import { fmtZoned, parseUtc, DEFAULT_TZ } from '../tz';
+import { loadTestAdvice, busiestHourShare } from '../loadTestAdvice';
 
 const HEATMAP_PAGES = ['voter_identity', 'results', 'apply'];
 const FRAME_WIDTHS = [390, 820, 1280];
@@ -48,6 +49,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   const [schedule, setSchedule] = useState(null);
   const [loading, setLoading] = useState(true);
   const [frame, setFrame] = useState(null); // { page, width }
+  const [voterCount, setVoterCount] = useState('');   // eligible voters, typed by the superadmin, for load-test advice
 
   const load = useCallback(async () => {
     try {
@@ -94,6 +96,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
 
   if (loading && !data && !cmp) return <LoadingBlock text="Loading Site Usage…" />;
   const t = data?.totals || {};
+  const advice = loadTestAdvice({ voters: voterCount, shareBusiestHour: busiestHourShare(data?.hour_of_day), avgSessionSeconds: t.average_session_seconds });
 
   return (
     <RevealGroup>
@@ -269,6 +272,15 @@ export default function AnalyticsPanel({ organizations = [] }) {
                 Peak concurrency: {t.peak_concurrency || 0}{t.peak_concurrency_time ? ` at ${fmtZoned(t.peak_concurrency_time, tz)}` : ''}.
                 {' '}Use about 1.5 × this value ({Math.ceil((t.peak_concurrency || 0) * 1.5)}) as the number of users in <code>backend/loadtest/locustfile.py</code>.
               </p>
+              <label style={{ ...check, marginTop: 8 }}>
+                Eligible voters (to plan a load test)
+                <input type="number" min="0" inputMode="numeric" value={voterCount} onChange={(e) => setVoterCount(e.target.value)} style={{ ...inputStyle, width: 110 }} aria-label="Eligible voters" />
+              </label>
+              {advice.expected > 0 && (
+                <p style={muted}>
+                  Expected people online at once in the busiest hour: about {advice.expected}. Test with {advice.low} to {advice.high} users in <code>backend/loadtest/locustfile.py</code>.
+                </p>
+              )}
             </div>
 
             <div style={panel} className="card-pad">
