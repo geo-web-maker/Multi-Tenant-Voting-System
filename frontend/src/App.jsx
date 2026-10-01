@@ -726,7 +726,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   // their session, so ask first. No admin token -> no dialog (plain voter reset). (WP-7c)
   const handleVoteNow = () => {
     if (sessionStorage.getItem(ADMIN_TOKEN_KEY)
-      && !window.confirm("Going to Vote Now will sign you out of your admin session. Continue?")) {
+      && !window.confirm("You will be signed out. Continue?")) {
       return;
     }
     resetFlow();
