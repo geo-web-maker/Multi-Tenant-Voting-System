@@ -66,3 +66,21 @@ describe('A1: formatCountdown', () => {
     expect(formatCountdown(null)).toBeNull();
   });
 });
+
+describe('apply window countdown', () => {
+  const at = '2026-10-16T00:00:00';
+  const closes = '2026-10-04T20:59:00';
+  const st = { voting_phase: 'not_started', applications_phase: 'open', voting_opens_at: at, applications_closes_at: closes };
+  it('counts to applications closing while they are open', () => {
+    const r = derivePhase(st, Date.parse('2026-10-04T10:00:00Z'));
+    expect(r.state).toBe('apply_open');
+    expect(r.countdownTo).toBe(closes);
+    expect(r.countdownLabel).toBe('Applications close in');
+  });
+  it('flips to voting_soon + counts to voting once the deadline passes', () => {
+    const r = derivePhase(st, Date.parse('2026-10-04T21:00:00Z'));
+    expect(r.state).toBe('voting_soon');
+    expect(r.countdownTo).toBe(at);
+    expect(r.countdownLabel).toBe('Voting opens in');
+  });
+});

@@ -5,17 +5,23 @@ import { DEFAULT_TZ, fmtZoned, parseUtc } from './tz';
 // Applications open takes priority for the banner while voting has not opened.
 export const PHASE_STATES = ['apply_open', 'voting_soon', 'voting_open', 'voting_closed'];
 
-/** status (from /election-status) -> { state, tz, dates, countdownTo } or null when unknown. */
-export function derivePhase(status) {
+/** status (from /election-status) -> { state, tz, dates, countdownTo, countdownLabel } or null when unknown.
+ *  `now` (ms) lets an open applications window flip to "closed" the moment its end time passes,
+ *  without waiting for the next status refetch. */
+export function derivePhase(status, now = Date.now()) {
   if (!status) return null;
   const tz = status.timezone || DEFAULT_TZ;
   const voting = status.voting_phase;
   const apps = status.applications_phase;
   const masterOff = status.is_open === false;
 
+  const appsCloseAt = status.applications_closes_at || null;
+  const appsCloseMs = appsCloseAt && parseUtc(appsCloseAt) ? parseUtc(appsCloseAt).getTime() : null;
+  const appsOpen = apps === 'open' && !(appsCloseMs != null && appsCloseMs <= now);
+
   let state;
   if (voting === 'ended' || masterOff) state = 'voting_closed';
-  else if (voting === 'not_started') state = apps === 'open' ? 'apply_open' : 'voting_soon';
+  else if (voting === 'not_started') state = appsOpen ? 'apply_open' : 'voting_soon';
   else if (voting === 'open') state = 'voting_open';
   else return null; // unknown shape (old server): show nothing rather than guess
 
@@ -23,11 +29,20 @@ export function derivePhase(status) {
   const dates = {
     votingOpensAt: fmtOrNull(votingOpensAt, tz),
     votingClosesAt: fmtOrNull(status.voting_closes_at, tz),
-    applicationsCloseAt: fmtOrNull(status.applications_closes_at, tz),
+    applicationsCloseAt: fmtOrNull(appsCloseAt, tz),
   };
-  // Countdown only for the next upcoming phase (voting opening). Never for open/closed.
-  const countdownTo = (state === 'apply_open' || state === 'voting_soon') ? votingOpensAt : null;
-  return { state, tz, dates, countdownTo };
+  // Countdown only for the next upcoming milestone: while applications are open, their closing;
+  // once they are closed, voting opening. Never for open/closed voting.
+  let countdownTo = null;
+  let countdownLabel = null;
+  if (state === 'apply_open') {
+    if (appsCloseMs != null) { countdownTo = appsCloseAt; countdownLabel = 'Applications close in'; }
+    else if (votingOpensAt) { countdownTo = votingOpensAt; countdownLabel = 'Voting opens in'; }
+  } else if (state === 'voting_soon' && votingOpensAt) {
+    countdownTo = votingOpensAt; countdownLabel = 'Voting opens in';
+  }
+  const appsClosed = apps === 'ended' || (apps === 'open' && !appsOpen);
+  return { state, tz, dates, countdownTo, countdownLabel, appsClosed };
 }
 
 function fmtOrNull(v, tz) {

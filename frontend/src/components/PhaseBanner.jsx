@@ -11,30 +11,38 @@ const THEME = {
   voting_closed: { bg: '#f1f3f5', fg: '#343a40', border: '#ced4da' },
 };
 
-function copy(state, d) {
+// Each state is a title plus short, centred "label / value" rows, so dates read as a balanced
+// list instead of one run-on sentence.
+function copy(state, d, appsClosed) {
   switch (state) {
     case 'apply_open':
       return {
         title: 'Applications are open',
-        detail: d.applicationsCloseAt ? `Close ${d.applicationsCloseAt}.` : null,
-        extra: d.votingOpensAt ? `Voting opens ${d.votingOpensAt}.` : 'Voting has not started yet.',
+        rows: [
+          d.applicationsCloseAt && ['Applications close', d.applicationsCloseAt],
+          d.votingOpensAt ? ['Voting opens', d.votingOpensAt] : ['Voting', 'has not started yet'],
+        ],
       };
     case 'voting_soon':
-      return { title: 'Voting has not started yet', detail: d.votingOpensAt ? `It opens ${d.votingOpensAt}.` : null };
+      return {
+        title: appsClosed ? 'Applications are closed' : 'Voting has not started yet',
+        rows: [d.votingOpensAt ? ['Voting opens', d.votingOpensAt] : ['Voting', 'has not started yet']],
+      };
     case 'voting_open':
-      return { title: 'Voting is open', detail: d.votingClosesAt ? `It closes ${d.votingClosesAt}.` : null };
+      return { title: 'Voting is open', rows: [d.votingClosesAt && ['Voting closes', d.votingClosesAt]] };
     default:
-      return { title: 'Voting is closed', detail: d.votingClosesAt ? `It closed ${d.votingClosesAt}.` : null };
+      return { title: 'Voting is closed', rows: [d.votingClosesAt && ['Voting closed', d.votingClosesAt]] };
   }
 }
 
 export default function PhaseBanner({ status, onApply, style }) {
-  const info = derivePhase(status);
+  const [now, setNow] = useState(() => Date.now());
+  const info = derivePhase(status, now);
   const target = info?.countdownTo ? parseUtc(info.countdownTo) : null;
   const targetMs = target ? target.getTime() : null;
-  const [now, setNow] = useState(() => Date.now());
 
-  // One-second clock, only while there is a next phase to count down to.
+  // One-second clock, only while there is a next milestone to count down to. When the applications
+  // deadline passes, derivePhase flips the banner to "closed" and the clock re-targets voting opening.
   useEffect(() => {
     if (targetMs == null) return undefined;
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -42,10 +50,14 @@ export default function PhaseBanner({ status, onApply, style }) {
   }, [targetMs]);
 
   if (!info) return null;
-  const { state, dates } = info;
+  const { state, dates, appsClosed } = info;
   const t = THEME[state];
-  const c = copy(state, dates);
+  const c = copy(state, dates, appsClosed);
+  const rows = c.rows.filter(Boolean);
   const left = targetMs != null ? formatCountdown(targetMs - now) : null;
+  // Colour is set explicitly everywhere: in dark mode a global text colour was winning over the
+  // banner's own, leaving light text on the light-blue box (unreadable).
+  const txt = { color: t.fg, textAlign: 'center' };
 
   return (
     <div
@@ -53,23 +65,37 @@ export default function PhaseBanner({ status, onApply, style }) {
       data-phase={state}
       style={{
         background: t.bg, color: t.fg, border: `1px solid ${t.border}`, borderRadius: 8,
-        padding: '10px 12px', marginBottom: 14, fontSize: 16, lineHeight: 1.35, ...style,
+        padding: '14px 14px 12px', marginBottom: 14, fontSize: 16, lineHeight: 1.35,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', ...style,
       }}
     >
-      {/* The title is a <div>, not a <span>: index.css has a global rule (@media screen) that forces the theme text colour
-          on every h1/h2/p/span with !important, which no inline style can beat. That left light text on this
-          light-blue box. */}
-      <div style={{ textAlign: 'center', color: t.fg, fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>
-        {c.title}
-      </div>
-      {(c.detail || c.extra) && (
-        <div style={{ marginTop: 6, color: t.fg }}>{[c.detail, c.extra].filter(Boolean).join(' ')}</div>
-      )}
-      {left && (
-        <div style={{ marginTop: 6, color: t.fg, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-          Voting opens in {left}
+      <div style={{ ...txt, fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{c.title}</div>
+
+      {rows.length > 0 && (
+        <div style={{ marginTop: 10, width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.map(([label, value]) => (
+            <div key={label} style={txt}>
+              <div style={{ ...txt, fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', opacity: 0.75 }}>{label}</div>
+              <div style={{ ...txt, fontSize: 16, fontWeight: 600 }}>{value}</div>
+            </div>
+          ))}
         </div>
       )}
+
+      {left && (
+        <div
+          style={{
+            marginTop: 12, width: '100%', padding: '10px 8px', borderRadius: 6,
+            background: 'rgba(255,255,255,0.55)', border: `1px solid ${t.border}`, ...txt,
+          }}
+        >
+          <div style={{ ...txt, fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase' }}>
+            {info.countdownLabel}
+          </div>
+          <div style={{ ...txt, fontSize: 24, fontWeight: 800, fontVariantNumeric: 'tabular-nums', lineHeight: 1.2 }}>{left}</div>
+        </div>
+      )}
+
       {state === 'apply_open' && (
         <button
           type="button"

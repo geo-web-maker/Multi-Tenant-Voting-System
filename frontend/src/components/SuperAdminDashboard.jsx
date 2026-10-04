@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
-import { useToast, useConfirm, ScrollList } from './UIFeedback';
+import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import { toggleElection, electionToggleFeedback } from '../electionControls';
 import {
   SHARED_TAB_DEFS, ROADMAP_TAB_DEF, SharedTabPanels, OfficialCertificationBlock,
@@ -10,6 +10,7 @@ import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
+import { PrintStyles, ApplicationSnapshotDoc } from './CandidateStatusPortal';
 import VoterStats from './VoterStats';
 import { SmsUsageTile } from './SecurityPanel';
 import SecurityPanel from './SecurityPanel';
@@ -62,6 +63,10 @@ function getErrorMessage(e, fallback = 'Failed.') {
 export default function SuperAdminDashboard({ onLogout }) {
   const toast = useToast();
   const confirm = useConfirm();
+  const prompt = usePrompt();
+  const [editApp, setEditApp] = useState(null);           // { app, form } while the edit-application dialog is open
+  const [editAppSaving, setEditAppSaving] = useState(false);
+  const [printingApp, setPrintingApp] = useState(null);   // application being viewed as the printable PDF
 
   const [activeTab, setActiveTab] = useState('candidates');
   const [voterSubTab, setVoterSubTab] = useState('register');
@@ -456,6 +461,58 @@ const refetchAll = () => {
     } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
+  // Undo a force-approve / force-deny. Reason is mandatory and lands in the audit log.
+  const handleRevertToPending = async (app) => {
+    const warn = app.status === 'approved'
+      ? 'This takes the candidate off the ballot and revokes their certificate. '
+      : '';
+    const reason = await prompt(`Send this application back to pending? ${warn}Enter the reason (recorded in the audit log):`,
+      { placeholder: 'Reason', confirmText: 'Revert to pending' });
+    if (reason === null) return;
+    if (reason.trim().length < 3) { toast('A reason is required (at least 3 characters).', { kind: 'error' }); return; }
+    try {
+      await api.post(`/superadmin/applications/${app._id}/revert-to-pending`, { reason: reason.trim() });
+      toast('Application is pending again.', { kind: 'success' });
+      fetchApplications();
+      fetchCandidates();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to revert application.'), { kind: 'error' }); }
+  };
+
+  // Edit any field of an application. Reason is mandatory; the server records every change in the
+  // audit log and on the application (EDITED mark + extra original page in the PDF).
+  const openEditApplication = (app) => setEditApp({
+    app,
+    form: {
+      student_id: app.student_id || '', full_name: app.full_name || '', position_id: app.position_id || '',
+      manifesto: app.manifesto || '', image_url: app.image_url || '', newImage: null,
+      payment_method: app.payment_method || '', payment_proof_url: app.payment_proof_url || '', reason: '',
+    },
+  });
+
+  const saveEditApplication = async () => {
+    const { app, form } = editApp;
+    if (form.reason.trim().length < 3) { toast('A reason is required (at least 3 characters).', { kind: 'error' }); return; }
+    setEditAppSaving(true);
+    try {
+      const body = {};
+      const cmp = (k, orig) => { if ((form[k] ?? '') !== (orig ?? '')) body[k] = form[k]; };
+      if (form.student_id.trim().toLowerCase() !== String(app.student_id || '').toLowerCase()) body.student_id = form.student_id.trim();
+      cmp('full_name', app.full_name); cmp('position_id', app.position_id); cmp('manifesto', app.manifesto);
+      cmp('payment_method', app.payment_method); cmp('payment_proof_url', app.payment_proof_url);
+      if (form.newImage) body.image_url = await uploadToCloudinary(form.newImage);
+      else cmp('image_url', app.image_url);
+      if (Object.keys(body).length === 0) { toast('Nothing was changed.', { kind: 'error' }); return; }
+      const { data } = await api.post(`/superadmin/applications/${app._id}/edit`, { ...body, reason: form.reason.trim() });
+      toast(data.status_links_revoked
+        ? 'Application updated. Old status links were revoked — use "Resend status link".'
+        : 'Application updated.', { kind: 'success' });
+      setEditApp(null);
+      fetchApplications();
+      if (data.ballot_updated) fetchCandidates();
+    } catch (e) { toast(getErrorMessage(e, 'Failed to edit application.'), { kind: 'error' }); }
+    finally { setEditAppSaving(false); }
+  };
+
   // Resend is about SMS delivery, not a vetting decision, so it's available
   // regardless of application status (pending/approved/denied alike) —
   // candidate-portal-spec §4.3.
@@ -819,6 +876,23 @@ const handleSuperAdminRemoveStudent = async () => {
     },
   ];
 
+  if (printingApp) {
+    return (
+      <>
+        <PrintStyles />
+        <ApplicationSnapshotDoc
+          candidacy={{
+            position_title: printingApp.position_title || printingApp.position_id,
+            application_snapshot: printingApp.application_snapshot,
+            edits: (printingApp.edit_history || []).map(h => ({ at: h.at, snapshot: h.after })),
+          }}
+          branding={branding}
+          onClose={() => setPrintingApp(null)}
+        />
+      </>
+    );
+  }
+
   return (
     <div style={outerWrap} className="outer-wrap">
       {/* ── Header ── */}
@@ -981,6 +1055,77 @@ const handleSuperAdminRemoveStudent = async () => {
           </div>
         )}
 
+        {/* Edit application dialog */}
+        {editApp && (
+          <div className="overlay-fade-in" style={modalOverlay}>
+            <div className="panel-fade-in" style={modalContent}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '14px' }}>
+                <h3 style={{ margin: 0, color: 'var(--text-color)' }}>Edit application — {editApp.app.full_name}</h3>
+                <button onClick={() => !editAppSaving && setEditApp(null)} style={redLink}>Close</button>
+              </div>
+              <p style={{ margin: '0 0 12px', fontSize: '12px', opacity: 0.7 }}>
+                The application will carry an EDITED mark and its PDF keeps the original as an extra page.
+                Every change and your reason go to the audit log.
+              </p>
+              {[
+                ['student_id', 'Registration number'],
+                ['full_name', 'Full name'],
+              ].map(([k, label]) => (
+                <label key={k} style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
+                  {label}
+                  <input style={inp} value={editApp.form[k]}
+                    onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, [k]: e.target.value } }))} />
+                </label>
+              ))}
+              <label style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
+                Position
+                <select style={inp} value={editApp.form.position_id}
+                  onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, position_id: e.target.value } }))}>
+                  {!positions.some(p => p._id === editApp.form.position_id) && (
+                    <option value={editApp.form.position_id}>{editApp.app.position_title || editApp.form.position_id}</option>
+                  )}
+                  {positions.map(p => <option key={p._id} value={p._id}>{p.title}</option>)}
+                </select>
+              </label>
+              <label style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
+                Manifesto
+                <textarea style={{ ...inp, height: '140px', resize: 'vertical' }} value={editApp.form.manifesto}
+                  onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, manifesto: e.target.value } }))} />
+              </label>
+              <label style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
+                Replace photo {editApp.app.image_url ? '(leave empty to keep the current one)' : ''}
+                <input type="file" accept="image/*" style={inp}
+                  onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, newImage: e.target.files?.[0] || null } }))} />
+              </label>
+              {(editApp.app.payment_method || editApp.app.payment_proof_url) && (
+                <>
+                  <label style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
+                    Payment method
+                    <input style={inp} value={editApp.form.payment_method}
+                      onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, payment_method: e.target.value } }))} />
+                  </label>
+                  <label style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
+                    Receipt link (https://)
+                    <input style={inp} value={editApp.form.payment_proof_url}
+                      onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, payment_proof_url: e.target.value } }))} />
+                  </label>
+                </>
+              )}
+              <label style={{ display: 'block', marginBottom: '14px', fontSize: '12px', color: 'var(--text-color)' }}>
+                Reason for this edit (required)
+                <textarea style={{ ...inp, height: '70px', resize: 'vertical' }} value={editApp.form.reason}
+                  onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, reason: e.target.value } }))} />
+              </label>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button style={ghostBtn} disabled={editAppSaving} onClick={() => setEditApp(null)}>Cancel</button>
+                <button style={greenBtn} disabled={editAppSaving || editApp.form.reason.trim().length < 3} onClick={saveEditApplication}>
+                  {editAppSaving ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Ported from AdminDashboard: ballot preview modal */}
         {isPreviewOpen && (
           <div className="overlay-fade-in" style={modalOverlay}>
@@ -1036,6 +1181,12 @@ const handleSuperAdminRemoveStudent = async () => {
                           {app.status.toUpperCase()}
                           {app.superadmin_override && ' (SA)'}
                         </span>
+                        {app.edit_history?.length > 0 && (
+                          <span title="This application was corrected after submission"
+                            style={{ marginLeft: '8px', border: '1px solid #b45309', color: '#b45309', borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 800, letterSpacing: 1 }}>
+                            EDITED
+                          </span>
+                        )}
                       </div>
                       <small style={{ opacity: 0.5 }}>
                         {new Date(app.submitted_at).toLocaleDateString()}
@@ -1047,6 +1198,20 @@ const handleSuperAdminRemoveStudent = async () => {
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                       ID: {regNo(app.student_id)}
                     </p>
+                    {app.edit_history?.length > 0 && (
+                      <div style={{ margin: '4px 0', fontSize: '11px', color: '#b45309' }}>
+                        {app.edit_history.map((h, i) => (
+                          <div key={i} style={{ marginBottom: '4px' }}>
+                            <strong>Edited {new Date(h.at).toLocaleString()} by {h.by}</strong> · “{h.reason}”
+                            {Object.entries(h.changes || {}).map(([field, c]) => (
+                              <div key={field} style={{ paddingLeft: '10px' }}>
+                                {APP_FIELD_LABELS[field] || field}: {shortVal(field, c.old)} → {shortVal(field, c.new)}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <ManifestoText text={app.manifesto} />
                     {app.payment_method && (
                       <div style={{ marginTop: '8px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
@@ -1091,6 +1256,19 @@ const handleSuperAdminRemoveStudent = async () => {
                       Remove from Ballot
                     </button>
                   )}
+                  {app.superadmin_override && (app.status === 'approved' || app.status === 'denied') && (
+                    <button style={ghostBtn} onClick={() => handleRevertToPending(app)}>
+                      Revert to Pending
+                    </button>
+                  )}
+                  {app.application_snapshot && (
+                    <button style={ghostBtn} onClick={() => setPrintingApp(app)}>
+                      {app.edit_history?.length > 0 ? 'View / print PDF (edited + original)' : 'View / print PDF'}
+                    </button>
+                  )}
+                  <button style={ghostBtn} onClick={() => openEditApplication(app)}>
+                    Edit application
+                  </button>
                   <button style={ghostBtn} onClick={() => handleResendStatusLink(app.student_id)}>
                     Resend status link
                   </button>
@@ -2252,6 +2430,18 @@ const handleSuperAdminRemoveStudent = async () => {
 }
 
 // ── Status badge helper ──
+const APP_FIELD_LABELS = {
+  student_id: 'Reg no', full_name: 'Name', position_id: 'Position', manifesto: 'Manifesto',
+  image_url: 'Photo', payment_method: 'Payment method', payment_proof_url: 'Receipt link',
+};
+const shortVal = (field, v) => {
+  if (v == null || v === '') return '(empty)';
+  const t = String(v);
+  if (field === 'image_url' || field === 'payment_proof_url') return '(changed)';
+  if (field === 'student_id') return t.toUpperCase();
+  return t.length > 60 ? `${t.slice(0, 57)}…` : t;
+};
+
 function statusBadge(status) {
   const map = {
     pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },

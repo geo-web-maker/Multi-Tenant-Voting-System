@@ -3773,8 +3773,12 @@ async def get_candidate_status(token: str, request: Request):
         entry = {
             "position_title": title,
             "status": app_doc.get("status", "pending"),
-            "application_snapshot": app_doc.get("application_snapshot"),
+            "application_snapshot": app_doc.get("application_snapshot"),   # always the ORIGINAL submission
         }
+        # Public-safe edit marker: when, and the printed content after each correction. Never who or why.
+        edits = [{"at": h.get("at"), "snapshot": h.get("after")} for h in _application_edit_history(app_doc)]
+        if edits and app_doc.get("application_snapshot"):
+            entry["edits"] = edits
         if app_doc.get("status") == "denied" and app_doc.get("denial_snapshot"):
             entry["denial_snapshot"] = app_doc["denial_snapshot"]
         if app_doc.get("certificate_id"):
@@ -5039,6 +5043,8 @@ async def list_applications(request: Request, status: str = None):
     apps = []
     async for a in db.applications.find(query).sort("submitted_at", -1):
         a["_id"] = str(a["_id"])
+        a["edit_history"] = _application_edit_history(a)   # one shape for old and new corrections
+        a.pop("reg_no_history", None)
         if a.get("position_id"):
             title, order = await _resolve_position_title(a["position_id"], request.state.org_id)
             a["position_title"] = title
@@ -5053,6 +5059,7 @@ async def list_applications(request: Request, status: str = None):
         for a in apps:
             a.pop("votes", None)
             a.pop("removal_votes", None)
+            a.pop("revert_history", None)   # carries the pre-revert vote map
     return apps
 
 # =============================================================================
@@ -5832,6 +5839,247 @@ async def superadmin_force_deny(app_id: str, request: Request):
     await log_action("application_force_denied", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-denied application {app_id}.")
     return {"status": "force_denied"}
+
+
+class ApplicationRevertRequest(BaseModel):
+    reason: str
+
+
+class ApplicationEditRequest(BaseModel):
+    """Any subset of the application's fields; only the ones sent (and actually different) are changed."""
+    student_id:        str | None = None
+    full_name:         str | None = None
+    position_id:       str | None = None
+    manifesto:         str | None = Field(None, max_length=MANIFESTO_MAX_CHARS)
+    image_url:         str | None = None
+    payment_method:    str | None = None
+    payment_proof_url: str | None = None
+    reason:            str
+
+
+# Fields an application correction may touch, and which of them appear on the printed application.
+APPLICATION_EDITABLE_FIELDS = ("student_id", "full_name", "position_id", "manifesto", "image_url",
+                               "payment_method", "payment_proof_url")
+APPLICATION_PRINTED_FIELDS = ("student_id", "full_name", "position_title", "manifesto", "image_url")
+
+
+def _application_edit_history(app_doc: dict) -> list[dict]:
+    """Normalised correction history, oldest first: [{at, by, reason, changes{field:{old,new}}, after{...}}].
+    `after` is the printed content of the application right after that correction. Older records that
+    only have `reg_no_history` (registration-number-only edits) are converted on the fly."""
+    snap = app_doc.get("application_snapshot") or {}
+    out = []
+    for h in app_doc.get("reg_no_history") or []:
+        out.append({"at": h.get("at"), "by": h.get("by"), "reason": h.get("reason"),
+                    "changes": {"student_id": {"old": h.get("old"), "new": h.get("new")}},
+                    "after": {**{k: snap.get(k) for k in APPLICATION_PRINTED_FIELDS}, "student_id": h.get("new"),
+                              "submitted_at": snap.get("submitted_at")}})
+    out.extend(app_doc.get("edit_history") or [])
+    return out
+
+
+def _clean_reason(raw: str) -> str:
+    reason = (raw or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason (at least 3 characters) is required.")
+    if len(reason) > 500:
+        raise HTTPException(400, "Reason must be 500 characters or fewer.")
+    return reason
+
+
+@app.post("/superadmin/applications/{app_id}/revert-to-pending")
+async def superadmin_revert_application_to_pending(app_id: str, data: ApplicationRevertRequest, request: Request):
+    """Undo a force-approve or force-deny: the application goes back to `pending` so the commission
+    can decide it normally (or the superadmin can override again). A reason is mandatory and is written
+    to the audit log. Commission-decided applications are deliberately not reversible here.
+
+    Reverting a force-approve also takes the candidate off the ballot and revokes the certificate, and is
+    refused once votes have been cast for that candidate (those votes would be orphaned)."""
+    reason = _clean_reason(data.reason)
+    oid = parse_oid(app_id, "application id")
+    org_id = request.state.org_id
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    from_status = app_doc.get("status")
+    if from_status not in ("approved", "denied"):
+        raise HTTPException(400, "Only an approved or denied application can be sent back to pending.")
+    if not app_doc.get("superadmin_override"):
+        raise HTTPException(400, "This decision was made by the commission, not by a superadmin override, "
+                                 "so it can't be reverted here.")
+
+    cand = None
+    if from_status == "approved":
+        cand = await db.candidates.find_one(org_query(request, {"application_id": app_id}))
+        if cand:
+            votes_cast = await db.vote_events.count_documents(org_query(request, {"candidate_id": cand["_id"]}))
+            if votes_cast:
+                raise HTTPException(409, f"{votes_cast} vote(s) have already been cast for this candidate, "
+                                         "so the approval can't be reverted. Use Remove from Ballot instead.")
+
+    now = datetime.utcnow()
+    prior_votes = dict(app_doc.get("votes") or {})
+    # Atomic claim on the exact state we inspected, so a racing commission vote / second click can't double-apply.
+    result = await db.applications.update_one(
+        org_query(request, {"_id": oid, "status": from_status, "superadmin_override": True}),
+        {"$set": {"status": "pending", "votes": {}, "removal_votes": {},
+                  "denial_snapshot": None, "certificate_id": None, "certificate_issued_at": None},
+         "$unset": {"superadmin_override": "", "decided_at": "", "tied_pending_chief": ""},
+         "$push": {"revert_history": {"at": now, "by": current_actor(request), "from_status": from_status,
+                                      "reason": reason, "prior_votes": prior_votes}}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
+
+    if cand:
+        await db.candidates.delete_one(org_query(request, {"_id": cand["_id"]}))
+    if from_status == "approved":
+        await _revoke_certificate_for_application(app_doc, org_id)
+
+    await log_action("application_reverted_to_pending", current_actor(request), {
+        "app_id": app_id, "from_status": from_status, "reason": reason,
+        "candidate_removed_from_ballot": bool(cand), "certificate_revoked": bool(app_doc.get("certificate_id")),
+    }, org_id=org_id)
+    logger.info(f"Superadmin reverted application {app_id} from {from_status} to pending.")
+    return {"status": "pending", "from_status": from_status}
+
+
+@app.post("/superadmin/applications/{app_id}/edit")
+async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest, request: Request):
+    """Correct an application: registration number, name, position, manifesto, photo or payment details.
+    A reason is mandatory. The original submission snapshot is never touched; each correction is appended
+    to `edit_history` (who, when, why, old -> new, and the printed content afterwards), which drives the
+    EDITED mark and the extra pages of the application PDF, and it is written to the audit log.
+    A changed registration number must exist on the voter register under the same name; the applicant's
+    old status links are revoked (they may have gone to a different student's phone)."""
+    reason = _clean_reason(data.reason)
+    oid = parse_oid(app_id, "application id")
+    org_id = request.state.org_id
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+
+    requested = {k: getattr(data, k) for k in APPLICATION_EDITABLE_FIELDS if getattr(data, k) is not None}
+    new_vals: dict = {}
+    if "student_id" in requested:
+        sid = normalize_student_id(requested["student_id"])
+        if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", sid):
+            raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
+        new_vals["student_id"] = sid
+    if "full_name" in requested:
+        name = normalize_name(requested["full_name"])
+        if not name or len(name) > 120:
+            raise HTTPException(400, "Name must be 1-120 characters.")
+        new_vals["full_name"] = name
+    if "position_id" in requested:
+        pid = requested["position_id"].strip()
+        try:
+            pos = await db.positions.find_one({"_id": ObjectId(pid), "org_id": org_id})
+        except Exception:
+            pos = None
+        if not pos:
+            raise HTTPException(400, "That position does not exist.")
+        new_vals["position_id"] = pid
+    if "manifesto" in requested:
+        new_vals["manifesto"] = requested["manifesto"].strip()
+    for url_field in ("image_url", "payment_proof_url"):
+        if url_field in requested:
+            u = requested[url_field].strip()
+            if u and not (u.startswith("https://") and len(u) <= 2000):
+                raise HTTPException(400, f"{url_field} must be an https:// link (or empty).")
+            new_vals[url_field] = u
+    if "payment_method" in requested:
+        pm = requested["payment_method"].strip()
+        if len(pm) > 60:
+            raise HTTPException(400, "Payment method is too long.")
+        new_vals["payment_method"] = pm
+
+    # Only genuinely different values count as changes.
+    changes = {}
+    for k, v in new_vals.items():
+        old = app_doc.get(k, "")
+        if k == "student_id":
+            same = normalize_student_id(old or "") == v
+        else:
+            same = (old or "") == v
+        if not same:
+            changes[k] = {"old": old, "new": v}
+    if not changes:
+        raise HTTPException(400, "No changes to save.")
+
+    final = {k: changes[k]["new"] if k in changes else app_doc.get(k, "")
+             for k in ("student_id", "full_name", "position_id")}
+    set_doc = {k: c["new"] for k, c in changes.items()}
+
+    if "student_id" in changes or "full_name" in changes:
+        voter = await db.voters.find_one(org_query(request, {"student_id": final["student_id"]}))
+        if not voter:
+            raise HTTPException(404, "That registration number is not on the voter register.")
+        if not names_match(voter.get("full_name", ""), final["full_name"]):
+            raise HTTPException(400, "The name on the voter register for that registration number doesn't match "
+                                     "the name on this application.")
+        final["student_id"] = voter["student_id"]
+        if "student_id" in changes:
+            changes["student_id"]["new"] = set_doc["student_id"] = voter["student_id"]
+
+    if {"student_id", "position_id"} & set(changes):
+        clash = await db.applications.find_one(org_query(request, {
+            "student_id": final["student_id"], "position_id": final["position_id"], "_id": {"$ne": oid}}))
+        if clash:
+            raise HTTPException(409, "That student already has an application for this position.")
+
+    cand = None
+    if app_doc.get("status") == "approved":
+        cand = await db.candidates.find_one(org_query(request, {"application_id": app_id}))
+        if cand and "position_id" in changes:
+            if await db.vote_events.count_documents(org_query(request, {"candidate_id": cand["_id"]})):
+                raise HTTPException(409, "Votes have already been cast for this candidate, so their position "
+                                         "can't be changed.")
+
+    position_title, position_order = await _resolve_position_title(final["position_id"], org_id)
+    history = _application_edit_history(app_doc)
+    prev_after = history[-1]["after"] if history else (app_doc.get("application_snapshot") or {})
+    after = {
+        "student_id": final["student_id"], "full_name": final["full_name"], "position_title": position_title,
+        "manifesto": changes.get("manifesto", {}).get("new", prev_after.get("manifesto", app_doc.get("manifesto", ""))),
+        "image_url": changes.get("image_url", {}).get("new", prev_after.get("image_url", app_doc.get("image_url", ""))),
+        "submitted_at": (app_doc.get("application_snapshot") or {}).get("submitted_at"),
+    }
+    now = datetime.utcnow()
+    entry = {"at": now, "by": current_actor(request), "reason": reason, "changes": changes, "after": after}
+
+    guard = {"_id": oid, "student_id": app_doc.get("student_id"), "status": app_doc.get("status")}
+    result = await db.applications.update_one(
+        org_query(request, guard), {"$set": set_doc, "$push": {"edit_history": entry}})
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
+
+    if cand:   # keep the ballot entry in step with the corrected application
+        cand_set = {}
+        if "full_name" in changes: cand_set["name"] = changes["full_name"]["new"]
+        if "image_url" in changes: cand_set["image_url"] = changes["image_url"]["new"]
+        if "position_id" in changes: cand_set.update({"position": position_title, "order": position_order})
+        if cand_set:
+            await db.candidates.update_one({"_id": cand["_id"]}, {"$set": cand_set})
+
+    links_revoked = 0
+    if "student_id" in changes:
+        moved = await db.candidate_tokens.update_many(
+            {"org_id": org_id, "student_id": changes["student_id"]["old"]},
+            {"$set": {"student_id": final["student_id"], "revoked": True}})
+        links_revoked = moved.modified_count
+
+    def _short(v):
+        v = "" if v is None else str(v)
+        return v if len(v) <= 120 else v[:117] + "..."
+    await log_action("application_edited", current_actor(request), {
+        "app_id": app_id, "reason": reason, "fields": sorted(changes),
+        "changes": {k: {"old": _short(c["old"]), "new": _short(c["new"])} for k, c in changes.items()},
+        "status_links_revoked": links_revoked,
+    }, org_id=org_id)
+    logger.info(f"Superadmin corrected application {app_id}: {sorted(changes)}.")
+    return {"status": "edited", "fields": sorted(changes), "status_links_revoked": links_revoked,
+            "ballot_updated": bool(cand)}
 
 
 @app.post("/superadmin/applications/{app_id}/force-finance-clear")
@@ -7086,7 +7334,7 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
                 {"$set": {"full_name": old_name, "student_id": old_sid, "phone_numbers": old_phones}})
             raise HTTPException(409, "Another student in this organization already has that registration number.")
         # Keep the student's own records attached to the new number.
-        for coll in (db.applications, db.exception_grants, db.contact_changes):
+        for coll in (db.applications, db.exception_grants, db.contact_changes, db.candidate_tokens):
             await coll.update_many({"org_id": org_id, "student_id": old_sid}, {"$set": {"student_id": new_sid}})
 
     return {"events": events, "old_sid": old_sid, "new_sid": new_sid, "old_name": old_name,
@@ -8397,7 +8645,7 @@ async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Reque
         if await db.voters.find_one({"org_id": org_id, "student_id": old_value, "_id": {"$ne": voter["_id"]}}):
             raise HTTPException(409, "Another student now holds that registration number; can't restore it automatically.")
         await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"student_id": old_value}})
-        for coll in (db.applications, db.exception_grants, db.contact_changes):
+        for coll in (db.applications, db.exception_grants, db.contact_changes, db.candidate_tokens):
             await coll.update_many({"org_id": org_id, "student_id": new_value}, {"$set": {"student_id": old_value}})
         new_voter_sid = old_value
     elif field == "phone_numbers":

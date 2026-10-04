@@ -11,8 +11,9 @@ import ManifestoText from './ManifestoText';
 import { properName, properTitle } from '../displayText';
 import { faceCropUrl } from '../cloudinaryImage';
 import { LoadingBlock } from './Spinner.jsx';
+import { applicationVersions } from '../applicationVersions';
 
-const PrintStyles = () => (
+export const PrintStyles = () => (
   <style>{`
     @media print {
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -21,6 +22,7 @@ const PrintStyles = () => (
       .csp-outer { padding: 0 !important; background: #fff !important; }
       .csp-doc-card { max-width: none !important; padding: 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; }
       .csp-print-sheet { border: none !important; border-radius: 0 !important; padding: 0 !important; }
+      .csp-page + .csp-page { break-before: page; page-break-before: always; margin-top: 0 !important; padding-top: 0 !important; border-top: none !important; }
     }
     @media screen and (max-width: 560px) {
       .csp-outer { padding: 10px !important; }
@@ -232,6 +234,12 @@ function ApplicationTab({ candidacy, onPrint }) {
             <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.55 }}>
               Submitted {formatDate(snap.submitted_at)}
             </p>
+            {applicationVersions(snap, candidacy.edits).length > 1 && (
+              <p style={{ margin: '4px 0', fontSize: '12px' }}>
+                <span style={editedMark}>EDITED</span>{' '}
+                <span style={{ opacity: 0.6 }}>corrected {formatDate(candidacy.edits[candidacy.edits.length - 1].at)} — the printout includes the original</span>
+              </p>
+            )}
             <ManifestoText text={snap.manifesto} />
           </>
         ) : (
@@ -421,39 +429,77 @@ function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = ''
   );
 }
 
-function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
-  const snap = candidacy.application_snapshot || {};
+function ApplicationPage({ version, position, branding, hasEdits }) {
+  const isOriginal = version.kind === 'original';
+  const stamp = isOriginal && hasEdits
+    ? { text: 'ORIGINAL', color: '#64748b' }
+    : !isOriginal ? { text: 'EDITED', color: '#b45309' } : null;
+  const title = version.position_title || position;
   return (
-    <DocShell onClose={onClose} branding={branding} label="Candidate Application Record" fileName={docFileName('Application', snap.full_name, candidacy.position_title)}>
+    <div className="csp-page" style={{ position: 'relative' }}>
+      {stamp && (
+        <div style={{ position: 'absolute', top: 0, right: 0, border: `2px solid ${stamp.color}`, color: stamp.color, borderRadius: 4, padding: '2px 10px', fontSize: 12, fontWeight: 800, letterSpacing: 2, transform: 'rotate(4deg)' }}>
+          {stamp.text}
+        </div>
+      )}
       <DocHeader branding={branding} title="Candidate Application Record" marginBottom={24} />
+
+      {!isOriginal && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#92400e', marginBottom: 16 }}>
+          <strong>Edited {formatDate(version.edited_at)}</strong> — corrected: {version.changedFields.join(', ')}.
+          {' '}The application as it was before this correction is on the following page.
+        </div>
+      )}
+      {isOriginal && hasEdits && (
+        <div style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#475569', marginBottom: 16 }}>
+          <strong>Original submission</strong> — kept for the record. It was later corrected; see the edited page.
+        </div>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #3b82f6', paddingBottom: 10, marginBottom: 24, fontSize: 12 }}>
         <div>
-          <p style={{ margin: '2px 0' }}><strong>Position applied for:</strong> {properTitle(candidacy.position_title)}</p>
+          <p style={{ margin: '2px 0' }}><strong>Position applied for:</strong> {properTitle(title)}</p>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <p style={{ margin: '2px 0' }}><strong>Submitted:</strong> {formatDate(snap.submitted_at)}</p>
+          <p style={{ margin: '2px 0' }}><strong>Submitted:</strong> {formatDate(version.submitted_at)}</p>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 20, marginBottom: 24, alignItems: 'flex-start' }}>
-        {snap.image_url && <img src={faceCropUrl(snap.image_url, 96, 96)} alt="" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />}
+        {version.image_url && <img src={faceCropUrl(version.image_url, 96, 96)} alt="" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />}
         <dl style={{ flex: 1, margin: 0 }}>
           <dt style={{ fontSize: 10, textTransform: 'uppercase', color: '#64748b' }}>Full name</dt>
-          <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{properName(snap.full_name)}</dd>
+          <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{properName(version.full_name)}</dd>
           <dt style={{ fontSize: 10, textTransform: 'uppercase', color: '#64748b', marginTop: 8 }}>Registration number</dt>
-          <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{regNo(snap.student_id)}</dd>
+          <dd style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{regNo(version.student_id)}</dd>
         </dl>
       </div>
 
       <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: '#3b82f6', borderBottom: '1px solid #e2e8f0', paddingBottom: 6, margin: '24px 0 10px' }}>Manifesto</div>
-      <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#334155' }}>{snap.manifesto}</div>
+      <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#334155' }}>{version.manifesto}</div>
 
       <div style={{ marginTop: 36, paddingTop: 14, borderTop: '1px dashed #cbd5e1', fontSize: 10, color: '#94a3b8', textAlign: 'center', lineHeight: 1.5 }}>
-        This document is a record of the application exactly as submitted on the date above.
-        It does not reflect any correction made to the applicant's record afterwards.<br />
-        Generated by {branding.org_name}.
+        {isOriginal
+          ? 'This page is a record of the application exactly as submitted on the date above.'
+          : 'This page shows the application after the correction dated above. Earlier versions are kept on their own pages.'}
+        <br />Generated by {branding.org_name}.
       </div>
+    </div>
+  );
+}
+
+// Original submission snapshot + any later corrections, newest first, one printed page each.
+// Also used by the superadmin dashboard (which builds `edits` from the application's own history).
+export function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
+  const snap = candidacy.application_snapshot || {};
+  const versions = applicationVersions(candidacy.application_snapshot, candidacy.edits);
+  const hasEdits = versions.length > 1;
+  const current = versions[0] || snap;
+  return (
+    <DocShell onClose={onClose} branding={branding} label={hasEdits ? `Candidate Application Record · ${versions.length} pages (edited + original)` : 'Candidate Application Record'} fileName={docFileName('Application', current.full_name, current.position_title || candidacy.position_title)}>
+      {versions.map((v, i) => (
+        <ApplicationPage key={i} version={v} position={candidacy.position_title} branding={branding} hasEdits={hasEdits} />
+      ))}
     </DocShell>
   );
 }
@@ -582,3 +628,5 @@ const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--te
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const primaryBtn = { padding: '9px 14px', background: 'var(--info)', border: '1px solid var(--info)', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
 const pillBtn    = { padding: '8px 14px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px' };
+
+const editedMark = { display: 'inline-block', border: '1px solid #b45309', color: '#b45309', borderRadius: 4, padding: '0 6px', fontSize: 10, fontWeight: 800, letterSpacing: 1 };
