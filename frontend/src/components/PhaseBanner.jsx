@@ -62,6 +62,7 @@ export default function PhaseBanner({ status, onApply, style }) {
   return (
     <div
       role="status"
+      className="no-print"
       data-phase={state}
       style={{
         background: t.bg, color: t.fg, border: `1px solid ${t.border}`, borderRadius: 8,

@@ -701,7 +701,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
   return (
     <HelpMenuProvider>
-    <div style={containerStyle}>
+    <div style={containerStyle} className="app-shell">
       {(view === "voter" || view === "apply") && (
         <>
           <HelpPanel
@@ -731,7 +731,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '100%' : '500px',
           margin: '0 auto',
           transition: 'max-width 0.3s ease' 
-        }}>
+        }} className="app-column">
         
         <nav className="no-print" style={navBarStyle}>
           <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>

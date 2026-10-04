@@ -21,7 +21,7 @@ export default function ViewAsBanner() {
   const left = minutesLeft();
   const close = () => { clearAdminSession(); window.close(); window.location.replace('/'); };
   return (
-    <div role="status" style={{ position: 'sticky', top: 0, zIndex: 10000, display: 'flex', gap: 12, alignItems: 'center',
+    <div role="status" className="no-print" style={{ position: 'sticky', top: 0, zIndex: 10000, display: 'flex', gap: 12, alignItems: 'center',
       justifyContent: 'space-between', flexWrap: 'wrap', padding: '8px 14px', background: '#f39c12', color: '#1a1a1a', fontSize: 13, fontWeight: 600 }}>
       <span>
         Read-only view of {v.name} ({LABELS[v.role] || v.role}). Nothing you do here can change data.
