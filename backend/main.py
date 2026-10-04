@@ -6082,6 +6082,25 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
             "ballot_updated": bool(cand)}
 
 
+class ReconcileEditsRequest(BaseModel):
+    dry_run: bool = True
+
+
+@app.post("/superadmin/maintenance/reconcile-application-edits")
+async def superadmin_reconcile_application_edits(data: ReconcileEditsRequest, request: Request,
+                                                 admin: dict = Depends(require_role("superadmin"))):
+    """Record pre-tracking edits (live fields differ from the snapshot with no edit_history)."""
+    dry_run = data.dry_run
+    from edit_reconcile import run_edit_reconcile
+    report = await run_edit_reconcile(db, _resolve_position_title, _application_edit_history,
+                                      org_id=request.state.org_id, actor=current_actor(request), dry_run=dry_run)
+    if not dry_run and report["recorded"]:
+        await log_action("application_edits_reconciled", current_actor(request),
+                         {"recorded": report["recorded"], "apps": [i["app_id"] for i in report["items"]]},
+                         org_id=request.state.org_id)
+    return report
+
+
 @app.post("/superadmin/applications/{app_id}/force-finance-clear")
 async def superadmin_force_finance_clear(app_id: str, request: Request):
     """Bypass the Finance Commissioner gate — for cases where no Finance

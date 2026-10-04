@@ -307,6 +307,7 @@ export default function SecurityPanel() {
       <NameNormalizerTile />
 
       <RegNumberCheckTile />
+      <ApplicationEditReconcileTile />
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>Roster ledger integrity</b>
@@ -409,6 +410,52 @@ function RegNumberCheckTile() {
           {r.samples.length > 0 && (
             <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
               {r.samples.map((x, i) => <li key={i}>[{x.kind.replace('_', ' ')}] {x.collection}: {x.old} &rarr; <b>{x.new}</b></li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Superadmin maintenance: record application edits made before edit tracking existed. */
+function ApplicationEditReconcileTile() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState(null);
+
+  const run = async (dryRun) => {
+    if (!dryRun) {
+      const ok = await confirm(
+        'Mark these applications as EDITED? Each gets one history entry recording the change, so the EDITED label and the extra PDF pages appear. Application details are not changed.',
+        { confirmText: 'Record edits' });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      const r = (await api.post('/superadmin/maintenance/reconcile-application-edits', { dry_run: dryRun })).data;
+      setReport(r);
+      if (r.dry_run) toast(r.items.length ? `${r.items.length} application(s) have unrecorded edits.` : 'No unrecorded edits found.');
+      else toast(`Recorded edits on ${r.recorded} application(s).`, { kind: 'success' });
+    } catch (e) { toast(errMsg(e, 'Edit check failed.'), { kind: 'error' }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={box}>
+      <b style={{ fontSize: 14 }}>Unrecorded application edits</b>
+      <p style={note}>Finds applications whose details were changed before the Edit application button existed, so they never showed as edited. Preview lists them; Apply records each change in its history. The edit time shown will be today, because the real time was never saved.</p>
+      <button style={{ ...btn, background: '#3498db' }} disabled={busy} onClick={() => run(true)}>Preview</button>
+      <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !report || !report.dry_run || report.items.length === 0} onClick={() => run(false)}>Apply</button>
+      {report && (
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+          <div style={{ fontWeight: 700, color: report.dry_run ? 'inherit' : 'var(--success)' }}>
+            {report.dry_run ? `Preview: ${report.items.length} of ${report.scanned} application(s) have unrecorded edits` : `Done: ${report.recorded} recorded`}
+          </div>
+          {report.items.length > 0 && (
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
+              {report.items.map((x) => <li key={x.app_id}>{x.name}: <b>{x.fields.join(', ')}</b></li>)}
             </ul>
           )}
         </div>
