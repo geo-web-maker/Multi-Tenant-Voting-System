@@ -91,7 +91,7 @@ export default function HeatmapOverlay({ page, embedded = false }) {
 
   if (!allowed) return null;
   return (
-    <div data-no-track>
+    <div data-no-track className="no-print">
       {open && <canvas ref={canvas} aria-hidden="true" style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: 9990 }} />}
       {open && !embedded && (
         <div style={{ ...panel, right: 12, bottom: 'calc(68px + env(safe-area-inset-bottom))' }}>

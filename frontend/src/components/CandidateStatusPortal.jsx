@@ -23,6 +23,12 @@ export const PrintStyles = () => (
       .csp-doc-card { max-width: none !important; padding: 0 !important; border: none !important; border-radius: 0 !important; background: transparent !important; }
       .csp-print-sheet { border: none !important; border-radius: 0 !important; padding: 0 !important; }
       .csp-page + .csp-page { break-before: page; page-break-before: always; margin-top: 0 !important; padding-top: 0 !important; border-top: none !important; }
+      .csp-page { break-inside: avoid; page-break-inside: avoid; }
+      /* Page breaks are ignored inside flex / fixed-height / scrolling ancestors, so flatten them for print. */
+      html, body, #root { height: auto !important; min-height: 0 !important; overflow: visible !important; background: #fff !important; }
+      .csp-outer, .csp-doc-card { display: block !important; min-height: 0 !important; height: auto !important; overflow: visible !important; }
+      .csp-print-sheet { display: block !important; background: #fff !important; }
+      @page { margin: 12mm; }
     }
     @media screen and (max-width: 560px) {
       .csp-outer { padding: 10px !important; }
