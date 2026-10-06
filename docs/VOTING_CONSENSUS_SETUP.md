@@ -1,85 +1,60 @@
-# Commissioner voting: what "consensus" actually means today
+# Approval policy: what it means today
 
 ## The short version
 
-There is **no policy toggle** in the code right now. Both application approval
-and candidate removal use one hardcoded rule, in `backend/main.py`:
+`approval_policy` is a real per-org setting now (`db.settings`, `security_settings`),
+editable from the Security tab. It governs **two separate votes**:
+
+- **Application approval/denial** — cast by the **Vetting Panel** (`vetting` role,
+  `POST /admin/applications/{id}/vote`). Commissioners vote here only if they also
+  sit on the panel, and only through the panel hat (`/admin/switch-hat`).
+- **Candidate removal** — still cast by **commissioners** directly
+  (`POST /admin/applications/{id}/vote-remove`); this stayed out of the panel split
+  (guide decision 3) and uses the same `approval_policy` value.
 
 ```python
-required = (total // 2) + 1  # majority of TOTAL commissioner count
+# backend/main.py — same formula, read from the org's approval_policy
+required = (total // 2) + 1          # majority_total
 ```
 
-(`_resolve_application`, line ~1155, and `_resolve_removal`, line ~1208 — same
-formula in both.)
+## The three policies
 
-This resolves the moment either side reaches `floor(total/2)+1`, counting
-**every commissioner**, not just the ones who've voted. It is **not** full
-consensus/unanimity, even though the frontend copy currently says "Full
-consensus required for approval or removal."
+| Policy | Resolves when |
+|---|---|
+| `unanimous` | every panelist (or, for removals, every commissioner) agrees |
+| `majority_total` | either side reaches `floor(total/2)+1` of the full panel/commissioner count, even before everyone's voted |
+| `majority_cast` | after everyone active has weighed in, whichever side has more wins |
 
-That copy isn't lying by accident — it's only true because of arithmetic:
-with exactly **2** commissioners, `floor(2/2)+1 = 2`, i.e. majority-of-total
-happens to equal unanimity. The moment you add a 3rd commissioner, 2 of 3
-resolves it without the third person ever voting, and the "Full consensus"
-label becomes wrong.
+`CommissionDashboard.jsx` and `ApplicantPortal.jsx` now read the live policy and
+show the matching copy — there's no more hardcoded "Full consensus" string to go
+stale when the count changes.
 
-## The three policies worth naming
+## Seed data to test this by hand
 
-| Policy | Resolves when | Currently implemented? |
-|---|---|---|
-| **Unanimous** | every commissioner agrees | No |
-| **Majority of total** (current) | either side hits `floor(total/2)+1`, even before everyone's voted | Yes — the only behavior that exists |
-| **Majority of votes cast** | after voting closes / everyone's weighed in, whichever side has more wins | No |
+Run `python seed_test_data.py` then `python seed_advanced_scenarios.py`. Every
+seeded commissioner / IT admin / financial controller account uses the password
+`SeedTest123!` — the script prints each email as it runs. The P1 migration carries
+every seeded commissioner into `panel_members`, so to cast an application vote,
+log in as the commissioner and switch to the Vetting Panel hat in the UI (or via
+`POST /admin/switch-hat`) before voting; removal votes use the commissioner login
+directly.
 
-## How to get the behavior you want *today*, without a code change
+### Org `nomtest` — 5 panelists (migrated from 5 commissioners)
 
-Since the formula is fixed, the only lever you have is **how many people are
-commissioners**:
-
-- **Want effective unanimity?** Keep the commissioner count small and odd
-  isn't even required — with `N` commissioners, majority-of-total only equals
-  unanimity when `N` is 1 or 2. At `N=3`, 2 people can already decide it
-  without the third. There's no commissioner count above 2 that gives you
-  real unanimity under this formula — plan around that, don't rely on it.
-- **Want a real majority-of-total with room for disagreement?** Any `N ≥ 3`
-  already does this — that's the current behavior, no setup needed.
-- **Want majority-of-votes-cast instead** (decide only once voting is
-  closed, based on who actually showed up)? Not available without a code
-  change — see below.
-
-## If you want the actual toggle built
-
-This needs a real (small) backend change: an `approval_policy` field on the
-org's settings doc (`db.settings`, `{name: "security_settings"}` is the
-natural home, next to the other per-org knobs already there), read by both
-`_resolve_application` / `_resolve_removal`, plus fixing the two hardcoded
-"Full consensus" strings in `CommissionDashboard.jsx` /
-`OverseerDashboard.jsx` to reflect whichever policy is actually active. I
-didn't build this — say the word and I will, with the default kept at
-majority-of-total so existing orgs see zero behavior change.
-
-## What the seed script (`seed_advanced_scenarios.py`) set up for you to test this by hand
-
-Run it after the backend is up (`python seed_test_data.py` first if you
-haven't, then `python seed_advanced_scenarios.py`). Every seeded
-commissioner / IT admin / financial controller account uses the password
-`SeedTest123!` — the script prints each email as it runs.
-
-### Org `nomtest` — 5 commissioners, so majority (3) and unanimity (5) actually diverge
-
-- **President — Candidate A**: 2 of 5 commissioners approved (`commissioner0`,
+- **President — Candidate A**: 2 of 5 panelists approved (`commissioner0`,
   `commissioner1`). One vote short of the 3-vote majority. Log in as
   `commissioner2@nomtest.local`, `commissioner3@nomtest.local`, or
-  `commissioner4@nomtest.local` and cast the deciding vote — try approve
-  *and* deny on separate re-runs to see both outcomes.
+  `commissioner4@nomtest.local`, switch to the panel hat, and cast the deciding
+  vote — try approve *and* deny on separate re-runs to see both outcomes.
 - **President — Candidate B**: 1 approve / 1 deny already cast, contested.
   Two more votes either way resolves it.
 - **Secretary General**: finance-cleared, **zero** votes cast — the full
   flow from a clean slate.
 - **Treasurer**: already resolved (3/5 approved) by the script, so there's
   a real approved candidate — and a removal vote already in progress
-  against them (1 of 5 votes to remove). Finish that removal vote as a
-  different commissioner to see a candidate actually get removed.
+  against them (1 of 5 commissioners voted to remove, via the commissioner
+  login, not the panel hat). Finish that removal vote as a different
+  commissioner to see a candidate actually get removed.
 - **Contact changes**: one pending, one approved, one denied, one
   cancelled — `GET /admin/contact-changes` (or the Contact Changes tab) to
   see all four statuses at once.

@@ -99,6 +99,12 @@ export default function OverseerDashboard({ onLogout }) {
                 <span style={summaryLabel}>Commissioners</span>
                 <span style={summaryValue}>{data.total_commissioners}</span>
               </div>
+              {data.panel_count != null && (
+                <div style={summaryCard}>
+                  <span style={summaryLabel}>Vetting Panel</span>
+                  <span style={summaryValue}>{data.panel_count}</span>
+                </div>
+              )}
             </div>
 
             {/* ── Tabs ── */}
@@ -118,7 +124,9 @@ export default function OverseerDashboard({ onLogout }) {
                     </div>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>{a.position_id}</p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
-                      <Icon name="success" /> {a.approve_count} · <Icon name="error" /> {a.deny_count} · {a.votes_cast} vote(s) cast
+                      {a.final_split
+                        ? <>Panel split: <Icon name="success" /> {a.final_split.approve} approve · <Icon name="error" /> {a.final_split.deny} deny{a.decided_by_tie_break && ' · decided by tie-break'}</>
+                        : <>{a.votes_cast} of {a.panel_count} voted</>}
                       {a.finance_cleared && <> · Finance cleared</>}
                     </p>
                   </div>

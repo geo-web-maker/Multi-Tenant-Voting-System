@@ -89,7 +89,19 @@ const ACTION_TITLES = {
   application_force_denied: 'Application force-denied',
   application_reverted_to_pending: 'Application sent back to pending',
   application_edited: 'Application registration number corrected',
-  application_vote_cast: 'Commission vote cast',
+  application_vote_cast: 'Panel vote cast',
+  application_vote_tied: 'Panel vote tied',
+  application_tie_broken: 'Tie broken by the Chairperson',
+  application_final_reason_set: 'Final reason recorded',
+  hat_switched: 'Switched between Commissioner and Vetting Panel',
+  vetting_confidentiality_accepted: 'Panelist accepted confidentiality notice',
+  vetting_panel_credentials_set: 'Panelist credentials issued',
+  vetting_panel_login: 'Panelist logged in',
+  vetting_panel_member_added: 'Panelist added',
+  vetting_panel_member_updated: 'Panelist details changed',
+  vetting_panel_member_activated: 'Panelist activated',
+  vetting_panel_member_deactivated: 'Panelist deactivated',
+  vetting_panel_password_changed: 'Panelist changed password',
   candidate_removal_vote: 'Candidate removal vote cast',
   application_finance_cleared: 'Application finance-cleared',
   application_finance_rejected: 'Application finance-rejected',
@@ -120,8 +132,8 @@ const ACTION_TITLES = {
   branding_updated: 'Branding updated',
   position_added: 'Ballot position added',
   position_deleted: 'Ballot position deleted',
-  chief_commissioner_set: 'Chief Commissioner promoted',
-  chief_commissioner_cleared: 'Chief Commissioner role removed',
+  chief_commissioner_set: 'Chairperson appointed',
+  chief_commissioner_cleared: 'Chairperson role removed',
   finance_commissioner_set: 'Finance-clearing power granted',
   finance_commissioner_cleared: 'Finance-clearing power removed',
   finance_commissioner_retired: 'Finance-clearing power moved to the Financial Controller',
@@ -165,9 +177,9 @@ const PATH_LABELS = [
   [/^\/superadmin\/mfa\/generate/, 'the 2FA setup'],
   [/^\/superadmin\/orgs/, 'the Organisations page'],
   [/^\/superadmin\/branding/, 'Branding settings'],
-  [/^\/superadmin\/commissioners\/[^/]+\/set-chief/, 'promoting a Chief Commissioner'],
-  [/^\/superadmin\/commissioners\/[^/]+\/clear-chief/, 'removing a Chief Commissioner'],
-  [/^\/superadmin\/chief-commissioner/, 'Chief Commissioner info'],
+  [/^\/superadmin\/commissioners\/[^/]+\/set-chief/, 'appointing a Chairperson'],
+  [/^\/superadmin\/commissioners\/[^/]+\/clear-chief/, 'removing a Chairperson'],
+  [/^\/superadmin\/chief-commissioner/, 'Chairperson info'],
   [/^\/superadmin\/commissioners\/[^/]+\/set-finance-commissioner/, 'granting finance-clearing power'],
   [/^\/superadmin\/commissioners\/[^/]+\/clear-finance-commissioner/, 'removing finance-clearing power'],
   [/^\/superadmin\/finance-commissioner/, 'Finance Commissioner info'],
@@ -373,9 +385,22 @@ export function Timeline({ canEdit = false, isChief = false }) {
     const lines = Object.entries(draft).filter(([, w]) => w.start || w.end).map(([name, w]) =>
       `${PHASE_LABELS[name]}: ${w.start ? fmtZoned(zonedInputToUtcISO(w.start, tzDraft), tzDraft) : '—'} → ${w.end ? fmtZoned(zonedInputToUtcISO(w.end, tzDraft), tzDraft) : '—'}`);
     const here = browserTz();
+    // Only the superadmin can read the panel; for anyone else this quietly yields no warning.
+    let panelWarning = '';
+    if (draft.vetting && (draft.vetting.start || draft.vetting.end)) {
+      try {
+        const panel = (await api.get('/superadmin/vetting-panel')).data;
+        if (panel.panel_count < (panel.min_panel || 3)) {
+          panelWarning = `The panel has only ${panel.panel_count} active panelist${panel.panel_count === 1 ? '' : 's'}; at least ${panel.min_panel || 3} are required.`;
+        } else if (panel.tie_risk === 'superadmin_only') {
+          panelWarning = 'The panel can tie and only the superadmin could resolve it: add one panelist or the Chairperson before vetting opens. The panel is frozen once it does.';
+        }
+      } catch { /* not allowed or unavailable: no warning */ }
+    }
     const ok = await confirm(
       <div style={{ textAlign: 'left', fontSize: 13, lineHeight: 1.6 }}>
         <b>All times are in {tzDraft} ({utcOffsetLabel(tzDraft)}).</b>
+        {panelWarning && <p style={{ margin: '6px 0', color: 'var(--warning)' }}><Icon name="warning" /> {panelWarning}</p>}
         {here !== tzDraft && <p style={{ margin: '6px 0', color: 'var(--warning)' }}><Icon name="warning" /> Your device is set to {here} ({utcOffsetLabel(here)}). The times below are what voters in {tzDraft} will experience.</p>}
         {lines.map(l => <div key={l}>{l}</div>)}
       </div>,
@@ -1478,7 +1503,7 @@ export function OfficialCertificationBlock() {
       {report && !report.declaration && (
         <p style={warnBanner} className="no-print">
           The declaration is withheld until results are certified. Certification is the
-          Chief Commissioner's action. The tallies below are still shown so you can review
+          Chairperson's action. The tallies below are still shown so you can review
           them ahead of certifying.
         </p>
       )}

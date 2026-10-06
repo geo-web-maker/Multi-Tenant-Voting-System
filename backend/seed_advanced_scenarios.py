@@ -7,8 +7,9 @@ Seeds two extra orgs on top of whatever seed_test_data.py already created:
               IT admin and a financial controller. Several applications in
               flight, DELIBERATELY left at different vote counts (0 votes,
               short of majority, contested) so you can log in as each
-              commissioner yourself and cast the deciding vote through the
-              UI rather than finding everything pre-resolved. Also seeds one
+              commissioner yourself, switch to the Vetting Panel hat, and
+              cast the deciding vote through the UI rather than finding
+              everything pre-resolved. Also seeds one
               in-progress candidate removal, four contact-change requests
               (one of each status), and three exception grants (active,
               timed, already-expired).
@@ -277,7 +278,17 @@ async def finance_clear(client: httpx.AsyncClient, headers: dict, app_id: str, f
 
 async def cast_commissioner_vote(client: httpx.AsyncClient, org_slug: str, commissioner_email: str,
                                   commissioner_id: str, app_id: str, vote: str, endpoint: str = "vote"):
+    """`endpoint="vote"` (application approval) now requires the panel hat: the P1 migration
+    carries every commissioner into panel_members, so we log in as the commissioner and switch
+    hats first. `endpoint="vote-remove"` is unaffected — removal voting stayed commissioner-only
+    (guide decision 3) — so that one posts with the plain commissioner token."""
     token = await login_role(client, org_slug, commissioner_email)
+    if endpoint == "vote":
+        r = await client.post(f"{API_BASE}/admin/switch-hat", headers=admin_headers(token, org_slug))
+        if r.status_code >= 400:
+            print(f"  [nomtest] switch-hat for {commissioner_id} failed: {r.status_code} {r.text[:150]}")
+            return
+        token = r.json()["access_token"]
     headers = admin_headers(token, org_slug)
     r = await client.post(f"{API_BASE}/admin/applications/{app_id}/{endpoint}",
                            json={"commissioner_id": commissioner_id, "vote": vote}, headers=headers)
@@ -311,8 +322,9 @@ async def seed_nomtest_applications(client: httpx.AsyncClient, token: str, posit
         if app_id:
             await finance_clear(client, fc_headers, app_id, FINANCE_CONTROLLER_ID)
 
-    # President A: 2 of 5 commissioners approved — short of the 3-vote
-    # majority. Left for you to log in as a 3rd commissioner and decide it.
+    # President A: 2 of 5 panelists approved — short of the 3-vote
+    # majority. Left for you to log in as a 3rd commissioner, switch to the
+    # panel hat, and decide it.
     if app_a:
         await cast_commissioner_vote(client, NOMTEST_SLUG, commissioner_emails[COMMISSIONER_IDS[0]],
                                       COMMISSIONER_IDS[0], app_a, "approve")
@@ -344,7 +356,8 @@ async def seed_nomtest_applications(client: httpx.AsyncClient, token: str, posit
         treasurer_candidate_app_id = app_tr
         print(f"  [nomtest] Treasurer ({app_tr}): 3/5 approve — resolved, candidate created.")
 
-    # Removal in progress: 1 of 5 commissioners has voted to remove the
+    # Removal in progress (removal voting stays commissioner-only — decision 3):
+    # 1 of 5 commissioners has voted to remove the
     # Treasurer candidate. Left short of majority for you to finish.
     if treasurer_candidate_app_id:
         await cast_commissioner_vote(client, NOMTEST_SLUG, commissioner_emails[COMMISSIONER_IDS[4]],

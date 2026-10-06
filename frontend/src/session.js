@@ -32,7 +32,7 @@ const TAB_PREFIX         = 'tab:';
 const DRAFT_PREFIX       = 'draft:';
 
 // The views verify-admin can hand out; each matches the `role` claim in the JWT.
-const ADMIN_VIEWS = ['superadmin', 'commission', 'it_admin', 'financial_controller', 'overseer'];
+const ADMIN_VIEWS = ['superadmin', 'commission', 'vetting', 'it_admin', 'financial_controller', 'overseer'];
 const PUBLIC_VIEWS = ['results', 'apply'];
 
 // ── Admin session ────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ export function stashViewAsHandoff(data) {
 
 export function clearAdminSession() {
   [
-    VIEW_AS_KEY, 'admin_role', ADMIN_TOKEN_KEY, 'commissioner_id',
+    VIEW_AS_KEY, 'admin_role', ADMIN_TOKEN_KEY, 'commissioner_id', 'panel_linked',
     'it_admin_id', 'it_admin_name',
     'financial_controller_id', 'financial_controller_name',
     'overseer_id', 'overseer_name', PW_PENDING_KEY,

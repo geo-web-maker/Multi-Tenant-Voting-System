@@ -1,39 +1,36 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
+import { switchHat } from '../hatSwitch';
 import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import TabBar from './TabBar';
 import ContactChangesQueue from './ContactChangesQueue';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
-import { Icon } from './icons.jsx';
-import { faceCropUrl } from '../cloudinaryImage';
 import ReceiptLink from './ReceiptLink';
-import ManifestoText from './ManifestoText';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
-import ClosedNotice, { vettingNoticeText } from './ClosedNotice';
 import { LoadingBlock } from './Spinner.jsx';
+
+// Pre-P4 tab ids that may still be remembered in this tab's session.
+const LEGACY_TABS = ['pending', 'approved', 'denied', 'removed'];
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
 
-  const [activeTab, setActiveTab]       = usePersistedTab('commission', 'pending');
+  const [activeTab, setActiveTab]       = usePersistedTab('commission', 'outcomes');
   const [applications, setApplications] = useState([]);
   const [loading, setLoading]           = useState(false);
+  const [outcomesFailed, setOutcomesFailed] = useState(false);
+  const [panelLinked, setPanelLinked] = useState(false);
+  const [tieWaiting, setTieWaiting] = useState(0);
   const [lastSynced, markSynced]        = useLastSynced();
   const [commissionerId, setCommissionerId] = useState('');
-  const [totalCommissioners, setTotalCommissioners] = useState(0);
-  const [approvalPolicy, setApprovalPolicy] = useState('majority_total');
-  const [denyReasons, setDenyReasons]   = useState({});  // { app_id: string }
-  const [showDenyBox, setShowDenyBox]   = useState({});  // { app_id: bool }
-  const [voting, setVoting]             = useState({});  // { app_id: bool }
   const [studentChanges, setStudentChanges] = useState([]);
-  const [electionStatus, setElectionStatus] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [liveResults, setLiveResults] = useState(null);
-  // Chief/Deputy-Commissioner-only controls (exception grants, certification)
+  // Chairperson/Deputy-Chairperson-only controls (exception grants, certification)
   // render off this flag. It is a UI affordance, not the access boundary —
   // the backend re-checks is_chief_commissioner/is_deputy_chief_commissioner
   // on every one of those endpoints (see require_chief_commissioner).
@@ -54,33 +51,35 @@ export default function CommissionDashboard({ onLogout }) {
   const fetchAll = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const [appsRes, commRes, scRes, resultsRes, policyRes, statusRes] = await Promise.all([
-          api.get('/admin/applications').catch(() => ({ data: [] })),
+      const [appsRes, commRes, scRes, resultsRes, linkRes] = await Promise.all([
+          api.get('/admin/vetting-outcomes').catch(() => ({ data: null })),
           api.get('/admin/commissioners').catch(() => ({ data: [] })),
           api.get('/admin/student-changes').catch(() => ({ data: [] })),
           api.get('/commission/results/detailed').catch(() => ({ data: null })),
-          api.get('/admin/approval-policy').catch(() => ({ data: null })),
-          api.get('/election-status').catch(() => ({ data: null })),
+          api.get('/admin/panel-link').catch(() => ({ data: null })),
         ]);
-        setApplications(appsRes.data);
-        setTotalCommissioners(commRes.data.length);
-        if (policyRes.data) setApprovalPolicy(policyRes.data.policy);
-        setElectionStatus(statusRes.data);
+        setOutcomesFailed(appsRes.data === null);
+        // Keep the last good list on a failed refresh instead of blanking it.
+        if (appsRes.data !== null) setApplications(appsRes.data);
         const me = (commRes.data || []).find(
           c => String(c.student_id || '').toLowerCase()
             === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
         );
         const chief = Boolean(me?.is_chief_commissioner);
         const deputyChief = Boolean(me?.is_deputy_chief_commissioner);
+        setPanelLinked(Boolean(linkRes.data?.panel_linked));
+        setTieWaiting(Number(linkRes.data?.tie_waiting) || 0);
         setIsChief(chief);
         setIsDeputyChief(deputyChief);
         // A regular commissioner may still have 'reset_otp' as their persisted
         // last-active tab from before this restriction existed (or from when
         // they held the chief/deputy role). Bounce them off it so they don't
         // land on a blank panel.
-        if (!chief && !deputyChief) {
-          setActiveTab(prev => (prev === 'reset_otp' ? 'pending' : prev));
-        }
+        setActiveTab(prev => (
+          LEGACY_TABS.includes(prev) || (prev === 'reset_otp' && !chief && !deputyChief)
+            ? 'outcomes'
+            : prev
+        ));
         setStudentChanges(scRes.data);
         setLiveResults(resultsRes.data);
         markSynced();
@@ -96,72 +95,21 @@ export default function CommissionDashboard({ onLogout }) {
 
   // ── Voting ──
 
-  const castVote = async (appId, vote) => {
-    if (!commissionerId.trim()) {
-      toast('Your commissioner ID was not found in this session. Please log out and log in again.', { kind: 'error' })
-      return;
-    }
-    setVoting(prev => ({ ...prev, [appId]: true }));
+  // Guide 5.2: a commissioner linked to an active panelist can switch to the panel view.
+  const [switchingHat, setSwitchingHat] = useState(false);
+  const goToPanel = async () => {
+    setSwitchingHat(true);
     try {
-      await api.post(`/admin/applications/${appId}/vote`, {
-        commissioner_id: commissionerId,
-        vote,
-        reason: denyReasons[appId] || '',
-      });
-      setShowDenyBox(prev => ({ ...prev, [appId]: false }));
-      setDenyReasons(prev => ({ ...prev, [appId]: '' }));
-      await fetchAll();
+      await switchHat();
     } catch (e) {
-      toast(e.response?.data?.detail || 'Vote failed. You may have already voted on this application.', { kind: 'error' })
-    } finally {
-      setVoting(prev => ({ ...prev, [appId]: false }));
+      toast(e.response?.data?.detail || 'Could not switch to the Vetting Panel.', { kind: 'error' });
+      setSwitchingHat(false);
     }
   };
 
   // ── Helpers ──
 
-  // The vetting window (set on the admin Timeline tab) is when commissioners may cast an
-  // approve/deny vote. Payment clearance is separate (the Financial Controller's job, not gated by
-  // the window), so applications are ready the moment vetting opens.
-  const vettingOpen = electionStatus ? electionStatus.vetting_phase_open !== false : true;
-  const vettingNotice = vettingNoticeText(electionStatus);
-
-  const safeKey = (id) => id.replace(/[./]/g, '_');
-
-  const myVoteFor = (app) => {
-    if (!app.votes) return null;
-    return app.votes[safeKey(commissionerId)] || null;
-  };
-
-  const voteCount = (app) => {
-    const votes = app.votes || {};
-    return {
-      approve: Object.values(votes).filter(v => v === 'approve').length,
-      deny:    Object.values(votes).filter(v => v === 'deny').length,
-      total:   Object.keys(votes).length,
-    };
-  };
-
-  const majorityRequired = (total) => Math.floor(total / 2) + 1;
-
-  const policyHeaderCopy = {
-    unanimous: 'Every commissioner must agree. Unanimous approval is required.',
-    majority_total: `Resolves once ${majorityRequired(totalCommissioners)} of ${totalCommissioners} commissioners agree (majority of total).`,
-    majority_cast: 'Resolves once every commissioner has voted. Whichever side has more wins.',
-  }[approvalPolicy] || 'Full consensus required for approval or removal';
-
-  const policyTallyCopy = (vc) => {
-    if (approvalPolicy === 'unanimous') return `needs all ${totalCommissioners} to agree`;
-    if (approvalPolicy === 'majority_cast') return `${vc.total} of ${totalCommissioners} voted; resolves once everyone's weighed in`;
-    return `majority needs ${majorityRequired(totalCommissioners)}`;
-  };
-
-  // ── Filtered lists ──
-
-  const pending  = applications.filter(a => a.status === 'pending');
-  const approved = applications.filter(a => a.status === 'approved');
-  const denied   = applications.filter(a => a.status === 'denied');
-  const removed  = applications.filter(a => a.status === 'removed');
+  const outcomeSubtitle = 'Final decisions of the Vetting Panel. Votes and progress are not shown here.';
 
   const matchesSearch = (app) => {
     const q = searchQuery.trim().toLowerCase();
@@ -169,51 +117,27 @@ export default function CommissionDashboard({ onLogout }) {
     return (
       (app.full_name || '').toLowerCase().includes(q) ||
       (app.student_id || '').toLowerCase().includes(q) ||
-      (app.position_title || app.position_id || '').toLowerCase().includes(q)
+      (app.position_title || '').toLowerCase().includes(q)
     );
   };
 
-  const listFor = (tab) => {
-    let list = [];
-    if (tab === 'pending')  list = pending;
-    if (tab === 'approved') list = approved;
-    if (tab === 'denied')   list = denied;
-    if (tab === 'removed')  list = removed;
-    return list.filter(matchesSearch);
-  };
+  const currentList = applications.filter(matchesSearch);
 
   const tabGroups = [
-    {
-      label: 'Applications & Results',
-      icon: 'inbox',
-      tabs: [
-        { id: 'pending',  label: 'Pending',      count: pending.length },
-        { id: 'approved', label: 'Approved',     count: approved.length },
-        { id: 'denied',   label: 'Denied',       count: denied.length },
-        { id: 'removed',  label: 'Removed',      count: removed.length },
-        { id: 'results',  label: 'Live Results', count: null },
-      ],
-    },
-    {
-      label: 'Requests & Access',
-      icon: 'users',
-      tabs: [
-        { id: 'student_changes', label: 'Student Changes', count: studentChanges.filter(c => c.status === 'pending').length },
-        { id: 'contact_changes', label: 'Contact Changes',  count: null },
-        ...((isChief || isDeputyChief) ? [{ id: 'reset_otp', label: 'Reset OTP', count: null }] : []),
-      ],
-    },
-    {
-      label: 'Platform',
-      icon: 'settings',
-      tabs: [
-        ...SHARED_TAB_DEFS,
-        { id: 'official_doc', label: <>Official Document</>, count: null },
-      ],
-    },
+    { label: 'Oversight', icon: 'eye', tabs: [
+      { id: 'outcomes', label: <>Outcomes</>, icon: 'award' },
+      { id: 'results',  label: <>Live Results</>, icon: 'chart' },
+    ] },
+    { label: 'Requests', icon: 'inbox', tabs: [
+      { id: 'student_changes', label: <>Student Changes</>, icon: 'log' },
+      { id: 'contact_changes', label: <>Contact Changes</>, icon: 'phone' },
+      ...((isChief || isDeputyChief) ? [{ id: 'reset_otp', label: <>Reset OTP</>, icon: 'refresh' }] : []),
+    ] },
+    { label: 'Platform', icon: 'settings', tabs: [
+      ...SHARED_TAB_DEFS,
+      { id: 'official_doc', label: <>Official Document</>, icon: 'file' },
+    ] },
   ];
-
-  const currentList = listFor(activeTab);
 
   return (
     <div style={outerWrap} className="outer-wrap">
@@ -225,11 +149,16 @@ export default function CommissionDashboard({ onLogout }) {
             the rail. */}
         <AdminHeader
           title="Election Commission"
-          subtitle={`${totalCommissioners} commissioner${totalCommissioners !== 1 ? 's' : ''} total · ${policyHeaderCopy}`}
+          subtitle={outcomeSubtitle}
           lastSynced={lastSynced}
           onRefresh={() => fetchAll()}
           refreshing={loading}
           onLogout={onLogout}
+          actions={panelLinked ? (
+            <button onClick={goToPanel} disabled={switchingHat} style={{ ...hatBtn, opacity: switchingHat ? 0.6 : 1 }}>
+              {switchingHat ? 'Switching…' : 'Switch to Vetting Panel'}
+            </button>
+          ) : null}
         />
 
         {/* Identity is taken from the session the server issued at login —
@@ -242,19 +171,27 @@ export default function CommissionDashboard({ onLogout }) {
               Your commissioner identity could not be read from this session.
             </p>
             <p style={{ margin: '8px 0 0', fontSize: '12px', opacity: 0.6 }}>
-              Please log out and sign in again so your votes are attributed correctly.
+              Please log out and sign in again.
             </p>
           </div>
         ) : (
           <div style={infoPill}>
             Signed in as: <strong>{commissionerId}</strong>
-            {isChief && <span style={chiefPill}>Chief Commissioner</span>}
+            {isChief && <span style={chiefPill}>Chairperson</span>}
             {isDeputyChief && <span style={chiefPill}>Deputy Chairperson</span>}
           </div>
         )}
 
+        {/* Guide 7.2: the Chairperson is told when a tie needs their casting decision. */}
+        {panelLinked && tieWaiting > 0 && (
+          <div style={tieHint}>
+            {tieWaiting === 1 ? 'An application is tied and needs your casting decision.' : `${tieWaiting} applications are tied and need your casting decision.`}
+            {' '}Switch to the Vetting Panel to decide.
+          </div>
+        )}
+
         {/* ── Search ── */}
-        {['pending', 'approved', 'denied', 'removed'].includes(activeTab) && (
+        {activeTab === 'outcomes' && (
           <div style={{ marginBottom: '16px' }}>
             <input
               style={inp}
@@ -275,194 +212,47 @@ export default function CommissionDashboard({ onLogout }) {
         <TabBar groups={tabGroups} activeTab={activeTab} onChange={setActiveTab} />
         <div style={container} className="dashboard-shell dash-main">
 
-        {activeTab === 'pending' && !vettingOpen && <ClosedNotice text={vettingNotice || 'Vetting is not currently open. Commissioners cannot vote yet.'} />}
 
         {/* ── Empty state ── */}
-        {['pending', 'approved', 'denied', 'removed'].includes(activeTab) && currentList.length === 0 && !loading && (
+        {activeTab === 'outcomes' && outcomesFailed && (
+          <div style={emptyState}>
+            <p style={{ opacity: 0.7 }}>Could not load decisions. Use Refresh to try again.</p>
+          </div>
+        )}
+        {activeTab === 'outcomes' && !outcomesFailed && currentList.length === 0 && !loading && (
           <div style={emptyState}>
             <p style={{ opacity: 0.5 }}>
-              No {activeTab} applications.
-              {activeTab === 'pending' && ' Check back when applicants submit their forms.'}
+              No decisions yet.
             </p>
           </div>
         )}
 
-        {/* ── Application cards ── */}
-        {activeTab !== 'student_changes' && activeTab !== 'results' && (
+        {/* ── Outcomes (guide 5.2): final decisions only; never pending, votes or tallies ── */}
+        {activeTab === 'outcomes' && (
         <ScrollList>
-        {currentList.map(app => {
-          const vc      = voteCount(app);
-          const myVote  = myVoteFor(app);
-          const isVotingNow        = voting[app._id];
-
-          return (
-            <div key={app._id} style={appCard}>
-
-              {/* Top row — photo + info + status */}
-              <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
-                {app.image_url ? (
-                  <img src={faceCropUrl(app.image_url, 64, 64)} alt="" style={avatar} />
-                ) : (
-                  <div style={{ ...avatar, backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>
-                    <Icon name="user" />
-                  </div>
-                )}
-
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
-                    <div>
-                      <b style={{ fontSize: '15px', color: 'var(--text-color)' }}>{app.full_name}</b>
-                      <span style={{ ...statusBadge(app.status), marginLeft: '10px' }}>
-                        {app.status.toUpperCase()}
-                        {app.superadmin_override && ' · SA Override'}
-                      </span>
-                    </div>
-                    <small style={{ opacity: 0.45 }}>
-                      {new Date(app.submitted_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
-                    </small>
-                  </div>
-
-                  <p style={{ margin: '4px 0', fontSize: '13px', color: '#2ecc71', fontWeight: '600' }}>
-                    {app.position_title || app.position_id}
-                  </p>
-                  <p style={{ margin: '2px 0', fontSize: '12px', opacity: 0.55 }}>
-                    Student ID: {regNo(app.student_id)}
-                  </p>
-
-                  <ManifestoText text={app.manifesto} />
-                  
-                  {app.payment_method && (
-                    <div style={{ marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                      <p style={{ margin: '0 0 4px', fontSize: '12px', opacity: 0.6 }}>
-                        Payment method: <strong style={{ color: 'var(--text-color)' }}>{app.payment_method}</strong>
-                      </p>
-                      <p style={{ margin: '0 0 6px', fontSize: '13px' }}>
-                        Required amount:{' '}
-                        <strong style={{ color: 'var(--success)' }}>
-                          {app.fee_required ? `UGX ${Number(app.fee_required).toLocaleString('en-UG')}` : 'not set for this position'}
-                        </strong>
-                      </p>
-                      <ReceiptLink url={app.payment_proof_url} />
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Vote tally */}
-              {app.status === 'pending' && app.finance_cleared && totalCommissioners > 0 && (
-                <div style={tallyRow}>
-                  <span style={{ opacity: 0.6, fontSize: '12px' }}>
-                    Commission votes ({vc.total} of {totalCommissioners}):
-                  </span>
-                  <span style={{ color: '#2ecc71', fontWeight: '600', fontSize: '13px' }}>
-                    {vc.approve} approve
-                  </span>
-                  <span style={{ color: '#e74c3c', fontWeight: '600', fontSize: '13px' }}>
-                    {vc.deny} deny
-                  </span>
-                  <span style={{ opacity: 0.45, fontSize: '12px' }}>
-                    · {policyTallyCopy(vc)}
-                  </span>
-                  {app.tied_pending_chief && (
-                    <span style={{ opacity: 0.8, fontSize: '12px', color: '#e67e22', fontWeight: 600 }}>
-                      · Tied: awaiting Chief Commissioner tie-break
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* ── Pending: waits for the Financial Controller's payment clearance, then approve / deny ── */}
-              {app.status === 'pending' && !app.superadmin_override && (
-                <div style={{ marginTop: '14px' }}>
-                  {!app.finance_cleared ? (
-                    <div style={lockedNote}>
-                      Awaiting Financial Controller clearance before voting can open.
-                    </div>
-                  ) : myVote ? (
-                    <div style={myVoteRow(myVote)}>
-                      {myVote === 'approve'
-                        ? <><Icon name="success" /> You voted to approve this application.</>
-                        : <><Icon name="error" /> You voted to deny this application.</>}
-                      <span style={{ opacity: 0.6, fontSize: '12px', marginLeft: '8px' }}>
-                        Resolves once a majority is reached.
-                      </span>
-                    </div>
-                  ) : !vettingOpen ? (
-                    <div style={lockedNote}>
-                      {vettingNotice || 'Vetting is not currently open. Commissioners cannot vote yet.'}
-                    </div>
-                  ) : (
-                    <>
-                      {showDenyBox[app._id] && (
-                        <div style={{ marginBottom: '10px' }}>
-                          <textarea
-                            style={{ ...inp, height: '70px', resize: 'vertical' }}
-                            placeholder="Optional reason for denial…"
-                            value={denyReasons[app._id] || ''}
-                            onChange={e => setDenyReasons(prev => ({ ...prev, [app._id]: e.target.value }))}
-                          />
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                        <button
-                          style={{ ...greenBtn, flex: 1 }}
-                          disabled={isVotingNow}
-                          onClick={() => castVote(app._id, 'approve')}
-                        >
-                          {isVotingNow ? 'Submitting…' : <>Approve</>}
-                        </button>
-                        {showDenyBox[app._id] ? (
-                          <button
-                            style={{ ...redBtn, flex: 1 }}
-                            disabled={isVotingNow}
-                            onClick={() => castVote(app._id, 'deny')}
-                          >
-                            {isVotingNow ? 'Submitting…' : <>Confirm Deny</>}
-                          </button>
-                        ) : (
-                          <button
-                            style={{ ...ghostBtn, flex: 1, color: '#e74c3c', borderColor: '#e74c3c' }}
-                            onClick={() => setShowDenyBox(prev => ({ ...prev, [app._id]: true }))}
-                          >
-                            Deny
-                          </button>
-                        )}
-                        {showDenyBox[app._id] && (
-                          <button
-                            style={ghostBtn}
-                            onClick={() => setShowDenyBox(prev => ({ ...prev, [app._id]: false }))}
-                          >
-                            Cancel
-                          </button>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* ── Approved: confirm the original vote was counted, no removal UI here ── */}
-              {app.status === 'approved' && myVote && (
-                <div style={{ marginTop: '14px' }}>
-                  <div style={myVoteRow(myVote)}>
-                    <Icon name="success" /> Your vote was counted. You voted <strong>{myVote}</strong> on this application.
-                  </div>
-                </div>
-              )}
-
-              {/* Superadmin override notice */}
-              {app.superadmin_override && (
-                <div style={overrideNote}>
-                  This was decided by the superadmin. Commission voting was bypassed.
-                </div>
-              )}
-
+        {currentList.map(app => (
+          <div key={app.id} style={outcomeCard}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>{app.full_name || 'Applicant'}</b>
+              <span style={statusBadge(app.status)}>{(app.status || '').toUpperCase()}</span>
             </div>
-          );
-        })}
+            <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>
+              {app.position_title}{app.student_id ? ` · ${regNo(app.student_id)}` : ''}
+            </p>
+            <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
+              Decided: {app.decided_at ? new Date(app.decided_at).toLocaleDateString() : 'date not recorded'}
+            </p>
+            <p style={{ margin: '8px 0 0', fontSize: '13px' }}>
+              Reason: {app.final_reason || 'No reason recorded'}
+            </p>
+            {app.superadmin_override && (
+              <div style={overrideNote}>This was decided by the superadmin. Panel voting was bypassed.</div>
+            )}
+          </div>
+        ))}
         </ScrollList>
         )}
-        
+
         {/* ── Student Changes tab ── */}
         {activeTab === 'student_changes' && (
           <div>
@@ -635,32 +425,20 @@ function statusBadge(status) {
   };
 }
 
-function myVoteRow(vote) {
-  return {
-    padding: '10px 14px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    fontWeight: '600',
-    backgroundColor: vote === 'approve' ? '#2ecc7115' : '#e74c3c15',
-    color: vote === 'approve' ? '#2ecc71' : '#e74c3c',
-    border: `1px solid ${vote === 'approve' ? '#2ecc7140' : '#e74c3c40'}`,
-  };
-}
-
 // ── Styles ──
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'flex-start', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
-const avatar     = { width: '64px', height: '64px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0 };
 const tallyRow   = { display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', marginTop: '12px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };
 const inp        = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
-const btn        = { padding: '9px 16px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn   = { ...btn, backgroundColor: '#2ecc71' };
-const redBtn     = { ...btn, backgroundColor: '#e74c3c' };
-const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const promptBox  = { border: '1px dashed var(--border-color)', borderRadius: '12px', padding: '20px', marginBottom: '20px', backgroundColor: 'var(--bg-color)' };
 const chiefPill = { marginLeft: '10px', fontSize: '10px', fontWeight: 800, padding: '3px 9px', borderRadius: '10px', background: 'color-mix(in srgb, var(--warning) 22%, transparent)', color: 'var(--warning)' };
 const infoPill   = { fontSize: '13px', opacity: 0.7, marginBottom: '18px', padding: '8px 14px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center' };
 const overrideNote = { marginTop: '12px', fontSize: '12px', opacity: 0.55, fontStyle: 'italic' };
 const lockedNote = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)', fontSize: '12px', fontWeight: '600' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
+
+const tieHint = { padding: '10px 14px', marginBottom: '16px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)' };
+const hatBtn = { padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', fontWeight: '600' };
+
+const outcomeCard = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };

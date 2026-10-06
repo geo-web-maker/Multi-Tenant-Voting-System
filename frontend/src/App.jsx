@@ -73,6 +73,7 @@ function BallotBox(props) {
 const Results = lazy(() => import('./components/Results'));
 const SuperAdminDashboard = lazy(() => import('./components/SuperAdminDashboard'));
 const CommissionDashboard = lazy(() => import('./components/CommissionDashboard'));
+const VettingDashboard = lazy(() => import('./components/VettingDashboard'));
 const ApplicantPortal = lazy(() => import('./components/ApplicantPortal'));
 const ITAdminDashboard = lazy(() => import('./components/ITAdminDashboard'));
 const FinancialControllerDashboard = lazy(() => import('./components/FinancialControllerDashboard'));
@@ -559,11 +560,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         sessionStorage.setItem("commissioner_id", studentId);
   
         const role = sessionStorage.getItem("admin_role");
-        if (role === "superadmin") {
-          setView("superadmin");
-        } else {
-          setView("commission");
-        }
+        setView(role === "superadmin" ? "superadmin" : (role || "commission"));
       } else {
         setStep(3);
       }
@@ -590,8 +587,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     e.preventDefault();
     setPasswordChangeError('');
   
-    if (newPasswordForm.new_password.length < 6) {
-      setPasswordChangeError('New password must be at least 6 characters.');
+    if (newPasswordForm.new_password.length < 10) {
+      setPasswordChangeError('New password must be at least 10 characters and mix three of: lower, upper, numbers, symbols.');
       return;
     }
     if (newPasswordForm.new_password !== newPasswordForm.confirm_password) {
@@ -728,7 +725,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           // widening the dashboard's own CSS never actually reached the
           // screen. Only the voter/apply flow still wants a narrow, centered
           // column here.
-          maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer") ? '100%' : '500px',
+          maxWidth: (view === "admin" || view === "results" || view === "superadmin" || view === "commission" || view === "it_admin" || view === "financial_controller" || view === "overseer" || view === "vetting") ? '100%' : '500px',
           margin: '0 auto',
           transition: 'max-width 0.3s ease' 
         }} className="app-column">
@@ -802,6 +799,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {view === "it_admin" && <ITAdminDashboard onLogout={resetFlow} />}
         {view === "financial_controller" && <FinancialControllerDashboard onLogout={resetFlow} />}
         {view === "overseer" && <OverseerDashboard onLogout={resetFlow} />}
+        {view === "vetting" && <VettingDashboard onLogout={resetFlow} />}
         {HEATMAP_FRAME
           ? <HeatmapOverlay embedded page={HEATMAP_FRAME.page} />
           : window.self === window.top && view !== "voter" && sessionStorage.getItem('admin_role') === 'superadmin' && <HeatmapOverlay />}
@@ -825,7 +823,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     style={inputStyle}
                     value={studentId}
                     onChange={e => { setStudentId(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
-                    placeholder="Email e.g. commissioner@example.com"
+                    placeholder="Email address"
                     type="email"
                     autoComplete="email"
                   />

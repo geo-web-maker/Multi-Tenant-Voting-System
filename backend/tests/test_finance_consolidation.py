@@ -45,12 +45,13 @@ async def _reload(e, app):
 # ── the Financial Controller clears / rejects ────────────────────────────────
 
 async def test_financial_controller_clears_and_commissioners_can_then_vote(env):
+    await env.seed_panel()
     fc = await _fc(env)
     app = await _application(env)
     aid = str(app["_id"])
 
     # before clearance nobody can vote, and the message names the right person
-    r = await env.client.post(f"/admin/applications/{aid}/vote", headers=env.com1,
+    r = await env.client.post(f"/admin/applications/{aid}/vote", headers=env.pan1,
                               json={"commissioner_id": "com1", "vote": "approve"})
     assert r.status_code == 400 and "Financial Controller" in r.json()["detail"]
 
@@ -66,7 +67,7 @@ async def test_financial_controller_clears_and_commissioners_can_then_vote(env):
     assert entry["details"]["payment_proof_url"] == "https://x/receipt.png"
     assert entry["details"]["fee_required"] == 50000 and entry["details"]["reason"] == "Receipt matches the fee"
 
-    for who, hdr in (("com1", env.com1), ("com2", env.com2)):
+    for who, hdr in (("com1", env.pan1), ("com2", env.pan2)):
         r = await env.client.post(f"/admin/applications/{aid}/vote", headers=hdr,
                                   json={"commissioner_id": who, "vote": "approve"})
         assert r.status_code == 200, r.text
@@ -135,6 +136,7 @@ async def test_a_controller_cannot_act_in_someone_elses_name(env):
 
 
 async def test_someone_holding_both_roles_uses_the_role_of_the_session(env):
+    await env.seed_panel()
     fin = await _fc(env, "fcx", is_commissioner=True)              # one person, both roles
     comm = env.tok("fcx", "commission")
     a1 = await _application(env)
@@ -145,8 +147,16 @@ async def test_someone_holding_both_roles_uses_the_role_of_the_session(env):
     entry = await env.db.audit_log.find_one({"action": "application_finance_cleared"})
     assert entry["actor"] == "fcx" and entry["details"]["decider_also_commissioner"] is True
 
-    # ...and the same person can still vote from the Commission session
+    # a commissioner cannot vote from the Commission session (guide 8.1); the same person votes from the panel hat
     r = await env.client.post(f"/admin/applications/{a1['_id']}/vote", headers=comm,
+                              json={"commissioner_id": "fcx", "vote": "approve"})
+    assert r.status_code == 403
+    await env.db.panel_members.insert_one({"org_id": env.org_id, "panel_member_id": "PM-FCX", "student_id": "fcx",
+                                           "is_member": True, "full_name": "Fin Comm", "email": "fcx@p.org",
+                                           "phone_numbers": ["256700000000"], "active": True,
+                                           "appointment_reason": "test", "password_hash": "x",
+                                           "must_change_password": False})
+    r = await env.client.post(f"/admin/applications/{a1['_id']}/vote", headers=env.tok("PM-FCX", "vetting"),
                               json={"commissioner_id": "fcx", "vote": "approve"})
     assert r.status_code == 200, r.text
 
@@ -187,18 +197,22 @@ async def test_setting_a_finance_commissioner_is_retired(env):
 # ── visibility ───────────────────────────────────────────────────────────────
 
 async def test_controller_sees_receipts_but_not_how_commissioners_voted(env):
+    await env.seed_panel()
     fc = await _fc(env)
     app = await _application(env)
     await _clear(env, app, fc, "fc1")
-    await env.client.post(f"/admin/applications/{app['_id']}/vote", headers=env.com1,
+    await env.client.post(f"/admin/applications/{app['_id']}/vote", headers=env.pan1,
                           json={"commissioner_id": "com1", "vote": "approve"})
 
     seen_by_fc = (await env.client.get("/admin/applications", headers=fc)).json()[0]
     assert seen_by_fc["payment_proof_url"] == "https://x/receipt.png" and seen_by_fc["fee_required"] == 50000
     assert "votes" not in seen_by_fc and "removal_votes" not in seen_by_fc
 
-    seen_by_commission = (await env.client.get("/admin/applications", headers=env.com2)).json()[0]
-    assert seen_by_commission["votes"] == {"com1": "approve"}
+    # commissioners see no pending applications at all; panelists see progress and their own vote only
+    assert (await env.client.get("/admin/applications", headers=env.com2)).json() == []
+    seen_by_panel = (await env.client.get("/admin/applications", headers=env.pan2)).json()[0]
+    assert seen_by_panel["my_vote"] is None and seen_by_panel["progress"] == {"cast": 1, "panel_count": 2}
+    assert "votes" not in seen_by_panel and "final_split" not in seen_by_panel
 
 
 # ── voter-register decisions follow the same rule ────────────────────────────

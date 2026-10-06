@@ -240,7 +240,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
 
             {activeTab === 'candidates' && view === 'pending' && (
               <p style={{ margin: '0 0 14px', fontSize: '12px', opacity: 0.6 }}>
-                Commissioners can only vote on a candidate once you clear their payment.
+                The Vetting Panel can only vote on a candidate once you clear their payment.
               </p>
             )}
 

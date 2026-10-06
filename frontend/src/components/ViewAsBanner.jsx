@@ -2,7 +2,7 @@ import React from 'react';
 import { getViewAs, clearAdminSession } from '../session';
 import { ADMIN_TOKEN_KEY } from '../api';
 
-const LABELS = { it_admin: 'IT Admin', commission: 'Commissioner', financial_controller: 'Financial Controller', overseer: 'Overseer' };
+const LABELS = { it_admin: 'IT Admin', commission: 'Commissioner', financial_controller: 'Financial Controller', overseer: 'Overseer', vetting: 'Vetting Panel' };
 
 function minutesLeft() {
   try {

@@ -10,6 +10,8 @@ import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
 from pymongo import UpdateOne
 import os
+import calendar
+import struct
 import copy
 import csv
 import io
@@ -125,6 +127,34 @@ async def _is_token_revoked(jti: str | None) -> bool:
     return await db.revoked_tokens.find_one({"jti": jti}) is not None
 
 
+# Lookups that run on every voter request or every admin request and had no index (performance audit P1-3).
+# student_id / panel_member_id come FIRST so the same index also serves the (rare) lookups that carry no
+# org_id. All are non-unique on purpose, and each is created on its own so one failure (for example an
+# index with the same keys but another name made by hand in Atlas) can never stop the app from booting.
+PERF_INDEXES = [
+    ("otps", [("student_id", 1), ("org_id", 1)]),
+    ("admin_otps", [("student_id", 1), ("org_id", 1)]),
+    ("revoked_tokens", [("jti", 1)]),
+    ("panel_members", [("panel_member_id", 1)]),
+    ("panel_members", [("student_id", 1), ("org_id", 1)]),
+    ("applications", [("org_id", 1), ("status", 1)]),
+    ("applications", [("org_id", 1), ("submitted_at", -1)]),
+    ("candidate_tokens", [("token", 1)]),
+    ("candidate_tokens", [("org_id", 1), ("round_id", 1), ("student_id", 1)]),
+    ("certificates", [("certificate_id", 1)]),
+    ("organizations", [("slug", 1)]),
+    ("voters", [("org_id", 1), ("has_voted", 1)]),
+]
+
+
+async def _ensure_perf_indexes() -> None:
+    for coll, keys in PERF_INDEXES:
+        try:
+            await db[coll].create_index(keys)
+        except Exception:
+            logger.warning("Could not create index %s on %s (continuing without it)", keys, coll, exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # OTP_EXPIRY_MINUTES is enforced explicitly in verify_otp too — this index
@@ -202,13 +232,19 @@ async def lifespan(app: FastAPI):
     await db.audit_log.create_index([("org_id", 1), ("action", 1), ("timestamp", -1)])
     # Turnout-velocity aggregation scans cast_at.
     await db.vote_events.create_index([("org_id", 1), ("cast_at", 1)])
+    await _ensure_perf_indexes()
     set_revocation_check(_is_token_revoked)
+    if DEBUG_MODE:
+        # DEBUG_MODE sends no real SMS and writes every OTP and temporary password into the logs.
+        logger.critical("DEBUG_MODE is ON: SMS is mocked and OTPs / temp passwords are logged in clear text. "
+                        "This must never be set on a production deployment.")
     await _check_config_on_boot()
     analytics.set_org_slug_resolver(_org_slug_for_id)
     analytics.set_org_resolver(_resolve_org_id)
     await analytics.start(db)
     yield
     await analytics.stop()
+    await _close_sms_http()
     client.close()
 
 
@@ -377,12 +413,31 @@ def _invalidate_org_cache(slug=None):
     else:
         _ORG_CACHE.pop(slug, None)
 
+# Render free-tier keep-warm ping (BALLOTBOX_PHASE_RUNBOOK.md). Deliberately NOT
+# named /health or /ping: both are predictable, and /health is already documented
+# here in plain sight as the uptime-monitor / DB-check endpoint. The actual path
+# is read from KEEPWARM_PING_PATH, set only in Render's env vars and never
+# committed, so a cron job that's been given the value can hit it, but reading
+# this file — or the repo on GitHub — does not reveal where it lives. No DB
+# round trip and no alerting on purpose: this has one job (stop the process
+# sleeping), and shouldn't add to the Atlas M0 ops count or share /health's
+# DB-outage alert cooldown. Unset -> a path nothing will ever request, so the
+# route is effectively off rather than silently falling back to something
+# guessable.
+_KEEPWARM_PATH = "/" + os.getenv("KEEPWARM_PING_PATH", "__keepwarm_unconfigured__").strip("/")
+
+
+@app.get(_KEEPWARM_PATH, include_in_schema=False)
+def _keepwarm_ping():
+    return {"ok": True}
+
+
 ORG_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json",
                        "/superadmin/orgs", "/superadmin/mfa", "/verify-admin",
                        # Token/id-scoped, not header-scoped (candidate-portal-spec §3.2/§3.4) —
                        # the token or certificate_id itself carries the org, so an
                        # X-Org-Slug header is neither required nor consulted.
-                       "/candidates/status/", "/verify/")
+                       "/candidates/status/", "/verify/", _KEEPWARM_PATH)
 
 
 @app.middleware("http")
@@ -417,7 +472,7 @@ async def org_context_middleware(request: Request, call_next):
 # not via this admin session layer.
 
 PUBLIC_PATHS = {
-    "/", "/health", "/election-status",
+    "/", "/health", "/election-status", _KEEPWARM_PATH,
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk", "/vote-status",
     "/apply/check-eligibility", "/apply", "/apply/upload-image",
     "/verify-admin", "/election-results", "/election-results/voter-roll",
@@ -449,6 +504,28 @@ def _is_public(path: str, method: str) -> bool:
     return False
 
 
+# Every unauthenticated hit on a protected path used to write an audit_log row (and the audit log is
+# read by every admin role), so anyone could fill the database and bury real events. Log at most one
+# such row per client IP per window; the rest are counted in the application log only.
+_GUARD_401_LOG_GAP_S = 30.0
+_GUARD_401_MAX_TRACKED = 2000
+_GUARD_401_LAST: dict[str, float] = {}
+
+
+def _should_log_guard_401(ip: str) -> bool:
+    now = time.monotonic()
+    last = _GUARD_401_LAST.get(ip)
+    if last is not None and now - last < _GUARD_401_LOG_GAP_S:
+        return False
+    if len(_GUARD_401_LAST) >= _GUARD_401_MAX_TRACKED:
+        for k in [k for k, t in _GUARD_401_LAST.items() if now - t >= _GUARD_401_LOG_GAP_S]:
+            _GUARD_401_LAST.pop(k, None)
+        if len(_GUARD_401_LAST) >= _GUARD_401_MAX_TRACKED:
+            return False
+    _GUARD_401_LAST[ip] = now
+    return True
+
+
 @app.middleware("http")
 async def auth_guard_middleware(request: Request, call_next):
     if _is_public(request.url.path, request.method):
@@ -463,7 +540,10 @@ async def auth_guard_middleware(request: Request, call_next):
         # security-relevant signal (repeated bad *credentials*); this is
         # mainly useful for spotting a sudden wave of 401s.
         if exc.status_code == 401:
-            await log_action("admin_guard_401", "unknown", {"path": request.url.path}, org_id=None)
+            if _should_log_guard_401(real_client_ip(request)):
+                await log_action("admin_guard_401", "unknown", {"path": request.url.path}, org_id=None)
+            else:
+                logger.info("admin_guard_401 (throttled) path=%s", request.url.path)
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     if payload.get("role") not in ADMIN_ROLES:
@@ -501,12 +581,44 @@ async def auth_guard_middleware(request: Request, call_next):
         return JSONResponse(status_code=403, content={
             "detail": "You must change your temporary password before continuing."})
 
+    if payload.get("role") == "vetting" and request.url.path.startswith(PANEL_GUARDED_PREFIXES) \
+            and not request.url.path.startswith(PANEL_ALLOWED_PREFIXES):
+        return JSONResponse(status_code=403, content={"detail": "The Vetting Panel cannot access this area."})
+
     # Per-account session cutoff: a password reset or role revocation stamps
     # sessions_valid_after on the voter doc (see _invalidate_sessions), so any token
     # issued before that moment stops working here even though the JWT itself hasn't
     # expired yet. Superadmin has no voter doc to stamp — it relies on its own shorter
     # SUPERADMIN_JWT_EXPIRE_MINUTES lifetime instead.
-    if payload["role"] != "superadmin":
+    if payload["role"] == "vetting":
+        # Panel tokens are keyed by panel_member_id and have no voter row (guide 6.6).
+        acct = await db.panel_members.find_one(
+            {**({"org_id": req_org} if req_org else {}), "panel_member_id": payload.get("sub")},
+            {"sessions_valid_after": 1, "active": 1, "access_expires_at": 1, "expires_with_phase": 1,
+             "is_member": 1, "confidentiality_version": 1}
+        )
+        if not acct or not acct.get("active", False):
+            return JSONResponse(status_code=401, content={
+                "detail": "Your panel access is no longer active. Please log in again."})
+        if await _panel_access_ended(request, acct):
+            return JSONResponse(status_code=401, content={
+                "detail": "Your panel access has ended."})
+        # A superadmin's read-only view-as session cannot accept on the panelist's behalf, and the
+        # superadmin can already read everything, so the gate does not apply to it.
+        if not payload.get("view_only") \
+                and not acct.get("is_member") and acct.get("confidentiality_version") != CONFIDENTIALITY_VERSION \
+                and request.url.path not in CONFIDENTIALITY_ALLOWED_PATHS:
+            return JSONResponse(status_code=403, content={
+                "detail": "Please read and accept the confidentiality notice before continuing.",
+                "code": "confidentiality_required"})
+        cutoff = acct.get("sessions_valid_after")
+        if cutoff:
+            iat = payload.get("iat")
+            iat_dt = datetime.utcfromtimestamp(iat) if isinstance(iat, (int, float)) else iat
+            if iat_dt and iat_dt < cutoff:
+                return JSONResponse(status_code=401, content={
+                    "detail": "Your session was ended (password changed or access updated). Please log in again."})
+    elif payload["role"] != "superadmin":
         # NB: no flag_field filter here — a revoked role's whole point is that the flag is
         # now False, so filtering on it True would make the lookup miss exactly the account
         # whose session we most need to cut off. Role authorization is a separate check
@@ -635,6 +747,33 @@ app.include_router(build_backup_router(lambda: db))
 # =============================================================================
 # MODELS
 # =============================================================================     
+class PanelMemberCreate(BaseModel):
+    full_name:       str
+    email:           str
+    phone:           str                    # required; used for the temp-password SMS
+    is_member:       bool                   # True = internal (voter roll), False = external
+    appointment_reason: str                 # required, free text
+    affiliation:     str = ""
+    student_id:      str | None = None      # required when is_member, links to voter row
+    access_expires_at: datetime | None = None
+    expires_with_phase: str | None = None   # e.g. "vetting"; used when no fixed date
+
+class PanelCommissionerLink(BaseModel):
+    """Put an existing commissioner on the Vetting Panel with no separate login (they use the hat switch)."""
+    student_id:         str = Field(..., max_length=100)
+    appointment_reason: str = Field(..., max_length=1000)
+
+class PanelMemberCredentials(BaseModel):
+    email: str
+
+class PanelMemberUpdate(BaseModel):
+    """Fields a superadmin may change on an existing panelist. Omitted = unchanged."""
+    affiliation:        str | None = None
+    phone:              str | None = None
+    access_expires_at:  datetime | None = None
+    expires_with_phase: str | None = None
+    clear_access_end:   bool = False        # members only: remove the end date / phase
+
 class CommissionerRoleUpdate(BaseModel):
     role_label: str   # e.g. "Finance Commissioner", "Deputy Finance", "General Commissioner"
     
@@ -742,18 +881,26 @@ async def _get_or_create_status_token(student_id: str, round_id, org_id) -> dict
     return doc
 
 class ApplicationSubmit(BaseModel):
-    student_id:        str
-    full_name:         str
-    position_id:       str
+    # Public, unauthenticated body: every field is length-bounded so one request cannot store megabytes.
+    student_id:        str = Field(..., max_length=64)
+    full_name:         str = Field(..., max_length=200)
+    position_id:       str = Field(..., max_length=64)
     manifesto:         str = Field("", max_length=MANIFESTO_MAX_CHARS)
-    image_url:         str = ""
-    payment_method:    str = ""     
-    payment_proof_url: str = ""      
-    
+    image_url:         str = Field("", max_length=2000)
+    payment_method:    str = Field("", max_length=100)
+    payment_proof_url: str = Field("", max_length=2000)
+
 class CommissionerVote(BaseModel):
-    commissioner_id: str   # the commissioner's student_id
-    vote: str              # "approve" or "deny"
-    reason: str = ""
+    commissioner_id: str = Field("", max_length=64)   # optional; if sent it must match the panel account (student_id or PM- id)
+    vote: str = Field(..., max_length=16)             # "approve" or "deny"
+    reason: str = Field("", max_length=500)           # written to the audit log, so bounded
+
+class TieBreakDecision(BaseModel):
+    decision: str                                 # "approve" | "deny"
+    reason: str = Field("", max_length=500)       # stored only when deny
+
+class FinalReasonUpdate(BaseModel):
+    reason: str = Field("", max_length=500)       # empty clears it
 
 class FinanceClear(BaseModel):
     financial_controller_id: str   # must belong to a voter flagged is_financial_controller
@@ -880,6 +1027,36 @@ def names_match(registered_name: str, input_name: str) -> bool:
     match_threshold = 2 if len(reg_parts) >= 2 else 1
     return len(common_parts) >= match_threshold
 
+# One shared HTTP client for the SMS providers: keep-alive connections skip a fresh TLS handshake on every
+# code. The connect timeout is short (a provider we cannot even reach has sent nothing, so it fails fast and
+# the next provider is tried); the read timeout stays 15 s because the "ambiguous" logic below depends on it.
+_SMS_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_SMS_HTTP: httpx.AsyncClient | None = None
+_SMS_HTTP_LOOP = None
+
+
+def _sms_http() -> httpx.AsyncClient:
+    """The shared client, rebuilt if the event loop changed or it was closed (a client is bound to one loop)."""
+    global _SMS_HTTP, _SMS_HTTP_LOOP
+    loop = asyncio.get_running_loop()
+    if _SMS_HTTP is None or _SMS_HTTP.is_closed or _SMS_HTTP_LOOP is not loop:
+        _SMS_HTTP = httpx.AsyncClient(
+            timeout=_SMS_TIMEOUT,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=10, keepalive_expiry=30.0))
+        _SMS_HTTP_LOOP = loop
+    return _SMS_HTTP
+
+
+async def _close_sms_http() -> None:
+    global _SMS_HTTP
+    if _SMS_HTTP is not None and not _SMS_HTTP.is_closed:
+        try:
+            await _SMS_HTTP.aclose()
+        except Exception:
+            logger.debug("closing the SMS HTTP client failed", exc_info=True)
+    _SMS_HTTP = None
+
+
 async def send_sms_via_mambosms(to_number: str, message_text: str) -> bool:
     """Fallback OTP provider, used only when EgoSMS fails. Returns True only on a genuine send success —
     Mambo's API returns HTTP 200 even for some failures (e.g. a suspended
@@ -895,16 +1072,15 @@ async def send_sms_via_mambosms(to_number: str, message_text: str) -> bool:
             "sender_id": MAMBOSMS_SENDER_ID,
         }
         headers = {"Authorization": MAMBOSMS_API_KEY or "", "Content-Type": "application/json"}
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api-mongolia.mambosms.com/v1/send-sms",
-                json=payload,
-                headers=headers,
-                timeout=15.0,
-            )
-            body = response.json()
-            logger.info(f"MamboSMS Result: {body}")
-            return bool(body.get("success"))
+        response = await _sms_http().post(
+            "https://api-mongolia.mambosms.com/v1/send-sms",
+            json=payload,
+            headers=headers,
+            timeout=_SMS_TIMEOUT,
+        )
+        body = response.json()
+        logger.info(f"MamboSMS Result: {body}")
+        return bool(body.get("success"))
     except Exception as e:
         logger.error(f"MamboSMS Connection Error: {e}")
         return False
@@ -922,15 +1098,14 @@ async def send_sms_via_egosms(to_number: str, message_text: str) -> str:
             "message": message_text,
             "sender": EGOSMS_SENDER_ID
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://comms.egosms.co/api/v1/plain/",
-                params=params,
-                timeout=15.0
-            )
-            resp_text = response.text.strip()
-            logger.info(f"EgoSMS Result: {resp_text}")
-            return "ok" if "OK" in resp_text.upper() else "failed"
+        response = await _sms_http().get(
+            "https://comms.egosms.co/api/v1/plain/",
+            params=params,
+            timeout=_SMS_TIMEOUT
+        )
+        resp_text = response.text.strip()
+        logger.info(f"EgoSMS Result: {resp_text}")
+        return "ok" if "OK" in resp_text.upper() else "failed"
     except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.RemoteProtocolError) as e:
         logger.error(f"EgoSMS ambiguous result ({type(e).__name__}): {e}")
         return "ambiguous"
@@ -1075,20 +1250,43 @@ TEMP_PASSWORD_EXPIRE_HOURS = int(os.getenv("TEMP_PASSWORD_EXPIRE_HOURS", "24"))
 # The superadmin can reset elections, force-approve applications, and read every tenant —
 # a shorter session than the other roles limits how long a stolen superadmin token is useful.
 SUPERADMIN_JWT_EXPIRE_MINUTES = int(os.getenv("SUPERADMIN_JWT_EXPIRE_MINUTES", "60"))
+
+# Guide 6.4 / 6.6 (P5): what a panel token may reach. Panel tokens are blocked from every
+# admin area except the panel's own routes; route guards still apply inside those.
+from auth import JWT_EXPIRE_MINUTES as _JWT_MINUTES
+PANEL_GUARDED_PREFIXES = ("/admin/", "/commission/", "/overseer/", "/superadmin/", "/it-admin/", "/financial-controller/")
+PANEL_ALLOWED_PREFIXES = ("/admin/applications", "/admin/vetting-", "/admin/approval-policy",
+                          "/admin/switch-hat", "/admin/set-password", "/admin/logout")
+# Guide 6.4 rule 5: externals must accept this notice before anything else. Bump the version to re-ask.
+CONFIDENTIALITY_VERSION = "2026-10-v1"
+CONFIDENTIALITY_ALLOWED_PATHS = {"/admin/vetting-me", "/admin/vetting-confidentiality/accept", "/admin/logout"}
+CONFIDENTIALITY_NOTICE = (
+    "You are serving on the Vetting Panel as a non-member. Everything you see here is confidential: "
+    "applicant details, votes, panel discussion and the reasons behind decisions. Do not share or copy it. "
+    "Your access ends automatically at the time shown below.")
 SCOPE_PASSWORD_CHANGE_ONLY = "password_change_only"
 PASSWORD_CHANGE_ONLY_ALLOWED_PATHS = {"/admin/set-password", "/admin/logout"}
 
 
-def _login_token_for(voter: dict, role: str, must_change_field: str, org_id: str | None) -> str:
+def _login_token_for(voter: dict, role: str, must_change_field: str, org_id: str | None,
+                     expires_at: datetime | None = None) -> str:
     """A temp-password login (must_change_field still true) gets a token that the guard
     will accept ONLY for /admin/set-password and /admin/logout — so an intercepted temp
     password's token can't be used to touch anything else even if the client is buggy or
     the person never opens the change-password screen."""
     must_change = voter.get(must_change_field, True)
+    # Panel members are keyed by panel_member_id, not student_id (guide 6.3/6.6). A MEMBER's panel
+    # record also carries a student_id (its link to the voter row); preferring that gave the token a
+    # subject the guard could not resolve, so every member panelist who logged in directly was
+    # rejected on every request. Voter documents have no panel_member_id, so they are unaffected.
+    subject = voter.get("panel_member_id") or voter.get("student_id")
     return create_access_token(
-        subject=voter["student_id"], role=role, org_id=org_id,
+        subject=subject, role=role, org_id=org_id,
         full_name=voter.get("full_name", ""),
         scope=SCOPE_PASSWORD_CHANGE_ONLY if must_change else "full",
+        # Guide 6.4 rule 6: a panel token never outlives the access end.
+        expire_minutes=(max(1, min(_JWT_MINUTES, int((expires_at - datetime.utcnow()).total_seconds() // 60)))
+                        if expires_at else None),
     )
 
 
@@ -1179,6 +1377,36 @@ async def get_vote_counts(request: Request) -> dict[str, int]:
         counts[str(row["_id"])] = row["count"]
     return counts
 
+# ── Ballot secrecy against an insider (SEC audit, "Open" item 3) ─────────────────────────────────
+# vote_events deliberately holds no voter id. But a precise cast_at plus a time-ordered ObjectId _id let
+# someone with DB or backup access sort ballots into the exact order voters appeared in audit_log
+# ("vote_cast", a few ms apart) and pair each voter to a ballot. So:
+#   * cast_at is rounded DOWN to a coarse bucket (default 10 minutes),
+#   * the _id's timestamp is the bucket's END and the other 8 bytes are random, so _id order is
+#     bucket order and random inside a bucket (it still sorts the hash chain deterministically),
+#   * the "vote_cast" audit entry is stamped with the same bucket start instead of the exact instant.
+# Anyone can still tell WHICH bucket a voter and a ballot fell in, but not which ballot is whose.
+# Turnout analytics (hourly / daily) are unaffected. Existing events keep their old precise values and
+# still verify, because the chain hashes whatever cast_at / _id is stored.
+VOTE_TIME_BUCKET_SECONDS = max(60, int(os.getenv("VOTE_TIME_BUCKET_SECONDS", "600")))
+# A bucket is only folded into a checkpoint once it ended this long ago, so a transaction still in
+# flight can never land behind a checkpoint's to_id (it would be skipped by every later checkpoint).
+CHECKPOINT_SEAL_GRACE_SECONDS = 60
+
+
+def _vote_bucket_start(now: datetime | None = None) -> datetime:
+    now = now or datetime.utcnow()
+    epoch = calendar.timegm(now.utctimetuple())
+    return datetime.utcfromtimestamp(epoch - (epoch % VOTE_TIME_BUCKET_SECONDS))
+
+
+def _new_vote_event_stamp(now: datetime | None = None) -> tuple[ObjectId, datetime]:
+    """(_id, cast_at) for one ballot event: coarse time, unordered inside its bucket."""
+    start = _vote_bucket_start(now)
+    end_epoch = calendar.timegm(start.utctimetuple()) + VOTE_TIME_BUCKET_SECONDS
+    return ObjectId(struct.pack(">I", end_epoch) + os.urandom(8)), start
+
+
 async def _publish_checkpoint_externally(checkpoint: dict) -> None:
     """
     Uploads the checkpoint to Backblaze B2 with Object Lock in compliance
@@ -1255,6 +1483,10 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
     match: dict = org_query(request)
     if last:
         match["_id"] = {"$gt": last["to_id"]}
+    # Only buckets that ended more than the grace period ago. Event _ids are bucket-ordered, so every
+    # event left out here sorts AFTER every event folded in, and a later checkpoint picks it up.
+    sealed_before = _vote_bucket_start(datetime.utcnow() - timedelta(seconds=CHECKPOINT_SEAL_GRACE_SECONDS))
+    match["cast_at"] = {"$lt": sealed_before}
     events = await db.vote_events.find(match).sort("_id", 1).to_list(length=None)
     if not events:
         return None
@@ -1336,6 +1568,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """bcrypt takes roughly 100-250 ms of pure CPU; run on the event loop it stalls every other request
+    (voters included) for that long on each login. Handlers call this instead of verify_password."""
+    return await run_in_threadpool(verify_password, plain_password, hashed_password)
+
+
 # Fixed bcrypt hash of an arbitrary, unused password — used only to burn a
 # realistic amount of CPU time on the "no matching account" path in
 # /verify-admin, so that path can't be distinguished from a real
@@ -1372,17 +1610,19 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
 
 @app.get("/admin/approval-policy")
 async def get_approval_policy(request: Request,
-                               admin: dict = Depends(require_role("commission"))):
-    """Read-only view of the active policy, for commissioners only — IT Admin
-    and Overseer have no need to know it, and superadmin already sees it via
-    GET /superadmin/security-settings."""
+                               admin: dict = Depends(require_role("commission", "vetting"))):
+    """Read-only view of the active policy. The majority is taken over the Vetting Panel (guide 7, item 2);
+    the commissioner count is shown to commissioners for oversight only."""
     sec = await security_settings_for(request.state.org_id)
-    total = await get_commissioner_count(request.state.org_id)
-    return {
+    panel = await get_panel_count(request.state.org_id)
+    out = {
         "policy": sec["approval_policy"],
-        "total_commissioners": total,
-        "required_for_majority_total": (total // 2) + 1,
+        "panel_count": panel,
+        "required_for_majority_total": (panel // 2) + 1,
     }
+    if admin.get("role") == "commission":
+        out["total_commissioners"] = await get_commissioner_count(request.state.org_id)
+    return out
 
 
 async def get_commissioner_count(org_id: str = None) -> int:
@@ -1493,11 +1733,13 @@ def _tally_outcome(policy: str, total: int, approve: int, deny: int) -> str | No
 
 
 async def _flag_tie_for_chief(app_id: str, org_id: str):
-    await db.applications.update_one(
-        {"_id": ObjectId(app_id)},
+    """Flag a tie (name kept for data compatibility, guide 7.2). Logged once per tie, not on every re-check."""
+    result = await db.applications.update_one(
+        {"_id": ObjectId(app_id), "tied_pending_chief": {"$ne": True}},
         {"$set": {"tied_pending_chief": True}}
     )
-    await log_action("application_vote_tied", "commission", {"app_id": app_id}, org_id=org_id)
+    if result.matched_count:
+        await log_action("application_vote_tied", "vetting", {"app_id": app_id}, org_id=org_id)
 
 
 async def _issue_certificate(app_doc: dict, org_id: str = None):
@@ -1569,65 +1811,243 @@ async def _revoke_certificate_for_application(app_doc: dict, org_id: str = None)
     )
 
 
-async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
-    """
-    Called after every commissioner vote. Resolution rule (unanimous /
-    majority-of-total / majority-of-votes-cast) is read per-org from
-    security_settings.approval_policy — see _tally_outcome.
-    """
-    total = await get_commissioner_count(org_id)
-    if total == 0:
-        return
-    policy = (await security_settings_for(org_id))["approval_policy"]
+RESOLVED_STATUSES = ("approved", "denied", "removed")
+_HIDDEN_APPLICATION_FIELDS = ("votes", "removal_votes", "revert_history", "tied_pending_chief", "tie_break")
+# Data minimisation (SEC audit, "Open" item 5): payment details exist so the Financial Controller can
+# clear or reject a payment. No other role's screen reads them, so they are not sent to any other role.
+# The booleans (finance_cleared / finance_rejected) and fee_required stay: the vetting and overseer
+# dashboards use them to show whether voting can open.
+_FINANCE_ONLY_APPLICATION_FIELDS = ("payment_method", "payment_proof_url", "finance_clear_note",
+                                    "finance_rejection_reason")
+PANEL_HIDDEN_AUDIT_ACTIONS = ("application_vote_tied", "application_tie_broken")
 
-    votes = _dedupe_votes(app_doc.get("votes", {}))
-    approve_count = sum(1 for v in votes.values() if v == "approve")
-    deny_count    = sum(1 for v in votes.values() if v == "deny")
 
-    outcome = _tally_outcome(policy, total, approve_count, deny_count)
+async def get_panel_count(org_id: str = None) -> int:
+    """Active Vetting Panel members: the approval denominator (guide 7, item 1)."""
+    return await db.panel_members.count_documents(_oq(org_id, {"active": True}))
 
+
+def _panel_vote_key(p: dict) -> str:
+    """Members vote under their student_id, so migrated votes still map to the same person (guide 8.1).
+    Externals have no voter row and vote under their PM- id."""
+    if p.get("is_member") and p.get("student_id"):
+        return _vote_key(p["student_id"])
+    return _vote_key(p["panel_member_id"])
+
+
+async def _active_panel_keys(org_id: str = None) -> set:
+    keys = set()
+    async for p in db.panel_members.find(_oq(org_id, {"active": True})):
+        keys.add(_panel_vote_key(p))
+    return keys
+
+
+async def _has_live_application(request: Request, student_id: str) -> bool:
+    """Guide 6.5: an applicant (not yet denied or removed) cannot sit on the panel."""
+    return bool(await db.applications.find_one(org_query(request, {
+        "student_id": normalize_student_id(student_id),
+        "status": {"$nin": ["denied", "removed"]}})))
+
+
+async def _panel_access_end(request: Request, p: dict) -> datetime | None:
+    """Guide 6.4 rule 6: the earlier of a fixed date and the end of the chosen timeline phase.
+    Read live, so extending the phase extends access. None means no end is set."""
+    ends = []
+    if p.get("access_expires_at"):
+        ends.append(p["access_expires_at"])
+    phase = p.get("expires_with_phase")
+    if phase:
+        end = (await get_phase_schedule(request))["phases"].get(phase, {}).get("end")
+        if end:
+            ends.append(end)
+    return min(ends) if ends else None
+
+
+async def _panel_access_ended(request: Request, p: dict) -> bool:
+    end = await _panel_access_end(request, p)
+    return bool(end) and datetime.utcnow() >= end
+
+
+async def _external_has_no_end(request: Request, p: dict) -> bool:
+    """True for a non-member whose access end cannot be resolved right now (guide 6.4 rule 6 makes the
+    end mandatory for externals). Happens when only a timeline phase was chosen and that phase has no end
+    date, so nothing would ever close the account. Used to refuse NEW logins, fail-closed."""
+    return (not p.get("is_member")) and (await _panel_access_end(request, p)) is None
+
+
+_PANEL_LOGIN_EMAIL_FIELDS = ("it_admin_email", "financial_controller_email", "overseer_email",
+                             "commissioner_email")
+
+
+async def _panel_email_conflict(request: Request, email: str, exclude_pm_id: str | None = None) -> str | None:
+    """verify-admin tries each role in turn and the panel branch comes before the commissioner branch,
+    so a panel email equal to someone's commissioner (or any other role) email would silently capture
+    that person's login and lock them out of their own role. Panel emails must therefore be unique
+    across the panel AND across every other role's login email. Returns the message, or None if free."""
+    pattern = {"$regex": f"^{re.escape(email)}$", "$options": "i"}
+    q = {"email": pattern}
+    if exclude_pm_id:
+        q["panel_member_id"] = {"$ne": exclude_pm_id}
+    if await db.panel_members.find_one(org_query(request, q), {"_id": 1}):
+        return "A panel member with this email already exists."
+    if await db.voters.find_one(org_query(request, {"$or": [{f: pattern} for f in _PANEL_LOGIN_EMAIL_FIELDS]}),
+                                {"_id": 1}):
+        return ("This email is already the login email of another admin role. Use a different email so "
+                "each login resolves to exactly one role.")
+    return None
+
+
+async def _acting_panelist(request: Request, admin: dict) -> dict:
+    """The signed-in panel account, or 403. Checked on every vetting action."""
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": admin.get("sub"), "active": True}))
+    if not p:
+        raise HTTPException(403, "You are not an active member of the Vetting Panel.")
+    if await _panel_access_ended(request, p):
+        raise HTTPException(403, "Your panel access has ended.")
+    return p
+
+
+async def _panel_actor_context(request: Request) -> tuple:
+    """(vote key, is Chair) for a signed-in panelist; (None, False) for every other role."""
+    if current_role(request) != "vetting":
+        return None, False
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": current_actor(request), "active": True}))
+    if not p:
+        return None, False
+    is_chair = False
+    if p.get("is_member") and p.get("student_id"):
+        is_chair = bool(await db.voters.find_one(org_query(request, {
+            **get_forgiving_filter(p["student_id"]), "is_chief_commissioner": True})))
+    return _panel_vote_key(p), is_chair
+
+
+def _is_tied(policy: str, panel_total: int, approve: int, deny: int) -> bool:
+    """Guide 7.2: an even split once every active panelist has voted, under a policy that can tie."""
+    return (policy in ("majority_cast", "majority_total") and panel_total > 0
+            and approve + deny == panel_total and approve == deny)
+
+
+def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = None,
+                               active_keys=frozenset(), panel_count: int = 0,
+                               is_chair_panelist: bool = False) -> dict:
+    """Guide 7.1: the one place that decides what each role may see of an application.
+    Returns a copy. Only the superadmin receives the raw vote maps."""
+    out = dict(app)
+    raw = _dedupe_votes(app.get("votes", {}))
+    votes = {k: v for k, v in raw.items() if k in active_keys}
+    approve = sum(1 for v in votes.values() if v == "approve")
+    deny = sum(1 for v in votes.values() if v == "deny")
+    cast = len(votes)
+    resolved = app.get("status", "pending") in RESOLVED_STATUSES
+    awaiting = (not resolved) and panel_count > 0 and cast == panel_count
+    tied = (not resolved) and bool(app.get("tied_pending_chief"))
+
+    if role == "superadmin":
+        out["progress"] = {"cast": cast, "panel_count": panel_count}
+        out["awaiting_final_decision"] = awaiting
+        if resolved:
+            out["final_split"] = {"approve": approve, "deny": deny}
+        return out
+
+    for field in _HIDDEN_APPLICATION_FIELDS:
+        out.pop(field, None)
+    if role != "financial_controller":
+        for field in _FINANCE_ONLY_APPLICATION_FIELDS:
+            out.pop(field, None)
+    out.pop("decided_by_tie_break", None)
+    out.pop("final_reason", None)
+
+    if role in ("vetting", "overseer"):
+        out["progress"] = {"cast": cast, "panel_count": panel_count}
+        out["awaiting_final_decision"] = awaiting
+        if resolved:
+            out["final_split"] = {"approve": approve, "deny": deny}
+            out["decided_by_tie_break"] = bool(app.get("decided_by_tie_break"))
+    if role == "vetting":
+        out["my_vote"] = votes.get(actor_key) if actor_key else None
+        out["tie_break_available"] = bool(is_chair_panelist and tied and awaiting)
+    if role in ("vetting", "overseer", "commission") and resolved:
+        out["final_reason"] = app.get("final_reason")
+    return out
+
+
+def _redact_panel_audit(entry: dict, role: str | None = None):
+    """Non-superadmin view of audit entries that would reveal who voted how, or the split (guide 8.1)."""
+    action = entry.get("action")
+    details = dict(entry.get("details") or {})
+    if action == "application_vote_cast":
+        entry["actor"] = "redacted"
+        entry["details"] = {"app_id": details.get("app_id")}
+    elif action in ("application_approved", "application_denied"):
+        for k in ("approve_count", "deny_count", "panel_count", "total_commissioners"):
+            details.pop(k, None)
+        # A tie-break resolution is logged under the Chair's panel id with tie_break=True. Neither the
+        # Chair's identity nor the marker may reach roles outside vetting (guide 7.1 / 7.2). The
+        # overseer may learn THAT it was decided by tie-break, never who decided it.
+        if details.get("tie_break"):
+            entry["actor"] = "vetting"
+            if role != "overseer":
+                details.pop("tie_break", None)
+        entry["details"] = details
+
+
+async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, outcome: str, *,
+                                     actor: str, details: dict, extra_set: dict | None = None) -> bool:
+    """The single resolution path for votes, the Chair's tie-break and re-evaluation (guide 8.1).
+    The status flip is the atomic guard: a caller that loses the race changes nothing."""
+    new_status = "approved" if outcome == "approve" else "denied"
+    result = await db.applications.update_one(
+        {"_id": ObjectId(app_id), "status": {"$nin": list(RESOLVED_STATUSES)}},
+        {"$set": {"status": new_status, **(extra_set or {})}, "$unset": {"tied_pending_chief": ""}}
+    )
+    if result.matched_count == 0:
+        return False
     if outcome == "approve":
-        # SECURITY/CONCURRENCY: two commissioners casting the deciding vote
-        # within milliseconds of each other could both reach this branch for
-        # the same application before either had written "approved" yet,
-        # which used to create two candidate documents for one application.
-        # The status flip is now the atomic guard: only the caller whose
-        # update_one actually matches an unresolved document is allowed to
-        # create the candidate. The loser's matched_count is 0 and it does
-        # nothing further — the winner's own vote is already recorded either
-        # way, so no vote is lost, only the duplicate side effect.
-        result = await db.applications.update_one(
-            {"_id": ObjectId(app_id), "status": {"$nin": ["approved", "denied", "removed"]}},
-            {"$set": {"status": "approved"}, "$unset": {"tied_pending_chief": ""}}
-        )
-        if result.matched_count == 0:
-            return
         await _create_candidate_from_application(app_doc, org_id)
         await _issue_certificate(app_doc, org_id)
-        await log_action("application_approved", "commission", {
-            "app_id": app_id, "approve_count": approve_count, "total_commissioners": total, "policy": policy,
-        }, org_id=org_id)
+        await log_action("application_approved", actor, {"app_id": app_id, **details}, org_id=org_id)
         await _notify_applicant(app_doc, org_id, lambda org, pos: (
             f"{org}: Congratulations! Your nomination for {pos} has been approved. "
             f"Your name will appear on the ballot."))
-        logger.info(f"Application {app_id} approved by commission ({approve_count}/{total}, policy={policy}).")
-    elif outcome == "deny":
-        # Same atomic guard: only the winning caller logs/proceeds.
-        result = await db.applications.update_one(
-            {"_id": ObjectId(app_id), "status": {"$nin": ["approved", "denied", "removed"]}},
-            {"$set": {"status": "denied"}, "$unset": {"tied_pending_chief": ""}}
-        )
-        if result.matched_count == 0:
-            return
+    else:
         await _record_denial_snapshot(app_doc, org_id)
-        await log_action("application_denied", "commission", {
-            "app_id": app_id, "deny_count": deny_count, "total_commissioners": total, "policy": policy,
-        }, org_id=org_id)
+        await log_action("application_denied", actor, {"app_id": app_id, **details}, org_id=org_id)
         await _notify_applicant(app_doc, org_id, lambda org, pos: (
             f"{org}: Your nomination for {pos} was not approved by the Electoral Commission."))
-        logger.info(f"Application {app_id} denied by commission ({deny_count}/{total}, policy={policy}).")
-    elif policy == "majority_cast" and (approve_count + deny_count) == total and approve_count == deny_count:
+    return True
+
+
+async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
+    """Called after every panel vote and after panel or policy changes. The denominator is the
+    active panel (guide 7, item 1), and only active panelists' votes count."""
+    panel_total = await get_panel_count(org_id)
+    if panel_total == 0:
+        return
+    policy = (await security_settings_for(org_id))["approval_policy"]
+    active = await _active_panel_keys(org_id)
+    votes = {k: v for k, v in _dedupe_votes(app_doc.get("votes", {})).items() if k in active}
+    approve_count = sum(1 for v in votes.values() if v == "approve")
+    deny_count = sum(1 for v in votes.values() if v == "deny")
+
+    outcome = _tally_outcome(policy, panel_total, approve_count, deny_count)
+    if outcome:
+        applied = await _apply_application_outcome(
+            app_id, app_doc, org_id, outcome, actor="vetting",
+            details={"approve_count": approve_count, "deny_count": deny_count,
+                     "panel_count": panel_total, "policy": policy})
+        if applied:
+            word = "approved" if outcome == "approve" else "denied"
+            logger.info(f"Application {app_id} {word} by vetting panel ({approve_count}/{deny_count} of {panel_total}, policy={policy}).")
+        return
+
+    if _is_tied(policy, panel_total, approve_count, deny_count):
         await _flag_tie_for_chief(app_id, org_id)
+    else:
+        # Re-evaluation found no tie (panel change, expiry or policy change): clear a stale flag (guide 7.2).
+        await db.applications.update_one(
+            {"_id": ObjectId(app_id), "status": {"$nin": list(RESOLVED_STATUSES)}},
+            {"$unset": {"tied_pending_chief": ""}})
+
 
 async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
     """
@@ -1678,7 +2098,7 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
         await _flag_tie_for_chief(app_id, org_id)
 
 
-async def _resweep_pending_after_policy_change(org_id: str):
+async def _resweep_pending_after_policy_change(org_id: str, include_removals: bool = True):
     """
     Called right after approval_policy changes. Re-evaluates every
     still-open application/removal against the NEW policy immediately,
@@ -1693,6 +2113,8 @@ async def _resweep_pending_after_policy_change(org_id: str):
     async for app_doc in db.applications.find(_oq(org_id, {"status": "pending"})):
         await _resolve_application(str(app_doc["_id"]), app_doc, org_id)
 
+    if not include_removals:
+        return
     async for app_doc in db.applications.find(_oq(org_id, {
         "status": "approved", "removal_votes": {"$exists": True, "$ne": {}},
     })):
@@ -1764,7 +2186,13 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             q["org_id"] = org_id
         await db.voters.delete_one(q)
 
-async def log_action(action: str, actor: str, details: dict | None = None, org_id: str = None):
+async def log_action(action: str, actor: str, details: dict | None = None, org_id: str = None,
+                     timestamp: datetime | None = None):
+    details = dict(details or {})
+    if isinstance(actor, str) and actor.startswith("PM-") and "is_member" not in details:
+        pm = await db.panel_members.find_one({"panel_member_id": actor}, {"is_member": 1})
+        if pm:
+            details["is_member"] = bool(pm.get("is_member"))
     # details defaults to None, not {} — a mutable default argument is shared
     # across every call site in the process, so one accidental mutation would
     # leak into unrelated log entries.
@@ -1773,7 +2201,8 @@ async def log_action(action: str, actor: str, details: dict | None = None, org_i
         "actor":     actor,
         "details":   details or {},
         "org_id":    org_id,
-        "timestamp": datetime.utcnow()
+        # Ballot-secrecy callers pass a coarse time (see _vote_bucket_start); everyone else gets "now".
+        "timestamp": timestamp or datetime.utcnow()
     })
 
 
@@ -2135,7 +2564,7 @@ async def assert_voting_allowed(request: Request, student_id: str):
     ended, since /vote only ever checked has_voted + last_status. Re-check
     both gates here, at the point of casting, not just at OTP-send time.
     """
-    config = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    config = await cached_setting(request.state.org_id, "election_config")
     if config and not config.get("is_open", True):
         raise HTTPException(status_code=403, detail="Election is closed.")
     if config and config.get("is_certified"):
@@ -2162,8 +2591,29 @@ LOGIN_LOCKOUT_MINUTES = 15
 SUPERADMIN_LOCKOUT_SECONDS_CAP = int(os.getenv("SUPERADMIN_LOCKOUT_SECONDS_CAP", "60"))
 
 
+# Per-EMAIL ceiling across every IP (SEC audit, "Open" item 4). The (email, IP) counter below stops one
+# address hammering an account, but an attacker rotating IPs gets LOGIN_MAX_ATTEMPTS fresh guesses per IP.
+# This second counter is keyed on the email alone, so total guesses against one account are bounded
+# no matter how many addresses they come from. It is higher than the per-IP limit so a real user who
+# mistypes a few times (or a shared campus NAT) is not caught by it.
+LOGIN_EMAIL_MAX_ATTEMPTS = int(os.getenv("LOGIN_EMAIL_MAX_ATTEMPTS", "20"))
+
+
 def _login_attempt_key(email: str, org_id: str | None, ip: str) -> str:
     return f"{org_id or 'default'}:{email}:{ip}"
+
+
+def _login_email_key(email: str, org_id: str | None) -> str:
+    # "*" can never be a real IP, so this cannot collide with an (email, IP) key.
+    return f"{org_id or 'default'}:{email}:*"
+
+
+def _login_lock_for(email: str, attempts: int, threshold: int) -> timedelta:
+    if _is_superadmin_email(email):
+        # Same short, capped backoff as the per-IP lock: the publicly-known superadmin email must never
+        # be lockable for long by a stranger typing it wrong.
+        return timedelta(seconds=min(SUPERADMIN_LOCKOUT_SECONDS_CAP, 5 * (2 ** (attempts - threshold))))
+    return timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
 
 
 def _is_superadmin_email(email: str) -> bool:
@@ -2171,14 +2621,15 @@ def _is_superadmin_email(email: str) -> bool:
 
 
 async def enforce_login_rate_limit(email: str, org_id: str | None, ip: str):
-    key = _login_attempt_key(email, org_id, ip)
-    record = await db.login_attempts.find_one({"key": key})
-    if not record:
-        return
-
-    locked_until = record.get("locked_until")
-    if locked_until and locked_until > datetime.utcnow():
-        remaining_s = int((locked_until - datetime.utcnow()).total_seconds())
+    # Check the per-IP record and the per-email record; whichever lock runs longer decides the message.
+    longest = None
+    for key in (_login_attempt_key(email, org_id, ip), _login_email_key(email, org_id)):
+        record = await db.login_attempts.find_one({"key": key})
+        locked_until = (record or {}).get("locked_until")
+        if locked_until and locked_until > datetime.utcnow() and (longest is None or locked_until > longest):
+            longest = locked_until
+    if longest:
+        remaining_s = int((longest - datetime.utcnow()).total_seconds())
         remaining_min = max(1, remaining_s // 60 + (1 if remaining_s % 60 else 0))
         raise HTTPException(
             status_code=429,
@@ -2203,21 +2654,33 @@ async def record_failed_login(email: str, org_id: str | None, ip: str):
     )
     attempts = doc.get("attempts", 1)
     if attempts >= LOGIN_MAX_ATTEMPTS:
-        if _is_superadmin_email(email):
-            lock_for = timedelta(seconds=min(
-                SUPERADMIN_LOCKOUT_SECONDS_CAP,
-                5 * (2 ** (attempts - LOGIN_MAX_ATTEMPTS))))   # short, capped backoff — never a hard 15-min block
-        else:
-            lock_for = timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+        lock_for = _login_lock_for(email, attempts, LOGIN_MAX_ATTEMPTS)
         await db.login_attempts.update_one(
             {"key": key}, {"$set": {"locked_until": datetime.utcnow() + lock_for}}
         )
         await log_action("admin_login_locked", email, {"attempts": attempts, "ip": ip}, org_id=org_id)
 
+    # Per-email counter, same atomic $inc, shared by every IP.
+    email_key = _login_email_key(email, org_id)
+    edoc = await db.login_attempts.find_one_and_update(
+        {"key": email_key},
+        {"$inc": {"attempts": 1}, "$set": {"last_attempt": datetime.utcnow()}},
+        upsert=True,
+        return_document=True,
+    )
+    email_attempts = edoc.get("attempts", 1)
+    if email_attempts >= LOGIN_EMAIL_MAX_ATTEMPTS:
+        lock_for = _login_lock_for(email, email_attempts, LOGIN_EMAIL_MAX_ATTEMPTS)
+        await db.login_attempts.update_one(
+            {"key": email_key}, {"$set": {"locked_until": datetime.utcnow() + lock_for}}
+        )
+        await log_action("admin_login_locked", email,
+                         {"attempts": email_attempts, "scope": "email"}, org_id=org_id)   # no IP: it spans many
+
 
 async def clear_login_attempts(email: str, org_id: str | None, ip: str):
-    key = _login_attempt_key(email, org_id, ip)
-    await db.login_attempts.delete_one({"key": key})
+    await db.login_attempts.delete_many({"key": {"$in": [_login_attempt_key(email, org_id, ip),
+                                                         _login_email_key(email, org_id)]}})
 
 # =============================================================================
 # OTP THROTTLING, SMS-BUDGET PROTECTION & ROSTER CONTROL  (OTP_SMS_Design_v2)
@@ -2307,8 +2770,22 @@ async def cached_setting(org_id, name: str):
     return doc
 
 
+# Public results payload, per organisation: every open results page polls /election-results, and without
+# this each poll recounted turnout and re-aggregated every vote event (performance audit P1-2). The key
+# includes `results_released`, so a gated visitor can never be served a payload built for a released one.
+_RESULTS_TTL = float(os.getenv("RESULTS_CACHE_TTL_S", "5"))
+_RESULTS_CACHE: dict[tuple, tuple[float, dict]] = {}
+
+
+def _invalidate_results(org_id=None) -> None:
+    for k in [k for k in _RESULTS_CACHE if org_id is None or k[0] == str(org_id)]:
+        _RESULTS_CACHE.pop(k, None)
+
+
 def invalidate_settings(org_id=None, name: str | None = None) -> None:
-    """Drop cached settings for one org (optionally one name). org_id=None drops everything."""
+    """Drop cached settings for one org (optionally one name). org_id=None drops everything.
+    Also drops that org's cached results, since opening, closing or certifying changes what they show."""
+    _invalidate_results(org_id)
     if org_id is None and name is None:
         _SETTINGS_CACHE.clear()
         return
@@ -2891,7 +3368,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     bucket -> reserve send slot -> send (re-using a live code) -> count -> roll back on gateway failure."""
     now = datetime.utcnow()
     legacy = OTP_LIMITER_MODE == "legacy"
-    status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    status_doc = await cached_setting(request.state.org_id, "election_config")
 
     if status_doc and not status_doc.get("is_open", True):
         analytics.set_reason(request, "closed")
@@ -2960,7 +3437,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     otp = existing["code"] if live else str(secrets.randbelow(900000) + 100000)
 
     first_name = student.get("full_name", "Voter").split()[0].capitalize()
-    branding_doc = await db.settings.find_one(org_query(request, {"name": "branding"}))
+    branding_doc = await cached_setting(request.state.org_id, "branding")
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
 
     message = (
@@ -3222,10 +3699,12 @@ async def cast_vote(data: VoteRequest, request: Request):
         # lock against, unlike the $inc this replaces. No voter_id is stored:
         # has_voted (on the voter doc) and this event are deliberately
         # decoupled so nothing in the DB links a voter to their choice.
+        _ev_id, _ev_at = _new_vote_event_stamp()
         await db.vote_events.insert_one(
             org_stamp(request, {
+                "_id": _ev_id,
                 "candidate_id": candidate_oid,
-                "cast_at": datetime.utcnow(),
+                "cast_at": _ev_at,
             }),
             session=session
         )
@@ -3247,7 +3726,8 @@ async def cast_vote(data: VoteRequest, request: Request):
     # same secrecy boundary vote_events already keeps (see comment above).
     # This only records THAT a ballot was cast, so the activity log has a
     # complete picture of every state change, not just the admin-side ones.
-    await log_action("vote_cast", normalize_student_id(data.student_id), {}, org_id=request.state.org_id)
+    await log_action("vote_cast", normalize_student_id(data.student_id), {}, org_id=request.state.org_id,
+                     timestamp=_vote_bucket_start())
 
     return {"status": "success"}
 
@@ -3340,9 +3820,9 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         # Same append-only pattern as /vote, batched as one insert_many so a
         # multi-position ballot is still a single round trip inside the
         # transaction (still all-or-nothing with the has_voted update above).
-        cast_at = datetime.utcnow()
+        cast_at = _vote_bucket_start()
         await db.vote_events.insert_many(
-            [org_stamp(request, {"candidate_id": c_oid, "cast_at": cast_at})
+            [org_stamp(request, {"_id": _new_vote_event_stamp()[0], "candidate_id": c_oid, "cast_at": cast_at})
              for c_oid in candidate_oids],
             session=session
         )
@@ -3360,7 +3840,8 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         )
         raise
 
-    await log_action("vote_cast", normalize_student_id(data.student_id), {"positions": len(candidate_oids)}, org_id=request.state.org_id)
+    await log_action("vote_cast", normalize_student_id(data.student_id), {"positions": len(candidate_oids)},
+                     org_id=request.state.org_id, timestamp=_vote_bucket_start())
 
     return {"status": "success", "message": "Ballot cast successfully."}
 
@@ -3484,6 +3965,21 @@ async def _check_register_rate_limit(request: Request):
     )
 
 
+APPLY_RATE_LIMIT = 120        # eligibility checks per IP per window (a campus NAT shares one IP)
+APPLY_SUBMIT_RATE_LIMIT = 60  # application submissions per IP per window
+APPLY_RATE_WINDOW_S = 600
+
+
+async def _check_apply_rate_limit(request: Request, *, submit: bool = False):
+    """/apply/check-eligibility tells a caller whether an ID is on the roll and whether a name matches it,
+    and was unthrottled, so the register could be enumerated during the applications phase. Generous
+    limits: legitimate applicants make a handful of calls, and the upload limiter already bounds them."""
+    await _check_rate_limit(
+        request, bucket="apply_submit" if submit else "apply_check",
+        limit=APPLY_SUBMIT_RATE_LIMIT if submit else APPLY_RATE_LIMIT, window_s=APPLY_RATE_WINDOW_S,
+        message="Too many requests. Please try again in a few minutes.")
+
+
 VOTER_REGISTER_PAGE_SIZE = 25
 
 @app.get("/voter-register")
@@ -3568,7 +4064,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
         analytics.set_reason(request, "bad_file_type")
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP, or GIF images are allowed.")
 
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)   # never buffer an unbounded body
     if len(content) > MAX_UPLOAD_BYTES:
         analytics.set_reason(request, "too_large")
         raise HTTPException(status_code=400, detail="Image must be under 5MB.")
@@ -3590,6 +4086,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
 
 @app.post("/apply/check-eligibility")
 async def check_application_eligibility(data: ApplicationEligibilityCheck, request: Request):
+    await _check_apply_rate_limit(request)
     await assert_phase_open(request, "applications", data.student_id)
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
@@ -3608,9 +4105,15 @@ async def check_application_eligibility(data: ApplicationEligibilityCheck, reque
 
 @app.post("/apply")
 async def submit_application(data: ApplicationSubmit, request: Request):
+    await _check_apply_rate_limit(request, submit=True)
     # Applications had NO time gating anywhere — a candidacy could be filed
     # after voting had already closed.
     await assert_phase_open(request, "applications", data.student_id)
+    # These URLs are attacker-supplied on a public endpoint and are later opened by the Financial Controller
+    # and the panel, so they must be https links (the superadmin edit route already enforces this).
+    for _field, _val in (("image_url", data.image_url), ("payment_proof_url", data.payment_proof_url)):
+        if _val and not _val.startswith("https://"):
+            raise HTTPException(400, f"{_field} must be an https:// link (or empty).")
     student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
     if not student:
         analytics.set_reason(request, "not_on_roll")
@@ -3625,6 +4128,8 @@ async def submit_application(data: ApplicationSubmit, request: Request):
             detail="The name entered doesn't match our records for this Student ID."
         )
     data.full_name = normalize_name(data.full_name)
+    if await db.panel_members.find_one(org_query(request, {"student_id": student["student_id"], "active": True})):
+        raise HTTPException(403, "You are serving on the Vetting Panel and cannot apply. Ask the superadmin to remove you from the panel first.")
     data.student_id = student["student_id"]     # canonical stored form, whatever the applicant typed
 
     existing = await db.applications.find_one(org_query(request, {
@@ -3949,7 +4454,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     }))
     if it_admin:
         stored_hash = it_admin.get("it_admin_password_hash", "")
-        if not verify_password(data.password, stored_hash):
+        if not await verify_password_async(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         expires = it_admin.get("it_admin_temp_password_expires")
         if expires and datetime.utcnow() > expires and it_admin.get("it_admin_must_change_password"):
@@ -3973,7 +4478,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     }))
     if financial_controller:
         stored_hash = financial_controller.get("financial_controller_password_hash", "")
-        if not verify_password(data.password, stored_hash):
+        if not await verify_password_async(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         expires = financial_controller.get("financial_controller_temp_password_expires")
         if expires and datetime.utcnow() > expires and financial_controller.get("financial_controller_must_change_password"):
@@ -3998,7 +4503,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     }))
     if overseer:
         stored_hash = overseer.get("overseer_password_hash", "")
-        if not verify_password(data.password, stored_hash):
+        if not await verify_password_async(data.password, stored_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         expires = overseer.get("overseer_temp_password_expires")
         if expires and datetime.utcnow() > expires and overseer.get("overseer_must_change_password"):
@@ -4013,6 +4518,41 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
             "overseer_id":         overseer["student_id"],
             "full_name":           overseer.get("full_name", ""),
             "must_change_password": overseer.get("overseer_must_change_password", True)
+        }
+
+    # ── Vetting Panel ──
+    # Panel members live in panel_members (not voters), so externals (non-members)
+    # can log in here without a voter row. Same timing-safe shape as the others.
+    panelist = await db.panel_members.find_one(org_query(request, {
+        "email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "active": True,
+    }))
+    if panelist:
+        stored_hash = panelist.get("password_hash", "")
+        if not await verify_password_async(data.password, stored_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+        expires = panelist.get("temp_password_expires")
+        if expires and datetime.utcnow() > expires and panelist.get("must_change_password"):
+            raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
+        if await _panel_access_ended(request, panelist):
+            raise HTTPException(status_code=401, detail="Your panel access has ended.")
+        if await _external_has_no_end(request, panelist):
+            raise HTTPException(status_code=401, detail="Your panel access has no end date set yet. "
+                                                        "Ask the superadmin to set one.")
+        await log_action("vetting_panel_login", panelist["panel_member_id"],
+                         {"email": data.email, "is_member": panelist.get("is_member", False)},
+                         org_id=request.state.org_id)
+        token = _login_token_for(panelist, "vetting", "must_change_password", request.state.org_id,
+                                 expires_at=await _panel_access_end(request, panelist))
+        return {
+            "status":              "success",
+            "bypass":              True,
+            "role":                "vetting",
+            "access_token":        token,
+            "panel_member_id":     panelist["panel_member_id"],
+            "full_name":           panelist.get("full_name", ""),
+            "is_member":           panelist.get("is_member", False),
+            "must_change_password": panelist.get("must_change_password", True),
         }
 
     # ── Commissioner ──
@@ -4032,11 +4572,11 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         # timing oracle for the same information. _DUMMY_BCRYPT_HASH is a
         # fixed, valid bcrypt hash of no real password; its value doesn't
         # matter, only that checkpw does real work against it.
-        bcrypt.checkpw(data.password.encode()[:72], _DUMMY_BCRYPT_HASH)
+        await run_in_threadpool(bcrypt.checkpw, data.password.encode()[:72], _DUMMY_BCRYPT_HASH)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     stored_hash = commissioner.get("commissioner_password_hash", "")
-    if not verify_password(data.password, stored_hash):
+    if not await verify_password_async(data.password, stored_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     expires = commissioner.get("commissioner_temp_password_expires")
     if expires and datetime.utcnow() > expires and commissioner.get("commissioner_must_change_password"):
@@ -4788,7 +5328,7 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, WEBP, or GIF images are allowed.")
 
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)   # never buffer an unbounded body
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="Image must be under 5MB.")
     _assert_real_image(content)
@@ -4908,7 +5448,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
     }))
     if it_admin:
         _assert_self(it_admin)
-        if not verify_password(data.old_password, it_admin.get("it_admin_password_hash", "")):
+        if not await verify_password_async(data.old_password, it_admin.get("it_admin_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
         await db.voters.update_one(
@@ -4930,7 +5470,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
     }))
     if financial_controller:
         _assert_self(financial_controller)
-        if not verify_password(data.old_password, financial_controller.get("financial_controller_password_hash", "")):
+        if not await verify_password_async(data.old_password, financial_controller.get("financial_controller_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
         await db.voters.update_one(
@@ -4952,7 +5492,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
     }))
     if overseer:
         _assert_self(overseer)
-        if not verify_password(data.old_password, overseer.get("overseer_password_hash", "")):
+        if not await verify_password_async(data.old_password, overseer.get("overseer_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
         await db.voters.update_one(
@@ -4967,6 +5507,31 @@ async def set_new_password(data: SetNewPassword, request: Request):
         await log_action("overseer_password_changed", overseer["student_id"], {}, org_id=request.state.org_id)
         return {"status": "password_updated"}
 
+    # Try Vetting Panel member (panel_members; no voter row for externals)
+    panelist = await db.panel_members.find_one(org_query(request, {
+        "email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "active": True,
+    }))
+    if panelist:
+        # Same self-only rule as _assert_self, keyed by panel_member_id (no student_id here).
+        if admin.get("role") != "superadmin" and panelist["panel_member_id"] != admin.get("sub"):
+            raise HTTPException(403, "You can only change your own password.")
+        if not await verify_password_async(data.old_password, panelist.get("password_hash", "")):
+            raise HTTPException(401, "Current password is incorrect.")
+        _assert_password_strength(data.new_password)
+        await db.panel_members.update_one(
+            {"_id": panelist["_id"]},
+            {"$set": {
+                "password_hash": hash_password(data.new_password),
+                "must_change_password": False,
+                **(await _invalidate_sessions(panelist["_id"])),
+            },
+             "$unset": {"temp_password_expires": ""}}
+        )
+        await log_action("vetting_panel_password_changed", panelist["panel_member_id"],
+                         {"is_member": panelist.get("is_member", False)}, org_id=request.state.org_id)
+        return {"status": "password_updated"}
+
     # Try commissioner
     commissioner = await db.voters.find_one(org_query(request, {
         "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
@@ -4974,7 +5539,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
     }))
     if commissioner:
         _assert_self(commissioner)
-        if not verify_password(data.old_password, commissioner.get("commissioner_password_hash", "")):
+        if not await verify_password_async(data.old_password, commissioner.get("commissioner_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
         await db.voters.update_one(
@@ -5037,38 +5602,102 @@ async def delete_candidate(candidate_id: str, request: Request, admin: dict = De
 
 @app.get("/admin/applications")
 async def list_applications(request: Request, status: str = None):
+    role = current_role(request)
+    org_id = request.state.org_id
     query = org_query(request)
     if status:
         query["status"] = status
+    if role == "commission":
+        # Commissioners not on the panel see the outcome, never pending applications (guide 5.2).
+        if status and status not in RESOLVED_STATUSES:
+            return []
+        if not status:
+            query["status"] = {"$in": list(RESOLVED_STATUSES)}
+    actor_key, is_chair = await _panel_actor_context(request)
+    active_keys = await _active_panel_keys(org_id)
+    panel_count = await get_panel_count(org_id)
     apps = []
     async for a in db.applications.find(query).sort("submitted_at", -1):
         a["_id"] = str(a["_id"])
         a["edit_history"] = _application_edit_history(a)   # one shape for old and new corrections
         a.pop("reg_no_history", None)
         if a.get("position_id"):
-            title, order = await _resolve_position_title(a["position_id"], request.state.org_id)
+            title, order = await _resolve_position_title(a["position_id"], org_id)
             a["position_title"] = title
             a["position_order"] = order
         else:
             a["position_order"] = 0
-        apps.append(a)
+        apps.append(shape_application_for_role(
+            a, role, actor_key=actor_key, active_keys=active_keys,
+            panel_count=panel_count, is_chair_panelist=is_chair))
     apps.sort(key=lambda x: (x.get("position_order", 0), -x["submitted_at"].timestamp() if x.get("submitted_at") else 0))
-    if current_role(request) == "financial_controller":
-        # Payment and judgement stay separate both ways: the controller sees the money side of every
-        # application but not which commissioner voted how (the raw maps are keyed by commissioner).
-        for a in apps:
-            a.pop("votes", None)
-            a.pop("removal_votes", None)
-            a.pop("revert_history", None)   # carries the pre-revert vote map
     return apps
 
 # =============================================================================
 # COMMISSION ROUTES  (voting — requires commission login)
 # =============================================================================
 
+@app.get("/admin/vetting-me")
+async def vetting_me(request: Request, admin: dict = Depends(require_role("vetting"))):
+    """The signed-in panelist's own status: access end and the confidentiality gate (guide 6.4)."""
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": admin.get("sub"), "active": True}))
+    if not p:
+        raise HTTPException(403, "You are not an active member of the Vetting Panel.")
+    end = await _panel_access_end(request, p)
+    return {
+        "panel_member_id": p["panel_member_id"],
+        "full_name": p.get("full_name", ""),
+        "is_member": bool(p.get("is_member")),
+        "affiliation": p.get("affiliation", ""),
+        "access_ends_at": end.isoformat() if end else None,
+        "confidentiality_required": not p.get("is_member") and not admin.get("view_only"),
+        "confidentiality_accepted": p.get("confidentiality_version") == CONFIDENTIALITY_VERSION,
+        "confidentiality_notice": CONFIDENTIALITY_NOTICE,
+    }
+
+
+@app.post("/admin/vetting-confidentiality/accept")
+async def accept_confidentiality(request: Request, admin: dict = Depends(require_role("vetting"))):
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": admin.get("sub"), "active": True}))
+    if not p:
+        raise HTTPException(403, "You are not an active member of the Vetting Panel.")
+    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": {
+        "confidentiality_accepted_at": datetime.utcnow(),
+        "confidentiality_version": CONFIDENTIALITY_VERSION}})
+    await log_action("vetting_confidentiality_accepted", p["panel_member_id"],
+                     {"version": CONFIDENTIALITY_VERSION}, org_id=request.state.org_id)
+    return {"status": "accepted", "confidentiality_version": CONFIDENTIALITY_VERSION}
+
+
+@app.get("/admin/vetting-outcomes")
+async def vetting_outcomes(request: Request, admin: dict = Depends(require_role("commission"))):
+    """Guide 5.2 / 8.1: what a commissioner may see of the Vetting Panel's work. Final decisions
+    and the final stated reason only. Never pending applications, votes, tallies or the split."""
+    def iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+    rows = []
+    async for a in db.applications.find(org_query(request, {"status": {"$in": list(RESOLVED_STATUSES)}})).sort("submitted_at", -1):
+        title = ""
+        if a.get("position_id"):
+            title, _ = await _resolve_position_title(a["position_id"], request.state.org_id)
+        rows.append({
+            "id": str(a["_id"]),
+            "full_name": a.get("full_name", ""),
+            "student_id": a.get("student_id", ""),
+            "position_title": title,
+            "status": a.get("status"),
+            "decided_at": iso(a.get("decided_at")),
+            "final_reason": a.get("final_reason"),
+            "superadmin_override": bool(a.get("superadmin_override")),
+        })
+    return rows
+
+
 @app.post("/admin/applications/{app_id}/vote")
-async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request):
-    """A commissioner casts their approve/deny vote on a pending application."""
+async def commissioner_vote(app_id: str, data: CommissionerVote, request: Request,
+                            admin: dict = Depends(require_role("vetting"))):
+    """A Vetting Panel member casts an approve/deny vote on a pending application (guide 8.1).
+    Commissioners cannot vote unless they sit on the panel, and then only through the panel hat."""
     if data.vote not in ("approve", "deny"):
         raise HTTPException(400, "Vote must be 'approve' or 'deny'.")
 
@@ -5076,42 +5705,115 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
         raise HTTPException(404, "Application not found.")
-    if app_doc.get("status") in ("approved", "denied", "removed"):
+    if app_doc.get("status") in RESOLVED_STATUSES:
         raise HTTPException(400, "This application is already resolved.")
     if not app_doc.get("finance_cleared"):
         raise HTTPException(400, "Awaiting Financial Controller clearance before voting can open.")
-    # Commissioners may only cast approve/deny votes inside the scheduled vetting window
-    # (set on the Timeline tab); Finance clearance above is deliberately exempt from this.
     await assert_phase_open(request, "vetting")
 
-    # SECURITY: the body-supplied commissioner_id used to be trusted on its
-    # own, so any valid admin token (an Overseer's, an IT Admin's) could cast
-    # a Commission vote under another commissioner's name. Bind it to the
-    # authenticated token subject first.
-    bind_identity(request, data.commissioner_id, "commissioner account")
+    panelist = await _acting_panelist(request, admin)
+    if panelist.get("student_id") and app_doc.get("student_id") and \
+            normalize_student_id(panelist["student_id"]) == normalize_student_id(app_doc["student_id"]):
+        raise HTTPException(403, "You cannot vote on your own application.")
+    key = _panel_vote_key(panelist)
+    claimed = (data.commissioner_id or "").strip()
+    allowed = {_vote_key(x) for x in (panelist.get("student_id"), panelist["panel_member_id"]) if x}
+    if claimed and _vote_key(claimed) not in allowed:
+        raise HTTPException(403, "The vote does not match your panel account.")
 
-    # Verify the voter exists and is actually a commissioner
-    commissioner = await db.voters.find_one(org_query(request, {
-        **get_forgiving_filter(data.commissioner_id),
-        "is_commissioner": True
-    }))
-    if not commissioner:
-        raise HTTPException(403, "Not a registered commissioner.")
-
-    await log_action("application_vote_cast", current_actor(request), {
-        "app_id": app_id, "vote": data.vote, "reason": data.reason
+    is_also_commissioner = False
+    if panelist.get("student_id"):
+        is_also_commissioner = bool(await db.voters.find_one(org_query(request, {
+            **get_forgiving_filter(panelist["student_id"]), "is_commissioner": True})))
+    await log_action("application_vote_cast", panelist["panel_member_id"], {
+        "app_id": app_id, "vote": data.vote, "reason": data.reason,
+        "is_member": bool(panelist.get("is_member")), "also_commissioner": is_also_commissioner,
     }, org_id=request.state.org_id)
 
-    # Record vote (keyed by commissioner_id so they can only vote once per application)
     await db.applications.update_one(
         org_query(request, {"_id": oid}),
-        {"$set": {f"votes.{_vote_key(data.commissioner_id)}": data.vote}}
+        {"$set": {f"votes.{key}": data.vote}}
     )
-
     updated = await db.applications.find_one(org_query(request, {"_id": oid}))
     await _resolve_application(app_id, updated, request.state.org_id)
 
-    return {"status": "vote_recorded"}
+    final = await db.applications.find_one(org_query(request, {"_id": oid}))
+    shaped = shape_application_for_role(
+        final, "vetting", actor_key=key, active_keys=await _active_panel_keys(request.state.org_id),
+        panel_count=await get_panel_count(request.state.org_id))
+    return {"status": "vote_recorded", "my_vote": data.vote, "progress": shaped["progress"]}
+
+
+@app.post("/admin/applications/{app_id}/tie-break")
+async def panel_tie_break(app_id: str, data: TieBreakDecision, request: Request,
+                          admin: dict = Depends(require_role("vetting"))):
+    """Guide 7.2: the Chair, acting in the panel hat and only as an active panelist, breaks a tie.
+    The casting decision is not written into votes, so each member keeps exactly one vote."""
+    if data.decision not in ("approve", "deny"):
+        raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+
+    panelist = await _acting_panelist(request, admin)
+    chair = None
+    if panelist.get("student_id"):
+        chair = await db.voters.find_one(org_query(request, {
+            **get_forgiving_filter(panelist["student_id"]), "is_chief_commissioner": True}))
+    if not chair:
+        raise HTTPException(403, "Only the Chairperson can break a tie.")
+    if panelist.get("student_id") and normalize_student_id(panelist["student_id"]) == normalize_student_id(app_doc.get("student_id") or ""):
+        raise HTTPException(403, "The Chairperson cannot break a tie on their own application.")
+
+    org_id = request.state.org_id
+    await assert_phase_open(request, "vetting")
+    if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("finance_cleared"):
+        raise HTTPException(409, "This application is not waiting for a tie-break.")
+    policy = (await security_settings_for(org_id))["approval_policy"]
+    active = await _active_panel_keys(org_id)
+    panel_total = await get_panel_count(org_id)
+    votes = {k: v for k, v in _dedupe_votes(app_doc.get("votes", {})).items() if k in active}
+    approve_count = sum(1 for v in votes.values() if v == "approve")
+    deny_count = sum(1 for v in votes.values() if v == "deny")
+    if not (app_doc.get("tied_pending_chief") and _is_tied(policy, panel_total, approve_count, deny_count)):
+        raise HTTPException(409, "This application is not waiting for a tie-break.")
+
+    extra = {
+        "tie_break": {"by": chair["student_id"], "decision": data.decision, "at": datetime.utcnow()},
+        "decided_by_tie_break": True,
+    }
+    reason = (data.reason or "").strip()
+    if data.decision == "deny" and reason:
+        extra["final_reason"] = reason
+    applied = await _apply_application_outcome(
+        app_id, app_doc, org_id, data.decision, actor=admin.get("sub", "unknown"),
+        details={"tie_break": True, "approve_count": approve_count, "deny_count": deny_count,
+                 "panel_count": panel_total, "policy": policy},
+        extra_set=extra)
+    if not applied:
+        raise HTTPException(409, "This application was just resolved by someone else. Please refresh.")
+    await log_action("application_tie_broken", admin.get("sub", "unknown"),
+                     {"app_id": app_id, "decision": data.decision}, org_id=org_id)
+    return {"status": "tie_broken", "decision": data.decision}
+
+
+@app.post("/superadmin/applications/{app_id}/final-reason")
+async def superadmin_set_final_reason(app_id: str, data: FinalReasonUpdate, request: Request,
+                                      admin: dict = Depends(require_role("superadmin"))):
+    """Guide 13.2 (H2): an optional reason on a denied or removed application. Shown to commissioners
+    in the outcome feed; per-panelist comments are never shown."""
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") not in ("denied", "removed"):
+        raise HTTPException(409, "A final reason applies to denied or removed applications.")
+    reason = (data.reason or "").strip() or None
+    await db.applications.update_one(org_query(request, {"_id": oid}), {"$set": {"final_reason": reason}})
+    await log_action("application_final_reason_set", current_actor(request), {"app_id": app_id},
+                     org_id=request.state.org_id)
+    return {"status": "saved", "final_reason": reason}
 
 
 @app.post("/admin/applications/{app_id}/vote-remove")
@@ -5548,6 +6250,7 @@ async def save_branding(data: BrandingUpdate, request: Request):
         {"$set": org_stamp(request, {**doc, "name": "branding"})},
         upsert=True
     )
+    invalidate_settings(request.state.org_id, "branding")    # the SMS text reads it through the cache
     # Branding drives the org name, the commissioner name printed on the
     # official declaration, and the cc list — all of which appear on the
     # certified report. Changes to it belong in the audit trail.
@@ -5783,7 +6486,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
 
 @app.post("/superadmin/applications/{app_id}/force-approve")
 async def superadmin_force_approve(app_id: str, request: Request):
-    """Approve an application instantly, bypassing commission voting."""
+    """Approve an application instantly, bypassing vetting panel voting."""
     oid = parse_oid(app_id, "application id")
     app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
@@ -5801,7 +6504,8 @@ async def superadmin_force_approve(app_id: str, request: Request):
             "status": "approved",
             "superadmin_override": True,
             "decided_at": datetime.utcnow()
-        }}
+        },
+        "$unset": {"tied_pending_chief": ""}}
     )
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just approved by someone else. Please refresh.")
@@ -5817,7 +6521,7 @@ async def superadmin_force_approve(app_id: str, request: Request):
 
 @app.post("/superadmin/applications/{app_id}/force-deny")
 async def superadmin_force_deny(app_id: str, request: Request):
-    """Deny an application instantly, bypassing commission voting."""
+    """Deny an application instantly, bypassing vetting panel voting."""
     oid = parse_oid(app_id, "application id")
     app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
     if not app_doc:
@@ -5831,7 +6535,8 @@ async def superadmin_force_deny(app_id: str, request: Request):
             "status": "denied",
             "superadmin_override": True,
             "decided_at": datetime.utcnow()
-        }}
+        },
+        "$unset": {"tied_pending_chief": ""}}
     )
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just resolved by someone else. Please refresh.")
@@ -6191,6 +6896,11 @@ async def get_election_results(request: Request):
             cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
             results_released = cfg.get("is_certified", False) or (
                 results_mode == "closed" and not cfg.get("is_open", True))
+    cache_key = (str(request.state.org_id), bool(results_released))
+    if _RESULTS_TTL > 0:
+        hit = _RESULTS_CACHE.get(cache_key)
+        if hit and hit[0] > time.monotonic():
+            return copy.deepcopy(hit[1])
     voter_turnout = await db.voters.count_documents(org_query(request, {"has_voted": True}))
     results = []
     if results_released:
@@ -6203,7 +6913,10 @@ async def get_election_results(request: Request):
                 "votes": vote_counts.get(str(cand["_id"]), 0),
                 "order": cand.get("order", 0)
             })
-    return {"voter_turnout": voter_turnout, "results": results, "results_released": results_released}
+    payload = {"voter_turnout": voter_turnout, "results": results, "results_released": results_released}
+    if _RESULTS_TTL > 0:
+        _RESULTS_CACHE[cache_key] = (time.monotonic() + _RESULTS_TTL, copy.deepcopy(payload))
+    return payload
 
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
@@ -6229,23 +6942,26 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
     total_commissioners = await get_commissioner_count(request.state.org_id)
 
     applications_summary = []
+    overseer_keys = await _active_panel_keys(request.state.org_id)
+    panel_count = await get_panel_count(request.state.org_id)
     async for a in db.applications.find(org_query(request)).sort("submitted_at", -1):
-        votes = a.get("votes", {})
-        removal_votes = a.get("removal_votes", {})
-        applications_summary.append({
-            "id":               str(a["_id"]),
-            "full_name":        a.get("full_name", ""),
-            "position_id":      a.get("position_id", ""),
-            "status":           a.get("status", "pending"),
-            "finance_cleared":  a.get("finance_cleared", False),
-            "approve_count":    sum(1 for v in votes.values() if v == "approve"),
-            "deny_count":       sum(1 for v in votes.values() if v == "deny"),
-            "votes_cast":       len(votes),
-            "removal_approve_count": sum(1 for v in removal_votes.values() if v == "approve"),
-            "submitted_at":     a.get("submitted_at")
-            # NOTE: raw `votes` / `removal_votes` maps intentionally omitted —
-            # those identify which commissioner cast which vote.
-        })
+        shaped = shape_application_for_role(a, "overseer", active_keys=overseer_keys, panel_count=panel_count)
+        row = {
+            "id":                 str(a["_id"]),
+            "full_name":          a.get("full_name", ""),
+            "position_id":        a.get("position_id", ""),
+            "status":             a.get("status", "pending"),
+            "finance_cleared":    a.get("finance_cleared", False),
+            "votes_cast":         shaped["progress"]["cast"],
+            "panel_count":        panel_count,
+            "awaiting_final_decision": shaped["awaiting_final_decision"],
+            "submitted_at":       a.get("submitted_at"),
+            # No vote maps, and no approve/deny split while pending (guide 7.1). Removal fields dropped.
+        }
+        if "final_split" in shaped:
+            row["final_split"] = shaped["final_split"]
+            row["decided_by_tie_break"] = bool(shaped.get("decided_by_tie_break"))
+        applications_summary.append(row)
 
     student_changes_summary = []
     async for c in db.student_changes.find(org_query(request)).sort("requested_at", -1):
@@ -6278,6 +6994,7 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
             "turnout_pct":  round((voted_count / total_voters) * 100, 1) if total_voters else 0
         },
         "total_commissioners":   total_commissioners,
+        "panel_count":           panel_count,
         "applications":          applications_summary,
         "student_changes":       student_changes_summary,
         "candidate_results":     candidates_results
@@ -6762,6 +7479,357 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
     return {"status": "credentials_set", "sms_notified": sms_sent}
 
 
+
+# =============================================================================
+# SUPERADMIN — VETTING PANEL MANAGEMENT (guide P1)
+# =============================================================================
+# Panel members are separate from voters. Only the superadmin creates or removes
+# them. Externals (is_member False) have no voter row and can never vote.
+
+def _panel_public(p: dict) -> dict:
+    """Shape a panel record for the API. Never returns hashes or temp passwords."""
+    return {
+        "panel_member_id": p.get("panel_member_id"),
+        "full_name":       p.get("full_name", ""),
+        "email":           p.get("email", ""),
+        "is_member":       p.get("is_member", False),
+        "student_id":      p.get("student_id"),
+        "affiliation":     p.get("affiliation", ""),
+        "appointment_reason": p.get("appointment_reason", ""),
+        "active":          p.get("active", False),
+        "access_expires_at": p["access_expires_at"].isoformat() if p.get("access_expires_at") else None,
+        "expires_with_phase": p.get("expires_with_phase"),
+        "confidentiality_accepted_at": (p["confidentiality_accepted_at"].isoformat()
+                                        if p.get("confidentiality_accepted_at") else None),
+    }
+
+
+async def _panel_open_guard(request: Request):
+    """Guide 7 item 4: the panel is frozen while the vetting window is open, so
+    thresholds cannot move under people mid-vote. Changes are allowed before it
+    opens and after it closes."""
+    schedule = await get_phase_schedule(request)
+    window = schedule["phases"].get("vetting", {})
+    # _phase_is_open treats an UNENFORCED phase as open (it never blocks). For the freeze we
+    # need the opposite: only an enforced window that is currently inside its dates freezes
+    # the panel. An org that never set a timeline must still be able to appoint panelists.
+    if window.get("enforced") and _phase_is_open(window, datetime.utcnow()):
+        raise HTTPException(409, "The Vetting Panel is frozen while vetting is open. "
+                                 "Changes are allowed before it opens and after it closes.")
+
+
+@app.get("/superadmin/vetting-panel")
+async def superadmin_list_panel(request: Request):
+    rows = [_panel_public(p) async for p in db.panel_members.find(
+        org_query(request, {}), {"_id": 0, "password_hash": 0, "temp_password_expires": 0})]
+    active_rows = [r for r in rows if r["active"]]
+    panel_count = len(active_rows)
+    # Guide 7.2 tie_risk: ties only happen on an even panel; the Chair (live check) can break them.
+    chair_active = False
+    for r in rows:
+        r["is_chair"] = False
+        if r.get("student_id") and await db.voters.find_one(org_query(request, {
+                **get_forgiving_filter(r["student_id"]), "is_chief_commissioner": True})):
+            r["is_chair"] = True
+            if r["active"]:
+                chair_active = True
+    if panel_count % 2 == 1:
+        tie_risk = "none"
+    elif chair_active:
+        tie_risk = "chair_resolves"
+    else:
+        tie_risk = "superadmin_only"
+    frozen = False
+    try:
+        await _panel_open_guard(request)
+    except HTTPException:
+        frozen = True
+    return {"panel": rows, "count": panel_count, "panel_count": panel_count, "tie_risk": tie_risk,
+            "frozen": frozen, "min_panel": 3}
+
+
+@app.post("/superadmin/vetting-panel")
+async def superadmin_add_panelist(data: PanelMemberCreate, request: Request):
+    await _panel_open_guard(request)
+
+    if not data.appointment_reason.strip():
+        raise HTTPException(400, "An appointment reason is required.")
+    if not data.full_name.strip() or not data.email.strip() or not data.phone.strip():
+        raise HTTPException(400, "Name, email and phone are required.")
+    if data.is_member and not data.student_id:
+        raise HTTPException(400, "A member panelist must be linked to a student_id.")
+    if not data.is_member and not (data.access_expires_at or data.expires_with_phase):
+        raise HTTPException(400, "An external panelist needs an access end: a date or a timeline phase.")
+    if data.expires_with_phase and data.expires_with_phase not in PHASE_NAMES:
+        raise HTTPException(400, "Unknown timeline phase for access expiry.")
+
+    email = data.email.strip().lower()
+    conflict = await _panel_email_conflict(request, email)
+    if conflict:
+        raise HTTPException(409, conflict)
+    if not data.is_member and not data.access_expires_at and data.expires_with_phase:
+        phase_end = (await get_phase_schedule(request))["phases"].get(data.expires_with_phase, {}).get("end")
+        if not phase_end:
+            raise HTTPException(400, "That timeline phase has no end date yet, so it cannot close an external's "
+                                     "access. Set a fixed access end, or schedule the phase first.")
+
+    if data.is_member:
+        voter = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+        if not voter:
+            raise HTTPException(404, "Member not found on the voter roll.")
+        if await _has_live_application(request, voter["student_id"]):
+            raise HTTPException(409, "This member has an application in progress and cannot sit on the Vetting Panel.")
+
+    panel_member_id = f"PM-{secrets.token_hex(6).upper()}"
+    temp_password = generate_temp_password()
+    now = datetime.utcnow()
+    doc = {
+        "org_id":            request.state.org_id,
+        "panel_member_id":   panel_member_id,
+        "full_name":         data.full_name.strip(),
+        "email":             email,
+        "phone_numbers":     [data.phone.strip()],
+        "is_member":         data.is_member,
+        "appointment_reason": data.appointment_reason.strip(),
+        "affiliation":       data.affiliation.strip(),
+        "student_id":        normalize_student_id(data.student_id) if data.is_member else None,
+        "access_expires_at": data.access_expires_at,
+        "expires_with_phase": data.expires_with_phase,
+        "confidentiality_accepted_at": None,
+        "confidentiality_version": None,
+        "active":            True,
+        "password_hash":     hash_password(temp_password),
+        "must_change_password": True,
+        "temp_password_expires": now + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+        "added_by":          current_actor(request),
+        "added_at":          now,
+        "removed_at":        None,
+    }
+    await db.panel_members.insert_one(doc)
+    await _resweep_pending_after_policy_change(request.state.org_id, include_removals=False)
+    sms_sent = await send_temp_password_sms(
+        {"phone_numbers": doc["phone_numbers"], "full_name": doc["full_name"],
+         "org_id": doc["org_id"]}, "Vetting Panel", temp_password)
+    await log_action("vetting_panel_member_added", current_actor(request), {
+        "panel_member_id": panel_member_id, "is_member": data.is_member,
+        "reason": doc["appointment_reason"], "sms_notified": sms_sent,
+    }, org_id=request.state.org_id)
+    return {"status": "added", "panel_member_id": panel_member_id, "sms_notified": sms_sent}
+
+
+@app.post("/superadmin/vetting-panel/link-commissioner")
+async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Request):
+    """Guide 5.2: a commissioner sits on the panel as an extension of their own screens. The record is
+    linked by student_id and carries NO password and NO email, so nothing is texted and there is nothing to
+    log in with: they reach the panel through /admin/switch-hat from the Commission dashboard. The
+    appointment reason is required and goes into the audit trail like any other appointment."""
+    await _panel_open_guard(request)
+    reason = data.appointment_reason.strip()
+    if not reason:
+        raise HTTPException(400, "An appointment reason is required.")
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    if not voter or not voter.get("is_commissioner"):
+        raise HTTPException(404, "That person is not a commissioner.")
+    sid = normalize_student_id(voter["student_id"])
+    existing = await db.panel_members.find_one(org_query(request, {"student_id": sid}))
+    if existing:
+        raise HTTPException(409, "This commissioner is already on the panel list."
+                                 + ("" if existing.get("active") else " They are inactive: use Activate."))
+    if await _has_live_application(request, voter["student_id"]):
+        raise HTTPException(409, "This member has an application in progress and cannot sit on the Vetting Panel.")
+
+    panel_member_id = f"PM-{secrets.token_hex(6).upper()}"
+    now = datetime.utcnow()
+    await db.panel_members.insert_one({
+        "org_id":            request.state.org_id,
+        "panel_member_id":   panel_member_id,
+        "full_name":         voter.get("full_name", ""),
+        "email":             "",
+        "phone_numbers":     voter.get("phone_numbers", []),
+        "is_member":         True,
+        "appointment_reason": reason,
+        "affiliation":       "",
+        "student_id":        sid,
+        "access_expires_at": None,
+        "expires_with_phase": None,
+        "confidentiality_accepted_at": None,
+        "confidentiality_version": None,
+        "active":            True,
+        "password_hash":     "",          # no direct login: verify_password() rejects an empty hash
+        "must_change_password": True,
+        "temp_password_expires": None,
+        "added_by":          current_actor(request),
+        "added_at":          now,
+        "removed_at":        None,
+    })
+    await _resweep_pending_after_policy_change(request.state.org_id, include_removals=False)
+    await log_action("vetting_panel_member_added", current_actor(request), {
+        "panel_member_id": panel_member_id, "is_member": True, "linked_commissioner": True,
+        "reason": reason, "sms_notified": False,
+    }, org_id=request.state.org_id)
+    return {"status": "added", "panel_member_id": panel_member_id, "sms_notified": False}
+
+
+@app.patch("/superadmin/vetting-panel/{panel_member_id}")
+async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpdate, request: Request):
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
+    if not p:
+        raise HTTPException(404, "Panel member not found.")
+    update: dict = {}
+    if data.affiliation is not None:
+        update["affiliation"] = data.affiliation.strip()
+    if data.phone is not None:
+        if not data.phone.strip():
+            raise HTTPException(400, "Phone cannot be empty.")
+        update["phone_numbers"] = [data.phone.strip()]
+    if data.expires_with_phase and data.expires_with_phase not in PHASE_NAMES:
+        raise HTTPException(400, "Unknown timeline phase for access expiry.")
+    end_touched = data.access_expires_at is not None or data.expires_with_phase is not None or data.clear_access_end
+    if end_touched:
+        new_at = data.access_expires_at
+        new_phase = data.expires_with_phase
+        if data.clear_access_end:
+            new_at, new_phase = None, None
+        elif new_at is not None and new_phase is None:
+            new_phase = None          # a fixed date replaces a phase-based end
+        elif new_phase is not None and new_at is None:
+            new_at = None             # and the other way round
+        if not p.get("is_member") and not (new_at or new_phase):
+            raise HTTPException(400, "An external panelist needs an access end: a date or a timeline phase.")
+        update["access_expires_at"] = new_at
+        update["expires_with_phase"] = new_phase
+        # The panel is frozen while vetting is open. The one change allowed then is giving a
+        # panelist MORE time (a later fixed date); shortening or switching could change who counts.
+        try:
+            await _panel_open_guard(request)
+        except HTTPException:
+            old = p.get("access_expires_at")
+            if not (new_at and old and new_at > old and not new_phase):
+                raise
+    if not update:
+        raise HTTPException(400, "Nothing to change.")
+    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": update})
+    await log_action("vetting_panel_member_updated", current_actor(request), {
+        "panel_member_id": panel_member_id, "fields": sorted(update.keys())}, org_id=request.state.org_id)
+    return {"status": "updated", "panel_member_id": panel_member_id}
+
+
+@app.post("/superadmin/vetting-panel/{panel_member_id}/set-credentials")
+async def superadmin_panel_set_credentials(panel_member_id: str, data: PanelMemberCredentials, request: Request):
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
+    if not p:
+        raise HTTPException(404, "Panel member not found.")
+    temp_password = generate_temp_password()
+    email = data.email.strip().lower()
+    if not email:
+        raise HTTPException(400, "An email is required.")
+    conflict = await _panel_email_conflict(request, email, exclude_pm_id=p["panel_member_id"])
+    if conflict:
+        raise HTTPException(409, conflict)
+    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": {
+        "email": email,
+        "password_hash": hash_password(temp_password),
+        "must_change_password": True,
+        "temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
+        **(await _invalidate_sessions(p["_id"])),
+    }})
+    sms_sent = await send_temp_password_sms(p, "Vetting Panel", temp_password)
+    await log_action("vetting_panel_credentials_set", current_actor(request), {
+        "panel_member_id": panel_member_id, "sms_notified": sms_sent}, org_id=request.state.org_id)
+    return {"status": "credentials_set", "sms_notified": sms_sent}
+
+
+@app.post("/superadmin/vetting-panel/{panel_member_id}/active")
+async def superadmin_panel_set_active(panel_member_id: str, request: Request, active: bool = True):
+    await _panel_open_guard(request)
+    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
+    if not p:
+        raise HTTPException(404, "Panel member not found.")
+    if active and p.get("student_id") and await _has_live_application(request, p["student_id"]):
+        raise HTTPException(409, "This member has an application in progress and cannot be activated on the Vetting Panel.")
+    if not active and p.get("active"):
+        # Guide 7 item 6: never let the active panel drop below 3.
+        remaining = await db.panel_members.count_documents(org_query(request, {
+            "active": True, "panel_member_id": {"$ne": panel_member_id}}))
+        if remaining < 3:
+            raise HTTPException(409, "The Vetting Panel must keep at least 3 active panelists.")
+    update = {"active": active, **(await _invalidate_sessions(p["_id"]))}
+    if not active:
+        update["removed_at"] = datetime.utcnow()
+    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": update})
+    await _resweep_pending_after_policy_change(request.state.org_id, include_removals=False)
+    await log_action("vetting_panel_member_" + ("activated" if active else "deactivated"),
+                     current_actor(request), {"panel_member_id": panel_member_id},
+                     org_id=request.state.org_id)
+    return {"status": "active" if active else "inactive", "panel_member_id": panel_member_id}
+
+
+# =============================================================================
+# COMMISSIONER — HAT SWITCH (guide 5.2)
+# =============================================================================
+# A commissioner linked to an ACTIVE panel member can switch to the panel view.
+# One token has one role, so switching issues a new token and revokes the old one.
+
+@app.post("/admin/switch-hat")
+async def switch_hat(request: Request, admin: dict = Depends(require_role("commission", "vetting"))):
+    org_id = request.state.org_id
+    if admin["role"] == "commission":
+        target = "vetting"
+        student_id = admin.get("sub")
+        voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+        if not voter or not voter.get("is_commissioner"):
+            raise HTTPException(403, "Not a commissioner.")
+        panelist = await db.panel_members.find_one(org_query(request, {
+            "student_id": normalize_student_id(student_id), "active": True}))
+        if not panelist:
+            raise HTTPException(403, "You are not on the Vetting Panel.")
+        if await _panel_access_ended(request, panelist):
+            raise HTTPException(403, "Your panel access has ended.")
+        new_token = create_access_token(
+            subject=panelist["panel_member_id"], role="vetting", org_id=org_id,
+            full_name=panelist.get("full_name", ""), scope="full")
+        # The commission token's jti is what gets revoked; the old token then stops working.
+        await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
+        await log_action("hat_switched", student_id, {
+            "from": "commission", "to": "vetting", "panel_member_id": panelist["panel_member_id"]}, org_id=org_id)
+        return {"status": "switched", "role": "vetting", "access_token": new_token}
+
+    # role == vetting: switch back to the commissioner view
+    panel = await db.panel_members.find_one(org_query(request, {
+        "panel_member_id": admin.get("sub"), "active": True}))
+    if not panel or not panel.get("student_id"):
+        raise HTTPException(403, "Only a linked commissioner can switch back.")
+    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(panel["student_id"])))
+    if not voter or not voter.get("is_commissioner"):
+        raise HTTPException(403, "Only a linked commissioner can switch back.")
+    new_token = create_access_token(
+        subject=voter["student_id"], role="commission", org_id=org_id,
+        full_name=voter.get("full_name", ""), scope="full")
+    await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
+    await log_action("hat_switched", voter["student_id"], {
+        "from": "vetting", "to": "commission"}, org_id=org_id)
+    return {"status": "switched", "role": "commission", "access_token": new_token}
+
+
+@app.get("/admin/panel-link")
+async def panel_link(request: Request, admin: dict = Depends(require_role("commission"))):
+    """Whether the signed-in commissioner can switch to the Vetting Panel. Answers only for the
+    caller (never lists who is on the panel), so the dashboard can hide the switch button."""
+    panelist = await db.panel_members.find_one(org_query(request, {
+        "student_id": normalize_student_id(admin.get("sub")), "active": True}))
+    linked = bool(panelist) and not await _panel_access_ended(request, panelist)
+    # Guide 7.2: tell the Chairperson (and only them) when a tie is waiting for their decision,
+    # so they know to switch to the panel view. Only a count; no votes or names.
+    tie_waiting = 0
+    if linked:
+        chair = await db.voters.find_one(org_query(request, {
+            **get_forgiving_filter(admin.get("sub")), "is_chief_commissioner": True}), {"_id": 1})
+        if chair:
+            tie_waiting = await db.applications.count_documents(org_query(request, {
+                "tied_pending_chief": True, "status": {"$nin": list(RESOLVED_STATUSES)}}))
+    return {"panel_linked": linked, "tie_waiting": tie_waiting}
+
+
 # =============================================================================
 # SUPERADMIN — FINANCIAL CONTROLLER MANAGEMENT (student register approvals)
 # =============================================================================
@@ -7041,6 +8109,25 @@ class ViewAsRequest(BaseModel):
 @app.post("/superadmin/view-as")
 async def superadmin_view_as(data: ViewAsRequest, request: Request,
                              admin: dict = Depends(require_role("superadmin"))):
+    if data.role == "vetting":
+        # Panelists live in panel_members and are keyed by panel_member_id (guide 6.3), so the
+        # `student_id` field carries that id for this role. Read-only like every view-as token.
+        p = await db.panel_members.find_one(org_query(request, {
+            "panel_member_id": data.student_id, "active": True}))
+        if not p:
+            raise HTTPException(404, "That person is not an active member of the Vetting Panel.")
+        if await _panel_access_ended(request, p):
+            raise HTTPException(409, "This panelist's access has ended.")
+        token = create_access_token(
+            subject=p["panel_member_id"], role="vetting", org_id=request.state.org_id,
+            full_name=p.get("full_name", ""), scope="full", expire_minutes=VIEW_AS_MINUTES,
+            extra_claims={"view_only": True, "viewer": current_actor(request)})
+        await log_action("admin_view_as_started", current_actor(request), {
+            "target": p["panel_member_id"], "target_name": p.get("full_name", ""),
+            "role": "vetting", "minutes": VIEW_AS_MINUTES}, org_id=request.state.org_id)
+        return {"access_token": token, "role": "vetting", "student_id": p["panel_member_id"],
+                "full_name": p.get("full_name", ""), "org_slug": request.state.org_slug or "",
+                "expires_in_minutes": VIEW_AS_MINUTES}
     flag = VIEW_AS_ROLE_FLAGS.get(data.role)
     if not flag:
         raise HTTPException(400, "Unknown admin role.")
@@ -7578,6 +8665,11 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
     new_v = stored.get("voting") or {}
     new_window = {"start": naive_utc(new_v.get("start")), "end": naive_utc(new_v.get("end")),
                   "enforced": bool(new_v.get("enforced"))}
+    vet = stored.get("vetting") or {}
+    vet_end = naive_utc(vet.get("end"))
+    if bool(vet.get("enforced")) and (vet_end is None or vet_end > now):
+        if await get_panel_count(request.state.org_id) < 3:
+            raise HTTPException(409, "Vetting cannot open with fewer than 3 active panelists.")
     ends_voting_now = was_live and new_window["enforced"] and not _phase_is_open(new_window, now)
     reason = (data.reason or "").strip()
     if ends_voting_now and len(reason) < EARLY_STOP_MIN_REASON:
@@ -7805,8 +8897,17 @@ async def get_admin_audit_log(request: Request, limit: int = 200, action: str = 
         query["actor"] = {"$regex": re.escape(actor.strip()[:60]), "$options": "i"}
     limit = min(max(limit, 1), 500)
     skip = max(skip, 0)
-    total = await db.audit_log.count_documents(query)
     privileged = current_role(request) == "superadmin"
+    if not privileged:
+        hidden_actions = list(PANEL_HIDDEN_AUDIT_ACTIONS)
+        if actor:
+            # The actor filter runs against the STORED actor. Left in place it would let a non-superadmin
+            # ask "which of these vote events did panelist X cast?" and so learn who has voted on an
+            # application even though the returned actor is redacted. Vote events are therefore not
+            # searchable by actor for anyone but the superadmin.
+            hidden_actions.append("application_vote_cast")
+        query.setdefault("$and", []).append({"action": {"$nin": hidden_actions}})
+    total = await db.audit_log.count_documents(query)
     logs = []
     async for entry in db.audit_log.find(query).sort("timestamp", -1).skip(skip).limit(limit):
         entry["_id"] = str(entry["_id"])
@@ -7818,6 +8919,7 @@ async def get_admin_audit_log(request: Request, limit: int = 200, action: str = 
                 details["ip"] = _mask_ip(details["ip"])
             if entry.get("action") == "admin_login_locked":
                 entry["actor"] = _mask_email(entry.get("actor", ""))
+            _redact_panel_audit(entry, current_role(request))
         logs.append(entry)
     return {"total": total, "limit": limit, "skip": skip, "entries": logs}
 

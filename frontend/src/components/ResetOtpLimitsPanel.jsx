@@ -86,7 +86,7 @@ function TypeaheadSearch({ placeholder, ariaLabel, fetcher, onPick, renderResult
  * fresh code. It never shows or creates a code. Every reset is logged with the reason and note, and
  * is capped per voter and per admin (set on Security & SMS).
  *
- * canOverrideCaps  — Chief / Deputy Chief Commissioner and superadmin may raise one person's cap.
+ * canOverrideCaps  — The Chairperson, Deputy Chairperson and superadmin may raise one person's cap.
  */
 export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialStudentId = '' }) {
   const toast = useToast();

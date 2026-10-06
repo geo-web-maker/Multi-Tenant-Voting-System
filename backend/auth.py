@@ -35,10 +35,18 @@ if not JWT_SECRET:
         "Refusing to start with no secret rather than falling back to a default."
     )
 
-# The five admin roles verify-admin can issue. Voters get their own,
+if len(JWT_SECRET) < 32:
+    import logging as _logging
+    _logging.getLogger("BallotBoxAuth").warning(
+        "JWT_SECRET_KEY is shorter than 32 characters; HS256 tokens signed with a short secret can be "
+        "brute-forced offline. Generate a new one with `openssl rand -hex 32`.")
+
+# The six admin roles verify-admin can issue. Voters get their own,
 # separate token (see "Voter session tokens" below) whose role is NOT in this
 # set, so it can never open an admin route.
-ADMIN_ROLES = {"superadmin", "it_admin", "financial_controller", "overseer", "commission"}
+# "vetting" is the Vetting Panel (panel_members collection). A commissioner
+# reaches it through the hat switch, which issues a fresh token with this role.
+ADMIN_ROLES = {"superadmin", "it_admin", "financial_controller", "overseer", "commission", "vetting"}
 
 # main.py sets this to an async function that checks a token's jti against
 # db.revoked_tokens, so a logout (or "revoke all sessions") can invalidate a
@@ -149,7 +157,10 @@ def verify_voter_token(request: Request, student_id: str, org_id: Optional[str])
 
 async def decode_access_token(token: str, check_revocation: bool = True) -> dict:
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # A token missing exp, iat or jti must never be accepted: without exp it would not expire, and
+        # without jti it could not be revoked. create_access_token always sets all three.
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                             options={"require": ["exp", "iat", "jti"]})
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
     except jwt.InvalidTokenError:

@@ -192,6 +192,61 @@ class VoterUser(HttpUser):
                 resp.success()
 
 
+class ResultsViewerUser(HttpUser):
+    """Simulates someone with the public results page open: polls /election-status
+    every 60 s and /election-results every 10 s, matching the real frontend's
+    polling intervals (see PERFORMANCE_AUDIT.md section 4). This is the load the
+    audit flagged as the actual risk on a free Atlas M0 tier — it scales with how
+    many people are *watching*, not with how many students vote, so it is the one
+    traffic shape the original VoterUser-only test never exercised. Spawn these
+    alongside VoterUser (not instead of it) to see the combined ops/sec headroom
+    the 5 s _RESULTS_TTL / _SETTINGS_TTL caches leave under the 100 ops/s cap."""
+    wait_time = between(9, 11)   # ~ the frontend's 10 s results-poll cadence
+
+    def on_start(self):
+        self.org_slug = random.choice(ORGS_TO_TEST)
+        self.headers = {"X-Org-Slug": self.org_slug} if self.org_slug else {}
+        self._ticks = 0
+
+    @task
+    def poll_results(self):
+        self.client.get("/election-results", headers=self.headers, name="/election-results")
+        self._ticks += 1
+        if self._ticks % 6 == 0:   # /election-status polls ~6x less often (60 s vs 10 s)
+            self.client.get("/election-status", headers=self.headers, name="/election-status")
+
+
 @events.quitting.add_listener
 def _(environment, **kwargs):
     mongo_client.close()
+
+
+# -----------------------------------------------------------------------------
+# Scenario for THIS election: ~200 voters spread across one voting day, not a
+# concurrency stress run. Run headless, scoped to one org, with a handful of
+# results-watchers open at once (the realistic case — a few screens showing
+# live turnout in a student union office, not 100 simultaneous viewers):
+#
+#   locust -f locustfile.py --host https://<your-render-app>.onrender.com \
+#       --headless -u 25 -r 2 --run-time 10m \
+#       VoterUser:5 ResultsViewerUser:1
+#
+# Read as: 25 total simulated clients, weighted 5 VoterUser : 1 ResultsViewerUser
+# (so about 4 viewers in the mix), ramping 2/s, sustained for 10 minutes — this
+# compresses "200 voters trickling in over 8 hours" into a worst-case burst far
+# denser than the real day will ever be, which is the right direction to err for
+# a capacity check. Watch Atlas's Operations/sec panel during the run (section 7
+# of the audit) rather than trusting locust's own latency numbers alone, since
+# the M0 cap is what actually bites, not request latency.
+#
+# Analytically, before running: 200 voters x 26 ops (section 0 of the audit) =
+# 5,200 ops for the whole day's voting — about 0.18 ops/sec averaged over 8
+# hours. Even compressed into a 10-minute burst that is only ~8.7 ops/sec from
+# voting itself. Each results-watcher costs at most 1 cached-miss op per 5 s
+# (the _RESULTS_TTL window) no matter how many people are looking, so a handful
+# of open results tabs adds well under 1 op/sec combined. The free tier's
+# 100 ops/sec cap is not the binding constraint for this scenario; the Render
+# free-tier cold-start sleep is the more likely real-world failure mode, which
+# is why the keep-warm /health ping during voting hours (see
+# BALLOTBOX_PHASE_RUNBOOK.md) matters more here than the Atlas tier does.
+# -----------------------------------------------------------------------------

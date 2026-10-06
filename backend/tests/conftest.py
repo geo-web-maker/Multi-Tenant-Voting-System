@@ -8,6 +8,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
 
+# pymongo >= 4.11 passes `sort=` from UpdateOne into BulkOperationBuilder.add_update, which mongomock 4.3.0
+# does not accept (TypeError). The app never sets `sort`, so accept and ignore it in the test double only.
+import inspect
+from mongomock.collection import BulkOperationBuilder
+if "sort" not in inspect.signature(BulkOperationBuilder.add_update).parameters:
+    _orig_add_update = BulkOperationBuilder.add_update
+
+    def _add_update_ignoring_sort(self, *args, sort=None, **kwargs):
+        return _orig_add_update(self, *args, **kwargs)
+
+    BulkOperationBuilder.add_update = _add_update_ignoring_sort
+
 
 @pytest.fixture(autouse=True)
 def _reset_org_cache():
@@ -25,6 +37,7 @@ def _settings_cache_off_by_default(monkeypatch):
     disabled unless a test opts in (tests/test_settings_cache.py sets _SETTINGS_TTL itself)."""
     import main
     monkeypatch.setattr(main, "_SETTINGS_TTL", 0.0)
+    monkeypatch.setattr(main, "_RESULTS_TTL", 0.0)     # same for the public results cache
     main.invalidate_settings()
     yield
     main.invalidate_settings()

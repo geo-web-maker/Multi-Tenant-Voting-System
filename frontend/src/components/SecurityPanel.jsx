@@ -255,10 +255,10 @@ export default function SecurityPanel() {
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>Candidate approval policy</b>
-        <p style={note}>How the commission's votes on candidate applications and removals resolve. Changing this immediately re-checks every pending application and pending removal vote against the new rule — it can flip an outcome without a new vote being cast.</p>
+        <p style={note}>How the Vetting Panel's votes on candidate applications resolve. Changing this immediately re-checks every pending application against the new rule — it can flip an outcome without a new vote being cast.</p>
         <select style={inp} value={f.approval_policy} onChange={e => setF({ ...f, approval_policy: e.target.value })}>
-          <option value="majority_total">Majority of total commissioners (original behaviour)</option>
-          <option value="unanimous">Unanimous — every commissioner must agree</option>
+          <option value="majority_total">Majority of total panel size (original behaviour)</option>
+          <option value="unanimous">Unanimous — every panelist must agree</option>
           <option value="majority_cast">Majority of votes cast — resolves once everyone has voted</option>
         </select>
       </div>

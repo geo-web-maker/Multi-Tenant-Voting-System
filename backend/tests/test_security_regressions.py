@@ -86,6 +86,7 @@ async def test_forged_and_stale_tokens_rejected(env):
 
 # ---- H1: commissioner vote stuffing ------------------------------------------------------------
 async def test_one_commissioner_cannot_vote_multiple_times_by_varying_the_id(env):
+    await env.seed_panel()
     for i in range(3):
         await env.voter(f"com{i+3}", f"Comm {i+3}", ("2567000000%02d" % (i + 10),), is_commissioner=True)   # 5 commissioners -> need 3
     app = await env.db.applications.insert_one({
@@ -93,7 +94,7 @@ async def test_one_commissioner_cannot_vote_multiple_times_by_varying_the_id(env
         "status": "pending", "votes": {}, "removal_votes": {}, "finance_cleared": True})
     aid = str(app.inserted_id)
     for variant in ("com1", "COM1", "Com1 ", "c om1", '"com1"'):
-        await env.client.post(f"/admin/applications/{aid}/vote", headers=env.com1,
+        await env.client.post(f"/admin/applications/{aid}/vote", headers=env.pan1,
                               json={"commissioner_id": variant, "vote": "approve"})
     doc = await env.db.applications.find_one({"_id": ObjectId(aid)})
     assert doc["status"] == "pending", "a single commissioner reached majority alone"

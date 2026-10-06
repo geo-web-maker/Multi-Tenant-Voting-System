@@ -13,7 +13,7 @@ const fmt = (t) => (t ? new Date(String(t).endsWith('Z') ? t : t + 'Z').toLocale
 /**
  * Commission: pending queue with Approve / Deny (any ONE commissioner decides) + the pre-freeze digest.
  * Overseer / SuperAdmin (readOnly): read-only list of the requests (no decide buttons) — but the
- * digest is always loaded, and SuperAdmin / Chief / Deputy Chief also get an Undo control on it
+ * digest is always loaded, and SuperAdmin / Chairperson / Deputy Chairperson also get an Undo control on it
  * (gated server-side by role, independent of this prop).
  * breakGlass (superadmin only): when the org has switched break-glass on, pending requests get a red
  * "Break-glass approve" button. It needs a written justification and is flagged in the ledger.

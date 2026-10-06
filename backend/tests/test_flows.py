@@ -83,6 +83,29 @@ async def env(monkeypatch):
     await voter("it1", "It Admin", ("256700000003",), is_it_admin=True)
     await voter("v1", "Ayebale Elizabeth")
     e.freeze = lambda: set_voting(e, start=START - timedelta(hours=1), end=START + timedelta(days=1))
+
+    async def seed_panel(extra=0, sids=("com1", "com2")):
+        """Phase 2: votes come from the Vetting Panel. Seeds members linked to the fixture
+        commissioners (plus `extra` externals) and sets e.pan1 / e.pan2 to their panel tokens."""
+        for sid in sids:
+            pmid = "PM-" + sid.upper()
+            await db.panel_members.insert_one({"org_id": org_id, "panel_member_id": pmid, "student_id": sid,
+                                               "is_member": True, "full_name": sid, "email": f"{sid}@p.org",
+                                               "phone_numbers": ["256700000000"], "active": True,
+                                               "appointment_reason": "fixture", "password_hash": "x",
+                                               "must_change_password": False})
+        for i in range(extra):
+            await db.panel_members.insert_one({"org_id": org_id, "panel_member_id": f"PM-EXT{i}",
+                                               "is_member": False, "full_name": f"External {i}", "email": f"ext{i}@p.org",
+                                               "phone_numbers": ["256700000000"], "active": True,
+                                               "appointment_reason": "fixture", "password_hash": "x",
+                                               "must_change_password": False, "student_id": None,
+                                               "access_expires_at": None,
+                                               # Externals are gated until they accept the notice (guide 6.4);
+                                               # these fixtures stand in for panelists who already have.
+                                               "confidentiality_version": main.CONFIDENTIALITY_VERSION})
+        e.pan1, e.pan2 = tok("PM-COM1", "vetting"), tok("PM-COM2", "vetting")
+    e.seed_panel = seed_panel
     yield e
     await client.aclose()
 
@@ -514,6 +537,7 @@ async def test_security_settings_and_schedule_banner(env):
 
 
 async def test_schedule_change_logs_derived_values_and_rearms_freeze(env):
+    await env.seed_panel(extra=1)   # vetting cannot be scheduled with fewer than 3 panelists
     body = {"round_id": "round-1", "phases": {"voting": {"start": (START + timedelta(days=1)).isoformat() + "Z",
                                                           "end": (START + timedelta(days=4)).isoformat() + "Z", "enforced": True}}}
     assert (await env.client.post("/admin/schedule/phases", headers=env.sa, json=body)).status_code == 200
@@ -553,6 +577,7 @@ async def test_quota_hard_stop_needs_chief(env):
 
 
 async def test_schedule_timezone_stored_validated_and_returned(env):
+    await env.seed_panel(extra=1)   # vetting cannot be scheduled with fewer than 3 panelists
     body = {"round_id": "round-1", "timezone": "Africa/Kampala",
             "phases": {"voting": {"start": "2026-01-12T05:00:00Z", "end": "2026-01-13T05:00:00Z", "enforced": True}}}
     assert (await env.client.post("/admin/schedule/phases", headers=env.sa, json=body)).status_code == 200
@@ -645,6 +670,7 @@ async def test_application_snapshots_fee_at_submit_time(env):
 
 
 async def test_sms_on_approval_finance_reject_and_denial_and_never_blocks(env):
+    await env.seed_panel()
     fc = await _financial_controller(env)
     pid = await _mk_position(env, "Speaker", 30000)
 
@@ -652,7 +678,7 @@ async def test_sms_on_approval_finance_reject_and_denial_and_never_blocks(env):
     a1 = await _apply(env, pid)
     aid = str(a1["_id"])
     assert (await env.client.post(f"/admin/applications/{aid}/finance-clear", headers=fc, json={"financial_controller_id": "fc1"})).status_code == 200
-    for who, tok in (("com1", env.com1), ("com2", env.com2)):
+    for who, tok in (("com1", env.pan1), ("com2", env.pan2)):
         r = await env.client.post(f"/admin/applications/{aid}/vote", headers=tok, json={"commissioner_id": who, "vote": "approve"})
         assert r.status_code == 200, r.text
     assert (await env.db.applications.find_one({"_id": a1["_id"]}))["status"] == "approved"

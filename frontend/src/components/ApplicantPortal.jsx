@@ -126,10 +126,10 @@ export default function ApplicantPortal() {
   }, 20000, !submitted);
 
   const approvalPolicyCopy = {
-    unanimous: 'Every commissioner must agree. Unanimous approval is required.',
-    majority_total: 'The commission reviews all applications before any candidate appears on the ballot. A majority of the commission must agree for approval.',
-    majority_cast: 'The commission reviews all applications before any candidate appears on the ballot. Resolves once every commissioner has voted. Whichever side has more wins.',
-  }[approvalPolicy] || 'The commission reviews all applications before any candidate appears on the ballot.';
+    unanimous: 'Every panelist must agree. Unanimous approval is required.',
+    majority_total: 'The Vetting Panel reviews all applications before any candidate appears on the ballot. A majority of the panel must agree for approval.',
+    majority_cast: 'The Vetting Panel reviews all applications before any candidate appears on the ballot. Resolves once every panelist has voted. Whichever side has more wins.',
+  }[approvalPolicy] || 'The Vetting Panel reviews all applications before any candidate appears on the ballot.';
 
   useEffect(() => {
     if (submitted) { clearDraft('apply'); return; }
@@ -263,7 +263,7 @@ const handleSubmit = async (e) => {
           <h2 style={{ color: 'var(--text-color)', margin: '0 0 10px' }}>Application Submitted!</h2>
           <p style={{ opacity: 0.7, lineHeight: '1.6', marginBottom: '24px' }}>
             Thank you, <strong>{submittedName}</strong>. Your application has been received and
-            is now with the Election Commission for review.
+            is now with the Vetting Panel for review.
           </p>
           <div style={{ ...infoBox, marginBottom: '16px', textAlign: 'left' }} role="note">
             <p style={{ margin: 0, fontSize: '13px', opacity: 0.9, lineHeight: '1.6' }}>
@@ -313,7 +313,7 @@ const handleSubmit = async (e) => {
           </p>
           <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', opacity: 0.85, lineHeight: '1.9' }}>
             <li><strong>Fill and Submit Form:</strong> Complete the form below and submit your application.</li>
-            <li><strong>Application Review:</strong> The Election Commission will review your submission.</li>
+            <li><strong>Application Review:</strong> The Vetting Panel will review your submission.</li>
             <li><strong>Access to Portal:</strong> Check your registered phone number for an SMS link to your candidate portal.</li>
             <li><strong>Track Your Status:</strong> Use the portal link to follow your application progress and view the final outcome.</li>
             <li><strong>Need Help?</strong> If no phone number is listed on your student record, contact the IT administrators for assistance.</li>

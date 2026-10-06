@@ -15,6 +15,7 @@ import VoterStats from './VoterStats';
 import { SmsUsageTile } from './SecurityPanel';
 import SecurityPanel from './SecurityPanel';
 import VoterFieldsPanel from './VoterFieldsPanel';
+import VettingPanelManager from './VettingPanelManager';
 import usePolling from '../hooks/usePolling';
 import useRosterStatus, { FROZEN_NOTE } from '../hooks/useRosterStatus';
 import ReceiptLink from './ReceiptLink';
@@ -107,6 +108,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   
   // --- Applications state ---
   const [applications, setApplications] = useState([]);
+  const [voterNames, setVoterNames] = useState({});   // panel_member_id / reg no -> name, for the panel-votes line
   const [appsLoading, setAppsLoading]   = useState(false);
   const [appFilter, setAppFilter]       = useState('all');
 
@@ -209,8 +211,19 @@ export default function SuperAdminDashboard({ onLogout }) {
   const fetchApplications = async ({ silent = false } = {}) => {
     if (!silent) setAppsLoading(true);
     try {
-      const res = await api.get(`/admin/applications`);
+      const [res, panelRes] = await Promise.all([
+        api.get(`/admin/applications`),
+        api.get(`/superadmin/vetting-panel`).catch(() => null),
+      ]);
       setApplications(res.data);
+      if (panelRes?.data?.panel) {
+        const names = {};
+        panelRes.data.panel.forEach((m) => {
+          names[String(m.panel_member_id).toUpperCase()] = m.full_name;
+          if (m.student_id) names[String(m.student_id).toUpperCase()] = m.full_name;
+        });
+        setVoterNames(names);
+      }
     } catch { /* non-critical: ignore */ }
     finally { if (!silent) setAppsLoading(false); }
   };
@@ -844,6 +857,7 @@ const handleSuperAdminRemoveStudent = async () => {
         { id: 'it_admins',     label: <>IT Admins</>, icon: 'monitor' },
         { id: 'financial_controllers', label: <>Financial Controllers</>, icon: 'wallet' },
         { id: 'overseers',     label: <>Overseers</>, icon: 'eye' },
+        { id: 'vetting_panel', label: <>Vetting Panel</>, icon: 'users' },
         { id: 'organizations', label: <>Organisations</>, icon: 'building' },
       ],
     },
@@ -1224,9 +1238,12 @@ const handleSuperAdminRemoveStudent = async () => {
                         <ReceiptLink url={app.payment_proof_url} />
                       </div>
                     )}
+                    {(app.status === 'denied' || app.status === 'removed') && (
+                      <FinalReasonEditor appId={app._id} initial={app.final_reason || ''} />
+                    )}
                     {app.votes && Object.keys(app.votes).length > 0 && (
                       <p style={{ margin: '6px 0 0', fontSize: '11px', opacity: 0.5 }}>
-                        Commission votes: {Object.entries(app.votes).map(([k,v]) => `${k}: ${v}`).join(' · ')}
+                        Panel votes: {Object.entries(app.votes).map(([k,v]) => `${voterNames[String(k).toUpperCase()] || k}: ${v}`).join(' · ')}
                       </p>
                     )}
                   </div>
@@ -1300,12 +1317,12 @@ const handleSuperAdminRemoveStudent = async () => {
                       <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
                       {c.is_chief_commissioner && (
                        <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                        Chief
+                        Chairperson
                         </span>
                       )}
                       {c.is_deputy_chief_commissioner && (
                        <span style={{ fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                        Deputy Chief
+                        Deputy Chairperson
                         </span>
                       )}
                     </div>
@@ -1342,26 +1359,26 @@ const handleSuperAdminRemoveStudent = async () => {
                       <button
                         onClick={() => handleClearChief(c.student_id)}
                         style={{ ...ghostBtn, color: 'var(--warning)', borderColor: 'var(--warning)', fontSize: '12px' }}>
-                        Clear Chief
+                        Clear Chairperson
                       </button>
                     ) : (
                       <button
                         onClick={() => handleSetChief(c.student_id)}
                         style={{ ...ghostBtn, fontSize: '12px' }}>
-                        Set Chief
+                        Set Chairperson
                       </button>
                     )}
                     {c.is_deputy_chief_commissioner ? (
                       <button
                         onClick={() => handleClearDeputyChief(c.student_id)}
                         style={{ ...ghostBtn, color: 'var(--info)', borderColor: 'var(--info)', fontSize: '12px' }}>
-                        Clear Deputy
+                        Clear Deputy Chairperson
                       </button>
                     ) : (
                       <button
                         onClick={() => handleSetDeputyChief(c.student_id)}
                         style={{ ...ghostBtn, fontSize: '12px' }}>
-                        Set Deputy
+                        Set Deputy Chairperson
                       </button>
                     )}
                   </div>
@@ -2188,7 +2205,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
         {/* ══════════════ CONTACT CHANGES TAB ══════════════ */}
         {/* readOnly: decisions on pending requests stay commission-only, but SuperAdmin
-            still gets the full pre-freeze digest and, as Chief/Deputy Chief also do, the
+            still gets the full pre-freeze digest and, as the Chairperson and Deputy Chairperson also do, the
             Undo control on it — gated server-side, not by this prop. */}
         {activeTab === 'contact_changes' && <ContactChangesQueue readOnly breakGlass />}
 
@@ -2366,6 +2383,7 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
 
         {/* ══════════════ ORGANIZATIONS TAB (multi-tenancy) ══════════════ */}
+        {activeTab === 'vetting_panel' && <VettingPanelManager voters={voters} commissioners={commissioners} />}
         {activeTab === 'organizations' && (
           <div style={twoCol}>
             <div style={card}>
@@ -2497,3 +2515,42 @@ const SmsProviderCard = ({ label, sub, data }) => (
 );
 const modalOverlay = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
 const modalContent = { backgroundColor: 'var(--card-bg)', padding: '30px', borderRadius: '16px', width: '90%', maxWidth: '700px', maxHeight: '85vh', overflowY: 'auto' };
+
+// Guide 13.2 (H2): the superadmin records the stated reason shown to commissioners.
+function FinalReasonEditor({ appId, initial }) {
+  const toast = useToast();
+  const [text, setText] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  // A background reload may bring a newer saved reason; follow it unless there are unsaved edits.
+  useEffect(() => {
+    setText((cur) => (cur === saved ? initial : cur));
+    setSaved(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to a new server value
+  }, [initial]);
+  const dirty = text.trim() !== (saved || '').trim();
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.post(`/superadmin/applications/${appId}/final-reason`, { reason: text.trim() });
+      setSaved(text.trim());
+      toast('Reason saved.', { kind: 'success' });
+    } catch (e) {
+      toast(e.response?.data?.detail || 'Could not save the reason.', { kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div style={{ marginTop: '10px' }}>
+      <label style={{ fontSize: '12px', opacity: 0.7 }}>
+        Reason shown to commissioners (optional) · {text.length}/500{dirty && ' · unsaved changes'}
+      </label>
+      <textarea style={{ ...inp, minHeight: '56px', marginTop: '4px' }} maxLength={500}
+        value={text} onChange={e => setText(e.target.value)} />
+      <button style={{ ...ghostBtn, marginTop: '6px' }} disabled={saving || !dirty} onClick={save}>
+        {saving ? 'Saving…' : 'Save reason'}
+      </button>
+    </div>
+  );
+}
