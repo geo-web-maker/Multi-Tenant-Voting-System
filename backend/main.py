@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -2096,6 +2096,21 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
         await db.applications.update_one({"_id": ObjectId(app_id)}, {"$unset": {"tied_pending_chief": ""}})
     elif policy == "majority_cast" and (approve_removals + deny_removals) == total and approve_removals == deny_removals:
         await _flag_tie_for_chief(app_id, org_id)
+
+
+async def _safe_resweep(org_id: str, include_removals: bool = True):
+    """Panel-membership endpoints (add/link/activate/deactivate a panelist) trigger a resweep purely as
+    a side effect of the active-panel count changing, NOT as the thing the caller actually asked for.
+    Run as a background task (added via BackgroundTasks.add_task at each call site) so it can't make an
+    already-successful "add this panelist" response slow, and wrapped here so a failure inside it — an
+    SMS send or certificate generation for some unrelated pending application — can't surface as a
+    failure of the panel-membership change that already committed before this runs. Logged, not raised:
+    there's no caller left listening by the time this executes, so the only thing an exception here would
+    accomplish is an unhandled-task warning in the server log, which this replaces with a clearer one."""
+    try:
+        await _resweep_pending_after_policy_change(org_id, include_removals=include_removals)
+    except Exception:
+        logger.exception(f"Resweep of pending applications after a panel change failed for org {org_id}.")
 
 
 async def _resweep_pending_after_policy_change(org_id: str, include_removals: bool = True):
@@ -7549,7 +7564,7 @@ async def superadmin_list_panel(request: Request):
 
 
 @app.post("/superadmin/vetting-panel")
-async def superadmin_add_panelist(data: PanelMemberCreate, request: Request):
+async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, background_tasks: BackgroundTasks):
     await _panel_open_guard(request)
 
     if not data.appointment_reason.strip():
@@ -7606,7 +7621,7 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request):
         "removed_at":        None,
     }
     await db.panel_members.insert_one(doc)
-    await _resweep_pending_after_policy_change(request.state.org_id, include_removals=False)
+    background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     sms_sent = await send_temp_password_sms(
         {"phone_numbers": doc["phone_numbers"], "full_name": doc["full_name"],
          "org_id": doc["org_id"]}, "Vetting Panel", temp_password)
@@ -7618,7 +7633,7 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request):
 
 
 @app.post("/superadmin/vetting-panel/link-commissioner")
-async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Request):
+async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Request, background_tasks: BackgroundTasks):
     """Guide 5.2: a commissioner sits on the panel as an extension of their own screens. The record is
     linked by student_id and carries NO password and NO email, so nothing is texted and there is nothing to
     log in with: they reach the panel through /admin/switch-hat from the Commission dashboard. The
@@ -7662,7 +7677,7 @@ async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Req
         "added_at":          now,
         "removed_at":        None,
     })
-    await _resweep_pending_after_policy_change(request.state.org_id, include_removals=False)
+    background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     await log_action("vetting_panel_member_added", current_actor(request), {
         "panel_member_id": panel_member_id, "is_member": True, "linked_commissioner": True,
         "reason": reason, "sms_notified": False,
@@ -7740,7 +7755,7 @@ async def superadmin_panel_set_credentials(panel_member_id: str, data: PanelMemb
 
 
 @app.post("/superadmin/vetting-panel/{panel_member_id}/active")
-async def superadmin_panel_set_active(panel_member_id: str, request: Request, active: bool = True):
+async def superadmin_panel_set_active(panel_member_id: str, request: Request, background_tasks: BackgroundTasks, active: bool = True):
     await _panel_open_guard(request)
     p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
     if not p:
@@ -7757,7 +7772,7 @@ async def superadmin_panel_set_active(panel_member_id: str, request: Request, ac
     if not active:
         update["removed_at"] = datetime.utcnow()
     await db.panel_members.update_one({"_id": p["_id"]}, {"$set": update})
-    await _resweep_pending_after_policy_change(request.state.org_id, include_removals=False)
+    background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     await log_action("vetting_panel_member_" + ("activated" if active else "deactivated"),
                      current_actor(request), {"panel_member_id": panel_member_id},
                      org_id=request.state.org_id)
