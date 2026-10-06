@@ -1671,8 +1671,11 @@ async def _resolve_position_title(position_id: str, org_id: str = None) -> tuple
 
 async def _create_candidate_from_application(app_doc: dict, org_id: str = None):
     title, order = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
+    # Same fallback _issue_certificate uses. This runs AFTER the status flip to "approved", so a KeyError here
+    # would leave an approved application with no candidate and no way to retry.
     await db.candidates.insert_one({
-        "name": app_doc["full_name"],
+        "name": app_doc.get("full_name")
+                or (app_doc.get("application_snapshot") or {}).get("full_name", ""),
         "position": title,
         "image_url": app_doc.get("image_url", ""),
         "order": order,
@@ -5765,20 +5768,30 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
     allowed = {_vote_key(x) for x in (panelist.get("student_id"), panelist["panel_member_id"]) if x}
     if claimed and _vote_key(claimed) not in allowed:
         raise HTTPException(403, "The vote does not match your panel account.")
+    # The panel screen promises "your vote is final and cannot be changed"; enforce it here too. Otherwise a
+    # panelist could flip a vote by calling the API after a tie was flagged and sidestep the Chairperson.
+    if key in _dedupe_votes(app_doc.get("votes")):
+        raise HTTPException(409, "You have already voted on this application. Votes are final.")
 
     is_also_commissioner = False
     if panelist.get("student_id"):
         is_also_commissioner = bool(await db.voters.find_one(org_query(request, {
             **get_forgiving_filter(panelist["student_id"]), "is_commissioner": True})))
+
+    # Atomic: only record the vote while the application is still open and this panelist has not voted. A
+    # concurrent resolution or a double submit changes nothing and is reported, instead of writing a vote
+    # onto a resolved application. The audit row is written only once the vote is actually stored.
+    written = await db.applications.update_one(
+        org_query(request, {"_id": oid, "status": {"$nin": list(RESOLVED_STATUSES)},
+                            f"votes.{key}": {"$exists": False}}),
+        {"$set": {f"votes.{key}": data.vote}}
+    )
+    if written.matched_count == 0:
+        raise HTTPException(409, "This application was just resolved or you have already voted. Please refresh.")
     await log_action("application_vote_cast", panelist["panel_member_id"], {
         "app_id": app_id, "vote": data.vote, "reason": data.reason,
         "is_member": bool(panelist.get("is_member")), "also_commissioner": is_also_commissioner,
     }, org_id=request.state.org_id)
-
-    await db.applications.update_one(
-        org_query(request, {"_id": oid}),
-        {"$set": {f"votes.{key}": data.vote}}
-    )
     updated = await db.applications.find_one(org_query(request, {"_id": oid}))
     await _resolve_application(app_id, updated, request.state.org_id)
 
@@ -7737,6 +7750,13 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
             raise HTTPException(404, "Member not found on the voter roll.")
         if await _has_live_application(request, voter["student_id"]):
             raise HTTPException(409, "This member has an application in progress and cannot sit on the Vetting Panel.")
+        # A second record for the same person would count twice in the approval denominator (get_panel_count)
+        # but vote under one key (_panel_vote_key), so unanimous / majority-of-cast outcomes could never be
+        # reached. link-commissioner already refuses this; the direct-login route must too.
+        if await db.panel_members.find_one(org_query(request, {
+                "student_id": normalize_student_id(voter["student_id"])}), {"_id": 1}):
+            raise HTTPException(409, "This member is already on the panel list. Edit, re-issue credentials for, "
+                                     "or activate the existing record instead of adding another.")
 
     panel_member_id = f"PM-{secrets.token_hex(6).upper()}"
     temp_password = generate_temp_password()
@@ -7751,7 +7771,9 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
         "appointment_reason": data.appointment_reason.strip(),
         "affiliation":       data.affiliation.strip(),
         "student_id":        normalize_student_id(data.student_id) if data.is_member else None,
-        "access_expires_at": data.access_expires_at,
+        # The frontend sends toISOString() ("...Z"), which pydantic parses as an AWARE datetime; everything
+        # else here compares against naive utcnow(), so store it naive (as the schedule routes already do).
+        "access_expires_at": naive_utc(data.access_expires_at),
         "expires_with_phase": data.expires_with_phase,
         "confidentiality_accepted_at": None,
         "confidentiality_version": None,
@@ -7844,7 +7866,9 @@ async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpda
         raise HTTPException(400, "Unknown timeline phase for access expiry.")
     end_touched = data.access_expires_at is not None or data.expires_with_phase is not None or data.clear_access_end
     if end_touched:
-        new_at = data.access_expires_at
+        # Aware (the browser sends "...Z") -> naive UTC. Without this, the `new_at > old` comparison in the
+        # freeze branch below raises TypeError (aware vs naive) and the request fails with HTTP 500.
+        new_at = naive_utc(data.access_expires_at)
         new_phase = data.expires_with_phase
         if data.clear_access_end:
             new_at, new_phase = None, None
@@ -7854,6 +7878,13 @@ async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpda
             new_at = None             # and the other way round
         if not p.get("is_member") and not (new_at or new_phase):
             raise HTTPException(400, "An external panelist needs an access end: a date or a timeline phase.")
+        # Same rule as creation (SEC-08): a phase-only end for an external must resolve to a real end date,
+        # otherwise nothing would ever close the account and new logins would be refused.
+        if new_phase and not new_at and not p.get("is_member"):
+            phase_end = (await get_phase_schedule(request))["phases"].get(new_phase, {}).get("end")
+            if not phase_end:
+                raise HTTPException(400, "That timeline phase has no end date yet, so it cannot close an external's "
+                                         "access. Set a fixed access end, or schedule the phase first.")
         update["access_expires_at"] = new_at
         update["expires_with_phase"] = new_phase
         # The panel is frozen while vetting is open. The one change allowed then is giving a
@@ -7912,8 +7943,8 @@ async def superadmin_panel_set_active(panel_member_id: str, request: Request, ba
         if remaining < 3:
             raise HTTPException(409, "The Vetting Panel must keep at least 3 active panelists.")
     update = {"active": active, **(await _invalidate_sessions(p["_id"]))}
-    if not active:
-        update["removed_at"] = datetime.utcnow()
+    # Stamp the removal on deactivation; clear it on re-activation so a live panelist never carries a stale date.
+    update["removed_at"] = None if active else datetime.utcnow()
     await db.panel_members.update_one({"_id": p["_id"]}, {"$set": update})
     background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     await log_action("vetting_panel_member_" + ("activated" if active else "deactivated"),
