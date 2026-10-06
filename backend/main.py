@@ -908,7 +908,16 @@ class FinanceClear(BaseModel):
 
 class FinanceReject(BaseModel):
     financial_controller_id: str   # must belong to a voter flagged is_financial_controller
-    reason: str                    # required
+    reason: str = Field(..., max_length=500)   # required; shown to the candidate on their status page
+
+class FinanceReverse(BaseModel):
+    financial_controller_id: str
+    reason: str = Field(..., max_length=500)   # required; internal (audit log + finance history), never shown to the candidate
+
+class FinanceReinstate(BaseModel):
+    financial_controller_id: str
+    target: str                                # "pending" (back to awaiting) | "cleared" (payment confirmed)
+    reason: str = Field(..., max_length=500)   # required; internal, e.g. "Balance of UGX 20,000 paid, receipt #123"
     
 
 class ITAdminStudentAdd(BaseModel):
@@ -1772,7 +1781,7 @@ async def _issue_certificate(app_doc: dict, org_id: str = None):
     )
 
 
-async def _record_denial_snapshot(app_doc: dict, org_id: str):
+async def _record_denial_snapshot(app_doc: dict, org_id: str, *, finance_reason: str | None = None):
     """
     Called at the moment an application is denied, from any of the three
     denial paths (commission vote, finance rejection, superadmin
@@ -1789,6 +1798,9 @@ async def _record_denial_snapshot(app_doc: dict, org_id: str):
                 "full_name": app_doc.get("full_name", ""),
                 "position_title": title,
                 "decided_at": decided_at,
+                # Only a Financial Controller rejection carries these: the candidate's portal shows the
+                # reason and tells them to contact Finance. A commission denial leaves them out.
+                **({"denied_by": "Financial Controller", "reason": finance_reason} if finance_reason else {}),
             },
         }}
     )
@@ -1818,7 +1830,7 @@ _HIDDEN_APPLICATION_FIELDS = ("votes", "removal_votes", "revert_history", "tied_
 # The booleans (finance_cleared / finance_rejected) and fee_required stay: the vetting and overseer
 # dashboards use them to show whether voting can open.
 _FINANCE_ONLY_APPLICATION_FIELDS = ("payment_method", "payment_proof_url", "finance_clear_note",
-                                    "finance_rejection_reason")
+                                    "finance_rejection_reason", "finance_history")
 PANEL_HIDDEN_AUDIT_ACTIONS = ("application_vote_tied", "application_tie_broken")
 
 
@@ -5989,9 +6001,9 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
     # Finance rejection is a separate code path from a commissioner-vote
     # denial, so it records the denial snapshot itself — otherwise the
     # candidate's status page would have no decision notice for it.
-    # (The finance reason above stays internal; the candidate sees a
-    # standard "Not approved".)
-    await _record_denial_snapshot(app_doc, request.state.org_id)
+    # The reason is stored on the snapshot so the candidate's status page shows it
+    # ("denied by the Financial Controller, contact Finance if this is an error").
+    await _record_denial_snapshot(app_doc, request.state.org_id, finance_reason=data.reason.strip())
 
     await log_action("application_finance_rejected", fc_id,
                       {"app_id": app_id, "reason": data.reason.strip(), **_payment_audit(app_doc, fc)},
@@ -6001,9 +6013,122 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
     await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
         f"{org}: Your nomination for {pos} was rejected because of your payment: {reason}."
         + (f" The required amount is {fmt_ugx(fee)}; incomplete payments are not accepted." if fee else "")
-        + " Contact the Electoral Commission."))
+        + " If you think this is a mistake, contact the Finance office."))
     logger.info(f"Application {app_id} finance-rejected by {fc_id}.")
     return {"status": "denied"}
+
+
+@app.post("/admin/applications/{app_id}/finance-reverse")
+async def finance_reverse_clearance(app_id: str, data: FinanceReverse, request: Request):
+    """
+    The Financial Controller takes back a clearance they gave in error (short payment, forged receipt).
+    The application returns to "awaiting clearance": the Vetting Panel can no longer vote on it.
+
+    Only possible while the application is still pending. Once the panel has approved or denied it, the
+    decision is no longer Finance's to undo (the superadmin can revert an override; see revert-to-pending).
+    Any votes already cast are set aside, since they were cast on a payment that is no longer valid; they
+    are kept in revert_history (superadmin-only) and the panel votes again after re-clearance.
+    """
+    reason = _clean_reason(data.reason)
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") in RESOLVED_STATUSES:
+        raise HTTPException(409, "The Vetting Panel has already decided this application, so Finance can no "
+                                 "longer reverse the clearance. Ask the superadmin.")
+    if not app_doc.get("finance_cleared"):
+        raise HTTPException(400, "This payment is not currently cleared.")
+
+    fc = await require_payment_controller(request, data.financial_controller_id, "reverse")
+    fc_id = fc["student_id"]
+    now = datetime.utcnow()
+    prior_votes = dict(app_doc.get("votes") or {})
+
+    result = await db.applications.update_one(
+        org_query(request, {"_id": oid, "finance_cleared": True,
+                            "status": {"$nin": list(RESOLVED_STATUSES)}}),
+        {"$set": {"finance_cleared": False, "votes": {}},
+         "$unset": {"finance_cleared_by": "", "finance_cleared_at": "", "finance_clear_note": "",
+                    "tied_pending_chief": ""},
+         "$push": {
+             "finance_history": {"at": now, "by": fc_id, "action": "clearance_reversed", "reason": reason},
+             **({"revert_history": {"at": now, "by": fc_id, "from_status": "pending",
+                                    "reason": f"Finance reversed payment clearance: {reason}",
+                                    "prior_votes": prior_votes}} if prior_votes else {}),
+         }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
+
+    await log_action("application_finance_reversed", fc_id,
+                     {"app_id": app_id, "reason": reason, "votes_set_aside": len(prior_votes),
+                      **_payment_audit(app_doc, fc)},
+                     org_id=request.state.org_id)
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
+        f"{org}: The payment confirmation for your {pos} nomination has been withdrawn while Finance "
+        f"reviews it. Please contact the Finance office."))
+    logger.info(f"Application {app_id} finance clearance reversed by {fc_id}.")
+    return {"status": "pending", "votes_set_aside": len(prior_votes)}
+
+
+@app.post("/admin/applications/{app_id}/finance-reinstate")
+async def finance_reinstate_application(app_id: str, data: FinanceReinstate, request: Request):
+    """
+    Move an application the Financial Controller rejected back into play once the candidate has sorted
+    things out with Finance. target="pending" returns it to the awaiting-clearance queue; target="cleared"
+    confirms the payment in the same step so the Vetting Panel can vote.
+
+    Only a finance rejection can be reinstated here. A commission denial or a superadmin override cannot.
+    """
+    if data.target not in ("pending", "cleared"):
+        raise HTTPException(400, "Target must be 'pending' or 'cleared'.")
+    reason = _clean_reason(data.reason)
+    oid = parse_oid(app_id, "application id")
+    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") != "denied" or not app_doc.get("finance_rejected"):
+        raise HTTPException(400, "Only an application rejected by Finance can be reinstated here.")
+    if app_doc.get("superadmin_override"):
+        raise HTTPException(400, "This denial was a superadmin override, so Finance can't reinstate it.")
+
+    fc = await require_payment_controller(request, data.financial_controller_id, "reinstate")
+    fc_id = fc["student_id"]
+    now = datetime.utcnow()
+    cleared = data.target == "cleared"
+
+    set_fields = {"status": "pending", "finance_rejected": False, "denial_snapshot": None,
+                  "finance_cleared": cleared}
+    if cleared:
+        set_fields.update({"finance_cleared_by": fc_id, "finance_cleared_at": now, "finance_clear_note": reason})
+    result = await db.applications.update_one(
+        org_query(request, {"_id": oid, "status": "denied", "finance_rejected": True,
+                            "superadmin_override": {"$ne": True}}),
+        {"$set": set_fields,
+         "$unset": {"finance_rejected_by": "", "finance_rejected_at": "", "finance_rejection_reason": "",
+                    "decided_at": ""},
+         "$push": {"finance_history": {
+             "at": now, "by": fc_id, "action": f"reinstated_to_{data.target}", "reason": reason,
+             "previous_rejection_reason": app_doc.get("finance_rejection_reason", "")}}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
+
+    await log_action("application_finance_reinstated", fc_id,
+                     {"app_id": app_id, "target": data.target, "reason": reason,
+                      "previous_rejection_reason": app_doc.get("finance_rejection_reason", ""),
+                      **_payment_audit(app_doc, fc)},
+                     org_id=request.state.org_id)
+    if cleared:
+        await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
+            f"{org}: Your payment issue is resolved and your nomination for {pos} is back under review."))
+    else:
+        await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
+            f"{org}: Your nomination for {pos} has been reopened and is awaiting payment confirmation "
+            f"from Finance."))
+    logger.info(f"Application {app_id} reinstated to {data.target} by {fc_id}.")
+    return {"status": "pending", "finance_cleared": cleared}
 
 
 @app.get("/admin/commissioners")

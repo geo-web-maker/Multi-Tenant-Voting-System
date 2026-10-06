@@ -106,6 +106,8 @@ const ACTION_TITLES = {
   application_finance_cleared: 'Application finance-cleared',
   application_finance_rejected: 'Application finance-rejected',
   application_force_finance_cleared: 'Application force finance-cleared',
+  application_finance_reversed: 'Finance clearance reversed',
+  application_finance_reinstated: 'Finance rejection reinstated',
   it_admin_login: 'IT Admin logged in',
   financial_controller_login: 'Financial Controller logged in',
   overseer_login: 'Overseer logged in',

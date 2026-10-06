@@ -16,7 +16,8 @@ pytestmark = pytest.mark.asyncio
 
 _APP = {"status": "pending", "finance_cleared": True, "fee_required": 5000,
         "payment_method": "MTN", "payment_proof_url": "https://x/receipt.jpg",
-        "finance_clear_note": "ok", "finance_rejection_reason": "blurry", "votes": {}}
+        "finance_clear_note": "ok", "finance_rejection_reason": "blurry",
+        "finance_history": [{"action": "clearance_reversed", "reason": "forged"}], "votes": {}}
 
 
 @pytest.mark.parametrize("role", ["vetting", "overseer", "it_admin", "commission"])

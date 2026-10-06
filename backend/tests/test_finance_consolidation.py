@@ -233,3 +233,113 @@ async def test_denying_a_student_change_needs_a_reason(env):
     assert r.status_code == 200
     doc = await env.db.student_changes.find_one({"_id": ch.inserted_id})
     assert doc["status"] == "denied" and doc["decision_reason"] == "No proof of payment"
+
+
+# ── reversing and reinstating (Finance corrects its own decisions) ───────────
+
+def _reverse(e, app, hdr, who, reason="Receipt is forged"):
+    return e.client.post(f"/admin/applications/{app['_id']}/finance-reverse", headers=hdr,
+                         json={"financial_controller_id": who, "reason": reason})
+
+
+def _reinstate(e, app, hdr, who, target, reason="Balance paid, receipt 4411 checked"):
+    return e.client.post(f"/admin/applications/{app['_id']}/finance-reinstate", headers=hdr,
+                         json={"financial_controller_id": who, "target": target, "reason": reason})
+
+
+async def test_clearance_can_be_reversed_while_pending_and_blocks_voting(env):
+    await env.seed_panel()
+    fc = await _fc(env)
+    app = await _application(env)
+    aid = str(app["_id"])
+    assert (await _clear(env, app, fc, "fc1")).status_code == 200
+    r = await env.client.post(f"/admin/applications/{aid}/vote", headers=env.pan1,
+                              json={"commissioner_id": "com1", "vote": "approve"})
+    assert r.status_code == 200
+
+    assert (await _reverse(env, app, fc, "fc1", "  ")).status_code == 400          # reason required
+    r = await _reverse(env, app, fc, "fc1")
+    assert r.status_code == 200 and r.json()["votes_set_aside"] == 1
+    doc = await _reload(env, app)
+    assert doc["status"] == "pending" and doc["finance_cleared"] is False
+    assert doc["votes"] == {} and "finance_cleared_by" not in doc
+    assert doc["finance_history"][-1]["action"] == "clearance_reversed"
+    assert doc["revert_history"][-1]["prior_votes"]                                # kept for the superadmin
+    entry = await env.db.audit_log.find_one({"action": "application_finance_reversed"})
+    assert entry["details"]["reason"] == "Receipt is forged"
+
+    # voting is closed again until Finance re-clears
+    r = await env.client.post(f"/admin/applications/{aid}/vote", headers=env.pan2,
+                              json={"commissioner_id": "com2", "vote": "approve"})
+    assert r.status_code == 400 and "Financial Controller" in r.json()["detail"]
+    assert (await _reverse(env, app, fc, "fc1")).status_code == 400                # nothing left to reverse
+
+
+async def test_clearance_cannot_be_reversed_after_the_panel_decided(env):
+    await env.seed_panel()
+    fc = await _fc(env)
+    app = await _application(env)
+    assert (await _clear(env, app, fc, "fc1")).status_code == 200
+    for who, hdr in (("com1", env.pan1), ("com2", env.pan2)):
+        await env.client.post(f"/admin/applications/{app['_id']}/vote", headers=hdr,
+                              json={"commissioner_id": who, "vote": "approve"})
+    assert (await _reload(env, app))["status"] == "approved"
+    r = await _reverse(env, app, fc, "fc1")
+    assert r.status_code == 409
+    assert (await _reload(env, app))["finance_cleared"] is True
+
+
+async def test_rejection_reason_reaches_the_candidate_status_page_snapshot(env):
+    fc = await _fc(env)
+    app = await _application(env)
+    assert (await _reject(env, app, fc, "fc1", "Receipt short by UGX 20,000")).status_code == 200
+    snap = (await _reload(env, app))["denial_snapshot"]
+    assert snap["reason"] == "Receipt short by UGX 20,000" and snap["denied_by"] == "Financial Controller"
+
+
+async def test_rejected_application_can_be_reinstated_to_pending_or_cleared(env):
+    fc = await _fc(env)
+    a1 = await _application(env)
+    assert (await _reject(env, a1, fc, "fc1")).status_code == 200
+    assert (await _reinstate(env, a1, fc, "fc1", "bogus")).status_code == 400
+    assert (await _reinstate(env, a1, fc, "fc1", "pending", "  ")).status_code == 400
+
+    r = await _reinstate(env, a1, fc, "fc1", "pending")
+    assert r.status_code == 200 and r.json() == {"status": "pending", "finance_cleared": False}
+    doc = await _reload(env, a1)
+    assert doc["status"] == "pending" and doc["finance_cleared"] is False
+    assert not doc.get("finance_rejected") and doc["denial_snapshot"] is None
+    assert "finance_rejection_reason" not in doc
+    assert doc["finance_history"][-1]["previous_rejection_reason"] == "Receipt short by UGX 20,000"
+
+    # and a second applicant goes straight to cleared
+    await env.voter("v2", "Second Person", ("256700000222",))
+    a2 = await _application(env, "v2", "Second Person")
+    assert (await _reject(env, a2, fc, "fc1")).status_code == 200
+    r = await _reinstate(env, a2, fc, "fc1", "cleared")
+    assert r.status_code == 200 and r.json()["finance_cleared"] is True
+    doc = await _reload(env, a2)
+    assert doc["status"] == "pending" and doc["finance_cleared"] is True and doc["finance_cleared_by"] == "fc1"
+    assert (await env.db.audit_log.find_one({"action": "application_finance_reinstated"})) is not None
+    # not rejected any more, so it cannot be reinstated twice
+    assert (await _reinstate(env, a2, fc, "fc1", "pending")).status_code == 400
+
+
+async def test_commission_or_override_denials_cannot_be_reinstated_by_finance(env):
+    fc = await _fc(env)
+    app = await _application(env)
+    await env.db.applications.update_one({"_id": app["_id"]}, {"$set": {"status": "denied"}})
+    assert (await _reinstate(env, app, fc, "fc1", "pending")).status_code == 400     # not a finance rejection
+    await env.db.applications.update_one({"_id": app["_id"]},
+                                         {"$set": {"finance_rejected": True, "superadmin_override": True}})
+    assert (await _reinstate(env, app, fc, "fc1", "pending")).status_code == 400     # override
+
+
+async def test_only_the_financial_controller_can_reverse_or_reinstate(env):
+    await env.seed_panel()
+    fc = await _fc(env)
+    app = await _application(env)
+    assert (await _clear(env, app, fc, "fc1")).status_code == 200
+    assert (await _reverse(env, app, env.pan1, "com1")).status_code in (401, 403)
+    assert (await _reverse(env, app, fc, "someone-else")).status_code == 403        # bind_identity
+    assert (await _reload(env, app))["finance_cleared"] is True

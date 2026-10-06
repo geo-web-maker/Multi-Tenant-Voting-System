@@ -281,6 +281,13 @@ function VettingTab({ candidacy, onPrintCertificate, onPrintDenial }) {
         <p style={{ margin: 0, fontSize: '14px', color: '#e74c3c' }}>
           <Icon name="error" /> Your application for <strong>{properTitle(candidacy.position_title)}</strong> was not approved.
         </p>
+        {candidacy.denial_snapshot.reason && (
+          <p style={{ margin: '10px 0 0', fontSize: '13px', lineHeight: 1.5 }}>
+            <strong>Denied by the Financial Controller:</strong> {candidacy.denial_snapshot.reason}
+            <br />
+            <span style={{ opacity: 0.7 }}>If you think this is a mistake, please contact the Finance office to have it fixed.</span>
+          </p>
+        )}
         <button style={{ ...ghostBtn, marginTop: '12px' }} onClick={onPrintDenial}>View / print decision notice</button>
       </div>
     );
@@ -575,8 +582,15 @@ function DenialNoticeDoc({ candidacy, branding, onClose }) {
         <Row label="Applicant" value={properName(d.full_name)} />
         <Row label="Position applied for" value={properTitle(d.position_title)} />
         <Row label="Decision" value="Not approved" />
+        {d.reason && <Row label="Denied by" value="Financial Controller" />}
+        {d.reason && <Row label="Reason" value={d.reason} />}
         <Row label="Decision date" value={formatDate(d.decided_at)} />
       </dl>
+      {d.reason && (
+        <p style={{ fontSize: 13, lineHeight: 1.6, color: '#334155', margin: '16px 0 0' }}>
+          If you believe this is an error, please contact the Finance office.
+        </p>
+      )}
       <p style={{ fontSize: 13, lineHeight: 1.6, color: '#334155', margin: '24px 0 0' }}>
         This notice reflects the vetting decision as made on the date above and does not change afterwards.
       </p>

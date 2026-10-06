@@ -122,6 +122,28 @@ export default function FinancialControllerDashboard({ onLogout }) {
     }), verb === 'clear' ? 'Payment clearance failed.' : 'Payment rejection failed.');
   };
 
+  // Take back a clearance given in error (short payment, forged receipt). Only while the Panel hasn't decided.
+  const reverseClearance = async (appId) => {
+    if (missingId()) return;
+    if (needReason(appId, 'reversing this clearance')) return;
+    if (!window.confirm('Reverse this clearance? The Vetting Panel will no longer be able to vote on this candidate, and any votes already cast are set aside.')) return;
+    await run(appId, () => api.post(`/admin/applications/${appId}/finance-reverse`, {
+      financial_controller_id: fcId,
+      reason: (reasons[appId] || '').trim(),
+    }), 'Could not reverse the clearance.');
+  };
+
+  // A rejected candidate who has sorted things out with Finance: back to pending, or straight to cleared.
+  const reinstate = async (appId, target) => {
+    if (missingId()) return;
+    if (needReason(appId, 'reinstating this candidate')) return;
+    await run(appId, () => api.post(`/admin/applications/${appId}/finance-reinstate`, {
+      financial_controller_id: fcId,
+      target,
+      reason: (reasons[appId] || '').trim(),
+    }), 'Could not reinstate this application.');
+  };
+
   // ── Filtered lists ──
 
   const voterLists = {
@@ -381,7 +403,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
 
               {state === 'pending' && (
                 <div style={{ marginTop: '14px' }}>
-                  {reasonBox(app._id, 'Reason (required to reject; optional note when clearing)…')}
+                  {reasonBox(app._id, 'Reason (required to reject, and shown to the candidate; optional note when clearing)…')}
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     <button
                       style={{ ...greenBtn, flex: 1 }}
@@ -410,10 +432,65 @@ export default function FinancialControllerDashboard({ onLogout }) {
                 </p>
               )}
 
+              {state === 'approved' && (
+                app.status === 'pending' ? (
+                  <div style={{ marginTop: '12px' }}>
+                    {reasonBox(app._id, 'Why is this clearance being reversed? (internal, not shown to the candidate)…')}
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                      <button
+                        style={{ ...redBtn, flex: 1 }}
+                        disabled={isDecidingNow}
+                        onClick={() => reverseClearance(app._id)}
+                      >
+                        {isDecidingNow ? 'Submitting…' : 'Reverse to pending'}
+                      </button>
+                      {reasonToggle(app._id)}
+                    </div>
+                  </div>
+                ) : (
+                  <p style={{ margin: '8px 0 0', fontSize: '12px', opacity: 0.55 }}>
+                    The Vetting Panel has already decided this application. Ask the superadmin if it must be changed.
+                  </p>
+                )
+              )}
+
               {state === 'denied' && (
                 <p style={{ margin: '10px 0 0', fontSize: '12px', opacity: 0.6 }}>
                   Rejected by: {app.finance_rejected_by || '—'}
                   {app.finance_rejection_reason && ` · "${app.finance_rejection_reason}"`}
+                </p>
+              )}
+
+              {state === 'denied' && (
+                <div style={{ marginTop: '12px' }}>
+                  <p style={{ margin: '0 0 8px', fontSize: '12px', opacity: 0.6 }}>
+                    The candidate sees this reason and is told to contact Finance. Once they have sorted it out with you, reinstate them:
+                  </p>
+                  {reasonBox(app._id, 'What was resolved? (e.g. balance paid, receipt checked) — internal…')}
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <button
+                      style={{ ...ghostBtn, flex: 1 }}
+                      disabled={isDecidingNow}
+                      onClick={() => reinstate(app._id, 'pending')}
+                    >
+                      {isDecidingNow ? 'Submitting…' : 'Move to pending'}
+                    </button>
+                    <button
+                      style={{ ...greenBtn, flex: 1 }}
+                      disabled={isDecidingNow}
+                      onClick={() => reinstate(app._id, 'cleared')}
+                    >
+                      {isDecidingNow ? 'Submitting…' : 'Clear payment'}
+                    </button>
+                    {reasonToggle(app._id)}
+                  </div>
+                </div>
+              )}
+
+              {(app.finance_history || []).length > 0 && (
+                <p style={{ margin: '8px 0 0', fontSize: '11px', opacity: 0.5 }}>
+                  History: {app.finance_history.map(h =>
+                    `${shortDate(h.at)} ${String(h.action).replace(/_/g, ' ')} by ${h.by}`).join(' → ')}
                 </p>
               )}
             </div>
