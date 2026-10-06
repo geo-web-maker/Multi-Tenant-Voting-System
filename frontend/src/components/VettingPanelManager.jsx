@@ -18,6 +18,14 @@ const RISK_NOTICE = {
   },
 };
 
+const PHASE_OPTIONS = [['applications', 'Applications'], ['vetting', 'Vetting'], ['campaign', 'Campaign'],
+  ['voting', 'Voting'], ['results', 'Results']];
+const phaseEnd = (src, k) => src?.phase_schedule?.[k]?.end || null;
+const phaseLabel = (src, k, label) => {
+  const end = phaseEnd(src, k);
+  return end ? `${label} closes (${new Date(end).toLocaleString()})` : `${label} closes (no end date set)`;
+};
+
 export default function VettingPanelManager({ voters = [], commissioners = [] }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -172,12 +180,12 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                     {p.student_id && <><small style={{ opacity: 0.6 }}>{regNo(p.student_id)}</small><br /></>}
                     {!p.student_id && p.affiliation && <><small style={{ opacity: 0.6 }}>{p.affiliation}</small><br /></>}
                     <small style={{ color: 'var(--info)' }}>{p.email}</small>
-                    {(p.access_expires_at || p.expires_with_phase) && (
+                    {(p.access_ends_at || p.access_expires_at || p.expires_with_phase) && (
                       <>
                         <br />
                         <small style={{ opacity: 0.6 }}>
-                          {p.access_expires_at ? `Access ends ${new Date(p.access_expires_at).toLocaleString()}` : ''}
-                          {p.expires_with_phase ? `Access ends when ${p.expires_with_phase} closes` : ''}
+                          {p.access_ends_at ? `Access ends ${new Date(p.access_ends_at).toLocaleString()}` : ''}
+                          {p.expires_with_phase ? ` (follows the ${p.expires_with_phase} phase${p.access_ends_at ? '' : ', which has no end date yet'})` : ''}
                         </small>
                       </>
                     )}
@@ -203,7 +211,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                   {!p.active && <button style={greenBtn} onClick={() => setActive(p, true)}>Activate</button>}
                 </div>
                 {editing === p.panel_member_id && (
-                  <PanelistEditor
+                  <PanelistEditor schedule={data}
                     panelist={p}
                     onDone={async (changed) => { setEditing(null); if (changed) await load(); }}
                   />
@@ -315,7 +323,9 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                 Or when a timeline phase closes
                 <select style={inp} value={form.expires_with_phase} onChange={set('expires_with_phase')}>
                   <option value="">None</option>
-                  <option value="vetting">Vetting closes</option>
+                  {PHASE_OPTIONS.map(([k, label]) => (
+                    <option key={k} value={k} disabled={!form.is_member && !phaseEnd(data, k)}>{phaseLabel(data, k, label)}</option>
+                  ))}
                 </select>
               </label>
               {!form.is_member && <p style={meta}>Outside people need one access end. If both are set, the earlier one applies.</p>}
@@ -333,7 +343,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
 }
 
 // Change an existing panelist's phone, affiliation or access end without removing and re-adding them.
-function PanelistEditor({ panelist, onDone }) {
+function PanelistEditor({ panelist, schedule, onDone }) {
   const toast = useToast();
   const [affiliation, setAffiliation] = useState(panelist.affiliation || '');
   const [phone, setPhone] = useState('');
@@ -375,7 +385,9 @@ function PanelistEditor({ panelist, onDone }) {
           Or when a timeline phase closes
           <select style={inp} value={phase} disabled={clearEnd || Boolean(accessEnds)} onChange={(e) => setPhase(e.target.value)}>
             <option value="">No change</option>
-            <option value="vetting">Vetting closes</option>
+            {PHASE_OPTIONS.map(([k, label]) => (
+              <option key={k} value={k} disabled={!panelist.is_member && !phaseEnd(schedule, k)}>{phaseLabel(schedule, k, label)}</option>
+            ))}
           </select>
         </label>
       </div>

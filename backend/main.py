@@ -1853,9 +1853,30 @@ _FINANCE_ONLY_APPLICATION_FIELDS = ("payment_method", "payment_proof_url", "fina
 PANEL_HIDDEN_AUDIT_ACTIONS = ("application_vote_tied", "application_tie_broken")
 
 
+async def _live_panelists(org_id: str = None) -> list:
+    """Active panelists whose access has not ended. Expired externals are dropped from the approval
+    denominator and from the counted votes, otherwise unanimous / majority-of-total policies can never
+    resolve once an external's access ends mid-vote. Read live, so extending a phase restores them."""
+    doc = await cached_setting(org_id, "election_phases")
+    phases = (doc or {}).get("phases", {}) or {}
+    now = datetime.utcnow()
+    live = []
+    async for p in db.panel_members.find(_oq(org_id, {"active": True})):
+        ends = []
+        if p.get("access_expires_at"):
+            ends.append(naive_utc(p["access_expires_at"]))
+        phase_end = (phases.get(p.get("expires_with_phase")) or {}).get("end") if p.get("expires_with_phase") else None
+        if phase_end:
+            ends.append(naive_utc(phase_end))
+        if ends and now >= min(ends):
+            continue
+        live.append(p)
+    return live
+
+
 async def get_panel_count(org_id: str = None) -> int:
-    """Active Vetting Panel members: the approval denominator (guide 7, item 1)."""
-    return await db.panel_members.count_documents(_oq(org_id, {"active": True}))
+    """Active, unexpired Vetting Panel members: the approval denominator (guide 7, item 1)."""
+    return len(await _live_panelists(org_id))
 
 
 def _panel_vote_key(p: dict) -> str:
@@ -1867,10 +1888,7 @@ def _panel_vote_key(p: dict) -> str:
 
 
 async def _active_panel_keys(org_id: str = None) -> set:
-    keys = set()
-    async for p in db.panel_members.find(_oq(org_id, {"active": True})):
-        keys.add(_panel_vote_key(p))
-    return keys
+    return {_panel_vote_key(p) for p in await _live_panelists(org_id)}
 
 
 async def _has_live_application(request: Request, student_id: str) -> bool:
@@ -1885,12 +1903,12 @@ async def _panel_access_end(request: Request, p: dict) -> datetime | None:
     Read live, so extending the phase extends access. None means no end is set."""
     ends = []
     if p.get("access_expires_at"):
-        ends.append(p["access_expires_at"])
+        ends.append(naive_utc(p["access_expires_at"]))
     phase = p.get("expires_with_phase")
     if phase:
         end = (await get_phase_schedule(request))["phases"].get(phase, {}).get("end")
         if end:
-            ends.append(end)
+            ends.append(naive_utc(end))
     return min(ends) if ends else None
 
 
@@ -2034,8 +2052,23 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
     if result.matched_count == 0:
         return False
     if outcome == "approve":
-        await _create_candidate_from_application(app_doc, org_id)
-        await _issue_certificate(app_doc, org_id)
+        try:
+            await _create_candidate_from_application(app_doc, org_id)
+            await _issue_certificate(app_doc, org_id)
+        except Exception:
+            # Compensating rollback: the status flip above is already committed, so a failure here would
+            # leave an approved application with no candidate. Undo what may have been written and put
+            # the application back to its prior open state so the next vote / resweep retries it.
+            logger.exception(f"Approval side effects failed for application {app_id}; rolling back.")
+            try:
+                await db.candidates.delete_many({"application_id": str(app_doc["_id"])})
+                await _revoke_certificate_for_application(app_doc, org_id)
+            except Exception:
+                logger.exception(f"Rollback cleanup failed for application {app_id}.")
+            await db.applications.update_one(
+                {"_id": ObjectId(app_id), "status": "approved"},
+                {"$set": {"status": app_doc.get("status") or "pending"}})
+            raise
         await log_action("application_approved", actor, {"app_id": app_id, **details}, org_id=org_id)
         await _notify_applicant(app_doc, org_id, lambda org, pos: (
             f"{org}: Congratulations! Your nomination for {pos} has been approved. "
@@ -2469,6 +2502,12 @@ class ElectionToggle(BaseModel):
 
 
 EARLY_STOP_MIN_REASON = 5
+
+
+def iso_utc(dt: datetime | None) -> str | None:
+    """Naive-UTC datetime -> ISO string with a Z, so browsers read it as UTC instead of local time."""
+    dt = naive_utc(dt)
+    return dt.isoformat() + "Z" if dt else None
 
 
 def naive_utc(dt: datetime | None) -> datetime | None:
@@ -5697,7 +5736,7 @@ async def vetting_me(request: Request, admin: dict = Depends(require_role("vetti
         "full_name": p.get("full_name", ""),
         "is_member": bool(p.get("is_member")),
         "affiliation": p.get("affiliation", ""),
-        "access_ends_at": end.isoformat() if end else None,
+        "access_ends_at": iso_utc(end),
         "confidentiality_required": not p.get("is_member") and not admin.get("view_only"),
         "confidentiality_accepted": p.get("confidentiality_version") == CONFIDENTIALITY_VERSION,
         "confidentiality_notice": CONFIDENTIALITY_NOTICE,
@@ -7668,7 +7707,7 @@ def _panel_public(p: dict) -> dict:
         "affiliation":     p.get("affiliation", ""),
         "appointment_reason": p.get("appointment_reason", ""),
         "active":          p.get("active", False),
-        "access_expires_at": p["access_expires_at"].isoformat() if p.get("access_expires_at") else None,
+        "access_expires_at": iso_utc(p.get("access_expires_at")),
         "expires_with_phase": p.get("expires_with_phase"),
         "confidentiality_accepted_at": (p["confidentiality_accepted_at"].isoformat()
                                         if p.get("confidentiality_accepted_at") else None),
@@ -7691,8 +7730,17 @@ async def _panel_open_guard(request: Request):
 
 @app.get("/superadmin/vetting-panel")
 async def superadmin_list_panel(request: Request):
-    rows = [_panel_public(p) async for p in db.panel_members.find(
+    raw = [p async for p in db.panel_members.find(
         org_query(request, {}), {"_id": 0, "password_hash": 0, "temp_password_expires": 0})]
+    rows = []
+    for p in raw:
+        row = _panel_public(p)
+        # The real end, resolved live from the timeline (earlier of fixed date and phase end).
+        row["access_ends_at"] = iso_utc(await _panel_access_end(request, p))
+        rows.append(row)
+    sched = await get_phase_schedule(request)
+    phase_schedule = {n: {"start": iso_utc(w.get("start")), "end": iso_utc(w.get("end")),
+                          "enforced": bool(w.get("enforced"))} for n, w in sched["phases"].items()}
     active_rows = [r for r in rows if r["active"]]
     panel_count = len(active_rows)
     # Guide 7.2 tie_risk: ties only happen on an even panel; the Chair (live check) can break them.
@@ -7716,7 +7764,8 @@ async def superadmin_list_panel(request: Request):
     except HTTPException:
         frozen = True
     return {"panel": rows, "count": panel_count, "panel_count": panel_count, "tie_risk": tie_risk,
-            "frozen": frozen, "min_panel": 3}
+            "frozen": frozen, "min_panel": 3, "phase_schedule": phase_schedule,
+            "timezone": sched["timezone"]}
 
 
 @app.post("/superadmin/vetting-panel")
@@ -7892,8 +7941,12 @@ async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpda
         try:
             await _panel_open_guard(request)
         except HTTPException:
-            old = p.get("access_expires_at")
-            if not (new_at and old and new_at > old and not new_phase):
+            old = await _panel_access_end(request, p)
+            if new_phase and not new_at:
+                new_end = naive_utc((await get_phase_schedule(request))["phases"].get(new_phase, {}).get("end"))
+            else:
+                new_end = new_at
+            if not (new_end and old and new_end > old):
                 raise
     if not update:
         raise HTTPException(400, "Nothing to change.")
@@ -7976,7 +8029,8 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role("commi
             raise HTTPException(403, "Your panel access has ended.")
         new_token = create_access_token(
             subject=panelist["panel_member_id"], role="vetting", org_id=org_id,
-            full_name=panelist.get("full_name", ""), scope="full")
+            full_name=panelist.get("full_name", ""), scope="full",
+            extra_claims={"via_hat": True})
         # The commission token's jti is what gets revoked; the old token then stops working.
         await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
         await log_action("hat_switched", student_id, {
@@ -7984,6 +8038,10 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role("commi
         return {"status": "switched", "role": "vetting", "access_token": new_token}
 
     # role == vetting: switch back to the commissioner view
+    # Only a session that began as a commissioner login may return to it. A panelist who signed in directly
+    # with panel credentials has not proven the commissioner password, so no commission token is issued.
+    if not admin.get("via_hat"):
+        raise HTTPException(403, "Sign in with your commissioner account to open the commission view.")
     panel = await db.panel_members.find_one(org_query(request, {
         "panel_member_id": admin.get("sub"), "active": True}))
     if not panel or not panel.get("student_id"):

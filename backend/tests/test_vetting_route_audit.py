@@ -83,3 +83,58 @@ async def test_candidate_created_from_snapshot_name_when_full_name_missing(env):
     await main._create_candidate_from_application(app_doc, env.org_id)
     cand = await env.db.candidates.find_one({"application_id": str(app_doc["_id"])})
     assert cand["name"] == "Snap Name"
+
+
+# --- Decisions on the previously open items (NOT executed when written; run pytest before deploying) ---
+
+# Expired externals leave the approval denominator and the counted votes.
+async def test_expired_external_is_excluded_from_panel_count(env):
+    import main
+    await _panelist(env, "PM-EXT100", "e100@x.org", is_member=False, expires=Clock.now + timedelta(days=5))
+    await _panelist(env, "PM-EXT101", "e101@x.org", is_member=False, expires=Clock.now - timedelta(days=1))
+    assert await main.get_panel_count(env.org_id) == 1
+    assert await main._active_panel_keys(env.org_id) == {main._vote_key("PM-EXT100")}
+
+
+# A panelist who logged in directly (no hat switch) cannot reach the commission view.
+async def test_direct_panel_login_cannot_switch_to_commission(env):
+    from auth import create_access_token
+    await env.db.panel_members.insert_one({
+        "org_id": env.org_id, "panel_member_id": "PM-DIRECT", "student_id": "com1", "is_member": True,
+        "full_name": "c", "email": "d@x.org", "active": True, "access_expires_at": None})
+    tok = create_access_token(subject="PM-DIRECT", role="vetting", org_id=env.org_id)
+    r = await env.client.post("/admin/switch-hat", headers={"Authorization": f"Bearer {tok}", "X-Org-Slug": "t1"})
+    assert r.status_code == 403, r.text
+
+
+# If candidate creation fails after the status flip, the application is reopened, not left approved.
+async def test_failed_approval_side_effects_roll_back_status(env, monkeypatch):
+    import main
+    aid = await _ready_application(env)
+
+    async def boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(main, "_create_candidate_from_application", boom)
+    doc = await env.db.applications.find_one({"_id": ObjectId(aid)})
+    with pytest.raises(RuntimeError):
+        await main._apply_application_outcome(aid, doc, env.org_id, "approve", actor="vetting", details={})
+    after = await env.db.applications.find_one({"_id": ObjectId(aid)})
+    assert after["status"] == "pending"
+    assert await env.db.candidates.count_documents({"application_id": aid}) == 0
+
+
+# Timeline phase: the list shows the real, resolved end (with Z) and the phase schedule for the dropdown.
+async def test_panel_list_resolves_phase_end_from_timeline(env):
+    end = Clock.now + timedelta(days=10)
+    await env.db.settings.update_one(
+        {"name": "election_phases", "org_id": env.org_id},
+        {"$set": {"name": "election_phases", "org_id": env.org_id, "round_id": "round-1",
+                  "phases": {"campaign": {"start": Clock.now + timedelta(days=1), "end": end, "enforced": True}}}},
+        upsert=True)
+    doc = await _panelist(env, "PM-EXT200", "e200@x.org", is_member=False, expires=None)
+    await env.db.panel_members.update_one({"panel_member_id": "PM-EXT200"}, {"$set": {"expires_with_phase": "campaign"}})
+    r = await env.client.get("/superadmin/vetting-panel", headers=env.sa)
+    assert r.status_code == 200, r.text
+    row = next(x for x in r.json()["panel"] if x["panel_member_id"] == "PM-EXT200")
+    assert row["access_ends_at"] == end.isoformat() + "Z"
+    assert r.json()["phase_schedule"]["campaign"]["end"] == end.isoformat() + "Z"

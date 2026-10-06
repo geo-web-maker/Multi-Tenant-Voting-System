@@ -129,19 +129,7 @@ export default function VettingDashboard({ onLogout }) {
 
   if (!accessible) {
     return (
-      <Shell>
-        <h2 style={{ marginTop: 0 }}>Confidentiality notice</h2>
-        <div style={card}>
-          <p style={{ margin: '0 0 12px', lineHeight: 1.5 }}>{me.confidentiality_notice}</p>
-          {me.access_ends_at && (
-            <p style={note}>Your access ends: {new Date(me.access_ends_at).toLocaleString()}.</p>
-          )}
-          <button style={btnApprove} disabled={accepting} onClick={accept}>
-            {accepting ? 'Recording…' : 'I have read this and accept'}
-          </button>
-        </div>
-        {onLogout && <button style={{ ...hatBtn, marginTop: 12 }} onClick={onLogout}>Log out</button>}
-      </Shell>
+      <ConfidentialityGate me={me} accepting={accepting} onAccept={accept} onLogout={onLogout} />
     );
   }
 
@@ -260,6 +248,61 @@ export default function VettingDashboard({ onLogout }) {
 }
 
 // Same outer-wrap + dashboard-shell frame every other dashboard uses.
+function ConfidentialityGate({ me, accepting, onAccept, onLogout }) {
+  const [agreed, setAgreed] = useState(false);
+  const points = [
+    ['Applicant details', 'Names, documents and everything submitted with a nomination.'],
+    ['Votes and decisions', 'Who voted, how, and the reasons behind any outcome.'],
+    ['Panel discussion', 'Anything said or shared between panelists.'],
+  ];
+  return (
+    <div style={{ ...outerWrap, alignItems: 'center' }} className="outer-wrap">
+      <div style={gateCard}>
+        <div style={gateIcon} aria-hidden="true">🔒</div>
+        <h2 style={{ margin: '0 0 4px', fontSize: '22px', color: 'var(--brand-primary, var(--text-color))' }}>
+          Vetting Panel
+        </h2>
+        <p style={{ margin: '0 0 18px', fontSize: '13px', color: 'var(--text-muted)' }}>
+          {me.full_name ? `Welcome, ${me.full_name}. ` : ''}Before you continue, please read and accept the confidentiality notice.
+        </p>
+
+        <div style={gateNotice}>
+          <p style={{ margin: 0, lineHeight: 1.55, fontSize: '14px' }}>{me.confidentiality_notice}</p>
+        </div>
+
+        <ul style={{ listStyle: 'none', padding: 0, margin: '16px 0' }}>
+          {points.map(([t, d]) => (
+            <li key={t} style={gatePoint}>
+              <span style={gateDot} aria-hidden="true" />
+              <span><b style={{ color: 'var(--text-color)' }}>{t}</b><br /><small style={{ color: 'var(--text-muted)' }}>{d}</small></span>
+            </li>
+          ))}
+        </ul>
+
+        {me.access_ends_at && (
+          <div style={gateExpiry}>
+            <small style={{ color: 'var(--text-muted)' }}>Your access ends</small><br />
+            <b>{new Date(me.access_ends_at).toLocaleString()}</b>
+          </div>
+        )}
+
+        <label style={gateCheck}>
+          <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+          <span>I understand and will keep everything I see here confidential.</span>
+        </label>
+
+        <button style={{ ...btnApprove, width: '100%', padding: '12px 16px', fontSize: '14px', opacity: agreed && !accepting ? 1 : 0.55, cursor: agreed && !accepting ? 'pointer' : 'not-allowed' }}
+                disabled={!agreed || accepting} onClick={onAccept}>
+          {accepting ? 'Recording…' : 'I have read this and accept'}
+        </button>
+        {onLogout && (
+          <button style={{ ...hatBtn, width: '100%', marginTop: 10 }} onClick={onLogout}>Log out</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Shell({ children }) {
   return (
     <div style={outerWrap} className="outer-wrap">
@@ -299,3 +342,11 @@ const btnBase  = { padding: '8px 16px', borderRadius: '8px', border: 'none', col
 const btnApprove = { ...btnBase, backgroundColor: '#2ecc71' };
 const btnDeny    = { ...btnBase, backgroundColor: '#e74c3c' };
 const hatBtn   = { padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
+
+const gateCard   = { width: '100%', maxWidth: '460px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '32px 28px', border: '1px solid var(--border-color)', boxShadow: '0 8px 30px rgba(0,0,0,0.08)', boxSizing: 'border-box' };
+const gateIcon   = { width: '52px', height: '52px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', marginBottom: '14px', backgroundColor: 'color-mix(in srgb, var(--info) 15%, transparent)' };
+const gateNotice = { borderLeft: '4px solid var(--brand-accent, var(--warning))', backgroundColor: 'var(--bg-color)', borderRadius: '8px', padding: '14px 16px' };
+const gatePoint  = { display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '8px 0', fontSize: '13px' };
+const gateDot    = { width: '8px', height: '8px', borderRadius: '50%', marginTop: '6px', flexShrink: 0, backgroundColor: 'var(--info)' };
+const gateExpiry = { padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', marginBottom: '16px', fontSize: '14px' };
+const gateCheck  = { display: 'flex', gap: '10px', alignItems: 'flex-start', fontSize: '13px', marginBottom: '14px', cursor: 'pointer', lineHeight: 1.4 };
