@@ -58,7 +58,7 @@ describe('shared api instance', () => {
 
   it('honours the per-call opt-out', async () => {
     const calls = script(['network']);
-    await expect(api.get('/health', { __noRetry: true })).rejects.toBeTruthy();
+    await expect(api.get('/', { __noRetry: true })).rejects.toBeTruthy();
     expect(calls).toHaveLength(1);
   });
 
@@ -86,7 +86,7 @@ describe('analytics hygiene (guide 5.1 / 5.2)', () => {
   it('never reports /health network failures (the boot wake-up loop retries it by design)', async () => {
     script(['network']);
     const nf = capture('an:netfail');
-    await expect(api.get('/health', { __noRetry: true })).rejects.toBeTruthy();
+    await expect(api.get('/', { __noRetry: true })).rejects.toBeTruthy();
     nf.off();
     expect(nf.seen).toHaveLength(0);
   });

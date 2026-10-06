@@ -219,7 +219,7 @@ export function initAnalytics() {
   // server is cold and fails repeatedly while it wakes, so counting it measured wake-up, not the page (guide 5.1).
   window.addEventListener('an:api', (e) => {
     const d = e.detail || {};
-    if (firstApiMs === null && d.ok === true && d.url && d.url !== '/health') { firstApiMs = Number(d.ms) || 0; maybeSendPerf(); }
+    if (firstApiMs === null && d.ok === true && d.url && d.url !== '/health' && d.url !== '/') { firstApiMs = Number(d.ms) || 0; maybeSendPerf(); }
   });
   window.addEventListener('an:netfail', (e) => err(e.detail?.kind === 'timeout' ? 'net:timeout' : 'net:network'));
   const onLoaded = () => { pageLoaded = true; maybeSendPerf(); setTimeout(() => maybeSendPerf(true), 15000); };

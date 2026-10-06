@@ -3307,7 +3307,9 @@ async def anchor_roster_ledger(request: Request):
 
 @app.get("/")
 def read_root():
-    return {"status": "Online", "sms_provider": "EgoSMS"}
+    # Boot probe for the frontend splash (App.jsx BOOT_PROBE_PATH). "/" rather than /health because
+    # iPhone/Brave content blockers can block monitoring-style paths. No DB call, no provider details.
+    return {"status": "Online"}
 
 @app.get("/health")
 async def health_check():

@@ -251,6 +251,11 @@ useEffect(() => {
   const INIT_MS = 800;           // how long "initializing secure connection" stays visible
   const CONNECTED_MS = 600;      // how long "connected" shows before the hand-off
   const EXIT_ANIM_MS = 350;      // must match the CSS transition on the splash
+  // Boot probe: "/" (bare API root), not "/health". Content blockers (iPhone Safari, Brave Shields) can drop
+  // requests to well-known monitoring paths like /health; the root is a plain page load they leave alone. It does
+  // no DB work, so it is also the cheapest possible wake-up poke. The secret keep-warm cron path is NOT used
+  // here on purpose: putting it in the bundle would publish it.
+  const BOOT_PROBE_PATH = '/';
   const WARM_MS = 500;           // /health answered inside this = warm server: skip the splash entirely
 
   let cancelled = false;
@@ -290,7 +295,7 @@ useEffect(() => {
   };
 
   const poll = () => {
-    api.get('/health', { __noRetry: true }).then(finish).catch(() => {
+    api.get(BOOT_PROBE_PATH, { __noRetry: true }).then(finish).catch(() => {
       if (!cancelled) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
     });
   };

@@ -58,7 +58,7 @@ const routeOf = (config) => String(config?.url || '').split('?')[0];
 const NETFAIL_GAP_MS = 30000;
 const lastNetFail = new Map();
 export function shouldReportNetFail(url, now = Date.now()) {
-  if (url === '/health') return false;
+  if (url === '/health' || url === '/') return false;
   if (lastNetFail.has(url) && now - lastNetFail.get(url) < NETFAIL_GAP_MS) return false;
   lastNetFail.set(url, now);
   return true;

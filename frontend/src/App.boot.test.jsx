@@ -6,7 +6,7 @@ let healthResolve;
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal()),             // keep the real constants (token keys, API_BASE, getErrorMessage)
   default: {
-    get: vi.fn((url) => (url === '/health'
+    get: vi.fn((url) => ((url === '/health' || url === '/')
       ? new Promise((res) => { healthResolve = () => res({ data: {} }); })
       : new Promise(() => {}))),
     post: vi.fn(() => new Promise(() => {})),
