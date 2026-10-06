@@ -575,6 +575,13 @@ async def auth_guard_middleware(request: Request, call_next):
             {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id"))
         return JSONResponse(status_code=403, content={"detail": "This session does not belong to this organization."})
 
+    # Everything below (and the helpers it calls, e.g. _panel_access_ended -> get_phase_schedule) reads
+    # request.state.org_id, which org_context_middleware has not set yet at this point. Publish the tenant
+    # resolved above, otherwise a panelist whose access is tied to a timeline phase hits an AttributeError
+    # (HTTP 500) on every guarded request, including /admin/set-password.
+    request.state.org_id = req_org
+    request.state.org_slug = request.headers.get("X-Org-Slug")
+
     # A temp-password login's token is scoped to password_change_only until the admin
     # actually changes their password — everything else 403s even with a valid token.
     if payload.get("scope") == SCOPE_PASSWORD_CHANGE_ONLY and request.url.path not in PASSWORD_CHANGE_ONLY_ALLOWED_PATHS:
@@ -615,7 +622,10 @@ async def auth_guard_middleware(request: Request, call_next):
         if cutoff:
             iat = payload.get("iat")
             iat_dt = datetime.utcfromtimestamp(iat) if isinstance(iat, (int, float)) else iat
-            if iat_dt and iat_dt < cutoff:
+            # iat is whole seconds (PyJWT truncates) but cutoff keeps microseconds: compare at second
+            # precision, or the token minted by the re-login right after a password change (same second)
+            # is rejected as "session ended".
+            if iat_dt and iat_dt < cutoff.replace(microsecond=0):
                 return JSONResponse(status_code=401, content={
                     "detail": "Your session was ended (password changed or access updated). Please log in again."})
     elif payload["role"] != "superadmin":
@@ -632,7 +642,10 @@ async def auth_guard_middleware(request: Request, call_next):
         if cutoff:
             iat = payload.get("iat")
             iat_dt = datetime.utcfromtimestamp(iat) if isinstance(iat, (int, float)) else iat
-            if iat_dt and iat_dt < cutoff:
+            # iat is whole seconds (PyJWT truncates) but cutoff keeps microseconds: compare at second
+            # precision, or the token minted by the re-login right after a password change (same second)
+            # is rejected as "session ended".
+            if iat_dt and iat_dt < cutoff.replace(microsecond=0):
                 await log_action("admin_guard_session_invalidated", payload.get("sub", "unknown"),
                                   {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id"))
                 return JSONResponse(status_code=401, content={
@@ -1268,7 +1281,10 @@ PANEL_ALLOWED_PREFIXES = ("/admin/applications", "/admin/vetting-", "/admin/appr
                           "/admin/switch-hat", "/admin/set-password", "/admin/logout")
 # Guide 6.4 rule 5: externals must accept this notice before anything else. Bump the version to re-ask.
 CONFIDENTIALITY_VERSION = "2026-10-v1"
-CONFIDENTIALITY_ALLOWED_PATHS = {"/admin/vetting-me", "/admin/vetting-confidentiality/accept", "/admin/logout"}
+# /admin/set-password must be here: a temp-password token is scoped to set-password only, so without it an
+# external could neither change the password (blocked by this gate) nor accept the notice (blocked by the scope).
+CONFIDENTIALITY_ALLOWED_PATHS = {"/admin/vetting-me", "/admin/vetting-confidentiality/accept", "/admin/logout",
+                                 "/admin/set-password"}
 CONFIDENTIALITY_NOTICE = (
     "You are serving on the Vetting Panel as a non-member. Everything you see here is confidential: "
     "applicant details, votes, panel discussion and the reasons behind decisions. Do not share or copy it. "
