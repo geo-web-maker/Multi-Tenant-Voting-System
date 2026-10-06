@@ -128,12 +128,14 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
     .filter((v) => !q || v.full_name?.toLowerCase().includes(q) || v.student_id?.toLowerCase().includes(q));
   const SHOWN = 50;
 
-  const commOptions = commissioners.filter((c) => !onPanel.has((c.student_id || '').toLowerCase()));
+  const commOptions = commissioners
+    .filter((c) => !onPanel.has((c.student_id || '').toLowerCase()))
+    .filter((c) => !q || c.full_name?.toLowerCase().includes(q) || c.student_id?.toLowerCase().includes(q));
   const pickVoter = (v) => {
     setPicked(v);
     setForm({ ...BLANK, is_member: true, student_id: v.student_id, full_name: v.full_name || '' });
   };
-  const switchMode = (m) => { setMode(m); setPicked(null); setForm(BLANK); };
+  const switchMode = (m) => { setMode(m); setPicked(null); setForm(BLANK); setSearch(''); };
   const showForm = mode === 'external' || picked;
 
   return (
@@ -160,8 +162,8 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
           <ScrollList maxHeight="60vh">
             {data.panel.map((p) => (
               <div key={p.panel_member_id} style={{ ...rowCard, flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                  <div style={{ minWidth: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
+                  <div style={{ minWidth: 0, flex: '1 1 200px' }}>
                     <b style={{ color: 'var(--text-color)' }}>{p.full_name}</b>
                     <span style={badge}>{p.is_member ? 'Member' : 'External'}</span>
                     {p.is_chair && <span style={badge}>Chairperson</span>}
@@ -214,31 +216,39 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
         {/* ── Right: add someone (search the roll, like Grant Overseer Access) ── */}
         <div>
           <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Add to the Panel</h4>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
             <button type="button" style={mode === 'commissioners' ? tabOn : ghostBtn} onClick={() => switchMode('commissioners')}>Commissioners</button>
             <button type="button" style={mode === 'roll' ? tabOn : ghostBtn} onClick={() => switchMode('roll')}>Voter roll</button>
             <button type="button" style={mode === 'external' ? tabOn : ghostBtn} onClick={() => switchMode('external')}>Outside person</button>
           </div>
 
           {mode === 'commissioners' && !picked && (
-            <div style={{ border: '1px solid var(--border-color)', borderRadius: '10px', maxHeight: '400px', overflowY: 'auto' }}>
-              {commOptions.length === 0 && (
-                <p style={{ opacity: 0.5, padding: '12px 14px', margin: 0 }}>
-                  {commissioners.length === 0 ? 'There are no commissioners yet.' : 'Every commissioner is already on the panel.'}
-                </p>
-              )}
-              {commOptions.map((c) => (
-                <div key={c.student_id} style={rowCard} className="grant-row">
-                  <div>
-                    <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
-                    {c.is_chief_commissioner && <span style={badge}>Chief</span>}
-                    <br />
-                    <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
+            <>
+              <input style={{ ...inp, marginBottom: '12px' }}
+                placeholder="Search commissioners by name or ID…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)} />
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: '10px', maxHeight: '400px', overflowY: 'auto' }}>
+                {commOptions.length === 0 && (
+                  <p style={{ opacity: 0.5, padding: '12px 14px', margin: 0 }}>
+                    {commissioners.length === 0
+                      ? 'There are no commissioners yet.'
+                      : (q ? 'No matching commissioners.' : 'Every commissioner is already on the panel.')}
+                  </p>
+                )}
+                {commOptions.map((c) => (
+                  <div key={c.student_id} style={rowCard} className="grant-row">
+                    <div>
+                      <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
+                      {c.is_chief_commissioner && <span style={badge}>Chief</span>}
+                      <br />
+                      <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
+                    </div>
+                    <button style={greenBtn} onClick={() => pickVoter(c)}>+ Add to Panel</button>
                   </div>
-                  <button style={greenBtn} onClick={() => pickVoter(c)}>+ Add to Panel</button>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </>
           )}
 
           {mode === 'roll' && !picked && (
