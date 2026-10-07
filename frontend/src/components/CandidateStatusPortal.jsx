@@ -143,7 +143,7 @@ export default function CandidateStatusPortal({ token }) {
 
         {error && (
           <div style={{ ...infoBox, borderColor: '#e74c3c40' }}>
-            <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}><Icon name="warning" /> {error}</p>
+            <p style={{ margin: 0, color: 'var(--bp-no, #e74c3c)', fontSize: '13px' }}><Icon name="warning" /> {error}</p>
           </div>
         )}
 
@@ -278,7 +278,7 @@ function VettingTab({ candidacy, onPrintCertificate, onPrintDenial }) {
   if (candidacy.denial_snapshot) {
     return (
       <div style={appCard}>
-        <p style={{ margin: 0, fontSize: '14px', color: '#e74c3c' }}>
+        <p style={{ margin: 0, fontSize: '14px', color: 'var(--bp-no, #e74c3c)' }}>
           <Icon name="error" /> Your application for <strong>{properTitle(candidacy.position_title)}</strong> was not approved.
         </p>
         {candidacy.denial_snapshot.reason && (
@@ -376,7 +376,7 @@ function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
             {branding.org_name}
           </div>
           <div style={cert
-            ? { margin: '8px 0 0', fontSize: 12, textTransform: 'uppercase', letterSpacing: 4, color: '#64748b' }
+            ? { margin: '8px 0 0', fontSize: 12, textTransform: 'uppercase', letterSpacing: 4, color: 'var(--bp-mu, #64748b)' }
             : { margin: '2px 0', fontSize: 16, fontWeight: 600, color: '#334155' }}>
             {branding.university_name}
           </div>
@@ -646,7 +646,7 @@ const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12p
 const infoBox    = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
-const primaryBtn = { padding: '9px 14px', background: 'var(--info)', border: '1px solid var(--info)', color: '#fff', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
+const primaryBtn = { padding: '9px 14px', background: 'var(--info)', border: '1px solid var(--info)', color: 'var(--bp-ai, #fff)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
 const pillBtn    = { padding: '8px 14px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px' };
 
 const editedMark = { display: 'inline-block', border: '1px solid #b45309', color: '#b45309', borderRadius: 4, padding: '0 6px', fontSize: 10, fontWeight: 800, letterSpacing: 1 };

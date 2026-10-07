@@ -12,6 +12,7 @@ vi.mock('./api', async (importOriginal) => ({
 vi.mock('./analytics', () => ({ initAnalytics: () => {}, trackPage: () => {}, pageName: () => 'x' }));
 
 import App from './App';
+import { UIFeedbackProvider } from './components/UIFeedback';
 import { ADMIN_TOKEN_KEY } from './api';
 
 window.matchMedia = window.matchMedia || ((q) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
@@ -25,32 +26,51 @@ const clickVoteNow = async () => {
   fireEvent.click(btn);
 };
 
-describe('WP-7c: confirm before Vote Now signs an admin out', () => {
+const renderApp = () => render(<UIFeedbackProvider><App /></UIFeedbackProvider>);
+
+describe('WP-7c: in-app confirm before Vote Now signs an admin out (no browser dialog)', () => {
   beforeEach(() => { sessionStorage.clear(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it('admin token + confirm=false keeps the token', async () => {
+  it('admin token + "Stay signed in" keeps the token', async () => {
     sessionStorage.setItem(ADMIN_TOKEN_KEY, ADMIN_JWT);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    render(<App />);
+    const native = vi.spyOn(window, 'confirm');
+    renderApp();
     await clickVoteNow();
-    expect(confirm).toHaveBeenCalledTimes(1);
+    const dlg = await screen.findByRole('dialog', { name: /sign out\?/i });
+    expect(dlg).toHaveTextContent('You will be signed out. Continue?');
+    fireEvent.click(screen.getByRole('button', { name: /stay signed in/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /sign out\?/i })).toBeNull());
+    expect(native).not.toHaveBeenCalled();
     expect(sessionStorage.getItem(ADMIN_TOKEN_KEY)).toBe(ADMIN_JWT);
   });
 
-  it('admin token + confirm=true clears the token', async () => {
+  it('admin token + Escape also keeps the token', async () => {
     sessionStorage.setItem(ADMIN_TOKEN_KEY, ADMIN_JWT);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(<App />);
+    renderApp();
     await clickVoteNow();
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(sessionStorage.getItem(ADMIN_TOKEN_KEY)).toBeNull();
+    await screen.findByRole('dialog', { name: /sign out\?/i });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /sign out\?/i })).toBeNull());
+    expect(sessionStorage.getItem(ADMIN_TOKEN_KEY)).toBe(ADMIN_JWT);
+  });
+
+  it('admin token + "Sign out" clears the token', async () => {
+    sessionStorage.setItem(ADMIN_TOKEN_KEY, ADMIN_JWT);
+    const native = vi.spyOn(window, 'confirm');
+    renderApp();
+    await clickVoteNow();
+    await screen.findByRole('dialog', { name: /sign out\?/i });
+    fireEvent.click(screen.getByRole('button', { name: /^sign out$/i }));
+    await waitFor(() => expect(sessionStorage.getItem(ADMIN_TOKEN_KEY)).toBeNull());
+    expect(native).not.toHaveBeenCalled();
   });
 
   it('no token -> no dialog', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    render(<App />);
+    const native = vi.spyOn(window, 'confirm');
+    renderApp();
     await clickVoteNow();
-    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: /sign out\?/i })).toBeNull();
+    expect(native).not.toHaveBeenCalled();
   });
 });

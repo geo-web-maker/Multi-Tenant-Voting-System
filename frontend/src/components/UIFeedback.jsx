@@ -3,7 +3,8 @@
 // hooks together — splitting them would only help Vite's dev-mode Fast
 // Refresh, not the production build, and keeping the toast/confirm/prompt
 // API next to the component that implements it is worth that tradeoff.)
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
+import { getTemplate } from '../template';
+import React, { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 
 // Replaces window.alert() / window.confirm() / window.prompt() app-wide with
 // an in-app toast + confirm-dialog system. The native dialogs this replaces:
@@ -38,6 +39,13 @@ export function useConfirm() {
   return ctx.confirm;
 }
 
+// For callers that can render outside the provider (App in tests). In the real app main.jsx always
+// supplies the provider, so the in-app dialog is what users see; the native fallback never runs there.
+export function useOptionalConfirm() {
+  const ctx = useContext(UIFeedbackContext);
+  return ctx ? ctx.confirm : (message) => Promise.resolve(window.confirm(message));
+}
+
 let toastIdCounter = 0;
 
 const TOAST_EXIT_MS = 180; // must match .toast-out duration in index.css
@@ -46,6 +54,12 @@ export function UIFeedbackProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const [dialog, setDialog] = useState(null); // { mode: 'confirm'|'prompt', message, danger, confirmText, cancelText, requireText, inputValue }
   const resolverRef = useRef(null);
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+  const confirmRef = useRef(null);
+  const titleId = useId();
+  const bp = !!getTemplate();
+  const bodyId = useId();
 
   // Marks the toast as exiting (triggers the slide/fade-out), then removes
   // it from state once that animation has had time to finish.
@@ -76,6 +90,7 @@ export function UIFeedbackProvider({ children }) {
       resolverRef.current = resolve;
       setDialog({
         mode: 'confirm',
+        title: opts.title || 'Please confirm',
         message,
         danger: !!opts.danger,
         confirmText: opts.confirmText || (opts.danger ? 'Confirm' : 'OK'),
@@ -96,6 +111,7 @@ export function UIFeedbackProvider({ children }) {
       resolverRef.current = resolve;
       setDialog({
         mode: 'prompt',
+        title: opts.title || 'Your input',
         message,
         danger: false,
         confirmText: opts.confirmText || 'OK',
@@ -106,13 +122,44 @@ export function UIFeedbackProvider({ children }) {
     });
   }, []);
 
-  const resolveDialog = (result) => {
+  const resolveDialog = useCallback((result) => {
     if (resolverRef.current) {
       resolverRef.current(result);
       resolverRef.current = null;
     }
     setDialog(null);
-  };
+  }, []);
+
+  const dialogOpen = dialog !== null;
+  const dialogMode = dialog?.mode;
+  const dialogDanger = !!dialog?.danger;
+  const hasField = dialogMode === 'prompt' || !!dialog?.requireText;
+
+  // Dialog behaviour a native confirm gave for free: Esc cancels, Tab stays inside, focus goes in on
+  // open and returns to the trigger on close. A destructive confirm starts on Cancel, not on the danger button.
+  useEffect(() => {
+    if (!dialogOpen) return undefined;
+    const previous = document.activeElement;
+    if (!hasField) (dialogDanger ? cancelRef : confirmRef).current?.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        resolveDialog(dialogMode === 'prompt' ? null : false);
+      } else if (e.key === 'Tab' && dialogRef.current) {
+        const items = dialogRef.current.querySelectorAll('button:not(:disabled), input, [href], [tabindex]:not([tabindex="-1"])');
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (previous && typeof previous.focus === 'function' && document.contains(previous)) previous.focus();
+    };
+  }, [dialogOpen, dialogMode, dialogDanger, hasField, resolveDialog]);
 
   const canConfirm = dialog?.mode === 'prompt'
     ? true
@@ -123,7 +170,7 @@ export function UIFeedbackProvider({ children }) {
       {children}
 
       {/* Toasts */}
-      <div style={toastContainerStyle}>
+      <div style={toastContainerStyle} aria-live="polite">
         {toasts.map(t => (
           <div key={t.id} style={{ ...toastStyle, ...toastKindStyle[t.kind] }}
             className={t.exiting ? 'toast-out' : 'toast-in'} onClick={() => dismissToast(t.id)}>
@@ -134,9 +181,20 @@ export function UIFeedbackProvider({ children }) {
 
       {/* Confirm / prompt dialog */}
       {dialog && (
-        <div style={overlayStyle} className="overlay-fade-in" onClick={() => resolveDialog(dialog.mode === 'prompt' ? null : false)}>
-          <div style={dialogStyle} className="panel-fade-in" onClick={(e) => e.stopPropagation()}>
-            <div style={{ whiteSpace: 'pre-wrap', marginBottom: (dialog.requireText || dialog.mode === 'prompt') ? '16px' : '24px', color: 'var(--text-color)', fontSize: '15px', lineHeight: 1.5 }}>
+        <div style={overlayStyle} className="overlay-fade-in ui-dialog-overlay" onClick={() => resolveDialog(dialog.mode === 'prompt' ? null : false)}>
+          <div
+            ref={dialogRef}
+            role={dialog.danger ? 'alertdialog' : 'dialog'}
+            aria-modal="true"
+            aria-label={bp ? undefined : dialog.title}
+            aria-labelledby={bp ? titleId : undefined}
+            aria-describedby={bodyId}
+            style={dialogStyle}
+            className="panel-fade-in ui-dialog"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {bp && <h2 id={titleId} className="ui-dialog-title">{dialog.title}</h2>}
+            <div id={bodyId} style={{ whiteSpace: 'pre-wrap', marginBottom: (dialog.requireText || dialog.mode === 'prompt') ? '16px' : '24px', color: 'var(--text-color)', fontSize: '15px', lineHeight: 1.5 }}>
               {dialog.message}
             </div>
             {dialog.mode === 'prompt' && (
@@ -168,9 +226,12 @@ export function UIFeedbackProvider({ children }) {
                 />
               </div>
             )}
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-              <button style={cancelBtnStyle} onClick={() => resolveDialog(dialog.mode === 'prompt' ? null : false)}>{dialog.cancelText}</button>
+            <div className="ui-dialog-actions" style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button ref={cancelRef} type="button" className="ui-dialog-cancel" style={cancelBtnStyle} onClick={() => resolveDialog(dialog.mode === 'prompt' ? null : false)}>{dialog.cancelText}</button>
               <button
+                ref={confirmRef}
+                type="button"
+                className="ui-dialog-confirm"
                 style={{ ...confirmBtnStyle, ...(dialog.danger ? dangerBtnStyle : {}), opacity: canConfirm ? 1 : 0.5, cursor: canConfirm ? 'pointer' : 'not-allowed' }}
                 disabled={!canConfirm}
                 onClick={() => canConfirm && resolveDialog(dialog.mode === 'prompt' ? dialog.inputValue : true)}
@@ -191,14 +252,14 @@ const toastContainerStyle = {
 };
 
 const toastStyle = {
-  padding: '12px 16px', borderRadius: '10px', color: '#fff', fontSize: '14px',
+  padding: '12px 16px', borderRadius: '10px', color: 'var(--bp-ai, #fff)', fontSize: '14px',
   boxShadow: '0 8px 20px rgba(0,0,0,0.25)', cursor: 'pointer', lineHeight: 1.4,
 };
 
 const toastKindStyle = {
-  info:    { backgroundColor: '#334155' },
-  success: { backgroundColor: '#16a34a' },
-  error:   { backgroundColor: '#dc2626' },
+  info:    { backgroundColor: 'var(--bp-mu, #334155)' },
+  success: { backgroundColor: 'var(--bp-ok, #16a34a)' },
+  error:   { backgroundColor: 'var(--bp-no, #dc2626)' },
 };
 
 const overlayStyle = {
@@ -210,7 +271,8 @@ const overlayStyle = {
 
 const dialogStyle = {
   backgroundColor: 'var(--card-bg)', padding: '24px', borderRadius: '16px',
-  width: '100%', maxWidth: '420px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
+  width: '100%', maxWidth: '420px',
+  boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
   border: '1px solid var(--border-color)',
 };
 
@@ -227,11 +289,11 @@ const cancelBtnStyle = {
 
 const confirmBtnStyle = {
   padding: '10px 18px', borderRadius: '8px', border: 'none',
-  backgroundColor: '#2563eb', color: '#fff', cursor: 'pointer', fontWeight: 600,
+  backgroundColor: 'var(--bp-ac, #2563eb)', color: 'var(--bp-ai, #fff)', cursor: 'pointer', fontWeight: 600,
 };
 
 const dangerBtnStyle = {
-  backgroundColor: '#dc2626',
+  backgroundColor: 'var(--bp-no, #dc2626)',
 };
 
 /**

@@ -130,7 +130,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
           </p>
         )}
 
-        {error && <p style={{ color: '#e74c3c', fontSize: 13 }}>{error}</p>}
+        {error && <p style={{ color: 'var(--bp-no, #e74c3c)', fontSize: 13 }}>{error}</p>}
         {stage === 'map' && (
           <>
             {!inspect && !error && <p style={{ opacity: 0.6 }}>Reading the file…</p>}
@@ -264,7 +264,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
 
             {needsConfirm && (
               <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 12, color: '#e74c3c', margin: '0 0 6px' }}>
+                <p style={{ fontSize: 12, color: 'var(--bp-no, #e74c3c)', margin: '0 0 6px' }}>
                   {removalCount} voter(s) will be permanently removed. Type REMOVE to confirm.
                 </p>
                 <input style={{ ...sel, width: '100%' }} value={confirmText} onChange={e => setConfirmText(e.target.value)} placeholder="REMOVE" />
@@ -291,4 +291,4 @@ const row = { display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', 
 const diffLine = { fontSize: 12, marginTop: 2, overflowWrap: 'anywhere' };
 const sel = { padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', fontSize: 12 };
 const ghostBtn = { padding: '8px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: 8, cursor: 'pointer', fontSize: 13 };
-const primaryBtn = { width: '100%', padding: 12, background: '#2ecc71', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' };
+const primaryBtn = { width: '100%', padding: 12, background: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' };

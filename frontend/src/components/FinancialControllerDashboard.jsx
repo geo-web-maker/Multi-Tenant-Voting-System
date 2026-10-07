@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
-import { useToast, ScrollList } from './UIFeedback';
+import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import ConsoleFrame from './ConsoleFrame';
 import ReceiptLink from './ReceiptLink';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
+import { getTemplate } from '../template';
 
 // All money in one place: voter-register payments (IT Admin add/remove requests) and candidate
 // nomination payments. Commissioners no longer clear payments, so whoever confirms the money never
@@ -27,6 +29,7 @@ const shortDate = (d) => (d ? new Date(d).toLocaleDateString('en-UG', { day: 'nu
 
 export default function FinancialControllerDashboard({ onLogout }) {
   const toast = useToast();
+  const confirm = useConfirm();
 
   const [rawTab, setActiveTab]      = usePersistedTab('financial_controller', 'voters');
   const [statusView, setStatusView] = usePersistedTab('financial_controller_status', 'pending');
@@ -126,7 +129,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
   const reverseClearance = async (appId) => {
     if (missingId()) return;
     if (needReason(appId, 'reversing this clearance')) return;
-    if (!window.confirm('Reverse this clearance? The Vetting Panel will no longer be able to vote on this candidate, and any votes already cast are set aside.')) return;
+    if (!(await confirm('Reverse this clearance? The Vetting Panel will no longer be able to vote on this candidate, and any votes already cast are set aside.', { danger: true, confirmText: 'Reverse clearance', title: 'Reverse clearance?' }))) return;
     await run(appId, () => api.post(`/admin/applications/${appId}/finance-reverse`, {
       financial_controller_id: fcId,
       reason: (reasons[appId] || '').trim(),
@@ -242,7 +245,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+        <ConsoleFrame nav={<TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />}>
         <div style={{ marginBottom: '20px' }} />
 
         {/* ── Pending / Approved / Denied view (both money tabs) ── */}
@@ -292,9 +295,9 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
                     {change.change_type === 'add' ? <>Add Student</> : <>Remove Student</>}
                   </b>
-                  <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
+                  <StatusBadge status={change.status} style={{ marginLeft: '10px' }}>
                     {change.status.toUpperCase()}
-                  </span>
+                  </StatusBadge>
                 </div>
                 <small style={{ opacity: 0.45 }}>{shortDate(change.requested_at)}</small>
               </div>
@@ -370,9 +373,9 @@ export default function FinancialControllerDashboard({ onLogout }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                 <div>
                   <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>{app.full_name}</b>
-                  <span style={{ ...statusBadge(state), marginLeft: '10px' }}>
+                  <StatusBadge status={state} style={{ marginLeft: '10px' }}>
                     {labels[state].toUpperCase()}
-                  </span>
+                  </StatusBadge>
                 </div>
                 <small style={{ opacity: 0.45 }}>{shortDate(app.submitted_at)}</small>
               </div>
@@ -500,6 +503,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         )}
 
         <SharedTabPanels activeTab={activeTab} />
+        </ConsoleFrame>
       </div>
     </div>
   );
@@ -518,15 +522,22 @@ function statusBadge(status) {
   };
 }
 
+// Status badge. Default: the same <span> as before. Blueprint: the shared status pill (one tone map for every console).
+function StatusBadge({ status, style, children }) {
+  const bp = getTemplate();
+  if (bp?.StatusPill) return <bp.StatusPill status={status} style={style}>{children}</bp.StatusPill>;
+  return <span style={{ ...statusBadge(status), ...style }}>{children}</span>;
+}
+
 // ── Styles (mirrors CommissionDashboard.jsx) ──
 const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-color)', padding: '20px' };
 const container  = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const payBox     = { marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };
 const inp        = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
-const btn        = { padding: '9px 16px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn   = { ...btn, backgroundColor: '#2ecc71' };
-const redBtn     = { ...btn, backgroundColor: '#e74c3c' };
+const btn        = { padding: '9px 16px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const greenBtn   = { ...btn, backgroundColor: 'var(--bp-ok, #2ecc71)' };
+const redBtn     = { ...btn, backgroundColor: 'var(--bp-no, #e74c3c)' };
 const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const pill       = (active) => ({
   padding: '6px 14px', borderRadius: '999px', cursor: 'pointer', fontSize: '12px', fontWeight: active ? 'bold' : 'normal',

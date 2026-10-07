@@ -46,10 +46,10 @@ export default function UploadBypassPanel() {
       <input style={{ ...inp, width: '100%', boxSizing: 'border-box' }} placeholder="Reason for this change (kept in the audit log)"
         aria-label="Reason for change" value={reason} onChange={e => setReason(e.target.value)} maxLength={300} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10, flexWrap: 'wrap' }}>
-        <button style={{ ...btn, background: enabled ? '#e74c3c' : '#2ecc71', opacity: canFlip ? 1 : 0.5 }} disabled={!canFlip} onClick={flip}>
+        <button style={{ ...btn, background: enabled ? 'var(--bp-no, #e74c3c)' : 'var(--bp-ok, #2ecc71)', opacity: canFlip ? 1 : 0.5 }} disabled={!canFlip} onClick={flip}>
           {busy ? 'Saving…' : enabled ? 'Turn bypass OFF' : 'Turn bypass ON'}
         </button>
-        {msg.text && <span role="status" style={{ fontSize: 12, color: msg.kind === 'error' ? '#e74c3c' : 'var(--success)' }}>{msg.text}</span>}
+        {msg.text && <span role="status" style={{ fontSize: 12, color: msg.kind === 'error' ? 'var(--bp-no, #e74c3c)' : 'var(--success)' }}>{msg.text}</span>}
       </div>
     </div>
   );
@@ -57,4 +57,4 @@ export default function UploadBypassPanel() {
 
 const box = { padding: 16, border: '1px solid var(--border-color)', borderRadius: 12, backgroundColor: 'var(--card-bg)', marginBottom: 16 };
 const inp = { padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', fontSize: 14 };
-const btn = { padding: '10px 16px', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' };
+const btn = { padding: '10px 16px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' };

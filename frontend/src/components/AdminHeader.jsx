@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 // (Exports a hook next to the component on purpose; splitting the file would touch every importer.)
 import React, { useCallback, useState } from 'react';
+import { getTemplate } from '../template';
 
 /**
  * The one header every admin panel uses, so they all look and behave the same:
@@ -19,7 +20,7 @@ export function useLastSynced() {
   return [lastSynced, markSynced];
 }
 
-export default function AdminHeader({ title, subtitle, lastSynced, onRefresh, refreshing = false, actions = null, onLogout }) {
+function DefaultAdminHeader({ title, subtitle, lastSynced, onRefresh, refreshing = false, actions = null, onLogout }) {
   return (
     <div style={wrap} className="no-print admin-header">
       <div style={{ minWidth: 0 }}>
@@ -43,9 +44,15 @@ export default function AdminHeader({ title, subtitle, lastSynced, onRefresh, re
   );
 }
 
+// Template seam (BP-T7a, R12): DefaultAdminHeader above is today's markup, untouched.
+export default function AdminHeader(props) {
+  const bp = getTemplate();
+  return bp ? <bp.AdminToolbar {...props} /> : <DefaultAdminHeader {...props} />;
+}
+
 const wrap = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' };
 const right = { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' };
 const sub = { fontSize: '12px', opacity: 0.6 };
 const base = { padding: '9px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const ghost = { ...base, background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', fontWeight: 'normal', padding: '9px 14px' };
-const logout = { ...base, color: '#fff', border: 'none', backgroundColor: '#e74c3c' };
+const logout = { ...base, color: 'var(--bp-ai, #fff)', border: 'none', backgroundColor: 'var(--bp-no, #e74c3c)' };

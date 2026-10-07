@@ -266,7 +266,7 @@ button:hover {
 }
 .tabbar-pill.is-active {
   background: var(--success);
-  color: #04231a;
+  color: var(--bp-ai, #04231a);
 }
 
 /* Above 768px these rows wrap onto multiple lines instead of scrolling
@@ -552,6 +552,9 @@ button:hover {
   max-width: 100%;
 }
 .outer-wrap { max-width: 100vw; }
+/* Every admin dashboard card fills the same width. AdminDashboard's inline 95% / 1200px cap and the
+   row-flex wrappers of IT Admin / Financial / Overseer / Vetting made the cards differ in width. */
+.dashboard-shell { width: 100% !important; max-width: 100% !important; }
 
 /* --- Dashboard shell: reclaim wasted padding on phones --- */
 @media (max-width: 600px) {
@@ -614,6 +617,18 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
+/* position: sticky (the bottom pill nav on phones/tablets, the side rail on
+   desktop) needs the VIEWPORT to be its scroll container. With overflow-x:
+   hidden on BOTH html and body, html's value is handed to the viewport and
+   body's stays on body itself, which turns body into its own (non-scrolling)
+   scroll container — sticky then measures against that box instead of the
+   screen and the nav just sits at the end of the page. `clip` still stops
+   sideways overflow but does not create a scroll container. Browsers
+   without `clip` keep the old `hidden` above. */
+@supports (overflow: clip) {
+  body { overflow-x: clip; }
+}
+
 #root {
   max-width: 100vw;
 }
@@ -626,6 +641,31 @@ html, body {
 }
 .table-scroll > table {
   min-width: 560px;
+}
+
+/* Tables that scroll INSIDE their own box (header stays put) so Next / Previous and
+   the rest of the page stay in reach instead of needing a full-page scroll to the
+   bottom of a long list. Height tracks the screen, with a floor for short windows. */
+.table-scroll-y {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: max(320px, calc(100dvh - 300px));
+}
+.table-scroll-y thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bp-sf3, var(--card-bg));
+}
+/* Wide screens: the fixed 460px / 50vh caps on existing scroll boxes left most of the
+   screen empty, so they follow the viewport height too. */
+@media (min-width: 769px) {
+  .table-scroll[style*="max-height"] {
+    max-height: max(320px, calc(100dvh - 260px)) !important;
+  }
+  .voter-table td { font-size: 13px !important; padding: 12px 14px !important; }
+  .voter-table th { font-size: 12px !important; padding: 11px 14px !important; }
+  .voter-table td:last-child > div { flex-wrap: nowrap !important; }
 }
 
 /* Chain hashes and long IDs are unbreakable strings — without this they
@@ -879,4 +919,11 @@ td, th {
   [style*="position: fixed"] {
     display: none !important;
   }
+}
+
+/* Demo SMS inbox button: sits left of the Help pill. Below 400px Help is icon-only (48px wide, right: 24px) so the
+   inline right: 82px is enough; from 400px up the pill shows its "Help"/"Close" label and is ~120px wide, which
+   put the two buttons on top of each other. */
+@media (min-width: 400px) {
+  .demo-inbox-fab { right: 152px !important; }
 }

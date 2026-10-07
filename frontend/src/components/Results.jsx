@@ -7,6 +7,7 @@ import { PublicTurnoutBreakdown } from './TurnoutBreakdown';
 import { LoadingBlock } from './Spinner.jsx';
 import { resultsState, notStartedMessage } from '../resultsState';
 import { fmtZoned, DEFAULT_TZ } from '../tz';
+import { getTemplate } from '../template';
 
 // 1. SHUFFLE UTILITY (Outside the component)
 const shuffleArray = (array) => {
@@ -191,13 +192,19 @@ const fetchData = async ({ force = false } = {}) => {
   const notStarted = pageState === 'not_started';
   const noVotes = pageState === 'no_votes';
 
+  // Template seam: `bp` is null in the standard UI; every branch falls through to the original markup.
+  const bp = getTemplate();
+  const badge = (tone, bg, fg, icon, label) => (bp
+    ? <bp.Pill tone={tone}><Icon name={icon} /> {label}</bp.Pill>
+    : <span className="cand-badge" style={badgeStyle(bg, fg)}><Icon name={icon} /> {label}</span>);
+
   if (loading) return <div style={{textAlign: 'center', padding: '50px'}}><LoadingBlock text="Loading Live Tally…" /></div>;
 
   return (
     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
       
       <div className="no-print">
-        <h2 style={{ textAlign: 'center', color: '#2c3e50', marginBottom: '20px' }}>Election Results</h2>
+        <h2 style={{ textAlign: 'center', color: 'var(--bp-tx, #2c3e50)', marginBottom: '20px' }}>Election Results</h2>
 
         {/* 2. THE TIE ALERT (Your new addition) */}
           {!isElectionOpen && orderedPositions.some(p => {
@@ -211,7 +218,7 @@ const fetchData = async ({ force = false } = {}) => {
           )}
         
         {notStarted && (
-          <div style={{ textAlign: 'center', padding: '30px 20px', color: '#475569', border: '1px dashed #ccc', borderRadius: '10px', marginBottom: '20px' }}>
+          <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--bp-mu, #475569)', border: '1px dashed var(--bp-line-ui, #ccc)', borderRadius: '10px', marginBottom: '20px' }}>
             <Icon name="alarm" />
             <div style={{ marginTop: '8px', fontWeight: 600 }}>
               {notStartedMessage(statusInfo.voting_opens_at ? fmtZoned(statusInfo.voting_opens_at, DEFAULT_TZ) : '')}
@@ -220,24 +227,31 @@ const fetchData = async ({ force = false } = {}) => {
         )}
 
         {/* Banner reflects Certification status */}
-        {!notStarted && (
+        {!notStarted && (bp ? (
+          <bp.Stat
+            tone={isElectionOpen || isCertified ? 'ok' : 'warn'}
+            pill={isElectionOpen ? <><Icon name="dot" /> Live Tallying</> : (isCertified ? <><Icon name="success" /> Official Certified Results</> : "Provisional Standings")}
+            value={electionData.voter_turnout}
+            note="Total Verified Ballots Cast"
+          />
+        ) : (
         <div style={bannerStyle(isElectionOpen, isCertified)}>
           <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#666', fontWeight: 'bold' }}>
             {isElectionOpen ? <><Icon name="dot" /> Live Tallying</> : (isCertified ? <><Icon name="success" /> Official Certified Results</> : "Provisional Standings")}
           </div>
-          <div style={{ fontSize: '36px', fontWeight: '800', color: isCertified ? '#10b981' : '#3b82f6' }}>
+          <div style={{ fontSize: '36px', fontWeight: '800', color: isCertified ? 'var(--bp-ok, #10b981)' : 'var(--bp-ac, #3b82f6)' }}>
             {electionData.voter_turnout}
           </div>
           <div style={{ fontSize: '13px', color: '#666' }}>Total Verified Ballots Cast</div>
         </div>
-        )}
+        ))}
 
         {noVotes && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#666', marginBottom: '20px' }}>No votes yet.</div>
+          <div style={{ textAlign: 'center', padding: '20px', color: 'var(--bp-mu, #666)', marginBottom: '20px' }}>No votes yet.</div>
         )}
 
         {notStarted || noVotes ? null : !electionData.results_released ? (
-          <div style={{ textAlign: 'center', padding: '30px 20px', color: '#666', border: '1px dashed #ccc', borderRadius: '10px', marginBottom: '20px' }}>
+          <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--bp-mu, #666)', border: '1px dashed var(--bp-line-ui, #ccc)', borderRadius: '10px', marginBottom: '20px' }}>
             <Icon name="lock" />
             <div style={{ marginTop: '8px', fontWeight: 600 }}>Candidate results not yet published</div>
             <div style={{ fontSize: '13px', marginTop: '4px' }}>
@@ -264,7 +278,9 @@ const fetchData = async ({ force = false } = {}) => {
             
               return (
                 <div key={position.name} style={{ marginBottom: '40px' }}>
+                  {bp ? <bp.PositionHeading>{position.name}</bp.PositionHeading> : (
                   <h3 className="position-header" style={positionHeaderStyle}>{position.name}</h3>
+                  )}
                   
                   {position.candidates.sort((a,b) => b.votes - a.votes).map(candidate => {
                     const percentage = positionTotal > 0
@@ -284,8 +300,10 @@ const fetchData = async ({ force = false } = {}) => {
                       }
                     }
             
+                    const Row = bp ? bp.Meter : 'div';
+                    const rowProps = bp ? { pct: percentage, accent: isTopCandidate } : { className: 'cand-row' };
                     return (
-                      <div key={candidate.id || candidate.name} className="cand-row">
+                      <Row key={candidate.id || candidate.name} {...rowProps}>
                         {/* Line 1: name (wraps freely) + votes (never squeezed) */}
                         <div className="cand-top">
                           <span className="cand-name">{candidate.name}</span>
@@ -297,28 +315,34 @@ const fetchData = async ({ force = false } = {}) => {
                             there is a status to show. */}
                         {(winStatus || (isElectionOpen && isTopCandidate)) && (
                           <div className="cand-badges">
-                            {winStatus === 'WINNER' && <span className="cand-badge" style={badgeStyle('var(--warning)', '#1e293b')}><Icon name="trophy" /> ELECTED</span>}
-                            {winStatus === 'MANDATE_GAINED' && <span className="cand-badge" style={badgeStyle('#10b981', '#fff')}><Icon name="success" /> MANDATE GAINED</span>}
-                            {winStatus === 'TIE' && <span className="cand-badge" style={badgeStyle('#e67e22', '#fff')}><Icon name="scale" /> TIE (RE-RUN)</span>}
-                            {winStatus === 'UNDERMANDATED' && <span className="cand-badge" style={badgeStyle('#ef4444', '#fff')}><Icon name="warning" /> UNDERMANDATED</span>}
-                            {isElectionOpen && isTopCandidate && (
-                              <span className="cand-live" style={{ color: isTie ? '#e67e22' : 'var(--success)' }}>
+                            {winStatus === 'WINNER' && badge('ok', 'var(--warning)', 'var(--bp-ai, #1e293b)', 'trophy', 'ELECTED')}
+                            {winStatus === 'MANDATE_GAINED' && badge('ok', 'var(--bp-ok, #10b981)', 'var(--bp-ai, #fff)', 'success', 'MANDATE GAINED')}
+                            {winStatus === 'TIE' && badge('warn', 'var(--bp-wn, #e67e22)', 'var(--bp-ai, #fff)', 'scale', 'TIE (RE-RUN)')}
+                            {winStatus === 'UNDERMANDATED' && badge('neg', 'var(--bp-no, #ef4444)', 'var(--bp-ai, #fff)', 'warning', 'UNDERMANDATED')}
+                            {isElectionOpen && isTopCandidate && (bp ? (
+                              <bp.Pill tone={isTie ? 'warn' : 'ok'}>
+                                {isTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
+                              </bp.Pill>
+                            ) : (
+                              <span className="cand-live" style={{ color: isTie ? 'var(--bp-wn, #e67e22)' : 'var(--success)' }}>
                                 {isTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
                               </span>
-                            )}
+                            ))}
                           </div>
                         )}
 
+                        {!bp && (
                         <div style={progressContainer}>
                            {/* Change color to Orange if it's a tie/deadlock */}
                            <div style={{
                              ...progressBar(percentage, winStatus === 'WINNER'),
-                             backgroundColor: (isTie && isTopCandidate) ? '#e67e22' : 
-                               (winStatus === 'MANDATE_GAINED' ? '#10b981' : 
-                               (winStatus === 'WINNER' ? 'var(--warning)' : '#3b82f6'))
+                             backgroundColor: (isTie && isTopCandidate) ? 'var(--bp-wn, #e67e22)' : 
+                               (winStatus === 'MANDATE_GAINED' ? 'var(--bp-ok, #10b981)' : 
+                               (winStatus === 'WINNER' ? 'var(--warning)' : 'var(--bp-ac, #3b82f6)'))
                            }} />
                         </div>
-                      </div>
+                        )}
+                      </Row>
                     );
                   })}
                 </div>
@@ -351,7 +375,7 @@ const fetchData = async ({ force = false } = {}) => {
                     </div>
                   ))
                 ) : (
-                  <p style={{ fontSize: '12px', color: '#64748b', margin: '10px 0' }}>
+                  <p style={{ fontSize: '12px', color: 'var(--bp-mu, #64748b)', margin: '10px 0' }}>
                     No match in the published list. Names appear in batches, so a recent voter may not show yet.
                   </p>
                 )
@@ -365,7 +389,7 @@ const fetchData = async ({ force = false } = {}) => {
                   </div>
                 ))
               )}
-              <p style={{ fontSize: '11px', color: '#64748b', textAlign: 'center', marginTop: '15px' }}>
+              <p style={{ fontSize: '11px', color: 'var(--bp-mu, #64748b)', textAlign: 'center', marginTop: '15px' }}>
                 * Names appear in batches of {BATCH_SIZE} and are randomized to protect voter privacy.
               </p>
             </div>
@@ -405,7 +429,7 @@ const fetchData = async ({ force = false } = {}) => {
             Download Public Results Report
           </button>
           )}
-          <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '10px' }}>
+          <p style={{ fontSize: '10px', color: 'var(--bp-mu, #94a3b8)', marginTop: '10px' }}>
             Syncing live from Server... Last update: {lastSynced.toLocaleTimeString()}
           </p>
         </div>
@@ -438,7 +462,7 @@ const bannerStyle = (isOpen, isCertified) => ({
   // Background logic
   background: isOpen ? '#f0fdf4' : (isCertified ? '#ecfdf5' : '#fff7ed'), 
   // Border logic
-  borderBottom: `4px solid ${isOpen ? 'var(--success)' : (isCertified ? '#10b981' : '#f39c12')}`,
+  borderBottom: `4px solid ${isOpen ? 'var(--success)' : (isCertified ? 'var(--bp-ok, #10b981)' : 'var(--bp-wn, #f39c12)')}`,
   boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)'
 });
 
@@ -456,19 +480,19 @@ const badgeStyle = (bgColor, textColor = '#000') => ({
 });
 
 const positionHeaderStyle = {
-  backgroundColor: '#f8fafc', color: '#3b82f6', padding: '8px 15px', borderRadius: '8px',
-  fontSize: '18px', fontWeight: 'bold', borderLeft: '4px solid #3b82f6', marginBottom: '20px'
+  backgroundColor: '#f8fafc', color: 'var(--bp-ac, #3b82f6)', padding: '8px 15px', borderRadius: '8px',
+  fontSize: '18px', fontWeight: 'bold', borderLeft: '4px solid var(--bp-ac, #3b82f6)', marginBottom: '20px'
 };
 
 const progressContainer = { width: '100%', backgroundColor: 'var(--surface-2)', borderRadius: '20px', height: '10px', overflow: 'hidden' };
 const progressBar = (pct, isWinner) => ({ 
-  width: `${pct}%`, height: '100%', backgroundColor: isWinner ? 'var(--warning)' : '#3b82f6', transition: 'width 1.5s ease-in-out' 
+  width: `${pct}%`, height: '100%', backgroundColor: isWinner ? 'var(--warning)' : 'var(--bp-ac, #3b82f6)', transition: 'width 1.5s ease-in-out' 
 });
 
 const tieWarningBanner = {
-  backgroundColor: '#fff7ed',
-  border: '1px solid #fb923c',
-  color: '#9a3412',
+  backgroundColor: 'var(--bp-wn-tint, #fff7ed)',
+  border: '1px solid var(--bp-wn-edge, #fb923c)',
+  color: 'var(--bp-tx, #9a3412)',
   padding: '12px',
   borderRadius: '8px',
   marginBottom: '20px',
@@ -484,5 +508,5 @@ const voterRowStyle = { display: 'flex', justifyContent: 'space-between', paddin
 const privacyLockStyle = { padding: '20px', textAlign: 'center', color: 'var(--text-muted)' };
 const thresholdBarStyle = { width: '100%', height: '8px', background: 'var(--border-color)', borderRadius: '4px', overflow: 'hidden' };
 const printBtnStyle = {
-  padding: '12px 24px', backgroundColor: '#1e293b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
+  padding: '12px 24px', backgroundColor: '#1e293b', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
 };

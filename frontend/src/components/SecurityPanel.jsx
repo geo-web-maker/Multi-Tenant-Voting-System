@@ -6,6 +6,7 @@ import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
 import { turnstileConfigured } from '../supportLink';
 import { useRevealReady } from './RevealGroup';
+import LegacyDataPanel from './LegacyDataPanel';
 import { DEFAULT_TZ, utcToZonedInput, zonedInputToUtcISO, utcOffsetLabel, fmtZoned } from '../tz';
 
 const ROUTE_LABELS = {
@@ -34,7 +35,7 @@ export function SmsUsageTile({ initial = null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `initial` is only the first-render seed
   }, []);
   if (!u) return null;
-  const modeColor = { normal: 'var(--success)', conservation: '#e67e22', under_attack: 'var(--danger)' }[u.mode];
+  const modeColor = { normal: 'var(--success)', conservation: 'var(--bp-wn, #e67e22)', under_attack: 'var(--danger)' }[u.mode];
   const low = u.budget_pct_left != null && u.budget_pct_left <= 25;
   return (
     <div style={box}>
@@ -69,7 +70,10 @@ export default function SecurityPanel() {
   const [d, setD] = useState(null);
   const [f, setF] = useState({});
   const [budget, setBudget] = useState({ total: '', mode: 'normal', enforce: false, floor: '' });
-  const [reason, setReason] = useState('');
+  // One reason box per form: they used to share a single value, so text typed for one save appeared in the others.
+  const [reasonSec, setReasonSec] = useState('');
+  const [reasonSms, setReasonSms] = useState('');
+  const [reasonBudget, setReasonBudget] = useState('');
   const [ledger, setLedger] = useState(null);
   const [tz, setTz] = useState(DEFAULT_TZ);   // election timezone (set on the Timeline tab)
   const [testPhone, setTestPhone] = useState('');
@@ -101,11 +105,21 @@ export default function SecurityPanel() {
   useRevealReady(Boolean(d) || failed);
   if (!d) return null;
 
-  const need = () => { if (reason.trim().length < 3) { toast('Enter a reason for this change first.', { kind: 'error' }); return false; } return true; };
+  const need = (r) => { if (r.trim().length < 3) { toast('Enter a reason for this change first.', { kind: 'error' }); return false; } return true; };
+  // A failed or timed-out save may still have been applied on the server, so always re-read the real values.
+  const saveFailed = (e) => {
+    toast(e?.response ? errMsg(e, 'Save failed.') : 'No answer from the server. The change may still have been applied; showing the current saved values.', { kind: 'error' });
+    load();
+  };
+  const savedOk = (msg, r) => {
+    const warn = r?.data?.warning;
+    if (warn) toast(warn, { kind: 'info' }); else toast(msg, { kind: 'success' });
+    load();
+  };
   const saveSecurity = async () => {
-    if (!need()) return;
+    if (!need(reasonSec)) return;
     if (!(await confirm('Save these security settings? The change is logged with your reason and shown to the overseer.', { confirmText: 'Save' }))) return;
-    const body = { reason: reason.trim() };
+    const body = { reason: reasonSec.trim() };
     ['roster_freeze_enabled', 'contact_change_required', 'superadmin_breakglass'].forEach(k => { body[k] = Boolean(f[k]); });
     ['otp_target_risk', 'quota_alert_pct', 'quota_hard_cap_pct'].forEach(k => { body[k] = Number(f[k]); });
     ['contact_change_ttl_hours', 'contact_change_max_per_voter', 'approver_daily_cap',
@@ -115,23 +129,23 @@ export default function SecurityPanel() {
     body.approval_policy = f.approval_policy;
     if (f.roster_freeze_at) body.roster_freeze_at = zonedInputToUtcISO(f.roster_freeze_at, tz);
     else body.clear_roster_freeze_at = true;
-    try { await api.put('/superadmin/security-settings', body); toast('Security settings saved.', { kind: 'success' }); setReason(''); load(); }
-    catch (e) { toast(errMsg(e, 'Save failed.'), { kind: 'error' }); }
+    try { const r = await api.put('/superadmin/security-settings', body); setReasonSec(''); savedOk('Security settings saved.', r); }
+    catch (e) { saveFailed(e); }
   };
   const saveSms = async () => {
-    if (!need()) return;
+    if (!need(reasonSms)) return;
     const warn = [f.sms_route_otp, f.sms_route_other].some(r => r === 'egosms_only' || r === 'mambosms_only');
     const msg = warn
       ? 'Save SMS routing? A provider set to "only" has NO fallback: if that provider is down or out of credit, those messages will not be delivered. Send a test first.'
       : 'Save SMS routing? It takes effect immediately for every new message.';
     if (!(await confirm(msg, { confirmText: 'Save routing' }))) return;
     try {
-      await api.put('/superadmin/security-settings', {
-        reason: reason.trim(), sms_route_otp: f.sms_route_otp, sms_route_other: f.sms_route_other,
+      const r = await api.put('/superadmin/security-settings', {
+        reason: reasonSms.trim(), sms_route_otp: f.sms_route_otp, sms_route_other: f.sms_route_other,
         sms_fallback_on_timeout: Boolean(f.sms_fallback_on_timeout),
       });
-      toast('SMS routing saved.', { kind: 'success' }); setReason(''); load();
-    } catch (e) { toast(errMsg(e, 'Save failed.'), { kind: 'error' }); }
+      setReasonSms(''); savedOk('SMS routing saved.', r);
+    } catch (e) { saveFailed(e); }
   };
   const sendTest = async (provider) => {
     if (!testPhone.trim()) { toast('Enter a phone number to send the test to.', { kind: 'error' }); return; }
@@ -149,15 +163,15 @@ export default function SecurityPanel() {
     finally { setTesting(''); }
   };
   const saveBudget = async () => {
-    if (!need()) return;
+    if (!need(reasonBudget)) return;
     try {
-      await api.put('/superadmin/sms-budget', {
-        reason: reason.trim(), sms_budget_total: budget.total === '' ? undefined : Number(budget.total),
+      const r = await api.put('/superadmin/sms-budget', {
+        reason: reasonBudget.trim(), sms_budget_total: budget.total === '' ? undefined : Number(budget.total),
         sms_mode: budget.mode, sms_budget_enforce: budget.enforce,
         sms_balance_floor_ugx: budget.floor === '' ? 0 : Number(budget.floor),
       });
-      toast('SMS budget saved.', { kind: 'success' }); setReason(''); load();
-    } catch (e) { toast(errMsg(e, 'Save failed.'), { kind: 'error' }); }
+      setReasonBudget(''); savedOk('SMS budget saved.', r);
+    } catch (e) { saveFailed(e); }
   };
   const verifyLedger = async () => {
     try { setLedger((await api.get('/admin/roster-ledger/verify')).data); } catch (e) { toast(errMsg(e, 'Verify failed.'), { kind: 'error' }); }
@@ -175,6 +189,7 @@ export default function SecurityPanel() {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
       <SmsUsageTile initial={smsUsage} />
+      <LegacyDataPanel />
       {d.banner && <div style={{ ...box, borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
 
       <div style={box}>
@@ -233,7 +248,7 @@ export default function SecurityPanel() {
         {chk('sms_fallback_on_timeout', 'Also switch provider when the first one times out (result unknown). Risk: the voter may receive the code twice.')}
 
         <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
-          <input style={inp} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. EgoSMS credit low, routing OTPs via MamboSMS" /></label>
+          <input style={inp} value={reasonSms} onChange={e => setReasonSms(e.target.value)} placeholder="e.g. EgoSMS credit low, routing OTPs via MamboSMS" /></label>
         <button style={{ ...btn, marginTop: 8 }} onClick={saveSms}>Save SMS routing</button>
 
         <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '16px 0 8px' }} />
@@ -241,9 +256,9 @@ export default function SecurityPanel() {
         <p style={note}>Sends a real (billable) test message. “Current routing” behaves exactly like a voter OTP; the provider buttons test one account directly, ignoring routing.</p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <input style={{ ...inp, maxWidth: 220 }} value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="Phone, e.g. 2567XXXXXXXX" />
-          <button style={{ ...btn, background: '#3498db' }} disabled={!!testing} onClick={() => sendTest()}>{testing === 'routing' ? 'Sending…' : 'Current routing'}</button>
-          <button style={{ ...btn, background: '#3498db' }} disabled={!!testing} onClick={() => sendTest('egosms')}>{testing === 'egosms' ? 'Sending…' : 'EgoSMS'}</button>
-          <button style={{ ...btn, background: '#3498db' }} disabled={!!testing} onClick={() => sendTest('mambosms')}>{testing === 'mambosms' ? 'Sending…' : 'MamboSMS'}</button>
+          <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={!!testing} onClick={() => sendTest()}>{testing === 'routing' ? 'Sending…' : 'Current routing'}</button>
+          <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={!!testing} onClick={() => sendTest('egosms')}>{testing === 'egosms' ? 'Sending…' : 'EgoSMS'}</button>
+          <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={!!testing} onClick={() => sendTest('mambosms')}>{testing === 'mambosms' ? 'Sending…' : 'MamboSMS'}</button>
           <button style={{ ...btn, background: '#7f8c8d' }} disabled={!!testing} onClick={checkBalances}>{testing === 'balances' ? 'Checking…' : 'Check balances'}</button>
         </div>
         {balances && (
@@ -283,7 +298,7 @@ export default function SecurityPanel() {
       </div>
 
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
-        <input style={inp} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. election-day hardening" /></label>
+        <input style={inp} value={reasonSec} onChange={e => setReasonSec(e.target.value)} placeholder="e.g. election-day hardening" /></label>
       <button style={btn} onClick={saveSecurity}>Save security settings</button>
 
       <div style={{ ...box, gridColumn: '1 / -1' }}>
@@ -301,6 +316,8 @@ export default function SecurityPanel() {
         <label style={{ ...fld, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={budget.enforce} onChange={e => setBudget({ ...budget, enforce: e.target.checked })} />
           <span style={{ fontSize: 13 }}>Enforce (leave off / monitor-only until the dry run passes)</span></label>
+        <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
+          <input style={inp} value={reasonBudget} onChange={e => setReasonBudget(e.target.value)} placeholder="e.g. topped up 5,000 credits" /></label>
         <button style={{ ...btn, marginTop: 8 }} onClick={saveBudget}>Save SMS budget</button>
       </div>
 
@@ -311,7 +328,7 @@ export default function SecurityPanel() {
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>Roster ledger integrity</b>
-        <button style={{ ...btn, background: '#3498db', marginLeft: 10 }} onClick={verifyLedger}>Verify chain</button>
+        <button style={{ ...btn, background: 'var(--bp-ac, #3498db)', marginLeft: 10 }} onClick={verifyLedger}>Verify chain</button>
         {ledger && <p style={{ ...note, color: ledger.valid ? 'var(--success)' : 'var(--danger)' }}>
           {ledger.valid ? `VERIFIED — ${ledger.entries} entries` : `MISMATCH at entry #${ledger.first_bad_seq}`}</p>}
       </div>
@@ -347,7 +364,7 @@ function NameNormalizerTile() {
     <div style={box}>
       <b style={{ fontSize: 14 }}>Name formatting clean-up</b>
       <p style={note}>New names are capitalised automatically when saved. This fixes names that were stored before that (voter register, applications, candidates, change requests). It changes letter case and spacing only. IDs, phone numbers, votes and the audit history are not touched.</p>
-      <button style={{ ...btn, background: '#3498db' }} disabled={busy} onClick={() => run(true)}>Preview changes</button>
+      <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(true)}>Preview changes</button>
       <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !report || !report.dry_run || report.total_changed === 0} onClick={() => run(false)}>Apply</button>
       {report && (
         <div style={{ marginTop: 10, fontSize: 13 }}>
@@ -395,7 +412,7 @@ function RegNumberCheckTile() {
     <div style={box}>
       <b style={{ fontSize: 14 }}>Registration number check</b>
       <p style={note}>Registration numbers are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
-      <button style={{ ...btn, background: '#3498db' }} disabled={busy} onClick={() => run(false)}>Check database</button>
+      <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(false)}>Check database</button>
       <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !r || r.fix || fixable === 0} onClick={() => run(true)}>Fix</button>
       {r && (
         <div style={{ marginTop: 10, fontSize: 13 }}>
@@ -446,7 +463,7 @@ function ApplicationEditReconcileTile() {
     <div style={box}>
       <b style={{ fontSize: 14 }}>Unrecorded application edits</b>
       <p style={note}>Finds applications whose details were changed before the Edit application button existed, so they never showed as edited. Preview lists them; Apply records each change in its history. The edit time shown will be today, because the real time was never saved.</p>
-      <button style={{ ...btn, background: '#3498db' }} disabled={busy} onClick={() => run(true)}>Preview</button>
+      <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(true)}>Preview</button>
       <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !report || !report.dry_run || report.items.length === 0} onClick={() => run(false)}>Apply</button>
       {report && (
         <div style={{ marginTop: 10, fontSize: 13 }}>
@@ -470,4 +487,4 @@ const note = { fontSize: 12, opacity: 0.75, margin: '6px 0' };
 const fld = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 };
 const lbl = { fontSize: 12, opacity: 0.65, fontWeight: 600 };
 const inp = { padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, width: '100%', boxSizing: 'border-box' };
-const btn = { padding: '10px 18px', color: '#fff', background: '#2ecc71', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
+const btn = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', background: 'var(--bp-ok, #2ecc71)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };

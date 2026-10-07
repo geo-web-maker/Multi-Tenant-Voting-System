@@ -10,6 +10,7 @@ import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
+import { getTemplate } from '../template';
 import { PrintStyles, ApplicationSnapshotDoc } from './CandidateStatusPortal';
 import VoterStats from './VoterStats';
 import { SmsUsageTile } from './SecurityPanel';
@@ -26,6 +27,8 @@ import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
 import VoterImportReview from './VoterImportReview';
 import PaymentInfoPanel from './PaymentInfoPanel';
+import NominationFormPanel from './NominationFormPanel';
+import DemoControlsPanel from './DemoControlsPanel';
 import UploadBypassPanel from './UploadBypassPanel';
 import ViewAsButton from './ViewAsButton';
 import { LoadingBlock } from './Spinner.jsx';
@@ -843,6 +846,7 @@ const handleSuperAdminRemoveStudent = async () => {
       tabs: [
         { id: 'candidates',   label: <>Candidates</>,   icon: 'award' },
         { id: 'positions',    label: <>Positions</>,    icon: 'clipboard' },
+        { id: 'nomination_form', label: <>Nomination Form</>, icon: 'file' },
         { id: 'applications', label: <>Applications</>, icon: 'file' },
         { id: 'branding',     label: <>Branding</>,     icon: 'palette' },
         { id: 'election',     label: <>Election</>,     icon: 'calendar' },
@@ -923,7 +927,7 @@ const handleSuperAdminRemoveStudent = async () => {
             title={!isElectionOpen && isCertified ? 'Revoke certification before starting the election' : undefined}
             style={{
               ...btn,
-              backgroundColor: isElectionOpen ? '#e67e22' : 'var(--success)',
+              backgroundColor: isElectionOpen ? 'var(--bp-wn, #e67e22)' : 'var(--success)',
               opacity: !isElectionOpen && isCertified ? 0.5 : 1,
               cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
             }}
@@ -935,7 +939,7 @@ const handleSuperAdminRemoveStudent = async () => {
             disabled={isElectionOpen}
             style={{
               ...btn,
-              backgroundColor: isCertified ? '#10b981' : '#f59e0b',
+              backgroundColor: isCertified ? 'var(--bp-ok, #10b981)' : 'var(--bp-wn, #f59e0b)',
               opacity: isElectionOpen ? 0.5 : 1,
               cursor: isElectionOpen ? 'not-allowed' : 'pointer',
             }}
@@ -1167,7 +1171,7 @@ const handleSuperAdminRemoveStudent = async () => {
             <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
               {['all','pending','approved','denied','removed'].map(f => (
                 <button key={f} onClick={() => setAppFilter(f)}
-                  style={{ ...ghostBtn, ...(appFilter === f && { borderColor: '#2ecc71', color: '#2ecc71' }) }}>
+                  style={{ ...ghostBtn, ...(appFilter === f && { borderColor: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ok, #2ecc71)' }) }}>
                   {f.charAt(0).toUpperCase() + f.slice(1)}
                   {' '}({f === 'all' ? applications.length : applications.filter(a => a.status === f).length})
                 </button>
@@ -1191,13 +1195,13 @@ const handleSuperAdminRemoveStudent = async () => {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                       <div>
                         <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>{app.full_name}</b>
-                        <span style={{ ...statusBadge(app.status), marginLeft: '10px' }}>
+                        <StatusBadge status={app.status} style={{ marginLeft: '10px' }}>
                           {app.status.toUpperCase()}
                           {app.superadmin_override && ' (SA)'}
-                        </span>
+                        </StatusBadge>
                         {app.edit_history?.length > 0 && (
                           <span title="This application was corrected after submission"
-                            style={{ marginLeft: '8px', border: '1px solid #b45309', color: '#b45309', borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 800, letterSpacing: 1 }}>
+                            style={{ marginLeft: '8px', border: '1px solid var(--bp-wn, #b45309)', color: 'var(--bp-wn, #b45309)', borderRadius: '4px', padding: '0 6px', fontSize: '10px', fontWeight: 800, letterSpacing: 1 }}>
                             EDITED
                           </span>
                         )}
@@ -1213,7 +1217,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       ID: {regNo(app.student_id)}
                     </p>
                     {app.edit_history?.length > 0 && (
-                      <div style={{ margin: '4px 0', fontSize: '11px', color: '#b45309' }}>
+                      <div style={{ margin: '4px 0', fontSize: '11px', color: 'var(--bp-wn, #b45309)' }}>
                         {app.edit_history.map((h, i) => (
                           <div key={i} style={{ marginBottom: '4px' }}>
                             <strong>Edited {new Date(h.at).toLocaleString()} by {h.by}</strong> · “{h.reason}”
@@ -1457,7 +1461,7 @@ const handleSuperAdminRemoveStudent = async () => {
               {[['register', 'Register'], ['stats', 'Statistics'], ['sms', 'SMS']].map(([id, label]) => (
                 <button key={id} role="tab" aria-selected={voterSubTab === id} onClick={() => setVoterSubTab(id)}
                   style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: 13,
-                    background: voterSubTab === id ? 'var(--info)' : 'transparent', color: voterSubTab === id ? '#fff' : 'inherit' }}>
+                    background: voterSubTab === id ? 'var(--info)' : 'transparent', color: voterSubTab === id ? 'var(--bp-ai, #fff)' : 'inherit' }}>
                   {label}
                 </button>
               ))}
@@ -1481,6 +1485,10 @@ const handleSuperAdminRemoveStudent = async () => {
               </>
             )}
           </>
+        )}
+
+        {activeTab === 'nomination_form' && (
+          <div style={twoCol}><NominationFormPanel /><DemoControlsPanel /></div>
         )}
 
         {activeTab === 'positions' && (
@@ -1634,7 +1642,7 @@ const handleSuperAdminRemoveStudent = async () => {
                           padding: '5px 10px',
                           cursor: 'pointer',
                           fontSize: '12px',
-                          color: '#ff6b6b',
+                          color: 'var(--bp-no, #ff6b6b)',
                         }}
                       >
                         Remove
@@ -1735,7 +1743,7 @@ const handleSuperAdminRemoveStudent = async () => {
                           padding: '5px 10px',
                           cursor: 'pointer',
                           fontSize: '12px',
-                          color: '#ff6b6b',
+                          color: 'var(--bp-no, #ff6b6b)',
                         }}
                       >
                         Remove
@@ -1765,13 +1773,13 @@ const handleSuperAdminRemoveStudent = async () => {
                   value={branding.support_phone || ''}
                   onChange={e => setBranding({ ...branding, support_phone: e.target.value })}
                 />
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                <small style={{ color: 'var(--bp-mu, #64748b)', fontSize: '11px' }}>
                   Shown as “Contact Support” in the voter Help menu and on the code screen, and named in the notice SMS
                   sent when a phone number is changed.
                 </small>
 
                 <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Support Contacts by Reason</label>
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                <small style={{ color: 'var(--bp-mu, #64748b)', fontSize: '11px' }}>
                   One card per reason, e.g. “Editing contact details”, “Reporting an issue”, “System guidance”. Add one
                   or more named contacts under a reason — a voter who taps a reason with several contacts sees their
                   names and picks who to message. Each reason appears as its own button in the voter Help menu.
@@ -1790,7 +1798,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         type="button"
                         aria-label="Remove reason"
                         onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.filter((_, j) => j !== gi) })}
-                        style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: '#ff6b6b' }}
+                        style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: 'var(--bp-no, #ff6b6b)' }}
                       >
                         Remove reason
                       </button>
@@ -1815,7 +1823,7 @@ const handleSuperAdminRemoveStudent = async () => {
                           type="button"
                           aria-label="Remove contact"
                           onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: x.contacts.filter((_, k) => k !== ci) } : x) })}
-                          style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: '#ff6b6b' }}
+                          style={{ background: 'rgba(255,80,80,0.15)', border: 'none', borderRadius: '6px', padding: '8px 10px', cursor: 'pointer', fontSize: '12px', color: 'var(--bp-no, #ff6b6b)' }}
                         >
                           Remove
                         </button>
@@ -1851,7 +1859,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   rows={5}
                   style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
                 />
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                <small style={{ color: 'var(--bp-mu, #64748b)', fontSize: '11px' }}>
                   {(branding.cc_list || []).length} entries — these appear at the bottom of the official printed report
                 </small>
 
@@ -1869,7 +1877,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   rows={5}
                   style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
                 />
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                <small style={{ color: 'var(--bp-mu, #64748b)', fontSize: '11px' }}>
                   {(branding.signatories || []).length} entries — these appear on the signature grid of the official
                   certified report, in this exact order. Leave the name blank for someone who signs by hand
                   (e.g. "— Dean of Students") — they don't need an account in this system. Leave the whole list
@@ -1904,8 +1912,8 @@ const handleSuperAdminRemoveStudent = async () => {
                   <span style={{ fontSize: '13px', opacity: 0.8 }}>Election</span>
                   <span style={{
                     fontSize: '12px', fontWeight: 700, padding: '3px 10px', borderRadius: '999px',
-                    backgroundColor: isElectionOpen ? 'rgba(230, 126, 34, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                    color: isElectionOpen ? '#e67e22' : 'var(--success)',
+                    backgroundColor: isElectionOpen ? 'var(--bp-wn-tint, rgba(230, 126, 34, 0.15))' : 'var(--bp-ok-tint, rgba(16, 185, 129, 0.15))',
+                    color: isElectionOpen ? 'var(--bp-wn, #e67e22)' : 'var(--success)',
                   }}>
                     {isElectionOpen ? 'OPEN' : 'CLOSED'}
                   </span>
@@ -1920,8 +1928,8 @@ const handleSuperAdminRemoveStudent = async () => {
                   <span style={{ fontSize: '13px', opacity: 0.8 }}>Results</span>
                   <span style={{
                     fontSize: '12px', fontWeight: 700, padding: '3px 10px', borderRadius: '999px',
-                    backgroundColor: isCertified ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
-                    color: isCertified ? 'var(--success)' : '#f59e0b',
+                    backgroundColor: isCertified ? 'var(--bp-ok-tint, rgba(16, 185, 129, 0.15))' : 'var(--bp-wn-tint, rgba(245, 158, 11, 0.15))',
+                    color: isCertified ? 'var(--success)' : 'var(--bp-wn, #f59e0b)',
                   }}>
                     {isCertified ? 'CERTIFIED' : 'NOT CERTIFIED'}
                   </span>
@@ -1940,8 +1948,8 @@ const handleSuperAdminRemoveStudent = async () => {
               </p>
             </div>
 
-            <div style={{ ...card, marginTop: '16px', borderColor: '#e74c3c' }}>
-              <h4 style={{ ...cardTitle, color: '#e74c3c' }}>Danger Zone</h4>
+            <div style={{ ...card, marginTop: '16px', borderColor: 'var(--bp-no, #e74c3c)' }}>
+              <h4 style={{ ...cardTitle, color: 'var(--bp-no, #e74c3c)' }}>Danger Zone</h4>
               <p style={{ fontSize: '13px', opacity: 0.7, margin: '0 0 12px' }}>
                 Full election reset — deletes ALL votes permanently. Certified elections cannot be reset.
               </p>
@@ -1949,7 +1957,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 onClick={handleResetElection}
                 disabled={isCertified}
                 style={{
-                  ...btn, backgroundColor: '#d63031',
+                  ...btn, backgroundColor: 'var(--bp-no, #d63031)',
                   opacity: isCertified ? 0.4 : 1,
                   cursor: isCertified ? 'not-allowed' : 'pointer',
                 }}
@@ -2155,9 +2163,9 @@ const handleSuperAdminRemoveStudent = async () => {
                     <b style={{ color: 'var(--text-color)' }}>
                       {change.change_type === 'add' ? <>Add</> : <>Remove</>}
                     </b>
-                    <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
+                    <StatusBadge status={change.status} style={{ marginLeft: '10px' }}>
                       {change.status.toUpperCase().replace('_', ' ')}
-                    </span>
+                    </StatusBadge>
                   </div>
                   <small style={{ opacity: 0.45 }}>
                     {new Date(change.requested_at).toLocaleDateString()}
@@ -2465,12 +2473,19 @@ function statusBadge(status) {
     pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
     approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
     denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
-    removed:  { background: '#95a5a620', color: '#95a5a6' },
+    removed:  { background: 'var(--bp-mu-tint, #95a5a620)', color: 'var(--bp-mu, #95a5a6)' },
   };
   return {
     fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
     ...(map[status] || { background: '#ffffff20', color: '#fff' }),
   };
+}
+
+// Status badge. Default: the same <span> as before. Blueprint: the shared status pill (one tone map for every console).
+function StatusBadge({ status, style, children }) {
+  const bp = getTemplate();
+  if (bp?.StatusPill) return <bp.StatusPill status={status} style={style}>{children}</bp.StatusPill>;
+  return <span style={{ ...statusBadge(status), ...style }}>{children}</span>;
 }
 
 // ── Styles ──
@@ -2493,12 +2508,12 @@ const appCard     = { border: '1px solid var(--border-color)', borderRadius: '12
 const formCol     = { display: 'flex', flexDirection: 'column', gap: '10px' };
 const inp         = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
 const fileLabel   = { fontSize: '12px', opacity: 0.7 };
-const btn         = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const btn         = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const greenBtn    = { ...btn, backgroundColor: 'var(--success)' };
-const redBtn      = { ...btn, backgroundColor: '#e74c3c' };
+const redBtn      = { ...btn, backgroundColor: 'var(--bp-no, #e74c3c)' };
 const ghostBtn    = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const editLink    = { background: 'none', border: 'none', color: 'var(--info)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const redLink     = { background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const redLink     = { background: 'none', border: 'none', color: 'var(--bp-no, #e74c3c)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const badge       = { marginLeft: '8px', fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 6px', borderRadius: '4px' };
 const avatar      = { width: '44px', height: '44px', borderRadius: '6px', objectFit: 'cover' };
 const statCard    = { padding: '14px', border: '1px solid var(--border-color)', borderRadius: '10px', textAlign: 'center', color: 'var(--text-color)' };

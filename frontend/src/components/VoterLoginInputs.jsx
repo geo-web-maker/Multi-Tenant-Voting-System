@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { getTemplate } from '../template';
 
 // Sample IDs/names cycled in the login placeholder animation.
 const examples = [
@@ -54,6 +55,10 @@ export default function VoterLoginInputs({ studentId, setStudentId, name, setNam
     return () => clearTimeout(timer);
   }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name]);
 
+  const bp = getTemplate();
+  if (bp) {
+    return <bp.VoterFields studentId={studentId} setStudentId={setStudentId} name={name} setName={setName} idPlaceholder={placeholderText.id} namePlaceholder={placeholderText.name} />;
+  }
   return (
     <>
       <input

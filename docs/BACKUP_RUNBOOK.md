@@ -44,11 +44,11 @@ are listed in the email; approve with `POST /internal/backup/approve-assets` or 
 | `mode=full` daily | open elections: full tenant backup (+ assets, new or changed only) |
 | `mode=weekly` | idle tenants: full backup only if something changed (or the last copy is 10+ days old) |
 
-Pre-reset snapshots are automatic (`/admin/reset-election`, `wipe_election_data.py`); failure aborts the reset/wipe.
+Pre-reset snapshots are automatic (`/admin/reset-election`, `wipe_election_data.py --org-slug <slug>`), one tenant at a time; failure aborts the reset/wipe.
 
 ## 4. Restore ONE tenant
 
-Tenant id = the org `_id` string, or `default` for the legacy single-tenant data.
+Tenant id = the org `_id` string. `default` only appears if stray documents with no `org_id` still exist (the app no longer creates or reads them); the scheduled backup keeps dumping them as a safety net until you delete them.
 
 ```
 cd backend   # needs the B2_BACKUP_* env vars and MONGO_URL

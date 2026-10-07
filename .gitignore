@@ -54,3 +54,6 @@ Thumbs.db
 !.vscode/tasks.json
 !.vscode/launch.jsonnode_modules
 dist
+
+# Blueprint template local build output
+dist-blueprint/

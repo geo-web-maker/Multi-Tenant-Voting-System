@@ -3,6 +3,7 @@ import api from '../api';
 import { regNo } from '../regNo';
 import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
+import { getTemplate } from '../template';
 
 export default function VoterList({ showStatus = false, onEdit, onRemove, onResetOtp }) {
   const [fields, setFields] = useState([]);
@@ -32,6 +33,8 @@ export default function VoterList({ showStatus = false, onEdit, onRemove, onRese
   const pages = Math.max(1, Math.ceil(data.total / pageSize));
   const start = data.total ? ((data.page - 1) * pageSize) + 1 : 0;
   const end = Math.min(data.page * pageSize, data.total);
+  const bp = getTemplate();
+  const L = (l) => (bp ? { 'data-l': l } : undefined);   // mobile card-row labels, Blueprint only
 
   return <div style={box}>
     <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
@@ -43,8 +46,8 @@ export default function VoterList({ showStatus = false, onEdit, onRemove, onRese
       <button type="button" style={ghost} onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
     </div>
     {error && <p style={errorStyle}><Icon name="warning" /> {error}</p>}
-    <div style={{ overflowX: 'auto', border: '1px solid var(--border-color)', borderRadius: 10 }}>
-      <table style={table}>
+    <div className="table-scroll-y voter-table" style={{ overflowX: 'auto', border: '1px solid var(--border-color)', borderRadius: 10 }}>
+      <table style={table} className={bp ? 'bp-rs' : undefined}>
         <thead><tr>
           <th style={th}>Name</th><th style={th}>Registration Number</th><th style={th}>Phone on file</th>
           {fields.map(f => <th key={f.key} style={th}>{f.label}</th>)}
@@ -53,11 +56,13 @@ export default function VoterList({ showStatus = false, onEdit, onRemove, onRese
         </tr></thead>
         <tbody>
           {data.results.map(v => <tr key={v.student_id}>
-            <td style={td}>{v.full_name}</td><td style={td}><code>{regNo(v.student_id)}</code></td>
-            <td style={td}>{v.phone_numbers?.length ? v.phone_numbers.join(', ') : <span style={{ opacity: .55 }}>None</span>}</td>
-            {fields.map(f => <td key={f.key} style={td}>{v.attrs?.[f.key] || <span style={{ opacity: .45 }}>—</span>}</td>)}
-            {showStatus && <td style={td}><span style={status(v.has_voted)}>{v.has_voted ? 'VOTED' : (v.last_status || 'IDLE').toUpperCase()}</span></td>}
-            <td style={td}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <td style={td} {...L('Name')}>{v.full_name}</td><td style={td} {...L('Registration Number')}><code>{regNo(v.student_id)}</code></td>
+            <td style={td} {...L('Phone on file')}>{v.phone_numbers?.length ? v.phone_numbers.join(', ') : <span style={{ opacity: .55 }}>None</span>}</td>
+            {fields.map(f => <td key={f.key} style={td} {...L(f.label)}>{v.attrs?.[f.key] || <span style={{ opacity: .45 }}>—</span>}</td>)}
+            {showStatus && <td style={td} {...L('Status')}>{bp
+              ? <bp.StatusPill tone={v.has_voted ? 'ok' : 'warn'}>{v.has_voted ? 'VOTED' : (v.last_status || 'IDLE').toUpperCase()}</bp.StatusPill>
+              : <span style={status(v.has_voted)}>{v.has_voted ? 'VOTED' : (v.last_status || 'IDLE').toUpperCase()}</span>}</td>}
+            <td style={td} {...L('Actions')}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button style={smallBtn} onClick={() => onEdit?.(v.student_id)}>Edit</button>
               {onRemove && <button style={smallBtn} onClick={() => onRemove(v)}>Remove</button>}
               {onResetOtp && <button style={smallBtn} onClick={() => onResetOtp(v.student_id)}>Reset OTP</button>}

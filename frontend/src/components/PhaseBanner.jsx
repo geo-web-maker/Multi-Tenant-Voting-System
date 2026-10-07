@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { derivePhase, formatCountdown } from '../phase';
 import { parseUtc } from '../tz';
+import { getTemplate } from '../template';
 
 // One prominent notice on the voter card. Informational only: the login form below is untouched and
 // the server stays the authority (exception grants can still let a specific student through).
@@ -55,6 +56,9 @@ export default function PhaseBanner({ status, onApply, style }) {
   const c = copy(state, dates, appsClosed);
   const rows = c.rows.filter(Boolean);
   const left = targetMs != null ? formatCountdown(targetMs - now) : null;
+  // Blueprint template: same state, copy and countdown, different rendering (hooks above have already run).
+  const bp = getTemplate();
+  if (bp) return <bp.PhaseBannerView state={state} title={c.title} rows={rows} left={left} countdownLabel={info.countdownLabel} onApply={onApply} style={style} />;
   // Colour is set explicitly everywhere: in dark mode a global text colour was winning over the
   // banner's own, leaving light text on the light-blue box (unreadable).
   const txt = { color: t.fg, textAlign: 'center' };

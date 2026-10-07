@@ -8,10 +8,12 @@ import { fetchBootstrap } from '../bootstrap';
 import { useHelpMenu } from '../context/HelpMenuContext';
 import MobileMoneyNumber from './MobileMoneyNumber';
 import { usePaymentInfo } from '../paymentInfo';
+import { useNominationForm } from '../nominationForm';
 import { LoadingBlock } from './Spinner.jsx';
 import { trackStep } from '../analytics';
 import { validateImageFile, ACCEPT_IMAGES } from '../imageFile';
 import { regNo } from '../regNo';
+import { getTemplate } from '../template';
 import { resizeImage } from '../imageResize';
 import {
   mapApplyError, missingFields, missingMessage, imageBlockReason, stepLabel, fileKey,
@@ -32,6 +34,14 @@ async function uploadToCloudinary(file, { signal, onProgress } = {}) {
   return res.data.secure_url;
 }
 
+async function uploadNominationDocument(file, { signal, onProgress } = {}) {
+  const formData = new FormData(); formData.append('file', file);
+  const res = await api.post('/apply/upload-document', formData, { signal,
+    onUploadProgress: onProgress ? (ev) => { if (ev.total) onProgress(Math.round((ev.loaded / ev.total) * 100)); } : undefined,
+  });
+  return res.data;
+}
+
 const invalidStyle = { border: '1px solid var(--danger)' };
 
 // Keep in sync with MANIFESTO_MAX_CHARS in backend/main.py.
@@ -41,6 +51,7 @@ export default function ApplicantPortal() {
   const { openFees } = useHelpMenu();
   const startedRef = useRef(false);
   const paymentInfo = usePaymentInfo(20000);
+  const nominationForm = useNominationForm(20000);
 
   // Text fields of an unfinished application survive a page reload. Files
   // (candidate photo, payment proof) can't be stored, so those need to be
@@ -68,13 +79,15 @@ export default function ApplicantPortal() {
   const [paymentMethod, setPaymentMethod] = useState(savedDraft?.payment_method ?? '');
   const [paymentProof, setPaymentProof] = useState(null);
   const [paymentProofPreview, setPaymentProofPreview] = useState(null);
+  const [nominationFile, setNominationFile] = useState(null);
+  const [nominationUploadId, setNominationUploadId] = useState('');
   const [step, setStep] = useState(0);              // 1..4 while a submit is running
   const [uploadPct, setUploadPct] = useState(null);  // 0..100 during an upload, else null
   const [slow, setSlow] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({}); // { field: true } for every field the last submit found missing
   const formRef = useRef(null);
   const abortRef = useRef(null);
-  const uploadedRef = useRef(new Map());   // fileKey -> uploaded URL, so a retry skips files that already went up
+  const uploadedRef = useRef(new Map());   // fileKey -> uploaded value, so a retry skips files already sent
   // A restored draft only has the text fields; the files must be attached again.
   const draftRestored = Boolean(savedDraft) && Object.values(savedDraft).some(Boolean);
 
@@ -171,6 +184,16 @@ export default function ApplicantPortal() {
   trackStep('apply', 'proof_selected');
   };
   
+const handleNominationChange = (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const ext = file.name?.toLowerCase().endsWith('.docx') ? 'docx' : (file.name?.toLowerCase().endsWith('.pdf') ? 'pdf' : '');
+  if (!ext || !(nominationForm.accepted_types || ['pdf']).includes(ext)) { setError('That nomination-form file type is not supported.'); e.target.value=''; return; }
+  if (file.size > Number(nominationForm.max_mb || 5) * 1024 * 1024) { setError(`That nomination form is over ${nominationForm.max_mb || 5} MB.`); e.target.value=''; return; }
+  clearField('nomination_form'); setError(''); setNominationFile(file); setNominationUploadId('');
+  uploadedRef.current.forEach((_, key) => { if (key.startsWith('nomination|')) uploadedRef.current.delete(key); });
+};
+
 const busyRef = useRef(false);   // synchronous lock: `uploading` state lags a render, so a fast double tap / Enter could start two runs
 const clearField = (name) => setFieldErrors(prev => (prev[name] ? { ...prev, [name]: false } : prev));
 
@@ -190,7 +213,7 @@ const handleSubmit = async (e) => {
   trackStep('apply', 'submit_clicked');
 
   // One pass over the whole form: list everything that is missing instead of one field per click.
-  const missing = missingFields({ ...form, payment_method: paymentMethod, payment_proof: paymentProof });
+  const missing = missingFields({ ...form, payment_method: paymentMethod, payment_proof: paymentProof, nomination_form: nominationForm.enabled && nominationFile }, { nominationRequired: Boolean(nominationForm.enabled && nominationForm.required) });
   if (missing.length) {
     setFieldErrors(Object.fromEntries(missing.map(m => [m.field, true])));
     setError(missingMessage(missing));
@@ -228,9 +251,25 @@ const handleSubmit = async (e) => {
     let image_url = '';
     if (hasPhoto) image_url = await upload(form.image, 2);
 
-    const payment_proof_url = await upload(paymentProof, hasPhoto ? 3 : 2);
+    let nomination_upload_id = '';
+    if (nominationForm.enabled && nominationFile) {
+      const nk = `nomination|${fileKey(nominationFile)}`;
+      const cachedNom = uploadedRef.current.get(nk);
+      if (cachedNom) { nomination_upload_id = cachedNom.upload_id; }
+      else {
+        setStep(hasPhoto ? 3 : 2); setUploadPct(0);
+        const uploaded = await uploadNominationDocument(nominationFile, { signal: controller.signal, onProgress: setUploadPct });
+        nomination_upload_id = uploaded.upload_id; uploadedRef.current.set(nk, uploaded); setNominationUploadId(nomination_upload_id); setUploadPct(null);
+      }
+    } else if (nominationUploadId) {
+      nomination_upload_id = nominationUploadId;
+    }
 
-    setStep(hasPhoto ? 4 : 3);
+    const paymentStep = hasPhoto ? (nominationForm.enabled ? 4 : 3) : (nominationForm.enabled ? 3 : 2);
+    const submitStep = hasPhoto ? (nominationForm.enabled ? 5 : 4) : (nominationForm.enabled ? 4 : 3);
+    const payment_proof_url = await upload(paymentProof, paymentStep);
+
+    setStep(submitStep);
     await api.post(`/apply`, {
       student_id:        sid,
       full_name:         form.full_name.trim(),
@@ -239,6 +278,7 @@ const handleSubmit = async (e) => {
       image_url,
       payment_method:    paymentMethod,
       payment_proof_url,
+      nomination_upload_id,
     }, { signal: controller.signal });
 
     setSubmittedName(form.full_name.trim());
@@ -255,35 +295,43 @@ const handleSubmit = async (e) => {
   }
 };
 
+  // ── Template seam (BP-T6). Called after every hook. Default: today's inline look, byte for byte.
+  // Blueprint: class hooks from the template; inline colour/shape styles are dropped (sx) so the classes can win. ──
+  const bp = getTemplate();
+  const k = bp?.cls;
+  const sx = (s, b) => (bp ? b : s);
+  const sel = (on) => (bp && on ? ` ${k.on}` : '');
+
   // ── Success screen ──
   if (submitted) {
     return (
-      <div style={outerWrap} className="outer-wrap">
-        <div style={{ ...card, textAlign: 'center', maxWidth: '480px', margin: '0 auto' }}>
-          <h2 style={{ color: 'var(--text-color)', margin: '0 0 10px' }}>Application Submitted!</h2>
-          <p style={{ opacity: 0.7, lineHeight: '1.6', marginBottom: '24px' }}>
+      <div style={sx(outerWrap)} className="outer-wrap">
+        <div style={sx({ ...card, textAlign: 'center', maxWidth: '480px', margin: '0 auto' })} className={k ? `${k.card} ${k.done}` : undefined}>
+          <h2 style={sx({ color: 'var(--text-color)', margin: '0 0 10px' })}>Application Submitted!</h2>
+          <p style={sx({ opacity: 0.7, lineHeight: '1.6', marginBottom: '24px' })} className={k?.mu}>
             Thank you, <strong>{submittedName}</strong>. Your application has been received and
             is now with the Vetting Panel for review.
           </p>
-          <div style={{ ...infoBox, marginBottom: '16px', textAlign: 'left' }} role="note">
-            <p style={{ margin: 0, fontSize: '13px', opacity: 0.9, lineHeight: '1.6' }}>
+          <div style={sx({ ...infoBox, marginBottom: '16px', textAlign: 'left' })} className={k?.accBan} role="note">
+            <p style={sx({ margin: 0, fontSize: '13px', opacity: 0.9, lineHeight: '1.6' })}>
               <strong>Follow your application on your candidate portal.</strong> A link to it is being sent by SMS
               to the phone number on your student record and may take a few minutes to arrive. Open it any time to
               see where your application stands and its outcome. If the link doesn't arrive, or you have no phone
               number on your student record, please contact the IT administrators.
             </p>
           </div>
-          <div style={infoBox}>
-            <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
+          <div style={sx(infoBox)} className={k?.accBan}>
+            <p style={sx({ margin: 0, fontSize: '13px', opacity: 0.8 })}>
               {approvalPolicyCopy}
             </p>
           </div>
           <button
-            style={{ ...greenBtn, marginTop: '24px', width: '100%' }}
+            style={sx({ ...greenBtn, marginTop: '24px', width: '100%' })}
+            className={k?.btn}
             onClick={() => {
               setSubmitted(false);
               setForm({ student_id: '', full_name: '', position_id: '', manifesto: '', image: null });
-              setPreview(null);
+              setPreview(null); setNominationFile(null); setNominationUploadId(''); setPaymentProof(null); setPaymentProofPreview(null); setPaymentMethod(''); uploadedRef.current.clear();
             }}
           >
             Submit Another Application
@@ -294,12 +342,12 @@ const handleSubmit = async (e) => {
   }
 
   return (
-    <div style={outerWrap} className="outer-wrap">
-      <div style={{ maxWidth: '620px', margin: '0 auto', width: '100%' }}>
+    <div style={sx(outerWrap)} className="outer-wrap">
+      <div style={sx({ maxWidth: '620px', margin: '0 auto', width: '100%' })} className={k?.apply}>
 
         {/* ── Header ── */}
-        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
-          <h2 style={{ color: 'var(--text-color)', margin: '0 0 6px' }}>
+        <div style={sx({ textAlign: 'center', marginBottom: '28px' })}>
+          <h2 style={sx({ color: 'var(--text-color)', margin: '0 0 6px' })}>
             Apply for a Position
           </h2>
         </div>
@@ -307,11 +355,11 @@ const handleSubmit = async (e) => {
         <ClosedNotice text={applicationsNoticeText(electionStatus)} />
 
         {/* Instructions for Applicants */}
-        <div style={{ ...infoBox, marginBottom: '24px' }}>
-          <p style={{ margin: 0, fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', opacity: 0.85 }}>
+        <div style={sx({ ...infoBox, marginBottom: '24px' })} className={k?.accBan}>
+          <p style={sx({ margin: 0, fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', opacity: 0.85 })}>
             Instructions for Applicants:
           </p>
-          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', opacity: 0.85, lineHeight: '1.9' }}>
+          <ul style={sx({ margin: 0, paddingLeft: '18px', fontSize: '13px', opacity: 0.85, lineHeight: '1.9' })}>
             <li><strong>Fill and Submit Form:</strong> Complete the form below and submit your application.</li>
             <li><strong>Application Review:</strong> The Vetting Panel will review your submission.</li>
             <li><strong>Access to Portal:</strong> Check your registered phone number for an SMS link to your candidate portal.</li>
@@ -327,24 +375,28 @@ const handleSubmit = async (e) => {
           <fieldset disabled={uploading} style={fieldsetReset}>
 
           {/* ── Personal details ── */}
-          <div style={card}>
-            <h4 style={sectionTitle}>Personal Details</h4>
+          <div style={sx(card)} className={k?.card}>
+            <h4 style={sx(sectionTitle)} className={k?.sec}>Personal Details</h4>
 
-            <label style={lbl}>Student Registration Number *</label>
+            <label style={sx(lbl)} className={k?.lbl} htmlFor={bp ? 'apply-student-id' : undefined}>Student Registration Number *</label>
             <input
+              id={bp ? 'apply-student-id' : undefined}
               data-field="student_id"
               aria-invalid={fieldErrors.student_id ? 'true' : undefined}
-              style={{ ...inp, ...(fieldErrors.student_id ? invalidStyle : null) }}
+              style={sx({ ...inp, ...(fieldErrors.student_id ? invalidStyle : null) })}
+              className={k?.in}
               placeholder="e.g. 22/U/IED/1086/GV"
               value={form.student_id}
               onChange={e => { clearField('student_id'); setForm(prev => ({ ...prev, student_id: e.target.value })); }}
             />
 
-            <label style={{ ...lbl, marginTop: '12px' }}>Full Name (as on your student ID) *</label>
+            <label style={sx({ ...lbl, marginTop: '12px' })} className={k?.lbl} htmlFor={bp ? 'apply-full-name' : undefined}>Full Name (as on your student ID) *</label>
             <input
+              id={bp ? 'apply-full-name' : undefined}
               data-field="full_name"
               aria-invalid={fieldErrors.full_name ? 'true' : undefined}
-              style={{ ...inp, ...(fieldErrors.full_name ? invalidStyle : null) }}
+              style={sx({ ...inp, ...(fieldErrors.full_name ? invalidStyle : null) })}
+              className={k?.in}
               placeholder="e.g. Ayebale Elizabeth"
               value={form.full_name}
               onChange={e => { clearField('full_name'); setForm(prev => ({ ...prev, full_name: e.target.value })); }}
@@ -352,27 +404,28 @@ const handleSubmit = async (e) => {
           </div>
 
           {/* ── Position ── */}
-          <div style={card}>
-            <h4 style={sectionTitle}>Position</h4>
+          <div style={sx(card)} className={k?.card}>
+            <h4 style={sx(sectionTitle)} className={k?.sec}>Position</h4>
 
             {posLoading ? (
               <LoadingBlock text="Loading available positions…" />
             ) : positions.length === 0 ? (
-              <div style={{ ...infoBox, borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }}>
-                <p style={{ margin: 0, color: 'var(--danger)', fontSize: '13px' }}>
+              <div style={sx({ ...infoBox, borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' })} className={k?.alt}>
+                <p style={sx({ margin: 0, color: 'var(--danger)', fontSize: '13px' })}>
                   No positions have been set up yet. Please check back later or contact the administration.
                 </p>
               </div>
             ) : (
               <div data-field="position_id" tabIndex={-1} role="radiogroup" aria-label="Position"
                 aria-invalid={fieldErrors.position_id ? 'true' : undefined}
-                style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderRadius: '10px', outline: 'none', ...(fieldErrors.position_id ? { boxShadow: '0 0 0 2px var(--danger)' } : null) }}>
+                style={sx({ display: 'flex', flexDirection: 'column', gap: '10px', borderRadius: '10px', outline: 'none', ...(fieldErrors.position_id ? { boxShadow: '0 0 0 2px var(--danger)' } : null) })}>
                 {positions.map((p, idx) => (
                   <div
                     key={p._id}
                     data-track={`apply-position-${idx + 1}`}
                     onClick={() => { if (uploading) return; clearField('position_id'); setForm(prev => ({ ...prev, position_id: p._id })); }}
-                    style={{
+                    className={k ? `${k.opt}${sel(form.position_id === p._id)}` : undefined}
+                    style={sx({
                       ...positionOption,
                       border: form.position_id === p._id
                         ? '2px solid var(--success)'
@@ -380,9 +433,10 @@ const handleSubmit = async (e) => {
                       backgroundColor: form.position_id === p._id
                         ? 'color-mix(in srgb, var(--success) 10%, transparent)'
                         : 'var(--bg-color)',
-                    }}
+                    })}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      {bp ? <bp.Tick on={form.position_id === p._id} /> : (
                       <div style={{
                         width: '22px', height: '22px', borderRadius: '50%', flexShrink: 0,
                         border: form.position_id === p._id ? '2px solid var(--success)' : '2px solid var(--border-color)',
@@ -392,10 +446,11 @@ const handleSubmit = async (e) => {
                           <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: 'var(--success)' }} />
                         )}
                       </div>
+                      )}
                       <div>
                         <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>{p.title}</b>
                         {p.description && (
-                          <p style={{ margin: '2px 0 0', fontSize: '12px', opacity: 0.6 }}>{p.description}</p>
+                          <p style={sx({ margin: '2px 0 0', fontSize: '12px', opacity: 0.6 })} className={k?.mu}>{p.description}</p>
                         )}
                       </div>
                     </div>
@@ -406,69 +461,105 @@ const handleSubmit = async (e) => {
           </div>
 
           {/* ── Manifesto ── */}
-          <div style={card}>
-            <h4 style={sectionTitle}>Your Manifesto *</h4>
-            <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 10px' }}>
+          <div style={sx(card)} className={k?.card}>
+            <h4 id={bp ? 'apply-manifesto-h' : undefined} style={sx(sectionTitle)} className={k?.sec}>Your Manifesto *</h4>
+            <p style={sx({ fontSize: '12px', opacity: 0.6, margin: '0 0 10px' })} className={k?.mu}>
               Briefly explain why you are running and what you plan to do if elected.
               Aim for 50–200 words.
             </p>
             <textarea
               data-field="manifesto"
+              aria-labelledby={bp ? 'apply-manifesto-h' : undefined}
               aria-invalid={fieldErrors.manifesto ? 'true' : undefined}
-              style={{ ...inp, height: '120px', resize: 'vertical', ...(fieldErrors.manifesto ? invalidStyle : null) }}
+              style={sx({ ...inp, height: '120px', resize: 'vertical', ...(fieldErrors.manifesto ? invalidStyle : null) })}
+              className={k?.ta}
               placeholder="I am running because…"
               value={form.manifesto}
               maxLength={MANIFESTO_MAX_CHARS}
               onChange={e => { clearField('manifesto'); setForm(prev => ({ ...prev, manifesto: e.target.value })); }}
             />
-            <small style={{ opacity: form.manifesto.length > MANIFESTO_MAX_CHARS * 0.9 ? 1 : 0.4, fontSize: '11px', color: form.manifesto.length >= MANIFESTO_MAX_CHARS ? 'var(--warning)' : undefined }}>
+            <small
+              className={k ? `${k.count}${form.manifesto.length >= MANIFESTO_MAX_CHARS ? ` ${k.lim}` : ''}` : undefined}
+              style={sx({ opacity: form.manifesto.length > MANIFESTO_MAX_CHARS * 0.9 ? 1 : 0.4, fontSize: '11px', color: form.manifesto.length >= MANIFESTO_MAX_CHARS ? 'var(--warning)' : undefined })}>
               {form.manifesto.trim().split(/\s+/).filter(Boolean).length} words · {form.manifesto.length}/{MANIFESTO_MAX_CHARS} characters
             </small>
           </div>
 
+          {/* ── Nomination Form (configured by superadmin) ── */}
+          {nominationForm.enabled && (
+            <div style={sx(card)} className={k?.card}>
+              <h4 style={sx(sectionTitle)} className={k?.sec}>{nominationForm.title || 'Nomination Form'}{nominationForm.required ? ' *' : ''}</h4>
+              <div style={sx({ fontSize: '13px', lineHeight: 1.7, opacity: 0.8, marginBottom: 12, whiteSpace: 'pre-line' })} className={k?.mu}>
+                {nominationForm.instructions || 'Download the blank form, complete and sign it, then upload the completed copy below.'}
+              </div>
+              {nominationForm.template_file?.url ? (
+                <a href={nominationForm.template_file.url} download={nominationForm.template_file.filename || true} target="_blank" rel="noreferrer" style={sx({ ...greenBtn, display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 14 })} className={k?.btn} data-track="apply-nomination-download">
+                  Download blank form
+                </a>
+              ) : (
+                <p style={sx({ fontSize: 12, opacity: 0.6, marginBottom: 14 })} className={k?.warnBan}>The blank form has not been uploaded yet. Contact the election administrator.</p>
+              )}
+              <label style={sx(lbl)} className={k?.lbl}>Completed form ({(nominationForm.accepted_types || ['pdf']).join(' / ').toUpperCase()}) {nominationForm.required ? '*' : '(optional)'}</label>
+              {draftRestored && !nominationFile && nominationForm.required && <p role="note" className={k?.warnBan} style={sx({ margin: '0 0 8px', fontSize: 12, color: 'var(--warning)', fontWeight: 600 })}>Re-attach your signed nomination form. Files cannot be restored from a saved draft.</p>}
+              <label data-track="apply-nomination-upload" data-field="nomination_form" tabIndex={-1} aria-invalid={fieldErrors.nomination_form ? 'true' : undefined}
+                className={k?.upload} style={sx({ ...photoUploadArea, minHeight: 100, ...(fieldErrors.nomination_form ? { border: '2px dashed var(--danger)' } : null) })}>
+                <div style={sx({ textAlign: 'center', opacity: 0.6 })} className={k?.upEmpty}>
+                  <div style={{ fontSize: 30, marginBottom: 6 }}><Icon name="file" /></div>
+                  <span style={{ fontSize: 13 }}>{nominationFile ? nominationFile.name : 'Click to upload your completed form'}</span>
+                  <br /><span style={sx({ fontSize: 11, opacity: .7 })}>{(nominationForm.accepted_types || ['pdf']).map(x=>x.toUpperCase()).join(', ')} · up to {nominationForm.max_mb || 5} MB</span>
+                </div>
+                <input type="file" accept={(nominationForm.accepted_types || ['pdf']).map(x=>`.${x}`).join(',')} style={{ display: 'none' }}
+                  onChange={handleNominationChange} />
+              </label>
+              {nominationFile && <button type="button" style={sx({ ...ghostBtn, marginTop: 8, fontSize: 12, color: 'var(--danger)' })} className={k?.del}
+                onClick={() => { setNominationFile(null); setNominationUploadId(''); clearField('nomination_form'); }}>Remove nomination form</button>}
+            </div>
+          )}
+
           {/* ── Payment Proof ── */}
-          <div style={card}>
-            <h4 style={sectionTitle}>Proof of Payment *</h4>
-            <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 14px' }}>
+          <div style={sx(card)} className={k?.card}>
+            <h4 style={sx(sectionTitle)} className={k?.sec}>Proof of Payment *</h4>
+            <p style={sx({ fontSize: '12px', opacity: 0.6, margin: '0 0 14px' })} className={k?.mu}>
               Select your payment method and upload a screenshot or photo of the payment receipt.
             </p>
 
             {/* Fee for the chosen position + disclaimer */}
             {!selectedPosition ? (
-              <div style={{ ...infoBox, marginBottom: '16px' }}>
-                <p style={{ margin: 0, fontSize: '13px', opacity: 0.8 }}>
+              <div style={sx({ ...infoBox, marginBottom: '16px' })} className={k?.accBan}>
+                <p style={sx({ margin: 0, fontSize: '13px', opacity: 0.8 })}>
                   Select a position above to see the nomination fee you must pay, or{' '}
-                  <button type="button" data-track="apply-fee-link" onClick={openFees} style={linkBtn}>check every position's fee first</button>.
+                  <button type="button" data-track="apply-fee-link" onClick={openFees} style={sx(linkBtn)} className={k?.inl}>check every position's fee first</button>.
                 </p>
               </div>
             ) : requiredFee > 0 ? (
-              <div style={{ ...infoBox, marginBottom: '16px', borderColor: 'var(--success)' }} role="note">
-                <p style={{ margin: 0, fontSize: '13px', opacity: 0.85 }}>Nomination fee for <strong>{selectedPosition.title}</strong></p>
-                <p style={{ margin: '4px 0 8px', fontSize: '22px', fontWeight: 700, color: 'var(--text-color)' }}>
+              <div style={sx({ ...infoBox, marginBottom: '16px', borderColor: 'var(--success)' })} className={k?.ban} role="note">
+                <p style={sx({ margin: 0, fontSize: '13px', opacity: 0.85 })}>Nomination fee for <strong>{selectedPosition.title}</strong></p>
+                <p style={sx({ margin: '4px 0 8px', fontSize: '22px', fontWeight: 700, color: 'var(--text-color)' })} className={k?.fee}>
                   UGX {requiredFee.toLocaleString('en-UG')}
                 </p>
                 <MobileMoneyNumber info={paymentInfo} style={{ margin: '0 0 10px' }} />
-                <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, opacity: 0.85 }}>
+                <p style={sx({ margin: 0, fontSize: '12px', lineHeight: 1.6, opacity: 0.85 })}>
                   <strong>Important:</strong> your receipt must show a payment of this full amount. Applications with
                   an incomplete or incorrect payment amount will be rejected.
                 </p>
-                <button type="button" data-track="apply-fee-link" onClick={openFees} style={{ ...linkBtn, display: 'block', marginTop: '8px' }}>
+                <button type="button" data-track="apply-fee-link" onClick={openFees} style={sx({ ...linkBtn, display: 'block', marginTop: '8px' })} className={k?.inl}>
                   See fees for other positions
                 </button>
               </div>
             ) : null}
           
             {/* Payment method selector */}
-            <label style={lbl}>Payment Method *</label>
+            <label style={sx(lbl)} className={k?.lbl}>Payment Method *</label>
             <div data-field="payment_method" tabIndex={-1} role="radiogroup" aria-label="Payment method"
               aria-invalid={fieldErrors.payment_method ? 'true' : undefined}
-              style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px', borderRadius: '10px', outline: 'none', ...(fieldErrors.payment_method ? { boxShadow: '0 0 0 2px var(--danger)' } : null) }}>
+              style={sx({ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px', borderRadius: '10px', outline: 'none', ...(fieldErrors.payment_method ? { boxShadow: '0 0 0 2px var(--danger)' } : null) })}>
               {['Mobile Money (MTN)', 'Mobile Money (Airtel)', 'Bank Transfer', 'Cash Receipt'].map(method => (
                 <div
                   key={method}
                   data-track="apply-payment-method"
                   onClick={() => { if (uploading) return; clearField('payment_method'); setPaymentMethod(method); }}
-                  style={{
+                  className={k ? `${k.opt}${sel(paymentMethod === method)}` : undefined}
+                  style={sx({
                     ...positionOption,
                     border: paymentMethod === method
                       ? '2px solid var(--success)'
@@ -476,9 +567,10 @@ const handleSubmit = async (e) => {
                     backgroundColor: paymentMethod === method
                       ? 'color-mix(in srgb, var(--success) 10%, transparent)'
                       : 'var(--bg-color)',
-                  }}
+                  })}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    {bp ? <bp.Tick on={paymentMethod === method} /> : (
                     <div style={{
                       width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
                       border: paymentMethod === method
@@ -490,6 +582,7 @@ const handleSubmit = async (e) => {
                         <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: 'var(--success)' }} />
                       )}
                     </div>
+                    )}
                     <span style={{ color: 'var(--text-color)', fontSize: '14px' }}>{method}</span>
                   </div>
                 </div>
@@ -497,23 +590,24 @@ const handleSubmit = async (e) => {
             </div>
           
             {/* Proof upload */}
-            <label style={lbl}>Payment Receipt / Screenshot *</label>
+            <label style={sx(lbl)} className={k?.lbl}>Payment Receipt / Screenshot *</label>
             {draftRestored && !paymentProof && (
-              <p role="note" style={{ margin: '0 0 8px', fontSize: '12px', color: 'var(--warning)', fontWeight: 600 }}>
+              <p role="note" className={k?.warnBan} style={sx({ margin: '0 0 8px', fontSize: '12px', color: 'var(--warning)', fontWeight: 600 })}>
                 Re-attach your receipt. Your typed answers were restored, but files cannot be saved.
               </p>
             )}
             <label data-track="apply-proof-upload" data-field="payment_proof" tabIndex={-1} aria-invalid={fieldErrors.payment_proof ? 'true' : undefined}
-              style={{ ...photoUploadArea, minHeight: '120px', ...(fieldErrors.payment_proof ? { border: '2px dashed var(--danger)' } : null) }}>
+              className={k?.upload}
+              style={sx({ ...photoUploadArea, minHeight: '120px', ...(fieldErrors.payment_proof ? { border: '2px dashed var(--danger)' } : null) })}>
               {paymentProofPreview ? (
                 <img src={paymentProofPreview} alt="Payment proof preview" className="panel-fade-in"
                   style={{ maxWidth: '100%', maxHeight: '200px', objectFit: 'contain', borderRadius: '8px' }} />
               ) : (
-                <div style={{ textAlign: 'center', opacity: 0.5 }}>
+                <div style={sx({ textAlign: 'center', opacity: 0.5 })} className={k?.upEmpty}>
                   <div style={{ fontSize: '32px', marginBottom: '6px' }}><Icon name="receipt" /></div>
                   <span style={{ fontSize: '13px' }}>Click to upload receipt or screenshot</span>
                   <br />
-                  <span style={{ fontSize: '11px', opacity: 0.7 }}>JPG, PNG, WEBP or GIF, up to 5 MB</span>
+                  <span style={sx({ fontSize: '11px', opacity: 0.7 })}>JPG, PNG, WEBP or GIF, up to 5 MB</span>
                 </div>
               )}
               <input
@@ -527,7 +621,8 @@ const handleSubmit = async (e) => {
             {paymentProofPreview && (
               <button
                 type="button"
-                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: 'var(--danger)' }}
+                style={sx({ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: 'var(--danger)' })}
+                className={k?.del}
                 onClick={() => { setPaymentProofPreview(null); setPaymentProof(null); }}
               >
                 Remove receipt
@@ -536,16 +631,16 @@ const handleSubmit = async (e) => {
           </div>
           
           {/* ── Photo ── */}
-          <div style={card}>
-            <h4 style={sectionTitle}>Passport Photo (optional)</h4>
-            <p style={{ fontSize: '12px', opacity: 0.6, margin: '0 0 12px' }}>
+          <div style={sx(card)} className={k?.card}>
+            <h4 style={sx(sectionTitle)} className={k?.sec}>Passport Photo (optional)</h4>
+            <p style={sx({ fontSize: '12px', opacity: 0.6, margin: '0 0 12px' })} className={k?.mu}>
               A clear headshot. This will appear on the ballot paper if approved.
             </p>
-            <label style={photoUploadArea}>
+            <label style={sx(photoUploadArea)} className={k?.upload}>
               {preview ? (
                 <img src={preview} alt="Preview" className="panel-fade-in" style={photoPreview} />
               ) : (
-                <div style={{ textAlign: 'center', opacity: 0.5 }}>
+                <div style={sx({ textAlign: 'center', opacity: 0.5 })} className={k?.upEmpty}>
                   <div style={{ fontSize: '32px', marginBottom: '6px' }}><Icon name="camera" /></div>
                   <span style={{ fontSize: '13px' }}>Click to upload photo</span>
                 </div>
@@ -560,7 +655,8 @@ const handleSubmit = async (e) => {
             {preview && (
               <button
                 type="button"
-                style={{ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: 'var(--danger)' }}
+                style={sx({ ...ghostBtn, marginTop: '8px', fontSize: '12px', color: 'var(--danger)' })}
+                className={k?.del}
                 onClick={() => { setPreview(null); setForm(prev => ({ ...prev, image: null })); }}
               >
                 Remove photo
@@ -572,34 +668,36 @@ const handleSubmit = async (e) => {
 
           {/* ── Error ── */}
           {error && (
-            <div style={errorBox} role="alert">
+            <div style={sx(errorBox)} className={k?.alt} role="alert">
               <Icon name="warning" /> {error}
             </div>
           )}
 
           {/* ── Declaration + submit ── */}
-          <div style={card}>
-            <div style={{ ...infoBox, marginBottom: '16px' }}>
-              <p style={{ margin: 0, fontSize: '12px', opacity: 0.8, lineHeight: '1.6' }}>
+          <div style={sx(card)} className={k?.card}>
+            <div style={sx({ ...infoBox, marginBottom: '16px' })} className={k?.accBan}>
+              <p style={sx({ margin: 0, fontSize: '12px', opacity: 0.8, lineHeight: '1.6' })}>
                 By submitting this form I confirm that the information provided is accurate,
                 I consent to my details being reviewed by the Election Commission.
               </p>
             </div>
+            {bp && uploading && <bp.StepBar step={step || 1} of={form.image ? (nominationForm.enabled ? 5 : 4) : (nominationForm.enabled ? 4 : 3)} />}
             <button
               type="submit"
               data-track="apply-submit"
-              style={{ ...greenBtn, width: '100%', padding: '14px', fontSize: '15px' }}
+              style={sx({ ...greenBtn, width: '100%', padding: '14px', fontSize: '15px' })}
+              className={k?.btn}
               disabled={uploading || positions.length === 0}
               aria-busy={uploading}
             >
               {uploading
-                ? <><Icon name="loading" /> {stepLabel(step || 1, Boolean(form.image))}{uploadPct != null ? ` ${uploadPct}%` : ''}</>
+                ? <><Icon name="loading" /> {stepLabel(step || 1, Boolean(form.image), Boolean(nominationForm.enabled))}{uploadPct != null ? ` ${uploadPct}%` : ''}</>
                 : "Submit Application"}
             </button>
             {uploading && (
-              <div role="status" style={{ marginTop: '10px', fontSize: '12px', textAlign: 'center' }}>
-                {slow && <p style={{ margin: '0 0 8px', color: 'var(--warning)', fontWeight: 600 }}>Slow connection. Keep this page open; it can take a minute.</p>}
-                <button type="button" onClick={cancelSubmit} style={ghostBtn}>Cancel</button>
+              <div role="status" style={sx({ marginTop: '10px', fontSize: '12px', textAlign: 'center' })} className={k?.stat}>
+                {slow && <p className={k?.warnBan} style={sx({ margin: '0 0 8px', color: 'var(--warning)', fontWeight: 600 })}>Slow connection. Keep this page open; it can take a minute.</p>}
+                <button type="button" onClick={cancelSubmit} style={sx(ghostBtn)} className={k?.sm}>Cancel</button>
               </div>
             )}
           </div>
@@ -624,6 +722,6 @@ const errorBox    = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb,
 const photoUploadArea = { display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed var(--border-color)', borderRadius: '10px', padding: '20px', cursor: 'pointer', minHeight: '100px', transition: 'border-color 0.15s, background-color 0.15s' };
 const fieldsetReset = { border: 0, padding: 0, margin: 0, minWidth: 0 };
 const photoPreview  = { width: '100px', height: '100px', objectFit: 'cover', borderRadius: '8px' };
-const btn           = { padding: '10px 18px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', color: '#fff' };
+const btn           = { padding: '10px 18px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', color: 'var(--bp-ai, #fff)' };
 const greenBtn      = { ...btn, backgroundColor: 'var(--success)' };
 const ghostBtn      = { padding: '8px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };

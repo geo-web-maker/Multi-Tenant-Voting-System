@@ -48,7 +48,7 @@ export default function VoterRegisterExport() {
       </label>
       <button type="button" data-track="export-register" onClick={onExport} disabled={busy} aria-busy={busy}
         style={{ minHeight: 44, padding: '0 16px', borderRadius: 8, fontWeight: 700, border: 0,
-                 background: full ? '#b45309' : 'var(--brand-primary)', color: '#fff',
+                 background: full ? 'var(--bp-wn, #b45309)' : 'var(--brand-primary)', color: 'var(--bp-ai, #fff)',
                  cursor: busy ? 'wait' : 'pointer' }}>
         {busy ? 'Preparing…' : full ? 'Export register (full details)' : 'Export register (phones hidden)'}
       </button>

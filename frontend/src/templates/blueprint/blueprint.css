@@ -1,0 +1,522 @@
+/* =====================================================================================================
+   BLUEPRINT CONSOLE TEMPLATE (BP-T1). Loaded only when VITE_UI_TEMPLATE=blueprint.
+   Sections: 1 TOKENS - 2 BRIDGE (S1) - 3 BASE - 4 COMPONENTS - 5 RESPONSIVE - 6 NEUTRALISERS (S3) - 7 PRINT.
+   Named sizes (px constants): header 64 (mobile 56) - tap 48 (small 40, mobile side links 44) - logo 40 (mobile 36, boot 72)
+   - avatar 48 - tick 28 - candidate row 72 - pill 24 - meter 8 - otp cell 48x56 (mobile 44x52) - sidebar 240 - two-col aside 288
+   - dock radius 28. Spacing uses only the 4px-base steps --bp-s1..s7. No colour literals outside section 1 (rule R6).
+   ===================================================================================================== */
+
+/* ===== 1. TOKENS ===== values must equal the mockup (parity.test.js) */
+html[data-template="blueprint"] {
+  --bp-s1: 4px; --bp-s2: 8px; --bp-s3: 12px; --bp-s4: 16px; --bp-s5: 24px; --bp-s6: 32px; --bp-s7: 48px;
+  --bp-gut: var(--bp-s5); --bp-pad: var(--bp-s5); --bp-hh: 64px; --bp-tap: 48px; --bp-r: 12px; --bp-rs: 8px;
+  --bp-fm: ui-monospace, Menlo, Consolas, monospace; --bp-fh: var(--bp-fm);
+}
+html[data-template="blueprint"]:not([data-theme]),
+html[data-template="blueprint"][data-theme="light"] {
+  --bp-bg: #e9ecef; --bp-sf: #fff; --bp-sf2: #f1f3f5; --bp-sf3: #fff;
+  --bp-line: #ced4da; --bp-line-ui: #7c8696;
+  --bp-tx: #14213d; --bp-mu: #5c677d; --bp-ac: #c2410c; --bp-ai: #fff;
+  --bp-ok: #1b6e2f; --bp-wn: #8f4d00; --bp-no: #b42323;
+  --bp-grid: rgba(20,33,61,.06); --bp-sh: 0 8px 24px rgba(11,37,69,.10);
+  --bp-tint: #f9ece7; --bp-tint2: #f4ddd3;
+  --bp-ok-tint: #e8f0ea; --bp-wn-tint: #f4ede6; --bp-no-tint: #f8e9e9; --bp-mu-tint: #eff0f2;
+  --bp-ac-edge: rgb(194 65 12 / .6);
+  --bp-ok-edge: rgb(27 110 47 / .35); --bp-wn-edge: rgb(143 77 0 / .35); --bp-no-edge: rgb(180 35 35 / .35); --bp-mu-edge: rgb(92 103 125 / .35);
+}
+html[data-template="blueprint"][data-theme="dark"] {
+  --bp-bg: #0b2545; --bp-sf: #10335f; --bp-sf2: #0d2b52; --bp-sf3: #143b6e;
+  --bp-line: #2b4f80; --bp-line-ui: #6f90bd;
+  --bp-tx: #e8f0fb; --bp-mu: #a3b8d4; --bp-ac: #ff922b; --bp-ai: #0b2545;
+  --bp-ok: #69db7c; --bp-wn: #ffc078; --bp-no: #ffa3a3;
+  --bp-grid: rgba(255,255,255,.05); --bp-sh: 0 8px 24px rgba(0,0,0,.35);
+  --bp-tint: #283c5a; --bp-tint2: #3b4456;
+  --bp-ok-tint: #194462; --bp-wn-tint: #284162; --bp-no-tint: #283e66; --bp-mu-tint: #1f406b;
+  --bp-ac-edge: rgb(255 146 43 / .6);
+  --bp-ok-edge: rgb(105 219 124 / .35); --bp-wn-edge: rgb(255 192 120 / .35); --bp-no-edge: rgb(255 163 163 / .35); --bp-mu-edge: rgb(163 184 212 / .35);
+}
+@media (prefers-color-scheme: dark) {
+  /* Before App sets data-theme the OS preference decides; same values as the dark block. */
+  html[data-template="blueprint"]:not([data-theme]) {
+    --bp-bg: #0b2545; --bp-sf: #10335f; --bp-sf2: #0d2b52; --bp-sf3: #143b6e;
+    --bp-line: #2b4f80; --bp-line-ui: #6f90bd;
+    --bp-tx: #e8f0fb; --bp-mu: #a3b8d4; --bp-ac: #ff922b; --bp-ai: #0b2545;
+    --bp-ok: #69db7c; --bp-wn: #ffc078; --bp-no: #ffa3a3;
+    --bp-grid: rgba(255,255,255,.05); --bp-sh: 0 8px 24px rgba(0,0,0,.35);
+    --bp-tint: #283c5a; --bp-tint2: #3b4456;
+    --bp-ok-tint: #194462; --bp-wn-tint: #284162; --bp-no-tint: #283e66; --bp-mu-tint: #1f406b;
+    --bp-ac-edge: rgb(255 146 43 / .6);
+    --bp-ok-edge: rgb(105 219 124 / .35); --bp-wn-edge: rgb(255 192 120 / .35); --bp-no-edge: rgb(255 163 163 / .35); --bp-mu-edge: rgb(163 184 212 / .35);
+  }
+}
+@media (max-width: 768px) {
+  html[data-template="blueprint"] { --bp-gut: var(--bp-s4); --bp-pad: var(--bp-s4); --bp-hh: 56px; }
+}
+
+/* ===== 2. BRIDGE (S1) - existing variables follow the template ===== */
+/* Specificity (0,1,1) beats the legacy :root / [data-theme] blocks (0,1,0). Print keeps its own forced-light values. */
+html[data-template="blueprint"] {
+  --bg-color: var(--bp-bg); --card-bg: var(--bp-sf); --surface-2: var(--bp-sf2);
+  --border-color: var(--bp-line); --text-color: var(--bp-tx); --text-muted: var(--bp-mu);
+  --success: var(--bp-ok); --danger: var(--bp-no); --warning: var(--bp-wn); --info: var(--bp-ac);
+  --brand-primary: var(--bp-ac); --brand-accent: var(--bp-ac);
+}
+
+@media screen {
+  /* ===== 3. BASE ===== */
+  html[data-template="blueprint"] body {
+    background-color: var(--bp-bg);
+    background-image: linear-gradient(var(--bp-grid) 1px, transparent 1px), linear-gradient(90deg, var(--bp-grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-attachment: fixed;
+    color: var(--bp-tx);
+    font: 14px/24px system-ui, sans-serif;
+  }
+  html[data-template="blueprint"] h1,
+  html[data-template="blueprint"] h2,
+  html[data-template="blueprint"] h3 {
+    font-family: var(--bp-fh); text-transform: uppercase; letter-spacing: .02em; color: var(--bp-tx);
+  }
+  html[data-template="blueprint"] h1 { font-size: 24px; line-height: 32px; }
+  html[data-template="blueprint"] h2 { font-size: 16px; line-height: 24px; }
+  html[data-template="blueprint"] label {
+    font-family: var(--bp-fm); font-size: 12px; line-height: 16px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--bp-mu);
+  }
+  html[data-template="blueprint"] input,
+  html[data-template="blueprint"] select,
+  html[data-template="blueprint"] textarea {
+    background-color: var(--bp-sf2); color: var(--bp-tx); border-color: var(--bp-line-ui); border-radius: var(--bp-rs);
+  }
+  html[data-template="blueprint"] button { border-radius: 99px; }
+  html[data-template="blueprint"] table { border-collapse: collapse; }
+  html[data-template="blueprint"] th {
+    font-family: var(--bp-fm); font-size: 11px; line-height: 16px; text-transform: uppercase; color: var(--bp-mu);
+    border-bottom: 2px solid var(--bp-line);
+  }
+  html[data-template="blueprint"] td { border-bottom: 1px solid var(--bp-line); }
+  html[data-template="blueprint"] :where(button, a, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 2px solid var(--bp-ac); outline-offset: 2px;
+  }
+  /* a selected candidate already has a 2px accent outline: the keyboard ring steps out so focus stays visible on it (T10) */
+  .bp-cand.bp-on:focus-visible { outline-offset: var(--bp-s1); }
+
+  /* ===== 4. COMPONENTS (ported from the mockup; classes renamed bp-*) ===== */
+  .bp-mono, .bp-num { font-family: var(--bp-fm); }
+  .bp-mu { color: var(--bp-mu); }
+  .bp-sc { overflow: auto; flex: 1; }
+
+  /* header: drawing title block */
+  .bp-top {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 3; display: flex; align-items: stretch;
+    height: var(--bp-hh); flex: none; margin: var(--bp-s3) var(--bp-gut) var(--bp-s4);
+    background: var(--bp-sf3); border: 1px solid var(--bp-line); border-radius: var(--bp-r); box-shadow: var(--bp-sh);
+  }
+  .bp-tl { flex: 1; display: flex; align-items: center; gap: var(--bp-s4); padding: 0 var(--bp-s4); min-width: 0; }
+  .bp-logo {
+    position: relative; display: grid; place-items: center; width: 40px; height: 40px; flex: none;
+    border-radius: var(--bp-rs); background: var(--bp-ac); color: var(--bp-ai); font: 700 12px var(--bp-fm); font-style: normal;
+  }
+  .bp-logo::before { content: ''; position: absolute; inset: -4px; border: 1px dashed var(--bp-ac-edge); border-radius: var(--bp-r); }
+  .bp-bt { display: flex; flex-direction: column; min-width: 0; }
+  .bp-bt b, .bp-bt small {
+    font: 700 12px/16px var(--bp-fm); text-transform: uppercase; letter-spacing: .06em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bp-bt small { font-size: 11px; font-weight: 500; color: var(--bp-mu); }
+  .bp-top nav, .bp-crumb, .bp-cell { display: flex; align-items: center; padding: 0 var(--bp-s4); border-left: 1px dashed var(--bp-line); }
+  .bp-top nav { gap: var(--bp-s1); }
+  .bp-top nav a, .bp-top nav button, .bp-theme button {
+    display: flex; align-items: center; height: 40px; padding: 0 var(--bp-s4); border-radius: var(--bp-rs);
+    color: var(--bp-mu); font: 600 13px/16px system-ui; background: transparent; border: 0; cursor: pointer; white-space: nowrap;
+  }
+  .bp-top nav a.bp-on, .bp-top nav button.bp-on { background: var(--bp-ac); color: var(--bp-ai); }
+  .bp-top nav button.bp-ghost, .bp-theme button { color: var(--bp-tx); border: 1px solid var(--bp-line-ui); }
+  .bp-logo.bp-img { background: var(--bp-sf2); }
+  .bp-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; }
+  .bp-crumb { gap: var(--bp-s2); font: 600 13px/16px system-ui; white-space: nowrap; }
+  .bp-crumb i { font-style: normal; color: var(--bp-mu); }
+  .bp-cell { flex-direction: column; justify-content: center; align-items: flex-start; gap: 0; }
+  .bp-cell small { font: 700 10px/16px var(--bp-fm); letter-spacing: .1em; text-transform: uppercase; color: var(--bp-mu); }
+  .bp-cell b { font: 700 13px/16px var(--bp-fm); white-space: nowrap; }
+  .bp-dot.bp-ok { background: var(--bp-ok); }
+  .bp-rule {
+    position: absolute; left: var(--bp-s3); right: var(--bp-s3); bottom: 0; height: 8px; pointer-events: none;
+    background:
+      repeating-linear-gradient(90deg, var(--bp-line) 0 1px, transparent 1px 8px) 0 100% / 100% 4px no-repeat,
+      repeating-linear-gradient(90deg, var(--bp-ac) 0 1px, transparent 1px 48px) 0 100% / 100% 8px no-repeat;
+  }
+
+  /* content column, card, fields, buttons */
+  .bp-wrap { max-width: 520px; margin: 0 auto; padding: 0 var(--bp-gut) var(--bp-s6); }
+  .bp-card {
+    background: var(--bp-sf); border: 1px solid var(--bp-line); border-top: 3px solid var(--bp-ac);
+    border-radius: var(--bp-r); padding: var(--bp-pad); margin-bottom: var(--bp-s4); box-shadow: var(--bp-sh);
+  }
+  .bp-in {
+    display: flex; align-items: center; padding: 0 var(--bp-s3); min-height: var(--bp-tap); color: var(--bp-tx);
+    background: var(--bp-sf2); border: 1px solid var(--bp-line-ui); border-radius: var(--bp-rs);
+  }
+  .bp-in.bp-focus, .bp-in:focus-within { outline: 2px solid var(--bp-ac); outline-offset: 1px; }
+  .bp-btn {
+    display: flex; align-items: center; justify-content: center; min-height: var(--bp-tap); padding: 0 var(--bp-s5);
+    border-radius: 99px; background: var(--bp-ac); color: var(--bp-ai); font: 700 14px system-ui; margin-top: var(--bp-s4); cursor: pointer;
+  }
+  .bp-btn.bp-ghost { background: transparent; color: var(--bp-tx); border: 1px solid var(--bp-line-ui); }
+  .bp-btn.bp-sm { display: inline-flex; min-height: 40px; padding: 0 var(--bp-s4); margin: 0; font-size: 13px; }
+  .bp-lnk { text-align: center; margin-top: var(--bp-s4); color: var(--bp-ac); font-weight: 600; }
+  .bp-ban {
+    padding: var(--bp-s3) var(--bp-s4); border-radius: var(--bp-rs); background: var(--bp-ok-tint);
+    border-left: 4px solid var(--bp-ok); margin-bottom: var(--bp-s3);
+  }
+  .bp-ban.bp-warn { background: var(--bp-wn-tint); border-color: var(--bp-wn); }
+  .bp-ban.bp-acc { background: var(--bp-tint); border-color: var(--bp-ac); }
+  .bp-ban.bp-mute { background: var(--bp-mu-tint); border-color: var(--bp-mu); }
+  .bp-alt {
+    background: var(--bp-no-tint); border-radius: var(--bp-rs); padding: var(--bp-s3) var(--bp-s4);
+    margin-top: var(--bp-s2); border-left: 4px solid var(--bp-no);
+  }
+
+  /* login / otp controls (BP-T3) */
+  input.bp-in, select.bp-in { display: block; width: 100%; box-sizing: border-box; margin: 0 0 var(--bp-s3); font: 16px system-ui; }
+  .bp-lbl { display: block; margin: 0 0 var(--bp-s1); }
+  button.bp-btn, a.bp-btn { width: 100%; box-sizing: border-box; border: 0; text-decoration: none; }
+  button.bp-btn.bp-ghost, a.bp-btn.bp-ghost { border: 1px solid var(--bp-line-ui); }
+  button.bp-btn.bp-sm { width: auto; }
+  button.bp-btn:disabled { opacity: .5; cursor: not-allowed; }
+  button.bp-lnk { display: block; width: 100%; background: none; border: 0; cursor: pointer; font: 600 14px system-ui; }
+  .bp-row2 { display: flex; gap: var(--bp-s3); }
+  .bp-row2 .bp-btn { flex: 1; }
+  .bp-ban-title { font: 800 16px/24px var(--bp-fm); text-transform: uppercase; letter-spacing: .02em; color: var(--bp-tx); }
+  .bp-ban-rows { margin-top: var(--bp-s2); display: grid; gap: var(--bp-s2); }
+  .bp-ban-k { font: 700 12px/16px var(--bp-fm); text-transform: uppercase; letter-spacing: .06em; color: var(--bp-mu); }
+  .bp-ban-v { font-weight: 600; color: var(--bp-tx); }
+  .bp-cd { margin-top: var(--bp-s3); padding: var(--bp-s3); border: 1px solid var(--bp-line); border-radius: var(--bp-rs); background: var(--bp-sf); }
+  .bp-cd .bp-big { color: var(--bp-tx); font-variant-numeric: tabular-nums; }
+  .bp-ban .bp-btn { margin-top: var(--bp-s3); }
+
+  /* ballot */
+  .bp-pos {
+    display: inline-block; padding: var(--bp-s1) var(--bp-s4); margin: var(--bp-s5) 0 var(--bp-s3); background: var(--bp-ac);
+    color: var(--bp-ai); border-radius: 99px; font: 700 12px/24px var(--bp-fh); text-transform: uppercase; letter-spacing: .08em;
+  }
+  .bp-cand {
+    display: flex; align-items: center; gap: var(--bp-s3); padding: var(--bp-s3); margin-bottom: var(--bp-s3); min-height: 72px;
+    background: var(--bp-sf); border: 1px solid var(--bp-line); border-radius: var(--bp-r); box-shadow: var(--bp-sh);
+  }
+  .bp-av {
+    width: 48px; height: 48px; flex: none; border-radius: 50%; background: var(--bp-tint); border: 1px solid var(--bp-line);
+    display: grid; place-items: center; font: 700 14px var(--bp-fm); color: var(--bp-mu); font-style: normal;
+  }
+  .bp-cand b { flex: 1; }
+  .bp-tick {
+    width: 28px; height: 28px; border: 2px solid var(--bp-line-ui); border-radius: 50%; display: grid; place-items: center;
+    color: var(--bp-ai); font-weight: 700;
+  }
+  .bp-cand.bp-on { border-color: var(--bp-ac); outline: 2px solid var(--bp-ac); background: var(--bp-tint); }
+  .bp-cand.bp-on .bp-tick { background: var(--bp-ac); border-color: var(--bp-ac); }
+  .bp-dock {
+    display: flex; gap: var(--bp-s2); padding: var(--bp-s3); background: var(--bp-sf3); border: 1px solid var(--bp-line);
+    border-radius: 28px; box-shadow: var(--bp-sh); position: fixed; left: var(--bp-gut); right: var(--bp-gut);
+    bottom: calc(var(--bp-s3) + env(safe-area-inset-bottom, 0px)); max-width: 520px; margin: 0 auto; z-index: 3;
+  }
+  .bp-dock .bp-btn { flex: 1; margin: 0; }
+  .bp-dock .bp-btn:last-child { flex: 2; }
+  .bp-block { text-align: left; margin-bottom: var(--bp-s5); }
+  .bp-cand { cursor: pointer; }
+  .bp-cand b { text-align: left; overflow-wrap: anywhere; }
+  .bp-av { overflow: hidden; }
+  .bp-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .bp-tick svg { width: 16px; height: 16px; }
+  .bp-btn.bp-danger { background: var(--bp-no); color: var(--bp-ai); border-color: var(--bp-no); }
+
+  /* stats, pills, meters */
+  .bp-big { font: 800 40px/48px var(--bp-fm); color: var(--bp-ac); }
+  .bp-stat { text-align: center; }
+  .bp-big.bp-sm { font-size: 24px; line-height: 32px; }   /* text-valued stat (e.g. "Open · Certified"), BP-T8b */
+  .bp-big.bp-neg { color: var(--bp-no); }   /* ink on a card surface (>= 4.5 in both themes) */
+  .bp-pill {
+    --bp-c: var(--bp-ok); --bp-ct: var(--bp-ok-tint); --bp-ce: var(--bp-ok-edge);
+    display: inline-flex; align-items: center; height: 24px; padding: 0 var(--bp-s3); border-radius: 99px;
+    font: 700 11px system-ui; color: var(--bp-c); background: var(--bp-ct); border: 1px solid var(--bp-ce);
+    text-transform: uppercase; white-space: nowrap;
+  }
+  .bp-pill.bp-warn { --bp-c: var(--bp-wn); --bp-ct: var(--bp-wn-tint); --bp-ce: var(--bp-wn-edge); }
+  .bp-pill.bp-neg { --bp-c: var(--bp-no); --bp-ct: var(--bp-no-tint); --bp-ce: var(--bp-no-edge); }
+  .bp-pill.bp-mute { --bp-c: var(--bp-mu); --bp-ct: var(--bp-mu-tint); --bp-ce: var(--bp-mu-edge); }
+  .bp-meter { margin: var(--bp-s4) 0; }
+  .bp-meter .bp-t { display: flex; justify-content: space-between; gap: var(--bp-s2); font-weight: 600; }
+  .bp-bar { height: 8px; margin-top: var(--bp-s2); background: var(--bp-sf2); border-radius: 99px; overflow: hidden; }
+  .bp-bar i { display: block; height: 100%; background: var(--bp-mu); border-radius: 99px; }
+  .bp-meter.bp-warn .bp-bar i { background: var(--bp-ac); }
+  .bp-bar i { transition: width 1.5s ease-in-out; }
+  .bp-stat .bp-pill { margin-bottom: var(--bp-s2); }
+  .bp-stat { margin-bottom: var(--bp-s5); }
+  .bp-mu { color: var(--bp-mu); font-size: 13px; }
+
+  /* console shell */
+  .bp-shell { display: grid; grid-template-columns: 240px 1fr; gap: var(--bp-s4); flex: 1; min-height: 0; }
+  .bp-wide { max-width: 720px; }
+  .bp-side {
+    position: sticky; top: calc(var(--bp-hh) + var(--bp-s5)); max-height: calc(100dvh - var(--bp-hh) - var(--bp-s6));
+    margin: 0 0 var(--bp-s3) var(--bp-gut); padding: var(--bp-s3); background: var(--bp-sf3); border: 1px solid var(--bp-line);
+    border-radius: var(--bp-r); box-shadow: var(--bp-sh); overflow: auto;
+  }
+  .bp-side h3:first-child { margin-top: var(--bp-s2); }
+  .bp-side h3 { font-size: 11px; line-height: 16px; color: var(--bp-mu); margin: var(--bp-s5) var(--bp-s3) var(--bp-s2); }
+  .bp-side .bp-brand { margin: var(--bp-s1) var(--bp-s2) 0; }
+  .bp-side a, .bp-side button {
+    display: flex; align-items: center; min-height: 40px; padding: 0 var(--bp-s3); border-radius: var(--bp-rs); font-size: 14px;
+  }
+  .bp-side a.bp-on, .bp-side button.bp-on { background: var(--bp-ac); color: var(--bp-ai); font-weight: 700; }
+  .bp-main { padding: 0 var(--bp-gut) var(--bp-s5) 0; min-width: 0; }
+
+  /* console toolbar (BP-T7a, E4): AdminHeader becomes a row above the shell */
+  .bp-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--bp-s3); margin: 0 0 var(--bp-s4); }
+  .bp-tt { min-width: 0; }
+  .bp-tt h2 { margin: 0; }
+  .bp-tt .bp-mu { font-size: 12px; line-height: 16px; }
+  .bp-tact { display: flex; flex-wrap: wrap; align-items: center; gap: var(--bp-s2); }
+
+  /* console sidebar items (BP-T7a). Prefixed so they beat the element-level button shape in BASE. */
+  .bp-grp-l { font: 700 11px/16px var(--bp-fm); letter-spacing: .06em; text-transform: uppercase; color: var(--bp-mu); margin: var(--bp-s5) var(--bp-s3) var(--bp-s2); }
+  .bp-grp:first-child .bp-grp-l { margin-top: var(--bp-s2); }
+  html[data-template="blueprint"] .bp-side button {
+    width: 100%; justify-content: space-between; gap: var(--bp-s2); text-align: left; cursor: pointer;
+    background: transparent; border: 0; border-radius: var(--bp-rs); color: var(--bp-tx);
+  }
+  html[data-template="blueprint"] .bp-side button:hover:not(.bp-on) { background: var(--bp-sf2); }
+  html[data-template="blueprint"] .bp-side button.bp-on { background: var(--bp-ac); color: var(--bp-ai); font-weight: 700; }
+  .bp-ct { margin-left: auto; padding: 0 var(--bp-s2); border: 1px solid var(--bp-line); border-radius: 99px; background: var(--bp-sf2); color: var(--bp-tx); font: 700 11px/16px var(--bp-fm); }
+  /* flat dashboards: one pill row. Outside a ConsoleFrame it sits at the top of the content card; inside one (BP-T7b) see the rail rules below. */
+  .bp-side.bp-flat { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: var(--bp-s1); margin: 0 0 var(--bp-s4); padding: var(--bp-s2); border-radius: 28px; background: var(--bp-sf2); box-shadow: none; }
+  html[data-template="blueprint"] .bp-side.bp-flat button { width: auto; flex: none; white-space: nowrap; min-height: 40px; padding: 0 var(--bp-s4); border-radius: 99px; }
+  html[data-template="blueprint"] .dash-body { gap: var(--bp-s4); }
+  @media (min-width: 769px) {
+    .dash-body > .bp-side { flex: 0 0 240px; box-sizing: border-box; margin: 0; align-self: flex-start; }
+  }
+  /* ConsoleFrame (BP-T7b): on desktop the flat dashboards' pill row becomes the same sticky rail the grouped ones have. Phones keep the pill row. */
+  @media (min-width: 769px) {
+    .dash-body > .bp-side.bp-flat {
+      position: sticky; top: calc(var(--bp-hh) + var(--bp-s5)); max-height: calc(100dvh - var(--bp-hh) - var(--bp-s6));
+      display: block; margin: 0; padding: var(--bp-s3); overflow: auto;
+      border-radius: var(--bp-r); background: var(--bp-sf3); box-shadow: var(--bp-sh);
+    }
+    html[data-template="blueprint"] .dash-body > .bp-side.bp-flat button { width: 100%; white-space: normal; padding: 0 var(--bp-s3); border-radius: var(--bp-rs); }
+  }
+  /* the empty spacer <div> every flat dashboard keeps after its tab bar would only push the content down beside the rail */
+  html[data-template="blueprint"] .bp-frame-main > div:first-child:empty { display: none; }
+  .bp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--bp-s4); margin-bottom: var(--bp-s4); }
+  .bp-grid .bp-card { margin: 0; }
+  .bp-g2 { grid-template-columns: 2fr 1fr; }
+  .bp-g4 { grid-template-columns: repeat(4, 1fr); }
+  .bp-ov { overflow-x: auto; }
+  table.bp-rs { width: 100%; font-size: 13px; }
+
+  /* centred boot screen, otp, steps, charts */
+  .bp-cen { display: grid; place-items: center; flex: 1; padding: var(--bp-s5); }
+  .bp-cen .bp-card { max-width: 384px; text-align: center; padding: var(--bp-s7) var(--bp-s6); }
+  .bp-cen .bp-logo, .bp-boot-stamp { width: 72px; height: 72px; margin: 0 auto var(--bp-s5); font-size: 20px; }
+  .bp-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bp-wn);
+    margin-right: var(--bp-s2); animation: bp-pulse 1.2s infinite;
+  }
+  @keyframes bp-pulse { 50% { opacity: .3; } }
+  @media (prefers-reduced-motion: reduce) { .bp-dot { animation: none; } .bp-bar i { transition: none; } }
+  .bp-otp { display: flex; gap: var(--bp-s2); justify-content: center; margin: var(--bp-s5) 0; }
+  .bp-otp i {
+    width: 48px; height: 56px; border: 1px solid var(--bp-line-ui); background: var(--bp-sf2); border-radius: var(--bp-rs);
+    display: grid; place-items: center; font: 700 24px var(--bp-fm); font-style: normal;
+  }
+  .bp-otp { position: relative; }
+  .bp-otp-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: 0; padding: 0; margin: 0; font-size: 16px; cursor: text; }
+  .bp-otp:focus-within { outline: 2px solid var(--bp-ac); outline-offset: var(--bp-s1); border-radius: var(--bp-rs); }
+  .bp-otp.bp-err i { border-color: var(--bp-no); }
+  .bp-otp.bp-lock { opacity: .5; }
+  .bp-steps { display: flex; gap: var(--bp-s2); margin: 0 0 var(--bp-s4); }
+  .bp-steps i { flex: 1; height: 8px; border-radius: 99px; background: var(--bp-line); }
+  .bp-steps i.bp-on { background: var(--bp-ac); }
+  .bp-chart { display: flex; align-items: flex-end; gap: var(--bp-s1); height: 120px; }
+  .bp-chart i { flex: 1; background: var(--bp-ac); border-radius: var(--bp-s1) var(--bp-s1) 0 0; }
+  .bp-hot { display: grid; grid-template-columns: repeat(8, 1fr); gap: var(--bp-s1); }
+  .bp-hot i { aspect-ratio: 1; border-radius: var(--bp-s1); background: var(--bp-ac); }
+  .bp-two { display: grid; grid-template-columns: 1fr 288px; gap: var(--bp-s4); }
+  .bp-chip {
+    display: inline-block; padding: var(--bp-s1) var(--bp-s3); border: 1px solid var(--bp-line-ui); border-radius: 99px;
+    font-size: 12px; color: var(--bp-mu);
+  }
+  /* header sub-parts used only in some layouts (hidden on mobile by section 5) */
+  .bp-sheet, .bp-lg { display: flex; }
+  .bp-brand { font-family: var(--bp-fm); }
+  .bp-status { display: flex; align-items: center; }
+  .bp-focus { outline: 2px solid var(--bp-ac); outline-offset: 1px; }
+
+  /* apply form (BP-T6). Layout-only inline styles stay in the component; colour/shape inline styles are dropped for these classes. */
+  .bp-apply { padding-bottom: calc(var(--bp-s7) * 2); }   /* room so the floating Help button never covers Submit (96) */
+  .bp-apply h2 { text-align: center; margin: 0 0 var(--bp-s5); }
+  .bp-apply p { margin: 0 0 var(--bp-s2); }
+  .bp-apply p:last-child { margin-bottom: 0; }
+  .bp-sec { font: 700 12px/16px var(--bp-fm); text-transform: uppercase; letter-spacing: .06em; color: var(--bp-mu); margin: 0 0 var(--bp-s3); }
+  .bp-apply .bp-mu { font-size: 12px; line-height: 16px; margin: 0 0 var(--bp-s3); }
+  .bp-apply .bp-ban ul { margin: 0; padding-left: var(--bp-s5); }
+  .bp-apply .bp-ban p, .bp-apply .bp-ban li { color: var(--bp-tx); font-size: 13px; line-height: 24px; }
+  .bp-apply .bp-ban { margin-bottom: var(--bp-s4); }
+  .bp-apply .bp-ban.bp-warn { font-weight: 600; }
+  .bp-apply .bp-alt { color: var(--bp-no); font: 600 13px/24px system-ui; margin: 0 0 var(--bp-s4); }
+  .bp-apply .bp-alt p { margin: 0; color: var(--bp-no); }
+  textarea.bp-ta { display: block; width: 100%; box-sizing: border-box; padding: var(--bp-s3); min-height: calc(var(--bp-s7) * 2.5); resize: vertical; margin: 0 0 var(--bp-s2); font: 16px/24px system-ui; }
+  .bp-in[aria-invalid="true"] { border-color: var(--bp-no); }
+  .bp-apply .bp-count { margin: 0; }
+  .bp-apply .bp-count.bp-lim { color: var(--bp-wn); font-weight: 700; }
+  .bp-fee { font: 800 24px/32px var(--bp-fm); color: var(--bp-tx); margin: var(--bp-s1) 0 var(--bp-s2); }
+  .bp-apply .bp-lnk.bp-inl { display: inline; width: auto; margin: 0; padding: 0; text-align: left; font: inherit; font-weight: 700; color: var(--bp-tx); text-decoration: underline; }
+  /* option rows (position, payment method): selected = accent border + outline + tick, never colour alone */
+  .bp-opt { min-height: var(--bp-tap); margin-bottom: var(--bp-s3); }
+  .bp-opt p { margin: 0; }
+  .bp-apply [role="radiogroup"] { margin-bottom: var(--bp-s3); }
+  .bp-apply [role="radiogroup"][aria-invalid="true"] { outline: 2px solid var(--bp-no); outline-offset: var(--bp-s1); border-radius: var(--bp-r); }
+  /* upload tiles keep their <label> element; the base `label` rule is beaten by the element-qualified selector */
+  html[data-template="blueprint"] label.bp-upload {
+    display: flex; align-items: center; justify-content: center; min-height: calc(var(--bp-s7) * 2.5); padding: var(--bp-s5);
+    border: 2px dashed var(--bp-line-ui); border-radius: var(--bp-rs); background: var(--bp-sf2); cursor: pointer;
+    font: 13px/24px system-ui; text-transform: none; letter-spacing: normal; color: var(--bp-mu);
+  }
+  html[data-template="blueprint"] label.bp-upload:focus-within { outline: 2px solid var(--bp-ac); outline-offset: var(--bp-s1); }
+  html[data-template="blueprint"] label.bp-upload[aria-invalid="true"] { border-color: var(--bp-no); }
+  .bp-up-empty { text-align: center; color: var(--bp-mu); }
+  .bp-up-empty small { display: block; font-size: 11px; line-height: 16px; }
+  .bp-btn.bp-ghost.bp-del { color: var(--bp-no); margin-top: var(--bp-s2); }
+  .bp-upstat { text-align: center; margin-top: var(--bp-s3); }
+  .bp-upstat .bp-ban { text-align: left; }
+  .bp-done { text-align: center; margin-bottom: calc(var(--bp-s7) * 2); }   /* margin, not padding: the .outer-wrap neutraliser zeroes padding */
+  .bp-done .bp-ban { text-align: left; }
+
+  /* ===== 5. RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    .bp-top { height: auto; flex-wrap: wrap; margin: var(--bp-s2) var(--bp-gut) var(--bp-s3); }
+    .bp-tl, .bp-cell { min-height: var(--bp-hh); }
+    .bp-tl { padding: 0 var(--bp-s3); gap: var(--bp-s3); }
+    .bp-logo { width: 36px; height: 36px; }
+    .bp-bt b { font-size: 11px; letter-spacing: .04em; }
+    .bp-cell { padding: 0 var(--bp-s3); }
+    .bp-cell small, .bp-cell.bp-sheet, .bp-crumb, .bp-lg { display: none; }
+    .bp-top nav { order: 3; flex: 1 0 100%; padding: var(--bp-s2) var(--bp-s2) var(--bp-s3); border-left: 0; border-top: 1px dashed var(--bp-line); }
+    /* the pills are <button>s, so the old `nav a` rule never matched: centre the row and share the width evenly */
+    .bp-top nav { justify-content: center; gap: var(--bp-s2); }
+    .bp-top nav a, .bp-top nav button { flex: 1 1 auto; max-width: 180px; justify-content: center; }
+    .bp-shell { display: flex; flex-direction: column; gap: 0; }
+    .bp-side {
+      order: 2; position: static; max-height: none; margin: 0 var(--bp-gut) var(--bp-s3); padding: var(--bp-s2);
+      display: flex; gap: var(--bp-s1); overflow-x: auto; border-radius: 28px; flex: none;
+    }
+    .bp-side h3, .bp-side .bp-brand { display: none; }
+    .bp-side a, .bp-side button { white-space: nowrap; border-radius: 99px; min-height: 44px; padding: 0 var(--bp-s4); }
+    .bp-main { padding: 0 var(--bp-gut) var(--bp-s4); order: 1; flex: 1; }
+    /* console (BP-T7a): the rail becomes a pill row pinned to the bottom of the screen; tabs stay one flat row, groups are flattened */
+    /* Pinned to the SCREEN bottom (position: fixed), not sticky: sticky only pins when the page is taller than the
+       viewport, so short tabs left the bar floating mid-screen. z-index sits above sticky table headers etc. in the
+       content; the bar is opaque so nothing shows through. The right padding keeps the last tab clear of the help FAB. */
+    .dash-body > .bp-side {
+      position: fixed; top: auto; left: var(--bp-gut); right: var(--bp-gut); bottom: calc(var(--bp-s3) + env(safe-area-inset-bottom, 0px));
+      z-index: 30; margin: 0 auto; max-width: 720px; box-sizing: border-box; padding-right: 64px;
+      background: var(--bp-sf3); border: 1px solid var(--bp-line); box-shadow: var(--bp-sh);
+    }
+    .dash-body > .bp-side.bp-flat { margin: 0 auto; background: var(--bp-sf3); box-shadow: var(--bp-sh); }
+    /* the bar is out of flow now, so reserve its height under the content */
+    .dash-body > .bp-side ~ .dash-main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+    .bp-side.bp-flat { flex-wrap: nowrap; overflow-x: auto; margin: 0 0 var(--bp-s3); }
+    .bp-grp { display: contents; }
+    .bp-grp-l, .bp-sess { display: none; }
+    html[data-template="blueprint"] .bp-side button { width: auto; flex: none; border-radius: 99px; }
+    .bp-toolbar { margin-bottom: var(--bp-s3); }
+    .bp-grid, .bp-g2, .bp-g4, .bp-two { grid-template-columns: 1fr; }
+    .bp-grid.bp-k2 { grid-template-columns: 1fr 1fr; }
+    .bp-big { font-size: 32px; line-height: 40px; }
+    .bp-otp i { width: 44px; height: 52px; }
+    .bp-cen .bp-card { padding: var(--bp-s6) var(--bp-s5); }
+    table.bp-rs thead { display: none; }
+    table.bp-rs tr { display: block; border: 1px solid var(--bp-line); border-radius: var(--bp-rs); margin-bottom: var(--bp-s2); padding: var(--bp-s1); }
+    table.bp-rs td { display: flex; justify-content: space-between; gap: var(--bp-s3); border: 0; padding: var(--bp-s1) var(--bp-s2); }
+    table.bp-rs td::before { content: attr(data-l); font: 700 11px/24px var(--bp-fm); color: var(--bp-mu); text-transform: uppercase; }
+    /* card rows fill the width: a responsive grid (1 column on phones, 2+ on tablets) instead of shrink-wrapped table cards hugging the left edge */
+    table.bp-rs, table.bp-rs tbody { display: block; width: 100%; }
+    table.bp-rs tbody { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--bp-s2); }
+    table.bp-rs tr { margin-bottom: 0; }
+    table.bp-rs tr:only-child { grid-column: 1 / -1; }
+  }
+  /* tablet band (E11 / D7): 769-1023 */
+  @media (min-width: 769px) and (max-width: 1023px) {
+    .bp-g4 { grid-template-columns: repeat(2, 1fr); }
+    .bp-two { grid-template-columns: 1fr; }
+    .bp-crumb { display: none; }
+  }
+
+  /* BP-T8c: IT Admin Edit Student. ITAdminDashboard.css is class-based (no inline styles), so plain specificity is enough here. */
+  html[data-template="blueprint"] .itadmin-card {
+    background: var(--bp-sf); border: 1px solid var(--bp-line); border-top: 3px solid var(--bp-ac);
+    border-radius: var(--bp-r); padding: var(--bp-pad); box-shadow: var(--bp-sh);
+  }
+  html[data-template="blueprint"] .itadmin-input, html[data-template="blueprint"] .itadmin-pick {
+    background: var(--bp-sf2); color: var(--bp-tx); border: 1px solid var(--bp-line-ui); border-radius: var(--bp-rs); min-height: var(--bp-tap);
+  }
+  html[data-template="blueprint"] .itadmin-input:focus-visible { outline: 2px solid var(--bp-ac); outline-offset: 1px; }
+  html[data-template="blueprint"] .itadmin-btn { min-height: var(--bp-tap); border-radius: 99px; }
+  html[data-template="blueprint"] .itadmin-btn.ghost { border: 1px solid var(--bp-line-ui); color: var(--bp-tx); }
+  html[data-template="blueprint"] .itadmin-kv, html[data-template="blueprint"] .itadmin-change { border-bottom-color: var(--bp-line); }
+
+  /* In-app dialogs (UIFeedback confirm / prompt): title follows the heading base rule; focus ring on every control */
+  html[data-template="blueprint"] .ui-dialog-title { margin: 0 0 var(--bp-s2); }
+  html[data-template="blueprint"] .ui-dialog :focus-visible,
+  html[data-template="blueprint"] .modal-content :focus-visible { outline: 2px solid var(--bp-ac); outline-offset: 2px; }
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .ui-dialog-actions { flex-direction: column-reverse; }
+    html[data-template="blueprint"] .ui-dialog-actions button { width: 100%; }
+  }
+
+  /* ===== NEUTRALISERS ===== */
+  /* N1 App.jsx:316-318 - org branding is written inline on <html>; pin the template accent (D1). N2/N3 (App shell) and N5/N6 (dashboard shell, BP-T7a) are below. */
+  html[data-template="blueprint"] { --brand-primary: var(--bp-ac) !important; --brand-accent: var(--bp-ac) !important; }
+  /* N2 App.jsx:1229 containerStyle - 20px padding, centred, min-height 100vh on .app-shell (the full-width header must touch the edges) */
+  html[data-template="blueprint"] .app-shell { padding: 0 !important; justify-content: flex-start !important; }
+  /* N3 App.jsx:743 inline maxWidth 500px on .app-column - the header is full width; .bp-wrap centres the content at 520 */
+  html[data-template="blueprint"] .app-column { max-width: 100% !important; }
+  /* N4 BallotBox.jsx:405 modalContentStyle - inline borderRadius 20px and shadow on every .modal-content; the dialog gets the card's 3px accent top edge */
+  html[data-template="blueprint"] .modal-content { border-radius: var(--bp-r) !important; border-top: 3px solid var(--bp-ac) !important; box-shadow: var(--bp-sh) !important; }
+  /* N5 SuperAdminDashboard.jsx:2479 outerWrap (same const in CommissionDashboard.jsx:429 and the other dashboards) - inline padding 20px and a solid page background that would hide the grid. Dashboards only (.app-column > .outer-wrap); the apply page's outer-wrap sits inside .bp-wrap and is left alone. A gutter instead of 0 so toolbar, org bar and rail align. */
+  html[data-template="blueprint"] .app-column > .outer-wrap { padding: 0 var(--bp-gut) var(--bp-s5) !important; background: transparent !important; }
+  /* width: 100% (was auto): IT Admin / Financial / Overseer wrap the shell in a ROW flexbox (justify-content: center), so `auto` made the card shrink-wrap its content and every tab came out a different width. Super Admin/Commission use a column wrapper and were already full width. */
+  /* N6 SuperAdminDashboard.jsx:2486 container (same const in CommissionDashboard.jsx:430 and the other dashboards) - inline card look, plus the 600px phone reset in index.css; the content pane becomes the mockup card (D4) */
+  html[data-template="blueprint"] .dashboard-shell {
+    background: var(--bp-sf) !important; border: 1px solid var(--bp-line) !important; border-top: 3px solid var(--bp-ac) !important;
+    border-radius: var(--bp-r) !important; box-shadow: var(--bp-sh) !important; padding: var(--bp-pad) !important; width: 100% !important;
+  }
+  /* N8 VoterList.jsx:91 table const - inline minWidth 760px would keep the card-row table wider than a phone */
+  html[data-template="blueprint"] table.bp-rs { min-width: 0 !important; }
+  /* N9 VoterList.jsx:92-93 th/td consts - inline border-bottom on every cell; on phones each row is a bordered block instead */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] table.bp-rs td { border-bottom: 0 !important; }
+  }
+  /* N10 UIFeedback.jsx:269 dialogStyle - the in-app confirm/prompt dialog: inline radius 16, padding 24, 1px border and a black shadow; becomes the mockup card */
+  html[data-template="blueprint"] .ui-dialog {
+    border: 1px solid var(--bp-line) !important; border-top: 3px solid var(--bp-ac) !important;
+    border-radius: var(--bp-r) !important; box-shadow: var(--bp-sh) !important; padding: var(--bp-pad) !important;
+  }
+  /* N11 UIFeedback.jsx:226 actions row - inline gap 10px is off the spacing scale */
+  html[data-template="blueprint"] .ui-dialog-actions { gap: var(--bp-s2) !important; }
+  /* N12 UIFeedback.jsx:286-295 cancelBtnStyle / confirmBtnStyle - inline 8px radius and 10px 18px padding; the template's 48px pill */
+  html[data-template="blueprint"] .ui-dialog-cancel, html[data-template="blueprint"] .ui-dialog-confirm {
+    min-height: var(--bp-tap) !important; border-radius: 99px !important; padding: 0 var(--bp-s5) !important;
+  }
+  /* N13 UIFeedback.jsx:286 cancelBtnStyle - inline border uses --border-color (1.5:1); control boundaries need line-ui (D2) */
+  html[data-template="blueprint"] .ui-dialog-cancel { border-color: var(--bp-line-ui) !important; }
+  /* N14 UIFeedback.jsx:280 dialogInputStyle - inline 6px radius, page-colour fill and --border-color boundary on the prompt / type-to-confirm field */
+  html[data-template="blueprint"] .ui-dialog input {
+    background: var(--bp-sf2) !important; border: 1px solid var(--bp-line-ui) !important; border-radius: var(--bp-rs) !important; min-height: var(--bp-tap) !important;
+  }
+  /* ===== /NEUTRALISERS ===== */
+}
+
+/* ===== 7. PRINT ===== reset only; the official documents print identically in both templates */
+@media print {
+  html[data-template="blueprint"] body { background-image: none !important; }
+}

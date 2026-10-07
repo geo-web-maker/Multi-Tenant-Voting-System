@@ -3,6 +3,7 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import ConsoleFrame from './ConsoleFrame';
 import ContactChangesQueue from './ContactChangesQueue';
 import { Icon } from './icons.jsx';
 import { ScrollList } from './UIFeedback';
@@ -10,11 +11,13 @@ import usePolling from '../hooks/usePolling';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import { LoadingBlock } from './Spinner.jsx';
+import { getTemplate } from '../template';
 
 
 export default function OverseerDashboard({ onLogout }) {
   const overseerId   = sessionStorage.getItem('overseer_id')   || '';
   const overseerName = sessionStorage.getItem('overseer_name') || '';
+  const bp = getTemplate(); // render-time: null => the standard UI
 
   const [data, setData]       = useState(null);
   const [liveResults, setLiveResults] = useState(null);
@@ -52,6 +55,13 @@ export default function OverseerDashboard({ onLogout }) {
     ...SHARED_TAB_DEFS,
   ];
 
+  const electionStatusNode = data && (
+    <>
+      {data.election_status.is_open ? <><Icon name="dotGreen" /> Open</> : <><Icon name="dotRed" /> Closed</>}
+      {data.election_status.is_certified && ' · Certified'}
+    </>
+  );
+
   return (
     <div style={outerWrap} className="outer-wrap">
       <div style={container}  className="dashboard-shell">
@@ -67,8 +77,8 @@ export default function OverseerDashboard({ onLogout }) {
         />
 
         {!overseerId && (
-          <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
-            <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}>
+          <div style={{ ...infoBox, borderColor: 'var(--bp-no, #e74c3c40)', marginBottom: '20px' }}>
+            <p style={{ margin: 0, color: 'var(--bp-no, #e74c3c)', fontSize: '13px' }}>
               <Icon name="warning" /> Your Overseer session could not be identified. Please log out and log back in.
             </p>
           </div>
@@ -81,34 +91,47 @@ export default function OverseerDashboard({ onLogout }) {
         {data && (
           <>
             {/* ── Summary cards ── */}
-            <div style={summaryGrid}>
-              <div style={summaryCard}>
-                <span style={summaryLabel}>Election Status</span>
-                <span style={summaryValue}>
-                  {data.election_status.is_open ? <><Icon name="dotGreen" /> Open</> : <><Icon name="dotRed" /> Closed</>}
-                  {data.election_status.is_certified && ' · Certified'}
-                </span>
-              </div>
-              <div style={summaryCard}>
-                <span style={summaryLabel}>Voter Turnout</span>
-                <span style={summaryValue}>
-                  {data.voter_turnout.voted_count} / {data.voter_turnout.total_voters} ({data.voter_turnout.turnout_pct}%)
-                </span>
-              </div>
-              <div style={summaryCard}>
-                <span style={summaryLabel}>Commissioners</span>
-                <span style={summaryValue}>{data.total_commissioners}</span>
-              </div>
-              {data.panel_count != null && (
+            {bp ? (
+              <bp.SummaryCards items={[
+                { label: 'Election Status', value: electionStatusNode },
+                { label: 'Voter Turnout', value: `${data.voter_turnout.voted_count} / ${data.voter_turnout.total_voters} (${data.voter_turnout.turnout_pct}%)` },
+                { label: 'Commissioners', value: data.total_commissioners },
+                ...(data.panel_count != null ? [{ label: 'Vetting Panel', value: data.panel_count }] : []),
+              ]} />
+            ) : (
+              <div style={summaryGrid}>
                 <div style={summaryCard}>
-                  <span style={summaryLabel}>Vetting Panel</span>
-                  <span style={summaryValue}>{data.panel_count}</span>
+                  <span style={summaryLabel}>Election Status</span>
+                  <span style={summaryValue}>
+                    {data.election_status.is_open ? <><Icon name="dotGreen" /> Open</> : <><Icon name="dotRed" /> Closed</>}
+                    {data.election_status.is_certified && ' · Certified'}
+                  </span>
                 </div>
-              )}
-            </div>
+                <div style={summaryCard}>
+                  <span style={summaryLabel}>Voter Turnout</span>
+                  <span style={summaryValue}>
+                    {data.voter_turnout.voted_count} / {data.voter_turnout.total_voters} ({data.voter_turnout.turnout_pct}%)
+                  </span>
+                </div>
+                <div style={summaryCard}>
+                  <span style={summaryLabel}>Commissioners</span>
+                  <span style={summaryValue}>{data.total_commissioners}</span>
+                </div>
+                {data.panel_count != null && (
+                  <div style={summaryCard}>
+                    <span style={summaryLabel}>Vetting Panel</span>
+                    <span style={summaryValue}>{data.panel_count}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
 
-            {/* ── Tabs ── */}
-            <TabBar tabs={tabs} activeTab={tab} onChange={setTab} />
+        {/* ── Tabs + content (framed: rail beside the content in the Blueprint template) ── */}
+        <ConsoleFrame nav={data ? <TabBar tabs={tabs} activeTab={tab} onChange={setTab} /> : null}>
+        {data && (
+          <>
             <div style={{ marginBottom: '20px' }} />
 
             {/* ── Applications (read-only) ── */}
@@ -120,7 +143,7 @@ export default function OverseerDashboard({ onLogout }) {
                   <div key={a.id} style={appCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                       <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>{a.full_name}</b>
-                      <span style={statusBadge(a.status)}>{a.status.toUpperCase()}</span>
+                      <StatusBadge status={a.status}>{a.status.toUpperCase()}</StatusBadge>
                     </div>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>{a.position_id}</p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
@@ -144,14 +167,14 @@ export default function OverseerDashboard({ onLogout }) {
                   <div key={c.id} style={appCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <span style={changeTypeBadge(c.change_type)}>
+                        <ChangeTypeBadge changeType={c.change_type}>
                           {c.change_type === 'add' ? <><Icon name="plus" /> ADD</> : <><Icon name="minus" /> REMOVE</>}
-                        </span>
+                        </ChangeTypeBadge>
                         <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>
                           {c.full_name} <code style={{ fontSize: '11px' }}>{regNo(c.student_id)}</code>
                         </b>
                       </div>
-                      <span style={statusBadge(c.status)}>{c.status.toUpperCase().replace('_', ' ')}</span>
+                      <StatusBadge status={c.status}>{c.status.toUpperCase().replace('_', ' ')}</StatusBadge>
                     </div>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
                       Requested by {c.requested_by}{c.decided_by && ` · decided by ${c.decided_by}`}
@@ -179,7 +202,7 @@ export default function OverseerDashboard({ onLogout }) {
                   <>
                     <div style={{ ...summaryCard, flexDirection: 'row', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
                       <span style={{ opacity: 0.6, fontSize: '12px' }}>Voter turnout:</span>
-                      <span style={{ color: '#2ecc71', fontWeight: '700', fontSize: '15px' }}>
+                      <span style={{ color: 'var(--bp-ok, #2ecc71)', fontWeight: '700', fontSize: '15px' }}>
                         {liveResults.voter_turnout.voted_count} / {liveResults.voter_turnout.total_voters}
                       </span>
                       <span style={{ opacity: 0.6, fontSize: '13px' }}>({liveResults.voter_turnout.turnout_pct}%)</span>
@@ -199,7 +222,7 @@ export default function OverseerDashboard({ onLogout }) {
                           <small style={{ opacity: 0.5 }}>
                             {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
                             {pos.candidates.length > 1 && (
-                              <span style={{ marginLeft: '8px', color: '#2ecc71', fontWeight: '600' }}>
+                              <span style={{ marginLeft: '8px', color: 'var(--bp-ok, #2ecc71)', fontWeight: '600' }}>
                                 +{pos.candidates[0].votes - pos.candidates[1].votes} lead
                                 {' '}({(pos.candidates[0].pct_of_position - pos.candidates[1].pct_of_position).toFixed(1)}%)
                               </span>
@@ -207,8 +230,12 @@ export default function OverseerDashboard({ onLogout }) {
                           </small>
                         </div>
                         <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                          {pos.candidates.map((c, idx) => (
-                            <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {pos.candidates.map((c, idx) => {
+                            // Blueprint: the row becomes a meter (bar = accent for the leader); default keeps the original div + inline bar.
+                            const Row = bp ? bp.Meter : 'div';
+                            const rowProps = bp ? { pct: c.pct_of_position, accent: idx === 0 } : { style: { display: 'flex', flexDirection: 'column', gap: '4px' } };
+                            return (
+                            <Row key={c.id} {...rowProps}>
                               <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
                                 <span style={{ fontSize: '12px', opacity: 0.5, width: '16px', flexShrink: 0 }}>{idx + 1}.</span>
                                 <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
@@ -219,11 +246,14 @@ export default function OverseerDashboard({ onLogout }) {
                                   {c.votes} ({c.pct_of_position}%)
                                 </span>
                               </div>
+                              {!bp && (
                               <div style={{ marginLeft: '24px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-                                <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
+                                <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? 'var(--bp-ok, #2ecc71)' : 'var(--border-color)' }} />
                               </div>
-                            </div>
-                          ))}
+                            )}
+                            </Row>
+                          );
+                          })}
                         </div>
                       </div>
                     ))}
@@ -241,6 +271,7 @@ export default function OverseerDashboard({ onLogout }) {
         {tab === 'contact_changes' && <ContactChangesQueue readOnly />}
 
         <SharedTabPanels activeTab={tab} />
+        </ConsoleFrame>
       </div>
     </div>
   );
@@ -249,6 +280,20 @@ export default function OverseerDashboard({ onLogout }) {
 // ── Helpers ──
 // Deliberately uses blue/grey, not green/red, so it can never be mistaken
 // for the approved/denied status badge next to it.
+// Status badge. Default: the same <span> as before. Blueprint: the shared status pill (one tone map for every console).
+function StatusBadge({ status, style, children }) {
+  const bp = getTemplate();
+  if (bp?.StatusPill) return <bp.StatusPill status={status} style={style}>{children}</bp.StatusPill>;
+  return <span style={{ ...statusBadge(status), ...style }}>{children}</span>;
+}
+
+// ADD / REMOVE tag. Blueprint: ok pill for add, muted pill for remove.
+function ChangeTypeBadge({ changeType, children }) {
+  const bp = getTemplate();
+  if (bp?.Pill) return <bp.Pill tone={changeType === 'add' ? 'ok' : 'mute'}>{children}</bp.Pill>;
+  return <span style={changeTypeBadge(changeType)}>{children}</span>;
+}
+
 function changeTypeBadge(changeType) {
   const isAdd = changeType === 'add';
   return {
@@ -256,8 +301,8 @@ function changeTypeBadge(changeType) {
     display: 'inline-flex', alignItems: 'center', gap: '3px',
     background: isAdd
       ? 'color-mix(in srgb, var(--info) 20%, transparent)'
-      : '#95a5a620',
-    color: isAdd ? 'var(--info)' : '#7f8c8d',
+      : 'var(--bp-mu-tint, #95a5a620)',
+    color: isAdd ? 'var(--info)' : 'var(--bp-mu, #7f8c8d)',
   };
 }
 
@@ -268,7 +313,7 @@ function statusBadge(status) {
     force_approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
     denied:         { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
     force_denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
-    cancelled:      { background: '#95a5a620', color: '#95a5a6' },
+    cancelled:      { background: 'var(--bp-mu-tint, #95a5a620)', color: 'var(--bp-mu, #95a5a6)' },
   };
   return {
     fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',

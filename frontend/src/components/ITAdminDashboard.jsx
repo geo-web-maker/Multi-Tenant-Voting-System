@@ -3,6 +3,7 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import ConsoleFrame from './ConsoleFrame';
 import RevealGroup from './RevealGroup';
 import { RosterStats, RecentActivity } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
@@ -17,6 +18,7 @@ import { regNo } from '../regNo';
 import VoterList from './VoterList';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import VoterRegisterExport from './VoterRegisterExport';
+import { getTemplate } from '../template';
 
 
 export default function ITAdminDashboard({ onLogout }) {
@@ -247,8 +249,8 @@ export default function ITAdminDashboard({ onLogout }) {
         />
 
         {!itAdminId && (
-          <div style={{ ...infoBox, borderColor: '#e74c3c40', marginBottom: '20px' }}>
-            <p style={{ margin: 0, color: '#e74c3c', fontSize: '13px' }}>
+          <div style={{ ...infoBox, borderColor: 'var(--bp-no, #e74c3c40)', marginBottom: '20px' }}>
+            <p style={{ margin: 0, color: 'var(--bp-no, #e74c3c)', fontSize: '13px' }}>
               <Icon name="warning" /> Your IT admin session could not be identified. Please log out and log back in.
             </p>
           </div>
@@ -263,7 +265,7 @@ export default function ITAdminDashboard({ onLogout }) {
         )}
 
         {/* ── Tabs ── */}
-        <TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+        <ConsoleFrame nav={<TabBar tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />}>
         <div style={{ marginBottom: '20px' }} />
 
         {/* ══════════════ ADD STUDENT ══════════════ */}
@@ -323,8 +325,8 @@ export default function ITAdminDashboard({ onLogout }) {
                       onClick={() => setPaymentMethod(method)}
                       style={{
                         padding: '10px 14px', minHeight: '44px', display: 'flex', alignItems: 'center', borderRadius: '8px', cursor: 'pointer',
-                        border: paymentMethod === method ? '2px solid #2ecc71' : '1px solid var(--border-color)',
-                        backgroundColor: paymentMethod === method ? '#2ecc7110' : 'var(--card-bg)',
+                        border: paymentMethod === method ? '2px solid var(--bp-ok, #2ecc71)' : '1px solid var(--border-color)',
+                        backgroundColor: paymentMethod === method ? 'var(--bp-ok-tint, #2ecc7110)' : 'var(--card-bg)',
                         fontSize: '13px', color: 'var(--text-color)'
                       }}
                     >
@@ -357,7 +359,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 </label>
                 {paymentProofPreview && (
                   <button type="button"
-                    style={{ ...ghostBtn, marginTop: '6px', fontSize: '12px', color: '#e74c3c' }}
+                    style={{ ...ghostBtn, marginTop: '6px', fontSize: '12px', color: 'var(--bp-no, #e74c3c)' }}
                     onClick={() => { setPaymentProof(null); setPaymentProofPreview(null); }}>
                     Remove receipt
                   </button>
@@ -461,7 +463,7 @@ export default function ITAdminDashboard({ onLogout }) {
                   )}
                 </div>
                 {removeForm.student_id && (
-                  <p style={{ fontSize: '11px', color: '#2ecc71', margin: '4px 0 0' }}>
+                  <p style={{ fontSize: '11px', color: 'var(--bp-ok, #2ecc71)', margin: '4px 0 0' }}>
                     <Icon name="check" /> Selected: {regNo(removeForm.student_id)}
                   </p>
                 )}
@@ -516,10 +518,10 @@ export default function ITAdminDashboard({ onLogout }) {
                     <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
                       {req.change_type === 'add' ? <>Add Student</> : <>Remove Student</>}
                     </b>
-                    <span style={{ ...statusBadge(req.status), marginLeft: '10px' }}>
+                    <StatusBadge status={req.status} style={{ marginLeft: '10px' }}>
                       {req.status.toUpperCase().replace('_', ' ')}
                       {req.superadmin_override && ' · SA'}
-                    </span>
+                    </StatusBadge>
                   </div>
                   <small style={{ opacity: 0.45 }}>
                     {new Date(req.requested_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
@@ -564,7 +566,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
                 {req.status === 'pending' && (
                   <button
-                    style={{ ...ghostBtn, marginTop: '12px', color: '#e74c3c', borderColor: '#e74c3c' }}
+                    style={{ ...ghostBtn, marginTop: '12px', color: 'var(--bp-no, #e74c3c)', borderColor: 'var(--bp-no, #e74c3c)' }}
                     disabled={cancelling[req._id]}
                     onClick={() => handleCancel(req._id)}
                   >
@@ -604,6 +606,7 @@ export default function ITAdminDashboard({ onLogout }) {
           </div>
         )}
         <SharedTabPanels activeTab={activeTab} />
+        </ConsoleFrame>
       </div>
     </div>
   );
@@ -617,12 +620,19 @@ function statusBadge(status) {
     force_approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
     denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
     force_denied:   { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
-    cancelled:      { background: '#95a5a620', color: '#95a5a6' },
+    cancelled:      { background: 'var(--bp-mu-tint, #95a5a620)', color: 'var(--bp-mu, #95a5a6)' },
   };
   return {
     fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
     ...(map[status] || {}),
   };
+}
+
+// Status badge. Default: the same <span> as before. Blueprint: the shared status pill (one tone map for every console).
+function StatusBadge({ status, style, children }) {
+  const bp = getTemplate();
+  if (bp?.StatusPill) return <bp.StatusPill status={status} style={style}>{children}</bp.StatusPill>;
+  return <span style={{ ...statusBadge(status), ...style }}>{children}</span>;
 }
 
 // ── Styles ──
@@ -635,9 +645,9 @@ const cardTitle   = { margin: '0 0 6px', color: 'var(--text-color)', fontSize: '
 const formCol     = { display: 'flex', flexDirection: 'column', gap: '4px' };
 const lbl         = { fontSize: '12px', opacity: 0.65, fontWeight: '600' };
 const inp         = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
-const btn         = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn    = { ...btn, backgroundColor: '#2ecc71' };
-const redBtn      = { ...btn, backgroundColor: '#e74c3c' };
+const btn         = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const greenBtn    = { ...btn, backgroundColor: 'var(--bp-ok, #2ecc71)' };
+const redBtn      = { ...btn, backgroundColor: 'var(--bp-no, #e74c3c)' };
 const ghostBtn    = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const appCard     = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
 const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };

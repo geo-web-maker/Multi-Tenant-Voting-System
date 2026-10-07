@@ -50,7 +50,9 @@ from tabular_import import (
 )
 from regno_audit import audit_reg_numbers
 import otp_limits as ol
+from tenant_db import scoped_db as _tenant_scoped_db, scoped_db_for as _tenant_scoped_db_for, cross_tenant
 import analytics
+import nomination_storage
 
 from auth import (
     create_access_token,
@@ -225,6 +227,17 @@ async def lifespan(app: FastAPI):
         logger.exception("Could not create hot-path indexes (continuing without them)")
     # Phase exception grants — looked up on every gated action.
     await db.exception_grants.create_index([("org_id", 1), ("student_id", 1), ("phase", 1)])
+    await db.nomination_uploads.create_index([("org_id", 1), ("created_at", -1)])
+    await db.nomination_uploads.create_index([("org_id", 1), ("upload_id", 1)], unique=True)
+    # NOTE: no TTL index here. A TTL on created_at also deleted *attached* records after 24h, which made
+    # submitted forms unreadable. Stale pending uploads are swept by _sweep_stale_nomination_uploads(), which
+    # removes the private file as well as the record. Drop the legacy TTL index if an earlier build created it.
+    try:
+        await db.nomination_uploads.drop_index("created_at_1")
+    except Exception:
+        pass
+    await db.demo_inbox.create_index([("org_id", 1), ("created_at", -1)])
+    await db.demo_inbox.create_index("created_at", expireAfterSeconds=14 * 24 * 3600)
     # The activity log is read by every admin role now, filtered and sorted.
     await db.student_edit_audit.create_index([("org_id", 1), ("student_key", 1), ("at", -1)])
     await db.student_edit_audit.create_index([("org_id", 1), ("search_terms", 1)])
@@ -372,14 +385,10 @@ except Exception as e:
 # time via VITE_ORG_SLUG). This middleware resolves it to an org_id and
 # attaches it to request.state so route handlers can filter by tenant.
 #
-# IMPORTANT: absence of the header is NOT rejected here — requests without it
-# get request.state.org_id = None, so the existing single-tenant deployment
-# keeps working unmodified during rollout. Individual routes decide whether
-# org scoping is required once they're retrofitted in the next pass.
-
-# Fail-closed tenancy. Set REQUIRE_ORG_CONTEXT=false ONLY for a legacy single-tenant deployment
-# whose data still has org_id=None.
-REQUIRE_ORG_CONTEXT = os.getenv("REQUIRE_ORG_CONTEXT", "true").strip().lower() == "true"
+# Fail-closed tenancy, no legacy mode. A request without X-Org-Slug is rejected (400) unless its
+# path is in ORG_EXEMPT_PREFIXES, and org_query()/org_stamp() refuse to run without a tenant, so
+# there is no "unscoped" path that could read or write across clients. The old REQUIRE_ORG_CONTEXT
+# switch and the org_id=None "legacy default tenant" have been removed on purpose.
 ORG_CACHE_TTL_S = float(os.getenv("ORG_CACHE_TTL_S", "60"))
 _ORG_CACHE: dict[str, tuple[str, float]] = {}
 
@@ -433,7 +442,9 @@ def _keepwarm_ping():
 
 
 ORG_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json",
-                       "/superadmin/orgs", "/superadmin/mfa", "/verify-admin",
+                       # /superadmin/legacy-data is a cross-tenant superadmin check (finds documents that
+                       # belong to NO tenant), so it cannot require a tenant header itself.
+                       "/superadmin/orgs", "/superadmin/mfa", "/superadmin/legacy-data", "/verify-admin",
                        # Token/id-scoped, not header-scoped (candidate-portal-spec §3.2/§3.4) —
                        # the token or certificate_id itself carries the org, so an
                        # X-Org-Slug header is neither required nor consulted.
@@ -451,7 +462,7 @@ async def org_context_middleware(request: Request, call_next):
             return JSONResponse(status_code=404, content={"detail": "Unknown organization."})
         request.state.org_id = org_id
         request.state.org_slug = org_slug
-    elif (REQUIRE_ORG_CONTEXT and request.method != "OPTIONS" and request.url.path != "/"
+    elif (request.method != "OPTIONS" and request.url.path != "/"
           and not request.url.path.startswith(ORG_EXEMPT_PREFIXES)):
         return JSONResponse(status_code=400, content={"detail": "X-Org-Slug header is required."})
     response = await call_next(request)
@@ -474,11 +485,11 @@ async def org_context_middleware(request: Request, call_next):
 PUBLIC_PATHS = {
     "/", "/health", "/election-status", _KEEPWARM_PATH,
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk", "/vote-status",
-    "/apply/check-eligibility", "/apply", "/apply/upload-image",
+    "/apply/check-eligibility", "/apply", "/apply/upload-image", "/apply/upload-document",
     "/verify-admin", "/election-results", "/election-results/voter-roll",
     "/election-results/turnout-breakdown",
     "/voter-register", "/voter-register/check-number",
-    "/analytics/collect",
+    "/analytics/collect", "/demo/inbox",
     # Backup triggers: called by an external scheduler with a shared secret
     # (X-Backup-Token, checked in backup_routes.py), not by an admin session.
     "/internal/backup/run", "/internal/backup/status", "/internal/backup/report",
@@ -494,7 +505,7 @@ def _is_public(path: str, method: str) -> bool:
     # "logged in" anywhere. Branding is logo/colors/org-name/support-contact —
     # nothing sensitive — and is fetched unauthenticated on every page load
     # by App.jsx and Results.jsx for every visitor, not just superadmin.
-    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/superadmin/branding", "/election-schedule", "/election-roadmap", "/public/bootstrap"}:
+    if method == "GET" and path in {"/candidates", "/positions", "/payment-info", "/nomination-form", "/superadmin/branding", "/election-schedule", "/election-roadmap", "/public/bootstrap"}:
         return True
     # candidate-portal-spec §3.2/§3.4: read-only, token/id-scoped, no admin
     # session involved at all — same reasoning as the voter-facing routes
@@ -569,7 +580,7 @@ async def auth_guard_middleware(request: Request, call_next):
     req_org = getattr(request.state, "org_id", None)
     if req_org is None and request.headers.get("X-Org-Slug"):
         req_org = await _resolve_org_id(request.headers["X-Org-Slug"])
-    if payload["role"] != "superadmin" and payload.get("org_id") != req_org:
+    if payload["role"] != "superadmin" and (not req_org or payload.get("org_id") != req_org):
         await log_action(
             "admin_guard_tenant_mismatch", payload.get("sub", "unknown"),
             {"path": request.url.path, "role": payload.get("role")}, org_id=payload.get("org_id"))
@@ -599,8 +610,8 @@ async def auth_guard_middleware(request: Request, call_next):
     # SUPERADMIN_JWT_EXPIRE_MINUTES lifetime instead.
     if payload["role"] == "vetting":
         # Panel tokens are keyed by panel_member_id and have no voter row (guide 6.6).
-        acct = await db.panel_members.find_one(
-            {**({"org_id": req_org} if req_org else {}), "panel_member_id": payload.get("sub")},
+        acct = await tdb_for(req_org).panel_members.find_one(
+            {"panel_member_id": payload.get("sub")},
             {"sessions_valid_after": 1, "active": 1, "access_expires_at": 1, "expires_with_phase": 1,
              "is_member": 1, "confidentiality_version": 1}
         )
@@ -634,8 +645,8 @@ async def auth_guard_middleware(request: Request, call_next):
         # whose session we most need to cut off. Role authorization is a separate check
         # (require_role); this is only about "does this token still correspond to a live
         # session for this account at all."
-        acct = await db.voters.find_one(
-            {**({"org_id": req_org} if req_org else {}), "student_id": payload.get("sub")},
+        acct = await tdb_for(req_org).voters.find_one(
+            {"student_id": payload.get("sub")},
             {"sessions_valid_after": 1}
         )
         cutoff = acct.get("sessions_valid_after") if acct else None
@@ -884,13 +895,14 @@ def _status_link_expired(token_doc: dict) -> bool:
 async def _get_or_create_status_token(student_id: str, round_id, org_id) -> dict:
     """Returns (and if needed creates) the student's one live status link for this round."""
     now = datetime.utcnow()
-    async for t in db.candidate_tokens.find(
+    async for t in tdb_for(org_id).candidate_tokens.find(
             {"student_id": student_id, "round_id": round_id, "org_id": org_id}).sort("created_at", -1):
         if not _status_link_expired(t):
             return t
     doc = {"token": secrets.token_urlsafe(32), "student_id": student_id, "round_id": round_id, "org_id": org_id,
-           "created_at": now, "expires_at": now + timedelta(days=STATUS_LINK_TTL_DAYS), "revoked": False}
-    await db.candidate_tokens.insert_one(doc)
+           "created_at": now, "expires_at": now + timedelta(days=STATUS_LINK_TTL_DAYS), "revoked": False,
+           "is_demo": bool(await _demo_active(org_id))}
+    await tdb_for(org_id).candidate_tokens.insert_one(doc)
     return doc
 
 class ApplicationSubmit(BaseModel):
@@ -902,6 +914,7 @@ class ApplicationSubmit(BaseModel):
     image_url:         str = Field("", max_length=2000)
     payment_method:    str = Field("", max_length=100)
     payment_proof_url: str = Field("", max_length=2000)
+    nomination_upload_id: str = Field("", max_length=64)   # id returned by /apply/upload-document (N2); never a URL
 
 class CommissionerVote(BaseModel):
     commissioner_id: str = Field("", max_length=64)   # optional; if sent it must match the panel account (student_id or PM- id)
@@ -1238,6 +1251,8 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
     which defaults to the original behaviour. Every provider send is counted toward the election budget.
     """
     org = request.state.org_id if request is not None else org_id
+    if org and await _demo_active(org):
+        return await _demo_capture(org, to_number, message_text, kind)
     if DEBUG_MODE:
         # Local/load-testing only: never hit either real API. Log the message (which contains the OTP)
         # so Locust or a manual tester can read it back, and report success.
@@ -1368,22 +1383,26 @@ async def generate_unique_org_slug(name: str) -> str:
         slug = f"{base}-{suffix}"
     return slug
 
+def require_org(org_id) -> str:
+    """Return org_id, or refuse. There is no unscoped / "legacy default tenant" mode: a missing tenant
+    is a 400, never a filter-less query that would match every client's documents."""
+    if not org_id:
+        raise HTTPException(400, "X-Org-Slug header is required.")
+    return str(org_id)
+
 def org_query(request: Request, extra: dict = None) -> dict:
     """
-    Merge tenant scoping into a query filter. If the request carries no
-    X-Org-Slug (request.state.org_id is None), the filter is returned
-    unchanged — this is what keeps the existing single-tenant KYUCCU
-    deployment working exactly as before, with no header set.
+    Merge tenant scoping into a query filter. Fails closed: if the request has no resolved
+    organization it raises (400) instead of returning an unscoped filter.
     """
     q = dict(extra) if extra else {}
-    if request.state.org_id:
-        q["org_id"] = request.state.org_id
+    q["org_id"] = require_org(getattr(request.state, "org_id", None))
     return q
 
 def org_stamp(request: Request, doc: dict) -> dict:
-    """Stamp a new document with the current org_id (None for legacy/default)."""
+    """Stamp a new document with the current org_id. Refuses to write an ownerless (org_id=None) doc."""
     doc = dict(doc)
-    doc["org_id"] = request.state.org_id
+    doc["org_id"] = require_org(getattr(request.state, "org_id", None))
     return doc
 
 async def get_vote_counts(request: Request) -> dict[str, int]:
@@ -1395,7 +1414,7 @@ async def get_vote_counts(request: Request) -> dict[str, int]:
     counts.get(str(candidate_id), 0) rather than indexing directly.
     """
     counts: dict[str, int] = {}
-    async for row in db.vote_events.aggregate([
+    async for row in tdb(request).vote_events.aggregate([
         {"$match": org_query(request)},
         {"$group": {"_id": "$candidate_id", "count": {"$sum": 1}}}
     ]):
@@ -1497,9 +1516,9 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
     excludes voter_id from the hash input (vote_events never stores it —
     see /vote) so the chain itself carries no voter-identity risk.
     """
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     await anchor_roster_ledger(request)   # ledger head goes to B2 Object Lock even when there are no new ballots
-    ledger_head = await db.roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
+    ledger_head = await tdb(request).roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
     last = await db.audit_checkpoints.find_one(
         org_query(request), sort=[("to_id", -1)]
     )
@@ -1512,7 +1531,7 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
     # event left out here sorts AFTER every event folded in, and a later checkpoint picks it up.
     sealed_before = _vote_bucket_start(datetime.utcnow() - timedelta(seconds=CHECKPOINT_SEAL_GRACE_SECONDS))
     match["cast_at"] = {"$lt": sealed_before}
-    events = await db.vote_events.find(match).sort("_id", 1).to_list(length=None)
+    events = await tdb(request).vote_events.find(match).sort("_id", 1).to_list(length=None)
     if not events:
         return None
 
@@ -1566,7 +1585,7 @@ async def verify_audit_chain(request: Request) -> dict:
             "_id": {"$gt": cp["from_id"], "$lte": cp["to_id"]} if cp["from_id"]
                    else {"$lte": cp["to_id"]}
         })
-        events = await db.vote_events.find(match).sort("_id", 1).to_list(length=None)
+        events = await tdb(request).vote_events.find(match).sort("_id", 1).to_list(length=None)
 
         recomputed = chain_hash
         for ev in events:
@@ -1617,10 +1636,8 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
     # voter["org_id"] is the source of truth for which org this voter
     # belongs to (set at import time), not the caller's request context,
     # since some callers here run outside a request (e.g. scripts).
-    branding_query = {"name": "branding"}
-    if voter.get("org_id"):
-        branding_query["org_id"] = voter["org_id"]
-    branding_doc = await db.settings.find_one(branding_query)
+    branding_doc = (await tdb_for(voter["org_id"]).settings.find_one({"name": "branding"})
+                    if voter.get("org_id") else None)
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
 
     message = (
@@ -1650,30 +1667,28 @@ async def get_approval_policy(request: Request,
     return out
 
 
-async def get_commissioner_count(org_id: str = None) -> int:
-    q = {"is_commissioner": True}
-    if org_id:
-        q["org_id"] = org_id
-    return await db.voters.count_documents(q)
+async def get_commissioner_count(org_id: str) -> int:
+    q = {"is_commissioner": True, "org_id": require_org(org_id)}
+    return await tdb_for(org_id).voters.count_documents(q)
 
-async def _resolve_position_title(position_id: str, org_id: str = None) -> tuple[str, int]:
+async def _resolve_position_title(position_id: str, org_id: str) -> tuple[str, int]:
     """Returns (title, order) for a position id, with safe fallbacks."""
+    org_id = require_org(org_id)      # outside the try: a missing tenant must not be swallowed
     try:
-        q = {"_id": ObjectId(position_id)}
-        if org_id:
-            q["org_id"] = org_id
-        pos = await db.positions.find_one(q)
+        q = {"_id": ObjectId(position_id), "org_id": org_id}
+        pos = await tdb_for(org_id).positions.find_one(q)
         if pos:
             return pos.get("title", position_id), pos.get("order", 0)
     except Exception:
         pass
     return position_id, 0
 
-async def _create_candidate_from_application(app_doc: dict, org_id: str = None):
+async def _create_candidate_from_application(app_doc: dict, org_id: str):
+    org_id = require_org(org_id)
     title, order = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
     # Same fallback _issue_certificate uses. This runs AFTER the status flip to "approved", so a KeyError here
     # would leave an approved application with no candidate and no way to retry.
-    await db.candidates.insert_one({
+    await tdb_for(org_id).candidates.insert_one({
         "name": app_doc.get("full_name")
                 or (app_doc.get("application_snapshot") or {}).get("full_name", ""),
         "position": title,
@@ -1681,16 +1696,16 @@ async def _create_candidate_from_application(app_doc: dict, org_id: str = None):
         "order": order,
         "votes": 0,
         "application_id": str(app_doc["_id"]),
-        "org_id": org_id
+        "org_id": org_id,
+        "is_demo": bool(app_doc.get("is_demo")),
     })
 
-async def _position_fee(position_id: str, org_id: str = None) -> int:
+async def _position_fee(position_id: str, org_id: str) -> int:
     """Nomination fee (UGX) configured on a position; 0 when none/unknown."""
+    org_id = require_org(org_id)
     try:
-        q = {"_id": ObjectId(position_id)}
-        if org_id:
-            q["org_id"] = org_id
-        pos = await db.positions.find_one(q)
+        q = {"_id": ObjectId(position_id), "org_id": org_id}
+        pos = await tdb_for(org_id).positions.find_one(q)
         return int((pos or {}).get("application_fee") or 0)
     except Exception:
         return 0
@@ -1704,11 +1719,11 @@ async def _notify_applicant(app_doc: dict, org_id: str, text_for) -> str:
     """Best-effort SMS to the applicant's first registered number. `text_for(org_name, position_title)` -> str.
     Never raises and never blocks the decision that triggered it. Returns 'sent' | 'failed' | 'no_phone'."""
     try:
-        voter = await db.voters.find_one({**get_forgiving_filter(app_doc.get("student_id", "")), "org_id": org_id})
+        voter = await tdb_for(org_id).voters.find_one({**get_forgiving_filter(app_doc.get("student_id", "")), "org_id": org_id})
         phones = (voter or {}).get("phone_numbers") or []
         if not phones:
             return "no_phone"
-        b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
+        b = await tdb_for(org_id).settings.find_one({"name": "branding", "org_id": org_id}) or {}
         title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
         text = text_for(b.get("org_name") or "the election", title)
         ok = await send_sms(phones[0], text, None, kind="notice", org_id=org_id)
@@ -1762,7 +1777,7 @@ def _tally_outcome(policy: str, total: int, approve: int, deny: int) -> str | No
 
 async def _flag_tie_for_chief(app_id: str, org_id: str):
     """Flag a tie (name kept for data compatibility, guide 7.2). Logged once per tie, not on every re-check."""
-    result = await db.applications.update_one(
+    result = await tdb_for(org_id).applications.update_one(
         {"_id": ObjectId(app_id), "tied_pending_chief": {"$ne": True}},
         {"$set": {"tied_pending_chief": True}}
     )
@@ -1781,10 +1796,10 @@ async def _issue_certificate(app_doc: dict, org_id: str = None):
     component from these fields plus branding.
     """
     title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
-    b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
+    b = await tdb_for(org_id).settings.find_one({"name": "branding", "org_id": org_id}) or {}
     certificate_id = f"CERT-{secrets.token_hex(6).upper()}"   # 48 bits, unambiguous charset
     issued_at = datetime.utcnow()
-    await db.certificates.insert_one({
+    await tdb_for(org_id).certificates.insert_one({
         "certificate_id": certificate_id,
         "org_id": org_id,
         "candidate_name": app_doc.get("full_name")
@@ -1793,8 +1808,9 @@ async def _issue_certificate(app_doc: dict, org_id: str = None):
         "org_name": b.get("org_name", ""),
         "issued_at": issued_at,
         "revoked": False,
+        "is_demo": bool(app_doc.get("is_demo")),
     })
-    await db.applications.update_one(
+    await tdb_for(org_id).applications.update_one(
         {"_id": ObjectId(str(app_doc["_id"]))},
         {"$set": {"certificate_id": certificate_id, "certificate_issued_at": issued_at}}
     )
@@ -1810,7 +1826,7 @@ async def _record_denial_snapshot(app_doc: dict, org_id: str, *, finance_reason:
     """
     title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
     decided_at = datetime.utcnow()
-    await db.applications.update_one(
+    await tdb_for(org_id).applications.update_one(
         {"_id": ObjectId(str(app_doc["_id"]))},
         {"$set": {
             "denial_snapshot": {
@@ -1836,7 +1852,7 @@ async def _revoke_certificate_for_application(app_doc: dict, org_id: str = None)
     certificate_id = app_doc.get("certificate_id")
     if not certificate_id:
         return
-    await db.certificates.update_one(
+    await tdb_for(org_id).certificates.update_one(
         {"certificate_id": certificate_id, "org_id": org_id},
         {"$set": {"revoked": True}}
     )
@@ -1861,7 +1877,7 @@ async def _live_panelists(org_id: str = None) -> list:
     phases = (doc or {}).get("phases", {}) or {}
     now = datetime.utcnow()
     live = []
-    async for p in db.panel_members.find(_oq(org_id, {"active": True})):
+    async for p in tdb_for(org_id).panel_members.find({"active": True}):
         ends = []
         if p.get("access_expires_at"):
             ends.append(naive_utc(p["access_expires_at"]))
@@ -1893,9 +1909,9 @@ async def _active_panel_keys(org_id: str = None) -> set:
 
 async def _has_live_application(request: Request, student_id: str) -> bool:
     """Guide 6.5: an applicant (not yet denied or removed) cannot sit on the panel."""
-    return bool(await db.applications.find_one(org_query(request, {
+    return bool(await tdb(request).applications.find_one({
         "student_id": normalize_student_id(student_id),
-        "status": {"$nin": ["denied", "removed"]}})))
+        "status": {"$nin": ["denied", "removed"]}}))
 
 
 async def _panel_access_end(request: Request, p: dict) -> datetime | None:
@@ -1937,9 +1953,9 @@ async def _panel_email_conflict(request: Request, email: str, exclude_pm_id: str
     q = {"email": pattern}
     if exclude_pm_id:
         q["panel_member_id"] = {"$ne": exclude_pm_id}
-    if await db.panel_members.find_one(org_query(request, q), {"_id": 1}):
+    if await tdb(request).panel_members.find_one(q, {"_id": 1}):
         return "A panel member with this email already exists."
-    if await db.voters.find_one(org_query(request, {"$or": [{f: pattern} for f in _PANEL_LOGIN_EMAIL_FIELDS]}),
+    if await tdb(request).voters.find_one({"$or": [{f: pattern} for f in _PANEL_LOGIN_EMAIL_FIELDS]},
                                 {"_id": 1}):
         return ("This email is already the login email of another admin role. Use a different email so "
                 "each login resolves to exactly one role.")
@@ -1948,7 +1964,7 @@ async def _panel_email_conflict(request: Request, email: str, exclude_pm_id: str
 
 async def _acting_panelist(request: Request, admin: dict) -> dict:
     """The signed-in panel account, or 403. Checked on every vetting action."""
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": admin.get("sub"), "active": True}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": admin.get("sub"), "active": True})
     if not p:
         raise HTTPException(403, "You are not an active member of the Vetting Panel.")
     if await _panel_access_ended(request, p):
@@ -1960,13 +1976,13 @@ async def _panel_actor_context(request: Request) -> tuple:
     """(vote key, is Chair) for a signed-in panelist; (None, False) for every other role."""
     if current_role(request) != "vetting":
         return None, False
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": current_actor(request), "active": True}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": current_actor(request), "active": True})
     if not p:
         return None, False
     is_chair = False
     if p.get("is_member") and p.get("student_id"):
-        is_chair = bool(await db.voters.find_one(org_query(request, {
-            **get_forgiving_filter(p["student_id"]), "is_chief_commissioner": True})))
+        is_chair = bool(await tdb(request).voters.find_one({
+            **get_forgiving_filter(p["student_id"]), "is_chief_commissioner": True}))
     return _panel_vote_key(p), is_chair
 
 
@@ -1976,12 +1992,23 @@ def _is_tied(policy: str, panel_total: int, approve: int, deny: int) -> bool:
             and approve + deny == panel_total and approve == deny)
 
 
+def _shape_nomination_fields(out: dict) -> None:
+    """N3: replace the stored `nomination_form` metadata with flat flags. Only the filename is shown; the upload id,
+    storage key and any link stay server-side and are reachable only through the audited read-back route."""
+    nf = out.pop("nomination_form", None)
+    has = isinstance(nf, dict) and bool(nf.get("upload_id"))
+    out["has_nomination_form"] = has
+    out["nomination_form_filename"] = nf.get("filename") if has else None
+    out["nomination_form_required"] = bool(out.get("nomination_form_required"))   # absent on older applications
+
+
 def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = None,
                                active_keys=frozenset(), panel_count: int = 0,
                                is_chair_panelist: bool = False) -> dict:
     """Guide 7.1: the one place that decides what each role may see of an application.
     Returns a copy. Only the superadmin receives the raw vote maps."""
     out = dict(app)
+    _shape_nomination_fields(out)       # every role, superadmin included: the browser never gets an upload id
     raw = _dedupe_votes(app.get("votes", {}))
     votes = {k: v for k, v in raw.items() if k in active_keys}
     approve = sum(1 for v in votes.values() if v == "approve")
@@ -2045,7 +2072,7 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
     """The single resolution path for votes, the Chair's tie-break and re-evaluation (guide 8.1).
     The status flip is the atomic guard: a caller that loses the race changes nothing."""
     new_status = "approved" if outcome == "approve" else "denied"
-    result = await db.applications.update_one(
+    result = await tdb_for(org_id).applications.update_one(
         {"_id": ObjectId(app_id), "status": {"$nin": list(RESOLVED_STATUSES)}},
         {"$set": {"status": new_status, **(extra_set or {})}, "$unset": {"tied_pending_chief": ""}}
     )
@@ -2061,11 +2088,11 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
             # the application back to its prior open state so the next vote / resweep retries it.
             logger.exception(f"Approval side effects failed for application {app_id}; rolling back.")
             try:
-                await db.candidates.delete_many({"application_id": str(app_doc["_id"])})
+                await tdb_for(org_id).candidates.delete_many({"application_id": str(app_doc["_id"])})
                 await _revoke_certificate_for_application(app_doc, org_id)
             except Exception:
                 logger.exception(f"Rollback cleanup failed for application {app_id}.")
-            await db.applications.update_one(
+            await tdb_for(org_id).applications.update_one(
                 {"_id": ObjectId(app_id), "status": "approved"},
                 {"$set": {"status": app_doc.get("status") or "pending"}})
             raise
@@ -2108,7 +2135,7 @@ async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
         await _flag_tie_for_chief(app_id, org_id)
     else:
         # Re-evaluation found no tie (panel change, expiry or policy change): clear a stale flag (guide 7.2).
-        await db.applications.update_one(
+        await tdb_for(org_id).applications.update_one(
             {"_id": ObjectId(app_id), "status": {"$nin": list(RESOLVED_STATUSES)}},
             {"$unset": {"tied_pending_chief": ""}})
 
@@ -2135,14 +2162,14 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
         # whose update actually flips status to "removed" proceeds to delete
         # the candidate and log it, so two commissioners racing to cast the
         # deciding removal vote can't both fire the delete/log side effects.
-        result = await db.applications.update_one(
+        result = await tdb_for(org_id).applications.update_one(
             {"_id": ObjectId(app_id), "status": "approved"},
             {"$set": {"status": "removed", "removal_votes": {}}, "$unset": {"tied_pending_chief": ""}}
         )
         if result.matched_count == 0:
             return
-        cand = await db.candidates.find_one({"application_id": app_id})
-        await db.candidates.delete_one({"application_id": app_id})
+        cand = await tdb_for(org_id).candidates.find_one({"application_id": app_id})
+        await tdb_for(org_id).candidates.delete_one({"application_id": app_id})
         await _revoke_certificate_for_application(app_doc, org_id)
         # Was only logger.info'd — a candidate removed by commission majority
         # never showed up in the Activity Log at all, unlike a superadmin's
@@ -2157,7 +2184,7 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
     elif outcome == "deny":
         # "deny" here means "keep" — no status change needed, but clear a
         # stale tie flag if this vote broke a previous tie the other way.
-        await db.applications.update_one({"_id": ObjectId(app_id)}, {"$unset": {"tied_pending_chief": ""}})
+        await tdb_for(org_id).applications.update_one({"_id": ObjectId(app_id)}, {"$unset": {"tied_pending_chief": ""}})
     elif policy == "majority_cast" and (approve_removals + deny_removals) == total and approve_removals == deny_removals:
         await _flag_tie_for_chief(app_id, org_id)
 
@@ -2189,14 +2216,14 @@ async def _resweep_pending_after_policy_change(org_id: str, include_removals: bo
     tighten-mid-round change can flip an outcome with no new commissioner
     action, which is a real behavior change worth being explicit about.
     """
-    async for app_doc in db.applications.find(_oq(org_id, {"status": "pending"})):
+    async for app_doc in tdb_for(org_id).applications.find({"status": "pending"}):
         await _resolve_application(str(app_doc["_id"]), app_doc, org_id)
 
     if not include_removals:
         return
-    async for app_doc in db.applications.find(_oq(org_id, {
+    async for app_doc in tdb_for(org_id).applications.find({
         "status": "approved", "removal_votes": {"$exists": True, "$ne": {}},
-    })):
+    }):
         await _resolve_removal(str(app_doc["_id"]), app_doc, org_id)
 
 #--IT Administration Helpers---
@@ -2213,7 +2240,7 @@ async def _validate_voter_attrs(org_id: str, attrs: dict | None) -> dict:
 
 
 async def get_voter_fields_for_org(org_id: str) -> list[dict]:
-    doc = await db.settings.find_one({"org_id": org_id, "name": "voter_fields"}) or {}
+    doc = await tdb_for(org_id).settings.find_one({"org_id": org_id, "name": "voter_fields"}) or {}
     return merge_voter_fields(doc.get("fields"))
 
 
@@ -2231,10 +2258,8 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             if clean not in phones:
                 phones.append(clean)
         sid = normalize_student_id(change_doc["student_id"])
-        q = {"student_id": sid}
-        if org_id:
-            q["org_id"] = org_id
-        if await db.voters.find_one(q, {"_id": 1}):
+        q = {"student_id": sid, "org_id": require_org(org_id)}
+        if await tdb_for(org_id).voters.find_one(q, {"_id": 1}):
             raise HTTPException(409, "Already registered, use Edit Student.")
         attrs = await _validate_voter_attrs(org_id, change_doc.get("attrs"))
         set_doc = {
@@ -2246,7 +2271,7 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
             "student_id":      sid
         }
         set_doc.update(attr_set_paths(attrs))
-        await db.voters.update_one(
+        await tdb_for(org_id).voters.update_one(
             q,
             {"$set": set_doc,
             # Defaults ONLY on insert: for an existing ID, $set here used to flip has_voted back to
@@ -2261,28 +2286,34 @@ async def _execute_student_change(change_doc: dict, org_id: str = None):
         )
     elif change_doc["change_type"] == "remove":
         q = get_forgiving_filter(change_doc["student_id"])
-        if org_id:
-            q["org_id"] = org_id
-        await db.voters.delete_one(q)
+        q["org_id"] = require_org(org_id)
+        await tdb_for(org_id).voters.delete_one(q)
 
 async def log_action(action: str, actor: str, details: dict | None = None, org_id: str = None,
                      timestamp: datetime | None = None):
     details = dict(details or {})
-    if isinstance(actor, str) and actor.startswith("PM-") and "is_member" not in details:
-        pm = await db.panel_members.find_one({"panel_member_id": actor}, {"is_member": 1})
+    if org_id and isinstance(actor, str) and actor.startswith("PM-") and "is_member" not in details:
+        pm = await tdb_for(org_id).panel_members.find_one({"panel_member_id": actor}, {"is_member": 1})
         if pm:
             details["is_member"] = bool(pm.get("is_member"))
     # details defaults to None, not {} — a mutable default argument is shared
     # across every call site in the process, so one accidental mutation would
     # leak into unrelated log entries.
-    await db.audit_log.insert_one({
+    entry = {
         "action":    action,
         "actor":     actor,
         "details":   details or {},
         "org_id":    org_id,
         # Ballot-secrecy callers pass a coarse time (see _vote_bucket_start); everyone else gets "now".
         "timestamp": timestamp or datetime.utcnow()
-    })
+    }
+    if not org_id:
+        # Genuinely tenant-less events (organization created, unauthenticated 401s). Marked so the
+        # superadmin "Legacy data" check does not mistake them for leftover pre-multi-tenancy rows.
+        entry["scope"] = "system"
+        await cross_tenant(db).audit_log.insert_one(entry)   # deliberate: no tenant to scope to
+    else:
+        await tdb_for(org_id).audit_log.insert_one(entry)
 
 
 # =============================================================================
@@ -2349,10 +2380,10 @@ async def require_payment_controller(request: Request, claimed_id: str, verb: st
     if current_role(request) != "financial_controller":
         raise HTTPException(403, f"Only the Financial Controller can {verb} a candidate's payment.")
     bind_identity(request, claimed_id, "Financial Controller account")
-    fc = await db.voters.find_one(org_query(request, {
+    fc = await tdb(request).voters.find_one({
         **get_forgiving_filter(claimed_id),
         "is_financial_controller": True,
-    }))
+    })
     if not fc:
         raise HTTPException(403, "Not a registered Financial Controller.")
     return fc
@@ -2378,11 +2409,11 @@ async def _is_chief_or_deputy(request: Request, admin: dict) -> bool:
         return True
     if admin.get("role") != "commission":
         return False
-    voter = await db.voters.find_one(org_query(request, {
+    voter = await tdb(request).voters.find_one({
         **get_forgiving_filter(admin.get("sub", "")),
         "is_commissioner": True,
         "$or": [{"is_chief_commissioner": True}, {"is_deputy_chief_commissioner": True}],
-    }))
+    })
     return bool(voter)
 
 
@@ -2533,6 +2564,25 @@ def voting_window_state(schedule: dict, now: datetime) -> dict:
     }
 
 
+async def _write_phase_schedule(org_id: str, phases: dict, timezone_name: str, round_id: str = DEFAULT_ROUND_ID) -> None:
+    """Single persistence seam for phase windows. Demo phase-jumps reuse this helper so they do not
+    invoke the real schedule route (whose early-end / panel validations are intentionally stricter)."""
+    org_id = require_org(org_id)
+    doc = {
+        "name": "election_phases",
+        "phases": phases,
+        "round_id": round_id or DEFAULT_ROUND_ID,
+        "timezone": timezone_name or DEFAULT_ELECTION_TZ,
+        "updated_at": datetime.utcnow(),
+    }
+    await tdb_for(org_id).settings.update_one(
+        {"name": "election_phases"},
+        {"$set": {**doc, "org_id": org_id}},
+        upsert=True,
+    )
+    invalidate_settings(org_id, "election_phases")
+
+
 async def get_phase_schedule(request: Request) -> dict:
     doc = await cached_setting(request.state.org_id, "election_phases")
     phases = (doc or {}).get("phases", {})
@@ -2567,12 +2617,12 @@ def _phase_is_open(window: dict, now: datetime) -> bool:
 
 async def has_exception_grant(request: Request, student_id: str, phase: str) -> dict | None:
     now = datetime.utcnow()
-    return await db.exception_grants.find_one(org_query(request, {
+    return await tdb(request).exception_grants.find_one({
         "student_id": normalize_student_id(student_id),
         "phase": phase,
         "revoked": {"$ne": True},
         "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}],
-    }))
+    })
 
 
 async def assert_phase_open(request: Request, phase: str, student_id: str | None = None):
@@ -2849,7 +2899,7 @@ async def cached_setting(org_id, name: str):
         hit = _SETTINGS_CACHE.get(key)
         if hit and hit[0] > time.monotonic():
             return copy.deepcopy(hit[1])
-    doc = await db.settings.find_one(_oq(org_id, {"name": name}))
+    doc = await tdb_for(org_id).settings.find_one({"name": name})
     if _SETTINGS_TTL > 0:
         _SETTINGS_CACHE[key] = (time.monotonic() + _SETTINGS_TTL, copy.deepcopy(doc))
     return doc
@@ -2879,11 +2929,20 @@ def invalidate_settings(org_id=None, name: str | None = None) -> None:
 
 
 def _oq(org_id, extra: dict | None = None) -> dict:
-    """org_query for code that has an org_id but no request (same semantics)."""
+    """org_query for code that has an org_id but no request (same fail-closed semantics)."""
     q = dict(extra) if extra else {}
-    if org_id:
-        q["org_id"] = org_id
+    q["org_id"] = require_org(org_id)
     return q
+
+
+def tdb(request: Request):
+    """Tenant-scoped database handle for this request (see tenant_db.py). 400 if there is no tenant.
+    `db` is resolved at call time so tests can swap main.db."""
+    return _tenant_scoped_db(db, request)
+
+def tdb_for(org_id):
+    """Same, for code that has an org_id but no request."""
+    return _tenant_scoped_db_for(db, org_id)
 
 
 class ApiError(Exception):
@@ -3091,7 +3150,7 @@ async def reset_voter_otp_state(org_id, student_ids):
     await clear_otp_limit_state(org_id, student_ids)
     for sid in {normalize_student_id(s) for s in student_ids if s}:
         q = _oq(org_id, {"student_id": sid})
-        await db.otps.delete_many(q)
+        await tdb_for(org_id).otps.delete_many(q)
         await db.admin_otps.delete_many(q)
 
 
@@ -3172,8 +3231,8 @@ async def sms_budget_gate(request: Request, sec: dict, usage: dict, student: dic
     if left <= 0:
         raise ApiError(429, msg, "budget")
     if sec["sms_mode"] == "conservation" and (student.get("sms_sends_total") or 0) > 0:
-        reserve = await db.voters.count_documents(org_query(request, {
-            "has_voted": {"$ne": True}, "sms_sends_total": {"$not": {"$gt": 0}}}))
+        reserve = await tdb(request).voters.count_documents({
+            "has_voted": {"$ne": True}, "sms_sends_total": {"$not": {"$gt": 0}}})
         if left <= reserve * 1.2:
             raise ApiError(429, "Codes are limited right now so that everyone can receive their first one. "
                                 "Please try again later or contact support.", "budget")
@@ -3258,9 +3317,9 @@ async def roster_status(request: Request, sec: dict | None = None) -> dict:
             or (lifted and lifted >= freeze_at)):
         return {**base, "phase": "pre_freeze", "frozen": False, "contact_change_required": False}
     end = v.get("end")
-    live_grant = await db.exception_grants.count_documents(org_query(request, {
+    live_grant = await tdb(request).exception_grants.count_documents({
         "phase": "voting", "revoked": {"$ne": True},
-        "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}))
+        "$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]})
     if end and now > end and not live_grant:
         return {**base, "phase": "closed", "frozen": True, "contact_change_required": False}
     return {**base, "phase": "voting_frozen", "frozen": True,
@@ -3268,8 +3327,8 @@ async def roster_status(request: Request, sec: dict | None = None) -> dict:
 
 
 async def _expire_pending_at_freeze(request: Request):
-    await db.student_changes.update_many(
-        org_query(request, {"status": "pending"}),
+    await tdb(request).student_changes.update_many(
+        {"status": "pending"},
         {"$set": {"status": "expired_at_freeze", "resolved_at": datetime.utcnow()}})
 
 
@@ -3295,7 +3354,7 @@ async def append_ledger(org_id, event: str, ref_id: str, actor: str, role: str, 
     """Append-only SHA-256 chain per org. Best effort: a ledger failure is logged, never fatal."""
     details = {k: v for k, v in (details or {}).items()}
     for _ in range(6):
-        last = await db.roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
+        last = await tdb_for(org_id).roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
         seq = (last["seq"] if last else 0) + 1
         prev = last["hash"] if last else "GENESIS"
         now = datetime.utcnow()
@@ -3304,7 +3363,7 @@ async def append_ledger(org_id, event: str, ref_id: str, actor: str, role: str, 
                "ts": ts, "details": details, "prev_hash": prev,
                "hash": _ledger_hash(prev, seq, event, ref_id, actor, role, ts, details)}
         try:
-            await db.roster_ledger.insert_one(doc)
+            await tdb_for(org_id).roster_ledger.insert_one(doc)
             return doc
         except DuplicateKeyError:
             continue
@@ -3317,7 +3376,7 @@ async def append_ledger(org_id, event: str, ref_id: str, actor: str, role: str, 
 
 async def verify_roster_ledger(org_id) -> dict:
     prev, n, bad = "GENESIS", 0, None
-    async for e in db.roster_ledger.find({"org_id": org_id}).sort("seq", 1):
+    async for e in tdb_for(org_id).roster_ledger.find({"org_id": org_id}).sort("seq", 1):
         n += 1
         expect_seq = n
         if (e["seq"] != expect_seq or e["prev_hash"] != prev
@@ -3331,11 +3390,11 @@ async def verify_roster_ledger(org_id) -> dict:
 
 async def anchor_roster_ledger(request: Request):
     """Publish the ledger head to B2 Object Lock (same trust anchor as the ballot chain)."""
-    org_id = request.state.org_id
-    head = await db.roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
+    org_id = require_org(request.state.org_id)
+    head = await tdb(request).roster_ledger.find_one({"org_id": org_id}, sort=[("seq", -1)])
     if not head:
         return
-    marker = await db.settings.find_one(org_query(request, {"name": "roster_ledger_anchor"})) or {}
+    marker = await tdb(request).settings.find_one({"name": "roster_ledger_anchor"}) or {}
     if marker.get("seq", 0) >= head["seq"]:
         return
     key = f"{org_id or 'default'}/roster-ledger-{head['seq']:08d}.json"
@@ -3353,7 +3412,7 @@ async def anchor_roster_ledger(request: Request):
         await log_action("audit_checkpoint_anchor_failed", "system", {"ledger_seq": head["seq"], "error": str(e)},
                          org_id=org_id)
         return
-    await db.settings.update_one(org_query(request, {"name": "roster_ledger_anchor"}),
+    await tdb(request).settings.update_one({"name": "roster_ledger_anchor"},
                                  {"$set": org_stamp(request, {"name": "roster_ledger_anchor", "seq": head["seq"],
                                                               "head_hash": head["hash"], "at": datetime.utcnow()})},
                                  upsert=True)
@@ -3464,7 +3523,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     # Timing is governed entirely by the "voting" phase schedule (see PHASE_NAMES / assert_phase_open).
     await assert_phase_open(request, "voting", data.student_id)
 
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         await ip_record(request, "fails")
         analytics.set_reason(request, "not_on_roll")
@@ -3518,7 +3577,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
         reservation = await reserve_send(request, sid)
 
     # Re-send the SAME code while it is still valid, so a late first SMS never becomes a wrong guess.
-    existing = None if legacy else await db.otps.find_one(org_query(request, {"student_id": sid}))
+    existing = None if legacy else await tdb(request).otps.find_one({"student_id": sid})
     live = bool(existing and existing.get("created_at")
                 and now - existing["created_at"] < timedelta(minutes=ol.CODE_TTL_MINUTES))
     otp = existing["code"] if live else str(secrets.randbelow(900000) + 100000)
@@ -3541,13 +3600,14 @@ async def verify_identity(data: IdentityCheck, request: Request):
 
     # "ok" or "ambiguous": the SMS may well be on its way, so the code must be valid and the cooldown must hold.
     if not live:
-        await db.otps.update_one(
-            org_query(request, {"student_id": sid}),
-            {"$set": org_stamp(request, {"code": otp, "created_at": now})},
+        await tdb(request).otps.update_one(
+            {"student_id": sid},
+            {"$set": org_stamp(request, {"code": otp, "created_at": now,
+                                      "is_demo": bool(await _demo_active(request.state.org_id))})},
             upsert=True
         )
-    await db.voters.update_one(
-        org_query(request, {"student_id": sid}),
+    await tdb(request).voters.update_one(
+        {"student_id": sid},
         {"$set": {"last_status": "otp_sent"}, "$inc": {"otp_count": 1, "sms_sends_total": 1},
          "$min": {"first_sms_at": now}}
     )
@@ -3617,12 +3677,12 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
     await _enforce_otp_attempt_limit(request, data.student_id)
 
     search = org_query(request, get_forgiving_filter(data.student_id))
-    voter  = await db.voters.find_one(search)
+    voter  = await tdb(request).voters.find_one(search)
     if not voter:
         analytics.set_reason(request, "voter_not_found")
         raise HTTPException(status_code=404, detail="Voter not found.")
 
-    record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
+    record = await tdb(request).otps.find_one(search) or await db.admin_otps.find_one(search)
 
     if record:
         created_at = record.get("created_at")
@@ -3631,7 +3691,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
             or datetime.utcnow() - created_at > timedelta(minutes=OTP_EXPIRY_MINUTES)
         )
         if is_expired:
-            await db.otps.delete_one(search)
+            await tdb(request).otps.delete_one(search)
             analytics.set_reason(request, "no_live_code")
             raise HTTPException(status_code=400, detail="This code has expired. Please request a new one.")
 
@@ -3640,10 +3700,10 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
         if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
             voter_token, vote_jti = create_voter_token(
                 student_id=normalize_student_id(voter["student_id"]), org_id=request.state.org_id)
-            await db.voters.update_one(search, {"$set": {
+            await tdb(request).voters.update_one(search, {"$set": {
                 "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
                 "authenticated_at": datetime.utcnow()}})
-            await db.otps.delete_one(search)
+            await tdb(request).otps.delete_one(search)
             await _clear_otp_attempts(request, data.student_id)
             # Failure (otp_verify_locked) was already logged; success never
             # was, so the log couldn't show a complete authentication
@@ -3663,13 +3723,13 @@ async def verify_otp(data: OTPCheck, request: Request):
         return await _verify_otp_legacy(data, request)
 
     search = org_query(request, get_forgiving_filter(data.student_id))
-    voter = await db.voters.find_one(search)
+    voter = await tdb(request).voters.find_one(search)
     if not voter:
         analytics.set_reason(request, "voter_not_found")
         raise HTTPException(status_code=404, detail="Voter not found.")
     sid = voter["student_id"]
 
-    record = await db.otps.find_one(search) or await db.admin_otps.find_one(search)
+    record = await tdb(request).otps.find_one(search) or await db.admin_otps.find_one(search)
     created_at = (record or {}).get("created_at")
     live = bool(record and created_at
                 and datetime.utcnow() - created_at <= timedelta(minutes=ol.CODE_TTL_MINUTES))
@@ -3677,7 +3737,7 @@ async def verify_otp(data: OTPCheck, request: Request):
         # No live code: a guess cannot succeed, so it must NOT cost the voter a token (otherwise anyone
         # could lock any voter out for free). Limited only by the per-IP guard.
         if record:
-            await db.otps.delete_one(search)
+            await tdb(request).otps.delete_one(search)
         await ip_record(request, "fails")
         raise ApiError(400, "This code has expired. Please request a new one." if record
                        else "Please request a new code first.", "no_live_code")
@@ -3692,10 +3752,10 @@ async def verify_otp(data: OTPCheck, request: Request):
     if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
         voter_token, vote_jti = create_voter_token(
             student_id=normalize_student_id(sid), org_id=request.state.org_id)
-        await db.voters.update_one(search, {"$set": {
+        await tdb(request).voters.update_one(search, {"$set": {
             "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
             "authenticated_at": datetime.utcnow()}})
-        await db.otps.delete_one(search)
+        await tdb(request).otps.delete_one(search)
         await db.otp_guess_state.delete_one({"key": _otp_key(request, sid)})   # success forgives the bucket
         await count_verified(request.state.org_id)
         await ip_record(request, "verifies")
@@ -3746,8 +3806,8 @@ async def cast_vote(data: VoteRequest, request: Request):
     # day — instead of surfacing those as hard errors to the voter.
     # HTTPException raised inside the callback isn't a PyMongoError, so
     # with_transaction lets it propagate immediately rather than retrying it.
-    candidate_exists = await db.candidates.count_documents(
-        org_query(request, {"_id": candidate_oid})
+    candidate_exists = await tdb(request).candidates.count_documents(
+        {"_id": candidate_oid}
     )
     if not candidate_exists:
         analytics.set_reason(request, "candidate_missing")
@@ -3756,8 +3816,8 @@ async def cast_vote(data: VoteRequest, request: Request):
     await assert_voting_allowed(request, data.student_id)
 
     async def _do_vote(session):
-        student = await db.voters.find_one(
-            org_query(request, get_forgiving_filter(data.student_id)), session=session
+        student = await tdb(request).voters.find_one(
+            get_forgiving_filter(data.student_id), session=session
         )
         if not student or student.get("has_voted"):
             analytics.set_reason(request, "ineligible")
@@ -3767,14 +3827,14 @@ async def cast_vote(data: VoteRequest, request: Request):
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
         _assert_voter_session(request, student)
 
-        candidate_still_exists = await db.candidates.count_documents(
-            org_query(request, {"_id": candidate_oid}), session=session
+        candidate_still_exists = await tdb(request).candidates.count_documents(
+            {"_id": candidate_oid}, session=session
         )
         if not candidate_still_exists:
             analytics.set_reason(request, "candidate_missing")
             raise HTTPException(status_code=404, detail="Candidate not found.")
 
-        claimed = await db.voters.update_one(
+        claimed = await tdb(request).voters.update_one(
             {"_id": student["_id"], "has_voted": {"$ne": True}},
             {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
             session=session
@@ -3787,12 +3847,13 @@ async def cast_vote(data: VoteRequest, request: Request):
         # has_voted (on the voter doc) and this event are deliberately
         # decoupled so nothing in the DB links a voter to their choice.
         _ev_id, _ev_at = _new_vote_event_stamp()
-        await db.vote_events.insert_one(
-            org_stamp(request, {
+        await tdb(request).vote_events.insert_one(
+            {
                 "_id": _ev_id,
                 "candidate_id": candidate_oid,
                 "cast_at": _ev_at,
-            }),
+                "is_demo": bool(await _demo_active(request.state.org_id)),
+            },
             session=session
         )
 
@@ -3828,7 +3889,7 @@ async def vote_status(student_id: str, request: Request, response: Response):
     the ballot must still be able to ask. Only reveals whether THIS voter has voted; never choices."""
     sid = normalize_student_id(student_id)
     verify_voter_token(request, sid, request.state.org_id)
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(sid)), {"has_voted": 1})
+    student = await tdb(request).voters.find_one(get_forgiving_filter(sid), {"has_voted": 1})
     if not student:
         raise HTTPException(status_code=404, detail="Voter not found.")
     response.headers["Cache-Control"] = "no-store"
@@ -3860,8 +3921,8 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     # candidate's document at once — instead of surfacing them as hard
     # errors to the voter. See /vote for the same pattern.
     async def _do_bulk_vote(session):
-        student = await db.voters.find_one(
-            org_query(request, get_forgiving_filter(data.student_id)), session=session
+        student = await tdb(request).voters.find_one(
+            get_forgiving_filter(data.student_id), session=session
         )
         if not student:
             analytics.set_reason(request, "voter_not_found")
@@ -3880,8 +3941,8 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         # marked as voted with some of their choices never counted. Now
         # it's genuinely all-or-nothing: either every choice is recorded,
         # or none are and the voter can retry.
-        candidates = await db.candidates.find(
-            org_query(request, {"_id": {"$in": candidate_oids}}), session=session
+        candidates = await tdb(request).candidates.find(
+            {"_id": {"$in": candidate_oids}}, session=session
         ).to_list(length=None)
         if len(candidates) != len(set(candidate_oids)):
             analytics.set_reason(request, "candidate_missing")
@@ -3896,7 +3957,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             analytics.set_reason(request, "duplicate_pick")
             raise HTTPException(status_code=400, detail="Only one candidate can be selected per position.")
 
-        claimed = await db.voters.update_one(
+        claimed = await tdb(request).voters.update_one(
             {"_id": student["_id"], "has_voted": {"$ne": True}},
             {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
             session=session
@@ -3908,9 +3969,10 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         # multi-position ballot is still a single round trip inside the
         # transaction (still all-or-nothing with the has_voted update above).
         cast_at = _vote_bucket_start()
-        await db.vote_events.insert_many(
-            [org_stamp(request, {"_id": _new_vote_event_stamp()[0], "candidate_id": c_oid, "cast_at": cast_at})
-             for c_oid in candidate_oids],
+        demo_flag = bool(await _demo_active(request.state.org_id))
+        await tdb(request).vote_events.insert_many(
+            [org_stamp(request, {"_id": _new_vote_event_stamp()[0], "candidate_id": c_oid, "cast_at": cast_at,
+                                 "is_demo": demo_flag}) for c_oid in candidate_oids],
             session=session
         )
 
@@ -3960,7 +4022,7 @@ async def get_candidates(request: Request):
             raise HTTPException(status_code=403, detail="Voting has closed. The candidate list is no longer available.")
 
     candidates = []
-    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+    async for cand in tdb(request).candidates.find({}).sort("order", 1):
         cand["_id"] = str(cand["_id"])
         candidates.append(cand)
     return candidates
@@ -3994,7 +4056,7 @@ async def get_positions(request: Request, response: Response):
         response.headers["Cache-Control"] = "public, max-age=15, stale-while-revalidate=30"
     response.headers["Vary"] = "Origin, X-Org-Slug, Authorization"
     positions = []
-    async for p in db.positions.find(org_query(request)).sort("order", 1):
+    async for p in tdb(request).positions.find({}).sort("order", 1):
         p["_id"] = str(p["_id"])
         positions.append(p)
     return positions
@@ -4038,6 +4100,15 @@ async def _check_upload_rate_limit(request: Request):
     await _check_rate_limit(
         request, bucket="upload", limit=UPLOAD_RATE_LIMIT, window_s=UPLOAD_RATE_WINDOW_S,
         message="Too many uploads. Please try again in a few minutes.",
+    )
+
+
+async def _check_document_upload_rate_limit(request: Request):
+    # Nomination forms have their own bucket: a third applicant upload must not
+    # consume the same 8/10-minute budget used by the photo/receipt endpoint.
+    await _check_rate_limit(
+        request, bucket="upload_doc", limit=UPLOAD_RATE_LIMIT, window_s=UPLOAD_RATE_WINDOW_S,
+        message="Too many form uploads. Please try again in a few minutes.",
     )
 
 
@@ -4085,8 +4156,8 @@ async def search_voter_register(request: Request, q: str = "", page: int = 1):
             {"full_name": {"$regex": safe_q, "$options": "i"}},
             {"student_id": {"$regex": re.escape(normalize_student_id(q)[:80]), "$options": "i"}},
         ]
-    total = await db.voters.count_documents(query)
-    cursor = db.voters.find(
+    total = await tdb(request).voters.count_documents(query)
+    cursor = tdb(request).voters.find(
         query, {"_id": 0, "full_name": 1, "student_id": 1, "phone_numbers": 1}
     ).sort("full_name", 1).skip(skip).limit(VOTER_REGISTER_PAGE_SIZE)
     results = [
@@ -4103,7 +4174,7 @@ async def search_voter_register(request: Request, q: str = "", page: int = 1):
 @app.post("/voter-register/check-number")
 async def check_registered_number(data: ApplicationEligibilityCheck, request: Request):
     await _check_register_rate_limit(request)
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         raise HTTPException(status_code=404, detail="Not found in the register.")
     if not names_match(student.get("full_name", ""), data.full_name):
@@ -4175,7 +4246,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
 async def check_application_eligibility(data: ApplicationEligibilityCheck, request: Request):
     await _check_apply_rate_limit(request)
     await assert_phase_open(request, "applications", data.student_id)
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         analytics.set_reason(request, "not_on_roll")
         raise HTTPException(
@@ -4201,7 +4272,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     for _field, _val in (("image_url", data.image_url), ("payment_proof_url", data.payment_proof_url)):
         if _val and not _val.startswith("https://"):
             raise HTTPException(400, f"{_field} must be an https:// link (or empty).")
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         analytics.set_reason(request, "not_on_roll")
         raise HTTPException(
@@ -4215,21 +4286,32 @@ async def submit_application(data: ApplicationSubmit, request: Request):
             detail="The name entered doesn't match our records for this Student ID."
         )
     data.full_name = normalize_name(data.full_name)
-    if await db.panel_members.find_one(org_query(request, {"student_id": student["student_id"], "active": True})):
+    if await tdb(request).panel_members.find_one({"student_id": student["student_id"], "active": True}):
         raise HTTPException(403, "You are serving on the Vetting Panel and cannot apply. Ask the superadmin to remove you from the panel first.")
     data.student_id = student["student_id"]     # canonical stored form, whatever the applicant typed
 
-    existing = await db.applications.find_one(org_query(request, {
+    existing = await tdb(request).applications.find_one({
         "student_id": data.student_id,
         "position_id": data.position_id
-    }))
+    })
     if existing:
         analytics.set_reason(request, "already_applied")
         raise HTTPException(400, "You have already applied for this position.")
 
     round_id = await current_round_id(request)
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     position_title, _ = await _resolve_position_title(data.position_id, org_id)
+
+    # N2: the signed nomination form. Checked before anything is stored so a missing form never leaves a
+    # half-created application behind.
+    nomination_cfg = await get_nomination_form(org_id)
+    claimed_upload = None
+    if nomination_cfg["enabled"]:
+        upload_id = (data.nomination_upload_id or "").strip()
+        if not upload_id and nomination_cfg["required"]:
+            raise HTTPException(400, "Please upload the signed nomination form before submitting your application.")
+        if upload_id:
+            claimed_upload = await _claim_nomination_upload(request, upload_id, data.student_id, data.position_id)
 
     # candidate-portal-spec §2/§4.1: a copy of the submitted fields, captured
     # once here. The printable "Application Snapshot" view always renders
@@ -4244,8 +4326,15 @@ async def submit_application(data: ApplicationSubmit, request: Request):
         "submitted_at":   datetime.utcnow(),
     }
 
-    await db.applications.insert_one(org_stamp(request, {
-        **data.dict(),
+    try:
+        inserted = await tdb(request).applications.insert_one({
+        **data.dict(exclude={"nomination_upload_id"}),
+        # Metadata only. The storage key and any link stay in nomination_uploads / behind a presigned URL.
+        "nomination_form": ({"upload_id": claimed_upload["upload_id"], "filename": claimed_upload["filename"],
+                             "kind": claimed_upload["kind"], "bytes": claimed_upload["bytes"]}
+                            if claimed_upload else None),
+        # Snapshot at submit time, like fee_required: a later change to the setting never rewrites history (N3).
+        "nomination_form_required": bool(nomination_cfg["enabled"] and nomination_cfg["required"]),
         # round_id is written now so multi-round support later is a feature
         # addition, not a breaking data migration.
         "round_id": round_id,
@@ -4261,17 +4350,30 @@ async def submit_application(data: ApplicationSubmit, request: Request):
         "denial_snapshot": None,
         "certificate_id": None,
         "certificate_issued_at": None,
-    }))
+        "is_demo": bool(await _demo_active(org_id)),
+        })
+    except Exception:
+        if claimed_upload:     # give the file back so the applicant can retry with the same upload
+            await tdb(request).nomination_uploads.update_one(
+                {"upload_id": claimed_upload["upload_id"], "status": "attached"},
+                {"$set": {"status": "pending", "created_at": claimed_upload.get("created_at") or claimed_upload.get("uploaded_at") or datetime.utcnow()},
+                 "$unset": {"student_id": "", "position_id": "", "attached_at": ""}})
+        raise
+    if claimed_upload:
+        await tdb(request).nomination_uploads.update_one(
+            {"upload_id": claimed_upload["upload_id"]}, {"$set": {"application_id": str(inserted.inserted_id)}})
     await log_action("application_submitted", data.student_id, {
     "position_id": data.position_id,
-    "full_name":   data.full_name
+    "full_name":   data.full_name,
+    "nomination_form_required": bool(nomination_cfg["enabled"] and nomination_cfg["required"]),
+    **({"nomination_form": claimed_upload["filename"]} if claimed_upload else {}),
     }, org_id=request.state.org_id)
 
     # candidate-portal-spec §3.1: one live status link per student per round,
     # created on first application and reused for every later one. The SMS is
     # only sent when a link is newly created (not on later applications).
     had_live_link = False
-    async for t in db.candidate_tokens.find({"student_id": data.student_id, "round_id": round_id, "org_id": org_id}):
+    async for t in tdb(request).candidate_tokens.find({"student_id": data.student_id, "round_id": round_id, "org_id": org_id}):
         if not _status_link_expired(t):
             had_live_link = True
             break
@@ -4300,7 +4402,7 @@ async def _candidacy_results_band(position_title: str, candidate_id: str, org_id
     (get_vote_counts), gated the same way /election-results gates the public
     breakdown — never raw vote counts or opponent names, only the band.
     """
-    cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
     schedule = await get_phase_schedule(request)
     voting_open = _phase_is_open(schedule["phases"].get("voting", {}), datetime.utcnow())
     voting_closed_certified = cfg.get("is_certified", False)
@@ -4308,7 +4410,7 @@ async def _candidacy_results_band(position_title: str, candidate_id: str, org_id
         return None
 
     vote_counts = await get_vote_counts(request)
-    peers = [c async for c in db.candidates.find(org_query(request, {"position": position_title}))]
+    peers = [c async for c in tdb(request).candidates.find({"position": position_title})]
     if not peers:
         return None
     ranked = sorted(peers, key=lambda c: vote_counts.get(str(c["_id"]), 0), reverse=True)
@@ -4331,8 +4433,9 @@ async def get_candidate_status(token: str, request: Request):
     # Limit is generous because the portal polls every 20s and campus users share NAT'd IPs.
     await _check_rate_limit(request, bucket="cand_status", limit=120, window_s=60,
                             message="Too many requests. Please try again shortly.")
-    token_doc = await db.candidate_tokens.find_one({"token": token})
-    if not token_doc:
+    # The one deliberately cross-tenant read: the token itself identifies the tenant.
+    token_doc = await cross_tenant(db).candidate_tokens.find_one({"token": token})
+    if not token_doc or not token_doc.get("org_id"):
         raise HTTPException(404, "Status link not found.")
     if _status_link_expired(token_doc):
         raise HTTPException(410, "This status link has expired or was withdrawn. Contact the IT administrators for a new one.")
@@ -4347,15 +4450,14 @@ async def get_candidate_status(token: str, request: Request):
     # display for everyone, so the candidate-specific results band is redundant.
     public_results_live = (await get_security_settings(request))["public_results_mode"] == "live"
 
-    apps = db.applications.find({
+    apps = tdb_for(org_id).applications.find({
         "student_id": token_doc["student_id"],
         "round_id": token_doc["round_id"],
-        "org_id": org_id,
     })
 
     # Branding is scoped by the token's org here, so the portal never depends on
     # a tenant header that a bare status link doesn't carry.
-    b = await db.settings.find_one({"name": "branding", "org_id": org_id}) or {}
+    b = await tdb_for(org_id).settings.find_one({"name": "branding"}) or {}
     branding = {k: b.get(k, "") for k in
                 ("logo_url", "org_name", "university_name", "university_logo_url")}
 
@@ -4374,7 +4476,7 @@ async def get_candidate_status(token: str, request: Request):
         if app_doc.get("status") == "denied" and app_doc.get("denial_snapshot"):
             entry["denial_snapshot"] = app_doc["denial_snapshot"]
         if app_doc.get("certificate_id"):
-            cert = await db.certificates.find_one({"certificate_id": app_doc["certificate_id"]})
+            cert = await tdb_for(org_id).certificates.find_one({"certificate_id": app_doc["certificate_id"]})
             if cert and not cert.get("revoked"):
                 entry["certificate_id"] = app_doc["certificate_id"]
                 entry["certificate"] = {
@@ -4384,7 +4486,7 @@ async def get_candidate_status(token: str, request: Request):
                     "org_name": cert.get("org_name") or branding["org_name"],
                 }
         if not public_results_live and app_doc.get("status") in ("approved", "removed"):
-            cand = await db.candidates.find_one({"application_id": str(app_doc["_id"])})
+            cand = await tdb_for(org_id).candidates.find_one({"application_id": str(app_doc["_id"])})
             if cand:
                 results = await _candidacy_results_band(
                     title, str(cand["_id"]), org_id, request)
@@ -4404,7 +4506,8 @@ async def verify_certificate(certificate_id: str, request: Request):
     """
     await _check_rate_limit(request, bucket="verify_cert", limit=30, window_s=60,
                             message="Too many requests. Please try again shortly.")
-    cert = await db.certificates.find_one({"certificate_id": certificate_id})
+    # The one deliberately cross-tenant read: the certificate id identifies the issuing tenant.
+    cert = await cross_tenant(db).certificates.find_one({"certificate_id": certificate_id})
     if not cert:
         raise HTTPException(404, "Certificate not found.")
     if cert.get("revoked"):
@@ -4412,8 +4515,8 @@ async def verify_certificate(certificate_id: str, request: Request):
     # Certificates issued before the organisation name was configured stored it
     # empty; fall back to the org's current branding (name only, nothing else).
     org_name = cert.get("org_name", "")
-    if not org_name:
-        b = await db.settings.find_one({"name": "branding", "org_id": cert.get("org_id")}) or {}
+    if not org_name and cert.get("org_id"):
+        b = await tdb_for(cert["org_id"]).settings.find_one({"name": "branding"}) or {}
         org_name = b.get("org_name", "")
     return {
         "verified": True,
@@ -4439,16 +4542,16 @@ async def resend_candidate_status_link(student_id: str, request: Request):
     # comparison for a student_id typed differently than it was stored.
     student_id_canon = normalize_student_id(student_id)
     any_token = (
-        await db.candidate_tokens.find_one(org_query(request, {"round_id": round_id, "student_id": student_id}))
-        or await db.candidate_tokens.find_one(org_query(request, {
+        await tdb(request).candidate_tokens.find_one({"round_id": round_id, "student_id": student_id})
+        or await tdb(request).candidate_tokens.find_one({
             "round_id": round_id,
             "student_id": {"$regex": f"^{re.escape(student_id_canon)}$", "$options": "i"},
-        }))
+        })
     )
     if not any_token:
         raise HTTPException(404, "This student has no candidacy this round.")
 
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     phones = (voter or {}).get("phone_numbers") or []
     if not phones:
         raise HTTPException(400, "This student has no phone number on file.")
@@ -4456,7 +4559,7 @@ async def resend_candidate_status_link(student_id: str, request: Request):
     # A still-valid link is re-sent as is (and its expiry extended); an expired or
     # revoked one is replaced with a fresh link.
     token_doc = await _get_or_create_status_token(any_token["student_id"], round_id, request.state.org_id)
-    await db.candidate_tokens.update_one(
+    await tdb(request).candidate_tokens.update_one(
         {"token": token_doc["token"]},
         {"$set": {"expires_at": datetime.utcnow() + timedelta(days=STATUS_LINK_TTL_DAYS)}})
     await send_sms(
@@ -4476,8 +4579,8 @@ async def revoke_candidate_status_link(student_id: str, request: Request):
     is issued the next time "Resend status link" is used."""
     round_id = await current_round_id(request)
     student_id_canon = normalize_student_id(student_id)
-    res = await db.candidate_tokens.update_many(
-        org_query(request, {"round_id": round_id, "student_id": {"$regex": f"^{re.escape(student_id_canon)}$", "$options": "i"}}),
+    res = await tdb(request).candidate_tokens.update_many(
+        {"round_id": round_id, "student_id": {"$regex": f"^{re.escape(student_id_canon)}$", "$options": "i"}},
         {"$set": {"revoked": True}})
     if res.matched_count == 0:
         raise HTTPException(404, "This student has no status link this round.")
@@ -4493,7 +4596,7 @@ async def revoke_candidate_status_link(student_id: str, request: Request):
 @app.post("/verify-admin")
 async def verify_admin(data: AdminLoginCheck, request: Request):
     email_key = data.email.strip().lower()
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     ip = real_client_ip(request)
 
     await enforce_login_rate_limit(email_key, org_id, ip)
@@ -4534,11 +4637,15 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
             "message": "Superadmin bypass active."
         }
 
+    # Every role below belongs to exactly one organization. Only the superadmin (above) may sign in
+    # without X-Org-Slug; without this, a header-less login would search every client's staff.
+    require_org(request.state.org_id)
+
     # ── IT Admin ──
-    it_admin = await db.voters.find_one(org_query(request, {
+    it_admin = await tdb(request).voters.find_one({
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_it_admin": True
-    }))
+    })
     if it_admin:
         stored_hash = it_admin.get("it_admin_password_hash", "")
         if not await verify_password_async(data.password, stored_hash):
@@ -4559,10 +4666,10 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         }
 
     # ── Financial Controller ──
-    financial_controller = await db.voters.find_one(org_query(request, {
+    financial_controller = await tdb(request).voters.find_one({
         "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_financial_controller": True
-    }))
+    })
     if financial_controller:
         stored_hash = financial_controller.get("financial_controller_password_hash", "")
         if not await verify_password_async(data.password, stored_hash):
@@ -4584,10 +4691,10 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         }
 
     # ── Overseer ──
-    overseer = await db.voters.find_one(org_query(request, {
+    overseer = await tdb(request).voters.find_one({
         "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_overseer": True
-    }))
+    })
     if overseer:
         stored_hash = overseer.get("overseer_password_hash", "")
         if not await verify_password_async(data.password, stored_hash):
@@ -4610,10 +4717,10 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     # ── Vetting Panel ──
     # Panel members live in panel_members (not voters), so externals (non-members)
     # can log in here without a voter row. Same timing-safe shape as the others.
-    panelist = await db.panel_members.find_one(org_query(request, {
+    panelist = await tdb(request).panel_members.find_one({
         "email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "active": True,
-    }))
+    })
     if panelist:
         stored_hash = panelist.get("password_hash", "")
         if not await verify_password_async(data.password, stored_hash):
@@ -4643,10 +4750,10 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         }
 
     # ── Commissioner ──
-    commissioner = await db.voters.find_one(org_query(request, {
+    commissioner = await tdb(request).voters.find_one({
         "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_commissioner": True
-    }))
+    })
     if not commissioner:
         # SECURITY: this used to be a 404 while every other "wrong
         # credentials" branch above returns 401 — a status-code oracle that
@@ -4698,7 +4805,7 @@ async def admin_logout(request: Request):
 @app.post("/admin/toggle-election")
 async def toggle_election(request: Request, data: ElectionToggle | None = None,
                           admin: dict = Depends(require_role("superadmin"))):
-    current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    current    = await tdb(request).settings.find_one({"name": "election_config"})
     new_status = not (current.get("is_open", True) if current else True)
     now        = datetime.utcnow()
     schedule   = await get_phase_schedule(request)
@@ -4743,8 +4850,8 @@ async def toggle_election(request: Request, data: ElectionToggle | None = None,
             "timezone": schedule["timezone"],
         })
 
-    await db.settings.update_one(
-        org_query(request, {"name": "election_config"}),
+    await tdb(request).settings.update_one(
+        {"name": "election_config"},
         {"$set": org_stamp(request, {"is_open": new_status, "name": "election_config"})},
         upsert=True
     )
@@ -4788,15 +4895,15 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
     # Refuse to wipe a certified election. The UI already disables the button
     # when is_certified is true, but a disabled button is not an access
     # control — the endpoint has to enforce it too.
-    config = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    config = await tdb(request).settings.find_one({"name": "election_config"})
     if (config or {}).get("is_certified"):
         raise HTTPException(400, "Certified results cannot be reset. Revoke certification first.")
     # Safety snapshot BEFORE anything is deleted. If it cannot be uploaded to B2 the
-    # reset aborts — it never continues without a backup. With no X-Org-Slug,
-    # org_query() is unscoped and this reset touches every tenant, so snapshot all.
+    # reset aborts — it never continues without a backup. A reset only ever touches the caller's
+    # own tenant: a missing X-Org-Slug is rejected, there is no "reset every tenant" mode.
+    org_id = require_org(request.state.org_id)
     try:
-        await backup.snapshot_before_destructive(
-            db, request.state.org_id, "reset-election", all_tenants=request.state.org_id is None)
+        await backup.snapshot_before_destructive(db, org_id, "reset-election")
     except Exception as e:
         logger.error(f"reset-election aborted: pre-reset snapshot failed: {e}")
         await backup.send_alert(
@@ -4804,23 +4911,23 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
             f"An election reset was requested by {current_actor(request)} but the safety snapshot "
             f"could not be uploaded, so nothing was deleted.\n\nError: {e}")
         raise HTTPException(503, "Reset aborted: the safety backup could not be uploaded, so nothing was deleted.")
-    await db.otps.delete_many(org_query(request))
+    await tdb(request).otps.delete_many({})
     # New limiter state belongs to this election run only (the roster_ledger is append-only and is kept).
-    _kf = {} if request.state.org_id is None else {"key": {"$regex": f"^{re.escape(request.state.org_id)}:otp:"}}
+    _kf = {"key": {"$regex": f"^{re.escape(org_id)}:otp:"}}
     await db.otp_send_state.delete_many(_kf)
     await db.otp_guess_state.delete_many(_kf)
-    await db.sms_usage.delete_many({} if request.state.org_id is None else {"org_key": request.state.org_id})
+    await db.sms_usage.delete_many({"org_key": org_id})
     await db.ip_send_stats.delete_many({})
-    await db.contact_changes.delete_many(org_query(request))
+    await tdb(request).contact_changes.delete_many({})
     await _save_security(request, {"freeze_lifted_at": datetime.utcnow(), "epoch_at": datetime.utcnow()})
     await append_ledger(request.state.org_id, "election_reset", "election", current_actor(request),
                         current_role(request), {"note": "roster freeze lifted; caps and quotas restart"})
-    await db.voters.update_many(org_query(request), {"$set": {"has_voted": False, "last_status": "idle"}})
-    await db.candidates.update_many(org_query(request), {"$set": {"votes": 0}})
+    await tdb(request).voters.update_many({}, {"$set": {"has_voted": False, "last_status": "idle"}})
+    await tdb(request).candidates.update_many({}, {"$set": {"votes": 0}})
     # votes now live in vote_events, not candidates.votes — without this, a
     # reset (used for testing/re-runs) would leave stale events behind and
     # the next election's tally would include last time's votes.
-    await db.vote_events.delete_many(org_query(request))
+    await tdb(request).vote_events.delete_many({})
     # If this election was ever checkpointed, those checkpoints now
     # reference _id ranges that no longer exist — verify_audit_chain would
     # report the chain permanently invalid, a false alarm, not real
@@ -4838,15 +4945,15 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
 
 @app.post("/admin/toggle-certification")
 async def toggle_certification(request: Request, admin: dict = Depends(require_chief_commissioner)):
-    current    = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    current    = await tdb(request).settings.find_one({"name": "election_config"})
     new_status = not (current.get("is_certified", False) if current else False)
     # "Stop the election before certifying" used to live only in the dashboards. Certified results
     # also block voting (assert_voting_allowed), so certifying an open election was a way to end
     # voting early with no reason on record. Enforce it here; revoking is always allowed.
     if new_status and (current.get("is_open", True) if current else True):
         raise HTTPException(400, "Stop the election before certifying results.")
-    await db.settings.update_one(
-        org_query(request, {"name": "election_config"}),
+    await tdb(request).settings.update_one(
+        {"name": "election_config"},
         {"$set": {"is_certified": new_status}},
         upsert=True
     )
@@ -5047,7 +5154,7 @@ def _normalize_phone_field(raw_phone_field: str, sid: str, row_num: int, warning
 async def get_voter_fields(request: Request) -> dict:
     """Per-org optional voter attributes (gender, programme, any custom field), each switchable.
     {"fields": [{key,label,standard,enabled,public}], "min_group_size": int}."""
-    doc = await db.settings.find_one(org_query(request, {"name": "voter_fields"})) or {}
+    doc = await tdb(request).settings.find_one({"name": "voter_fields"}) or {}
     lo, hi = MIN_GROUP_RANGE
     k = doc.get("min_group_size")
     return {"fields": merge_voter_fields(doc.get("fields")),
@@ -5127,7 +5234,7 @@ def _parse_voter_csv(content: bytes, fields: list[dict] | None = None, roster_id
 
 
 async def _roster_ids(request: Request) -> list[str]:
-    return [normalize_student_id(i) for i in await db.voters.distinct("student_id", org_query(request)) if i]
+    return [normalize_student_id(i) for i in await tdb(request).voters.distinct("student_id", org_query(request)) if i]
 
 
 _NEW_VOTER_DEFAULTS = {
@@ -5148,9 +5255,9 @@ async def _diff_roster(request: Request, rows: dict, enabled_keys=frozenset()) -
     Voter attributes (enabled_keys only): filling an EMPTY value is never a "change" (returned in
     attr_fills, applied automatically); only overwriting a different existing value shows up as changed."""
     existing = {}
-    async for v in db.voters.find(org_query(request)):
+    async for v in tdb(request).voters.find({}):
         existing[normalize_student_id(v.get("student_id", ""))] = v
-    applicants = set(await db.applications.distinct("student_id", org_query(request)))
+    applicants = set(await tdb(request).applications.distinct("student_id", org_query(request)))
 
     new, changed, unchanged, missing, attr_fills = [], [], 0, [], []
     for sid, r in rows.items():
@@ -5254,7 +5361,7 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
                                  "check the columns you matched and the header row.")
     diff = await _diff_roster(request, parsed["rows"], enabled)
     preview_id = secrets.token_urlsafe(16)
-    await db.voter_import_previews.insert_one({
+    await tdb(request).voter_import_previews.insert_one({
         "preview_id": preview_id, "org_id": request.state.org_id, "created_by": current_actor(request),
         "created_at": datetime.utcnow(), "rows": list(parsed["rows"].values()),
     })
@@ -5292,9 +5399,9 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
             or any(v not in ("apply", "skip") for v in data.changed_overrides.values())
             or any(v not in ("keep", "remove") for v in data.missing_overrides.values())):
         raise HTTPException(400, "Invalid import action.")
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     # Only the admin who uploaded the file can apply its preview.
-    prev = await db.voter_import_previews.find_one(
+    prev = await tdb(request).voter_import_previews.find_one(
         {"preview_id": data.preview_id, "org_id": org_id, "created_by": current_actor(request)})
     if not prev:
         raise HTTPException(404, "This import preview expired. Upload the file again.")
@@ -5353,12 +5460,12 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
             to_remove.append(m["actual_id"])
 
     if ops:
-        await db.voters.bulk_write(ops, ordered=False)
+        await tdb(request).voters.bulk_write(ops, ordered=False)
     removed = 0
     if to_remove:
-        res = await db.voters.delete_many(org_query(request, {"student_id": {"$in": to_remove}, "has_voted": {"$ne": True}}))
+        res = await tdb(request).voters.delete_many({"student_id": {"$in": to_remove}, "has_voted": {"$ne": True}})
         removed = res.deleted_count
-    await db.voter_import_previews.delete_one({"preview_id": data.preview_id})
+    await tdb(request).voter_import_previews.delete_one({"preview_id": data.preview_id})
 
     summary = {"added": added, "updated": updated, "skipped_changes": skipped_changed, "removed": removed,
                "blocked_removals": len(blocked), "staff_changes_skipped": staff_skipped, "phone_mode": data.phone_mode,
@@ -5384,7 +5491,7 @@ async def import_voters(request: Request, file: UploadFile = File(...), admin: d
          "$setOnInsert": dict(_NEW_VOTER_DEFAULTS)},
         upsert=True) for r in parsed["rows"].values()]
     if ops:
-        await db.voters.bulk_write(ops, ordered=False)
+        await tdb(request).voters.bulk_write(ops, ordered=False)
     await log_action("voters_imported", current_actor(request), {
         "count": len(ops), "skipped": parsed["skipped"], "warning_count": len(parsed["warnings"])
     }, org_id=request.state.org_id)
@@ -5476,7 +5583,7 @@ async def list_admin_voters(request: Request, q: str = "", page: int = 1, page_s
         clauses.append({"$or": [{"phone_numbers": {"$exists": False}}, {"phone_numbers": {"$size": 0}}]})
     if clauses:
         query["$and"] = clauses
-    total = await db.voters.count_documents(query)
+    total = await tdb(request).voters.count_documents(query)
     skip = (page - 1) * page_size
     if skip >= total and total:
         page = max(1, math.ceil(total / page_size))
@@ -5485,7 +5592,7 @@ async def list_admin_voters(request: Request, q: str = "", page: int = 1, page_s
     enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
     results = []
     projection = _admin_voter_projection(role)
-    async for v in db.voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)]).skip(skip).limit(page_size):
+    async for v in tdb(request).voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)]).skip(skip).limit(page_size):
         attrs = {k: v.get("attrs", {}).get(k, "") for k in enabled if v.get("attrs", {}).get(k, "") != ""}
         row = {"full_name": v.get("full_name", ""), "student_id": v.get("student_id", ""),
                "phone_numbers": [_mask_phone(p) for p in v.get("phone_numbers", [])], "attrs": attrs}
@@ -5504,7 +5611,7 @@ async def get_all_voters(request: Request, admin: dict = Depends(require_role("i
     fields = await get_voter_fields(request)
     enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
     voters = []
-    async for v in db.voters.find(org_query(request), projection):
+    async for v in tdb(request).voters.find({}, projection):
         row = {"full_name": v.get("full_name", ""), "student_id": v.get("student_id", ""),
                "phone_numbers": [_mask_phone(p) for p in v.get("phone_numbers", [])],
                "attrs": {k: v.get("attrs", {}).get(k, "") for k in enabled if v.get("attrs", {}).get(k, "") != ""}}
@@ -5529,16 +5636,16 @@ async def set_new_password(data: SetNewPassword, request: Request):
             raise HTTPException(403, "You can only change your own password.")
 
     # Try IT admin first
-    it_admin = await db.voters.find_one(org_query(request, {
+    it_admin = await tdb(request).voters.find_one({
         "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_it_admin": True
-    }))
+    })
     if it_admin:
         _assert_self(it_admin)
         if not await verify_password_async(data.old_password, it_admin.get("it_admin_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
-        await db.voters.update_one(
+        await tdb(request).voters.update_one(
             {"_id": it_admin["_id"]},
             {"$set": {
                 "it_admin_password_hash":        hash_password(data.new_password),
@@ -5551,16 +5658,16 @@ async def set_new_password(data: SetNewPassword, request: Request):
         return {"status": "password_updated"}
 
     # Try Financial Controller
-    financial_controller = await db.voters.find_one(org_query(request, {
+    financial_controller = await tdb(request).voters.find_one({
         "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_financial_controller": True
-    }))
+    })
     if financial_controller:
         _assert_self(financial_controller)
         if not await verify_password_async(data.old_password, financial_controller.get("financial_controller_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
-        await db.voters.update_one(
+        await tdb(request).voters.update_one(
             {"_id": financial_controller["_id"]},
             {"$set": {
                 "financial_controller_password_hash":        hash_password(data.new_password),
@@ -5573,16 +5680,16 @@ async def set_new_password(data: SetNewPassword, request: Request):
         return {"status": "password_updated"}
 
     # Try Overseer
-    overseer = await db.voters.find_one(org_query(request, {
+    overseer = await tdb(request).voters.find_one({
         "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_overseer": True
-    }))
+    })
     if overseer:
         _assert_self(overseer)
         if not await verify_password_async(data.old_password, overseer.get("overseer_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
-        await db.voters.update_one(
+        await tdb(request).voters.update_one(
             {"_id": overseer["_id"]},
             {"$set": {
                 "overseer_password_hash":        hash_password(data.new_password),
@@ -5595,10 +5702,10 @@ async def set_new_password(data: SetNewPassword, request: Request):
         return {"status": "password_updated"}
 
     # Try Vetting Panel member (panel_members; no voter row for externals)
-    panelist = await db.panel_members.find_one(org_query(request, {
+    panelist = await tdb(request).panel_members.find_one({
         "email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "active": True,
-    }))
+    })
     if panelist:
         # Same self-only rule as _assert_self, keyed by panel_member_id (no student_id here).
         if admin.get("role") != "superadmin" and panelist["panel_member_id"] != admin.get("sub"):
@@ -5606,7 +5713,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
         if not await verify_password_async(data.old_password, panelist.get("password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
-        await db.panel_members.update_one(
+        await tdb(request).panel_members.update_one(
             {"_id": panelist["_id"]},
             {"$set": {
                 "password_hash": hash_password(data.new_password),
@@ -5620,16 +5727,16 @@ async def set_new_password(data: SetNewPassword, request: Request):
         return {"status": "password_updated"}
 
     # Try commissioner
-    commissioner = await db.voters.find_one(org_query(request, {
+    commissioner = await tdb(request).voters.find_one({
         "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
         "is_commissioner": True
-    }))
+    })
     if commissioner:
         _assert_self(commissioner)
         if not await verify_password_async(data.old_password, commissioner.get("commissioner_password_hash", "")):
             raise HTTPException(401, "Current password is incorrect.")
         _assert_password_strength(data.new_password)
-        await db.voters.update_one(
+        await tdb(request).voters.update_one(
             {"_id": commissioner["_id"]},
             {"$set": {
                 "commissioner_password_hash":        hash_password(data.new_password),
@@ -5648,7 +5755,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 @app.post("/candidates")
 async def add_candidate(candidate: CandidateCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
     candidate.name = normalize_name(candidate.name)
-    result = await db.candidates.insert_one(org_stamp(request, candidate.dict()))
+    result = await tdb(request).candidates.insert_one(candidate.dict())
     await log_action("candidate_added", current_actor(request), {
         "name": candidate.name, "position": candidate.position
     }, org_id=request.state.org_id)
@@ -5665,7 +5772,7 @@ async def update_candidate(candidate_id: str, data: dict, request: Request, admi
     }
     if data.get("image_url"):
         upd["image_url"] = data["image_url"]
-    await db.candidates.update_one(org_query(request, {"_id": oid}), {"$set": upd})
+    await tdb(request).candidates.update_one({"_id": oid}, {"$set": upd})
     await log_action("candidate_updated", current_actor(request), {
         "candidate_id": candidate_id, "name": upd.get("name"), "position": upd.get("position")
     }, org_id=request.state.org_id)
@@ -5675,8 +5782,8 @@ async def update_candidate(candidate_id: str, data: dict, request: Request, admi
 @app.delete("/candidates/{candidate_id}")
 async def delete_candidate(candidate_id: str, request: Request, admin: dict = Depends(require_role("superadmin"))):
     oid = parse_oid(candidate_id, "candidate id")
-    doomed = await db.candidates.find_one(org_query(request, {"_id": oid}))
-    await db.candidates.delete_one(org_query(request, {"_id": oid}))
+    doomed = await tdb(request).candidates.find_one({"_id": oid})
+    await tdb(request).candidates.delete_one({"_id": oid})
     await log_action("candidate_deleted", current_actor(request), {
         "candidate_id": candidate_id,
         "name": (doomed or {}).get("name", ""),
@@ -5690,7 +5797,7 @@ async def delete_candidate(candidate_id: str, request: Request, admin: dict = De
 @app.get("/admin/applications")
 async def list_applications(request: Request, status: str = None):
     role = current_role(request)
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     query = org_query(request)
     if status:
         query["status"] = status
@@ -5704,7 +5811,7 @@ async def list_applications(request: Request, status: str = None):
     active_keys = await _active_panel_keys(org_id)
     panel_count = await get_panel_count(org_id)
     apps = []
-    async for a in db.applications.find(query).sort("submitted_at", -1):
+    async for a in tdb(request).applications.find(query).sort("submitted_at", -1):
         a["_id"] = str(a["_id"])
         a["edit_history"] = _application_edit_history(a)   # one shape for old and new corrections
         a.pop("reg_no_history", None)
@@ -5720,6 +5827,48 @@ async def list_applications(request: Request, status: str = None):
     apps.sort(key=lambda x: (x.get("position_order", 0), -x["submitted_at"].timestamp() if x.get("submitted_at") else 0))
     return apps
 
+@app.get("/admin/applications/{app_id}/nomination-form")
+async def get_application_nomination_form(
+        app_id: str, request: Request,
+        admin: dict = Depends(require_role("vetting", "superadmin", "overseer", "commission"))):
+    """N3: a short-lived signed link to the applicant's signed nomination form. The panel needs it to vet;
+    commissioners only once the application is resolved (same rule as list_applications). Every issued link is
+    audited, because panelists are told their views are confidential. Nothing here returns a storage key."""
+    role = current_role(request)
+    oid = parse_oid(app_id, "application id")
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if role == "commission" and app_doc.get("status", "pending") not in RESOLVED_STATUSES:
+        raise HTTPException(403, "Not authorized for this action.")
+    nf = app_doc.get("nomination_form")
+    if not isinstance(nf, dict) or not nf.get("upload_id"):
+        raise HTTPException(404, "No nomination form was submitted with this application.")
+    rec = await tdb(request).nomination_uploads.find_one({"upload_id": nf["upload_id"], "status": "attached"})
+    if not rec:
+        raise HTTPException(404, "The nomination form file could not be found.")
+    if not nomination_storage.is_configured():
+        await alert_critical("Nomination form storage not configured",
+                             f"Staff read-back failed. Missing: {', '.join(nomination_storage.missing_settings())}\n"
+                             f"Org: {request.state.org_id}")
+        raise HTTPException(503, "Form viewing is temporarily unavailable. Please try again later.")
+    try:
+        url = await run_in_threadpool(nomination_storage.presigned_get_url, rec["key"], rec.get("filename", ""))
+    except Exception as e:
+        logger.error(f"Nomination form link failed: {type(e).__name__}: {e}")
+        await alert_critical("Nomination form storage failing", f"{type(e).__name__}: {e}\nOrg: {request.state.org_id}")
+        raise HTTPException(502, "Could not open the form. Please try again.")
+    viewer = (getattr(request.state, "admin", None) or {})
+    await log_action("nomination_form_viewed", current_actor(request), {
+        "application_id": app_id, "role": role,
+        **({"viewed_by_superadmin": viewer.get("viewer")} if viewer.get("view_only") else {}),
+    }, org_id=request.state.org_id)
+    return JSONResponse(
+        content={"url": url, "filename": rec.get("filename", "nomination-form"), "kind": rec.get("kind"),
+                 "bytes": rec.get("bytes"), "expires_in": nomination_storage.PRESIGN_SECONDS},
+        headers={"Cache-Control": "no-store"})
+
+
 # =============================================================================
 # COMMISSION ROUTES  (voting — requires commission login)
 # =============================================================================
@@ -5727,7 +5876,7 @@ async def list_applications(request: Request, status: str = None):
 @app.get("/admin/vetting-me")
 async def vetting_me(request: Request, admin: dict = Depends(require_role("vetting"))):
     """The signed-in panelist's own status: access end and the confidentiality gate (guide 6.4)."""
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": admin.get("sub"), "active": True}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": admin.get("sub"), "active": True})
     if not p:
         raise HTTPException(403, "You are not an active member of the Vetting Panel.")
     end = await _panel_access_end(request, p)
@@ -5745,10 +5894,10 @@ async def vetting_me(request: Request, admin: dict = Depends(require_role("vetti
 
 @app.post("/admin/vetting-confidentiality/accept")
 async def accept_confidentiality(request: Request, admin: dict = Depends(require_role("vetting"))):
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": admin.get("sub"), "active": True}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": admin.get("sub"), "active": True})
     if not p:
         raise HTTPException(403, "You are not an active member of the Vetting Panel.")
-    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": {
+    await tdb(request).panel_members.update_one({"_id": p["_id"]}, {"$set": {
         "confidentiality_accepted_at": datetime.utcnow(),
         "confidentiality_version": CONFIDENTIALITY_VERSION}})
     await log_action("vetting_confidentiality_accepted", p["panel_member_id"],
@@ -5763,7 +5912,7 @@ async def vetting_outcomes(request: Request, admin: dict = Depends(require_role(
     def iso(v):
         return v.isoformat() if hasattr(v, "isoformat") else v
     rows = []
-    async for a in db.applications.find(org_query(request, {"status": {"$in": list(RESOLVED_STATUSES)}})).sort("submitted_at", -1):
+    async for a in tdb(request).applications.find({"status": {"$in": list(RESOLVED_STATUSES)}}).sort("submitted_at", -1):
         title = ""
         if a.get("position_id"):
             title, _ = await _resolve_position_title(a["position_id"], request.state.org_id)
@@ -5789,7 +5938,7 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
         raise HTTPException(400, "Vote must be 'approve' or 'deny'.")
 
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in RESOLVED_STATUSES:
@@ -5814,15 +5963,15 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
 
     is_also_commissioner = False
     if panelist.get("student_id"):
-        is_also_commissioner = bool(await db.voters.find_one(org_query(request, {
-            **get_forgiving_filter(panelist["student_id"]), "is_commissioner": True})))
+        is_also_commissioner = bool(await tdb(request).voters.find_one({
+            **get_forgiving_filter(panelist["student_id"]), "is_commissioner": True}))
 
     # Atomic: only record the vote while the application is still open and this panelist has not voted. A
     # concurrent resolution or a double submit changes nothing and is reported, instead of writing a vote
     # onto a resolved application. The audit row is written only once the vote is actually stored.
-    written = await db.applications.update_one(
-        org_query(request, {"_id": oid, "status": {"$nin": list(RESOLVED_STATUSES)},
-                            f"votes.{key}": {"$exists": False}}),
+    written = await tdb(request).applications.update_one(
+        {"_id": oid, "status": {"$nin": list(RESOLVED_STATUSES)},
+                            f"votes.{key}": {"$exists": False}},
         {"$set": {f"votes.{key}": data.vote}}
     )
     if written.matched_count == 0:
@@ -5831,10 +5980,10 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
         "app_id": app_id, "vote": data.vote, "reason": data.reason,
         "is_member": bool(panelist.get("is_member")), "also_commissioner": is_also_commissioner,
     }, org_id=request.state.org_id)
-    updated = await db.applications.find_one(org_query(request, {"_id": oid}))
+    updated = await tdb(request).applications.find_one({"_id": oid})
     await _resolve_application(app_id, updated, request.state.org_id)
 
-    final = await db.applications.find_one(org_query(request, {"_id": oid}))
+    final = await tdb(request).applications.find_one({"_id": oid})
     shaped = shape_application_for_role(
         final, "vetting", actor_key=key, active_keys=await _active_panel_keys(request.state.org_id),
         panel_count=await get_panel_count(request.state.org_id))
@@ -5849,21 +5998,21 @@ async def panel_tie_break(app_id: str, data: TieBreakDecision, request: Request,
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
 
     panelist = await _acting_panelist(request, admin)
     chair = None
     if panelist.get("student_id"):
-        chair = await db.voters.find_one(org_query(request, {
-            **get_forgiving_filter(panelist["student_id"]), "is_chief_commissioner": True}))
+        chair = await tdb(request).voters.find_one({
+            **get_forgiving_filter(panelist["student_id"]), "is_chief_commissioner": True})
     if not chair:
         raise HTTPException(403, "Only the Chairperson can break a tie.")
     if panelist.get("student_id") and normalize_student_id(panelist["student_id"]) == normalize_student_id(app_doc.get("student_id") or ""):
         raise HTTPException(403, "The Chairperson cannot break a tie on their own application.")
 
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     await assert_phase_open(request, "vetting")
     if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("finance_cleared"):
         raise HTTPException(409, "This application is not waiting for a tie-break.")
@@ -5901,13 +6050,13 @@ async def superadmin_set_final_reason(app_id: str, data: FinalReasonUpdate, requ
     """Guide 13.2 (H2): an optional reason on a denied or removed application. Shown to commissioners
     in the outcome feed; per-panelist comments are never shown."""
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") not in ("denied", "removed"):
         raise HTTPException(409, "A final reason applies to denied or removed applications.")
     reason = (data.reason or "").strip() or None
-    await db.applications.update_one(org_query(request, {"_id": oid}), {"$set": {"final_reason": reason}})
+    await tdb(request).applications.update_one({"_id": oid}, {"$set": {"final_reason": reason}})
     await log_action("application_final_reason_set", current_actor(request), {"app_id": app_id},
                      org_id=request.state.org_id)
     return {"status": "saved", "final_reason": reason}
@@ -5926,7 +6075,7 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
         raise HTTPException(400, "Vote must be 'approve' (remove) or 'deny' (keep).")
 
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") != "approved":
@@ -5934,10 +6083,10 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
 
     bind_identity(request, data.commissioner_id, "commissioner account")
 
-    commissioner = await db.voters.find_one(org_query(request, {
+    commissioner = await tdb(request).voters.find_one({
         **get_forgiving_filter(data.commissioner_id),
         "is_commissioner": True
-    }))
+    })
     if not commissioner:
         raise HTTPException(403, "Not a registered commissioner.")
 
@@ -5946,26 +6095,20 @@ async def commissioner_vote_remove(app_id: str, data: CommissionerVote, request:
     }, org_id=request.state.org_id)
 
     safe_key = _vote_key(data.commissioner_id)
-    await db.applications.update_one(
-        org_query(request, {"_id": oid}),
+    await tdb(request).applications.update_one(
+        {"_id": oid},
         {"$set": {f"removal_votes.{safe_key}": data.vote}}
     )
 
-    updated = await db.applications.find_one(org_query(request, {"_id": oid}))
+    updated = await tdb(request).applications.find_one({"_id": oid})
     await _resolve_removal(app_id, updated, request.state.org_id)
 
     return {"status": "removal_vote_recorded"}
 
 
-@app.post("/admin/applications/{app_id}/finance-clear")
-async def finance_clear_application(app_id: str, data: FinanceClear, request: Request):
-    """
-    The Financial Controller verifies the candidate's payment and clears the
-    application for voting. No commissioner can cast a vote on this application
-    until this is done, and no commissioner can do it for them.
-    """
+async def _finance_clear_application_core(app_id: str, data: FinanceClear, request: Request, fc: dict) -> dict:
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("approved", "denied", "removed"):
@@ -5973,24 +6116,14 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
-    fc = await require_payment_controller(request, data.financial_controller_id, "clear")
     fc_id = fc["student_id"]
     note = data.reason.strip()
-
-    # Atomic guard: fold the "not already cleared / not already resolved"
-    # check into the update filter itself instead of trusting the read
-    # above. Two near-simultaneous clear requests (a double-click, or a
-    # retry) would otherwise both pass the earlier read-based check and
-    # both write — this keeps finance_cleared_by/at accurate to whoever's
-    # write actually won, and matches the guard pattern used everywhere
-    # else in this file (see _resolve_application, _resolve_removal, and
-    # financial_controller_decide_student_change).
-    result = await db.applications.update_one(
-        org_query(request, {
+    result = await tdb(request).applications.update_one(
+        {
             "_id": oid,
             "finance_cleared": {"$ne": True},
             "status": {"$nin": ["approved", "denied", "removed"]},
-        }),
+        },
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": fc_id,
@@ -6004,10 +6137,6 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
                      {"app_id": app_id, **_payment_audit(app_doc, fc), **({"reason": note} if note else {})},
                      org_id=request.state.org_id)
 
-    # Nomination/vetting date comes from the "vetting" phase on the admin Timeline, not a
-    # hardcoded string, so it always matches whatever dates are actually configured this round.
-    # Shown in the org's election timezone (same convention as assert_phase_open's _when()) —
-    # the raw UTC value alone can read as the wrong calendar day/time to the applicant.
     schedule = await get_phase_schedule(request)
     vetting_start = schedule["phases"]["vetting"]["start"]
     when = None
@@ -6026,6 +6155,13 @@ async def finance_clear_application(app_id: str, data: FinanceClear, request: Re
     return {"status": "finance_cleared"}
 
 
+@app.post("/admin/applications/{app_id}/finance-clear")
+async def finance_clear_application(app_id: str, data: FinanceClear, request: Request):
+    """The Financial Controller verifies payment; the demo uses this same core business path."""
+    fc = await require_payment_controller(request, data.financial_controller_id, "clear")
+    return await _finance_clear_application_core(app_id, data, request, fc)
+
+
 @app.post("/admin/applications/{app_id}/finance-reject")
 async def finance_reject_application(app_id: str, data: FinanceReject, request: Request):
     """
@@ -6037,7 +6173,7 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
         raise HTTPException(400, "A reason is required to reject an application.")
 
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("approved", "denied", "removed"):
@@ -6051,12 +6187,12 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
     # Same atomic-guard pattern as finance_clear_application: fold the
     # "not already cleared / not already resolved" check into the update
     # filter itself so a double-click or race can't double-write.
-    result = await db.applications.update_one(
-        org_query(request, {
+    result = await tdb(request).applications.update_one(
+        {
             "_id": oid,
             "finance_cleared": {"$ne": True},
             "status": {"$nin": ["approved", "denied", "removed"]},
-        }),
+        },
         {"$set": {
             "status": "denied",
             "finance_rejected": True,
@@ -6101,7 +6237,7 @@ async def finance_reverse_clearance(app_id: str, data: FinanceReverse, request: 
     """
     reason = _clean_reason(data.reason)
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in RESOLVED_STATUSES:
@@ -6115,9 +6251,9 @@ async def finance_reverse_clearance(app_id: str, data: FinanceReverse, request: 
     now = datetime.utcnow()
     prior_votes = dict(app_doc.get("votes") or {})
 
-    result = await db.applications.update_one(
-        org_query(request, {"_id": oid, "finance_cleared": True,
-                            "status": {"$nin": list(RESOLVED_STATUSES)}}),
+    result = await tdb(request).applications.update_one(
+        {"_id": oid, "finance_cleared": True,
+                            "status": {"$nin": list(RESOLVED_STATUSES)}},
         {"$set": {"finance_cleared": False, "votes": {}},
          "$unset": {"finance_cleared_by": "", "finance_cleared_at": "", "finance_clear_note": "",
                     "tied_pending_chief": ""},
@@ -6155,7 +6291,7 @@ async def finance_reinstate_application(app_id: str, data: FinanceReinstate, req
         raise HTTPException(400, "Target must be 'pending' or 'cleared'.")
     reason = _clean_reason(data.reason)
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") != "denied" or not app_doc.get("finance_rejected"):
@@ -6172,9 +6308,9 @@ async def finance_reinstate_application(app_id: str, data: FinanceReinstate, req
                   "finance_cleared": cleared}
     if cleared:
         set_fields.update({"finance_cleared_by": fc_id, "finance_cleared_at": now, "finance_clear_note": reason})
-    result = await db.applications.update_one(
-        org_query(request, {"_id": oid, "status": "denied", "finance_rejected": True,
-                            "superadmin_override": {"$ne": True}}),
+    result = await tdb(request).applications.update_one(
+        {"_id": oid, "status": "denied", "finance_rejected": True,
+                            "superadmin_override": {"$ne": True}},
         {"$set": set_fields,
          "$unset": {"finance_rejected_by": "", "finance_rejected_at": "", "finance_rejection_reason": "",
                     "decided_at": ""},
@@ -6213,8 +6349,8 @@ async def list_commissioners_for_admins(request: Request):
     addresses, since the roster is being widened to every admin role.
     """
     result = []
-    async for v in db.voters.find(
-        org_query(request, {"is_commissioner": True}),
+    async for v in tdb(request).voters.find(
+        {"is_commissioner": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1,
          "is_deputy_chief_commissioner": 1, "commissioner_role": 1},
     ):
@@ -6232,14 +6368,14 @@ async def get_commission_detailed_results(request: Request):
     anonymous data /election-results already exposes publicly, just grouped
     and enriched for commission use.
     """
-    total_voters = await db.voters.count_documents(org_query(request))
-    voted_count = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    total_voters = await tdb(request).voters.count_documents({})
+    voted_count = await tdb(request).voters.count_documents({"has_voted": True})
     vote_counts = await get_vote_counts(request)
     positions_by_id = {}
-    async for pos in db.positions.find(org_query(request)).sort("order", 1):
+    async for pos in tdb(request).positions.find({}).sort("order", 1):
         positions_by_id[str(pos["_id"])] = pos
     grouped: dict = {}
-    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+    async for cand in tdb(request).candidates.find({}).sort("order", 1):
         position_title = cand.get("position", "Unknown Position")
         grouped.setdefault(position_title, []).append(cand)
 
@@ -6366,6 +6502,145 @@ async def list_organizations():
 
 
 # =============================================================================
+# LEGACY (NO-TENANT) DATA CHECK  — superadmin only
+# =============================================================================
+# The app no longer creates or reads documents without an org_id. This finds any that still exist (from
+# before multi-tenancy) so the superadmin can assign them to the right organization or remove them.
+# It is the only code that deliberately queries for a missing org, and it never exposes their contents.
+# {"org_id": None} matches both a null and a missing field.
+LEGACY_TENANT_COLLECTIONS = [
+    "voters", "applications", "candidates", "positions", "settings", "student_changes", "contact_changes",
+    "exception_grants", "student_edit_audit", "audit_log", "candidate_tokens", "certificates",
+    "panel_members", "otps", "admin_otps", "nomination_uploads",
+    # Hash-chained / anchored with the org id: removable, but NEVER re-assigned (that would break verification).
+    "vote_events", "audit_checkpoints", "roster_ledger",
+]
+LEGACY_NO_ASSIGN = {"vote_events", "audit_checkpoints", "roster_ledger"}
+LEGACY_DELETE_CONFIRM = "DELETE LEGACY DATA"
+
+
+def _legacy_targets() -> dict:
+    """name -> (filter, assignable). The 'default' keys are what the old org-less code wrote for SMS counters
+    and OTP limiter state."""
+    t = {n: ({"org_id": None}, n not in LEGACY_NO_ASSIGN) for n in LEGACY_TENANT_COLLECTIONS}
+    t["audit_log"] = ({"org_id": None, "scope": {"$ne": "system"}}, True)   # system events are not legacy
+    t["sms_usage"] = ({"org_key": "default"}, True)
+    t["otp_send_state"] = ({"key": {"$regex": "^default:otp:"}}, False)    # expires on its own (48 h)
+    t["otp_guess_state"] = ({"key": {"$regex": "^default:otp:"}}, False)   # expires on its own (7 d)
+    return t
+
+
+async def _legacy_counts() -> list[dict]:
+    out = []
+    for name, (flt, assignable) in _legacy_targets().items():
+        n = await cross_tenant(db)[name].count_documents(flt)      # deliberately cross-tenant: finds ownerless rows
+        out.append({"name": name, "count": n, "assignable": assignable})
+    return out
+
+
+class LegacyAssign(BaseModel):
+    org_id: str
+    collections: list[str] = Field(default_factory=list)
+
+
+class LegacyDelete(BaseModel):
+    collections: list[str] = Field(default_factory=list)
+    confirm: str = ""
+
+
+def _legacy_pick(requested: list[str], counts: list[dict], *, assigning: bool) -> list[str]:
+    by_name = {c["name"]: c for c in counts}
+    unknown = [n for n in requested if n not in by_name]
+    if unknown:
+        raise HTTPException(400, f"Unknown collection(s): {', '.join(unknown)}")
+    picked = [n for n in requested if by_name[n]["count"] > 0]
+    if assigning:
+        blocked = [n for n in picked if not by_name[n]["assignable"]]
+        if blocked:
+            raise HTTPException(400, f"Cannot be assigned to an organization (remove instead): {', '.join(blocked)}")
+    if not picked:
+        raise HTTPException(400, "Nothing selected: choose at least one collection that has legacy data.")
+    return picked
+
+
+@app.get("/superadmin/legacy-data")
+async def legacy_data_check(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    counts = await _legacy_counts()
+    return {"total": sum(c["count"] for c in counts), "collections": counts}
+
+
+@app.post("/superadmin/legacy-data/assign")
+async def legacy_data_assign(data: LegacyAssign, request: Request,
+                             admin: dict = Depends(require_role("superadmin"))):
+    try:
+        oid = ObjectId(data.org_id)
+    except Exception:
+        raise HTTPException(400, "Invalid organization id.")
+    org = await db.organizations.find_one({"_id": oid}, {"slug": 1, "name": 1})
+    if not org:
+        raise HTTPException(404, "Organization not found.")
+    org_id = str(org["_id"])
+    counts = await _legacy_counts()
+    picked = _legacy_pick(data.collections, counts, assigning=True)
+    targets = _legacy_targets()
+    results = []
+    for name in picked:
+        flt = targets[name][0]
+        try:
+            if name == "sms_usage":
+                if await db.sms_usage.find_one({"org_key": org_id}, {"_id": 1}):
+                    raise DuplicateKeyError("target organization already has SMS usage counters")
+                r = await db.sms_usage.update_many(flt, {"$set": {"org_key": org_id}})
+            else:
+                r = await cross_tenant(db)[name].update_many(flt, {"$set": {"org_id": org_id}})   # claims ownerless rows
+            results.append({"name": name, "moved": r.modified_count})
+        except DuplicateKeyError as e:
+            # Some documents may already have moved before the clash; a re-check shows what is left.
+            results.append({"name": name, "moved": 0, "error":
+                            f"Clashes with data the organization already has ({str(e)[:120]}). Remove these instead, or fix the clash."})
+        except Exception as e:
+            logger.error(f"legacy assign {name} failed: {e}")
+            results.append({"name": name, "moved": 0, "error": "Could not be assigned (see server log)."})
+    invalidate_settings()
+    _invalidate_results()
+    moved = {r["name"]: r["moved"] for r in results if r["moved"]}
+    await log_action("legacy_data_assigned", current_actor(request),
+                     {"org_slug": org.get("slug"), "moved": moved,
+                      "failed": [r["name"] for r in results if r.get("error")]}, org_id=org_id)
+    return {"org_id": org_id, "results": results, "remaining": sum(c["count"] for c in await _legacy_counts())}
+
+
+@app.post("/superadmin/legacy-data/delete")
+async def legacy_data_delete(data: LegacyDelete, request: Request,
+                             admin: dict = Depends(require_role("superadmin"))):
+    if data.confirm != LEGACY_DELETE_CONFIRM:
+        raise HTTPException(400, f'Type "{LEGACY_DELETE_CONFIRM}" to confirm.')
+    counts = await _legacy_counts()
+    picked = _legacy_pick(data.collections, counts, assigning=False)
+    backed_up = set(backup.FULL_COLLECTIONS) | set(backup.APPEND_ONLY)
+    snapshot = None
+    if any(n in backed_up for n in picked):
+        # Same rule as reset-election: never delete without a safety copy; a failed upload aborts.
+        try:
+            snapshot = await backup.snapshot_legacy_data(db, "legacy-delete")
+        except Exception as e:
+            logger.error(f"legacy-data delete aborted: pre-delete snapshot failed: {e}")
+            raise HTTPException(503, "Delete aborted: the safety backup could not be uploaded, so nothing was deleted.")
+    targets = _legacy_targets()
+    deleted = {}
+    for name in picked:
+        r = await cross_tenant(db)[name].delete_many(targets[name][0])   # removes ownerless rows only
+        deleted[name] = r.deleted_count
+    invalidate_settings()
+    _invalidate_results()
+    # Deliberately not written to audit_log: an entry with no org would itself be new legacy data.
+    logger.warning(f"legacy data removed by {current_actor(request)}: {deleted}; safety snapshot: "
+                   f"{(snapshot or {}).get('prefix')}")
+    return {"deleted": deleted, "snapshot": (snapshot or {}).get("prefix"),
+            "remaining": sum(c["count"] for c in await _legacy_counts())}
+
+
+# =============================================================================
 # SUPERADMIN ROUTES  (instant overrides — no voting required)
 # =============================================================================
 
@@ -6373,7 +6648,7 @@ async def list_organizations():
 
 @app.get("/superadmin/branding")
 async def get_branding(request: Request):
-    doc = await db.settings.find_one(org_query(request, {"name": "branding"}))
+    doc = await tdb(request).settings.find_one({"name": "branding"})
     if not doc:
         return {
             "logo_url":            "",
@@ -6404,7 +6679,7 @@ async def get_branding(request: Request):
 # edit them without wiping them on every save, hence this authenticated twin.
 @app.get("/superadmin/branding-full")
 async def get_branding_full(request: Request, admin: dict = Depends(require_role("superadmin"))):
-    doc = await db.settings.find_one(org_query(request, {"name": "branding"})) or {}
+    doc = await tdb(request).settings.find_one({"name": "branding"}) or {}
     defaults = {
         "logo_url": "", "primary_color": "#003366", "accent_color": "#f1c40f",
         "org_name": "", "university_name": "", "university_logo_url": "",
@@ -6455,8 +6730,8 @@ def _clean_support_contacts(groups: list[dict]) -> list[dict]:
 async def save_branding(data: BrandingUpdate, request: Request):
     doc = data.dict()
     doc["support_contacts"] = _clean_support_contacts(data.support_contacts)
-    await db.settings.update_one(
-        org_query(request, {"name": "branding"}),
+    await tdb(request).settings.update_one(
+        {"name": "branding"},
         {"$set": org_stamp(request, {**doc, "name": "branding"})},
         upsert=True
     )
@@ -6478,7 +6753,7 @@ async def save_branding(data: BrandingUpdate, request: Request):
 async def add_position(data: PositionCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
     # Was reachable by ANY admin token (the path doesn't start with
     # /superadmin) — an Overseer could create or delete ballot positions.
-    result = await db.positions.insert_one(org_stamp(request, data.dict()))
+    result = await tdb(request).positions.insert_one(data.dict())
     await log_action("position_added", current_actor(request), {"title": data.title}, org_id=request.state.org_id)
     return {"id": str(result.inserted_id)}
 
@@ -6494,7 +6769,7 @@ async def update_position(position_id: str, data: PositionUpdate, request: Reque
             raise HTTPException(400, "Position title cannot be empty.")
     if not changes:
         raise HTTPException(400, "Nothing to update.")
-    res = await db.positions.update_one(org_query(request, {"_id": oid}), {"$set": changes})
+    res = await tdb(request).positions.update_one({"_id": oid}, {"$set": changes})
     if res.matched_count == 0:
         raise HTTPException(404, "Position not found.")
     await log_action("position_updated", current_actor(request), {"position_id": position_id, **changes},
@@ -6508,7 +6783,7 @@ async def delete_position(position_id: str, request: Request, admin: dict = Depe
         oid = ObjectId(position_id)
     except Exception:
         raise HTTPException(400, "Invalid position id.")
-    await db.positions.delete_one(org_query(request, {"_id": oid}))
+    await tdb(request).positions.delete_one({"_id": oid})
     await log_action("position_deleted", current_actor(request), {"position_id": position_id}, org_id=request.state.org_id)
     return {"status": "deleted"}
 
@@ -6518,8 +6793,8 @@ async def delete_position(position_id: str, request: Request, admin: dict = Depe
 @app.get("/superadmin/commissioners")
 async def list_commissioners(request: Request):
     result = []
-    async for v in db.voters.find(
-        org_query(request, {"is_commissioner": True}),
+    async for v in tdb(request).voters.find(
+        {"is_commissioner": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_deputy_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
     ):
         result.append(v)
@@ -6527,13 +6802,13 @@ async def list_commissioners(request: Request):
     
 @app.post("/superadmin/commissioners/{student_id:path}/set-chief")
 async def set_chief_commissioner(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_commissioner"):
         raise HTTPException(400, "This person is not a commissioner.")
-    await db.voters.update_many(org_query(request), {"$set": {"is_chief_commissioner": False}})
-    await db.voters.update_one(
+    await tdb(request).voters.update_many({}, {"$set": {"is_chief_commissioner": False}})
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_chief_commissioner": True}}
     )
@@ -6547,8 +6822,8 @@ async def set_chief_commissioner(student_id: str, request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/clear-chief")
 async def clear_chief_commissioner(student_id: str, request: Request):
-    await db.voters.update_one(
-        org_query(request, get_forgiving_filter(student_id)),
+    await tdb(request).voters.update_one(
+        get_forgiving_filter(student_id),
         {"$set": {"is_chief_commissioner": False}}
     )
     await log_action("chief_commissioner_cleared", current_actor(request), {
@@ -6559,13 +6834,13 @@ async def clear_chief_commissioner(student_id: str, request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-deputy-chief")
 async def set_deputy_chief_commissioner(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_commissioner"):
         raise HTTPException(400, "This person is not a commissioner.")
-    await db.voters.update_many(org_query(request), {"$set": {"is_deputy_chief_commissioner": False}})
-    await db.voters.update_one(
+    await tdb(request).voters.update_many({}, {"$set": {"is_deputy_chief_commissioner": False}})
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_deputy_chief_commissioner": True}}
     )
@@ -6580,8 +6855,8 @@ async def set_deputy_chief_commissioner(student_id: str, request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/clear-deputy-chief")
 async def clear_deputy_chief_commissioner(student_id: str, request: Request):
-    await db.voters.update_one(
-        org_query(request, get_forgiving_filter(student_id)),
+    await tdb(request).voters.update_one(
+        get_forgiving_filter(student_id),
         {"$set": {"is_deputy_chief_commissioner": False}}
     )
     await log_action("deputy_chief_commissioner_cleared", current_actor(request), {
@@ -6592,8 +6867,8 @@ async def clear_deputy_chief_commissioner(student_id: str, request: Request):
 
 @app.get("/superadmin/chief-commissioner")
 async def get_chief_commissioner(request: Request):
-    chief = await db.voters.find_one(
-        org_query(request, {"is_chief_commissioner": True}),
+    chief = await tdb(request).voters.find_one(
+        {"is_chief_commissioner": True},
         {"_id": 0, "student_id": 1, "full_name": 1}
     )
     if not chief:
@@ -6612,8 +6887,8 @@ async def set_finance_commissioner(student_id: str, request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/clear-finance-commissioner")
 async def clear_finance_commissioner(student_id: str, request: Request):
-    await db.voters.update_one(
-        org_query(request, get_forgiving_filter(student_id)),
+    await tdb(request).voters.update_one(
+        get_forgiving_filter(student_id),
         {"$set": {"is_finance_commissioner": False}}
     )
     await log_action("finance_commissioner_cleared", current_actor(request), {"student_id": student_id}, org_id=request.state.org_id)
@@ -6625,8 +6900,8 @@ async def get_finance_commissioner(request: Request):
     """LEGACY: lists anyone still carrying the retired is_finance_commissioner flag (it no longer grants
     anything). Empty once migrate_retire_finance_commissioner.py --apply has been run."""
     result = []
-    async for fc in db.voters.find(
-        org_query(request, {"is_finance_commissioner": True}),
+    async for fc in tdb(request).voters.find(
+        {"is_finance_commissioner": True},
         {"_id": 0, "student_id": 1, "full_name": 1}
     ):
         result.append(fc)
@@ -6635,12 +6910,12 @@ async def get_finance_commissioner(request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-role")
 async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_commissioner"):
         raise HTTPException(400, "This person is not a commissioner.")
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"commissioner_role": data.role_label}}
     )
@@ -6652,11 +6927,11 @@ async def set_commissioner_role(student_id: str, data: CommissionerRoleUpdate, r
 @app.post("/superadmin/commissioners/{student_id:path}/toggle")
 async def toggle_commissioner(student_id: str, request: Request):
     """Grant or revoke commissioner status for any voter."""
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     new_val = not voter.get("is_commissioner", False)
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_commissioner": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
@@ -6667,7 +6942,7 @@ async def toggle_commissioner(student_id: str, request: Request):
 
 @app.post("/superadmin/it-admins/{student_id:path}/set-credentials")
 async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_it_admin"):
@@ -6676,7 +6951,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "it_admin_email":                data.email,
@@ -6698,7 +6973,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
 async def superadmin_force_approve(app_id: str, request: Request):
     """Approve an application instantly, bypassing vetting panel voting."""
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") == "approved":
@@ -6708,8 +6983,8 @@ async def superadmin_force_approve(app_id: str, request: Request):
     # not-yet-approved document via the update filter so this can't race a
     # commission majority vote (or a concurrent duplicate click) into
     # creating two candidates for the same application.
-    result = await db.applications.update_one(
-        org_query(request, {"_id": oid, "status": {"$ne": "approved"}}),
+    result = await tdb(request).applications.update_one(
+        {"_id": oid, "status": {"$ne": "approved"}},
         {"$set": {
             "status": "approved",
             "superadmin_override": True,
@@ -6733,14 +7008,14 @@ async def superadmin_force_approve(app_id: str, request: Request):
 async def superadmin_force_deny(app_id: str, request: Request):
     """Deny an application instantly, bypassing vetting panel voting."""
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in ("denied", "removed"):
         raise HTTPException(400, "Application is already denied or removed.")
 
-    result = await db.applications.update_one(
-        org_query(request, {"_id": oid, "status": {"$nin": ["denied", "removed"]}}),
+    result = await tdb(request).applications.update_one(
+        {"_id": oid, "status": {"$nin": ["denied", "removed"]}},
         {"$set": {
             "status": "denied",
             "superadmin_override": True,
@@ -6812,8 +7087,8 @@ async def superadmin_revert_application_to_pending(app_id: str, data: Applicatio
     refused once votes have been cast for that candidate (those votes would be orphaned)."""
     reason = _clean_reason(data.reason)
     oid = parse_oid(app_id, "application id")
-    org_id = request.state.org_id
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    org_id = require_org(request.state.org_id)
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     from_status = app_doc.get("status")
@@ -6825,9 +7100,9 @@ async def superadmin_revert_application_to_pending(app_id: str, data: Applicatio
 
     cand = None
     if from_status == "approved":
-        cand = await db.candidates.find_one(org_query(request, {"application_id": app_id}))
+        cand = await tdb(request).candidates.find_one({"application_id": app_id})
         if cand:
-            votes_cast = await db.vote_events.count_documents(org_query(request, {"candidate_id": cand["_id"]}))
+            votes_cast = await tdb(request).vote_events.count_documents({"candidate_id": cand["_id"]})
             if votes_cast:
                 raise HTTPException(409, f"{votes_cast} vote(s) have already been cast for this candidate, "
                                          "so the approval can't be reverted. Use Remove from Ballot instead.")
@@ -6835,8 +7110,8 @@ async def superadmin_revert_application_to_pending(app_id: str, data: Applicatio
     now = datetime.utcnow()
     prior_votes = dict(app_doc.get("votes") or {})
     # Atomic claim on the exact state we inspected, so a racing commission vote / second click can't double-apply.
-    result = await db.applications.update_one(
-        org_query(request, {"_id": oid, "status": from_status, "superadmin_override": True}),
+    result = await tdb(request).applications.update_one(
+        {"_id": oid, "status": from_status, "superadmin_override": True},
         {"$set": {"status": "pending", "votes": {}, "removal_votes": {},
                   "denial_snapshot": None, "certificate_id": None, "certificate_issued_at": None},
          "$unset": {"superadmin_override": "", "decided_at": "", "tied_pending_chief": ""},
@@ -6847,7 +7122,7 @@ async def superadmin_revert_application_to_pending(app_id: str, data: Applicatio
         raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
 
     if cand:
-        await db.candidates.delete_one(org_query(request, {"_id": cand["_id"]}))
+        await tdb(request).candidates.delete_one({"_id": cand["_id"]})
     if from_status == "approved":
         await _revoke_certificate_for_application(app_doc, org_id)
 
@@ -6869,8 +7144,8 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     old status links are revoked (they may have gone to a different student's phone)."""
     reason = _clean_reason(data.reason)
     oid = parse_oid(app_id, "application id")
-    org_id = request.state.org_id
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    org_id = require_org(request.state.org_id)
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
 
@@ -6889,7 +7164,7 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     if "position_id" in requested:
         pid = requested["position_id"].strip()
         try:
-            pos = await db.positions.find_one({"_id": ObjectId(pid), "org_id": org_id})
+            pos = await tdb(request).positions.find_one({"_id": ObjectId(pid), "org_id": org_id})
         except Exception:
             pos = None
         if not pos:
@@ -6927,7 +7202,7 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     set_doc = {k: c["new"] for k, c in changes.items()}
 
     if "student_id" in changes or "full_name" in changes:
-        voter = await db.voters.find_one(org_query(request, {"student_id": final["student_id"]}))
+        voter = await tdb(request).voters.find_one({"student_id": final["student_id"]})
         if not voter:
             raise HTTPException(404, "That registration number is not on the voter register.")
         if not names_match(voter.get("full_name", ""), final["full_name"]):
@@ -6938,16 +7213,16 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
             changes["student_id"]["new"] = set_doc["student_id"] = voter["student_id"]
 
     if {"student_id", "position_id"} & set(changes):
-        clash = await db.applications.find_one(org_query(request, {
-            "student_id": final["student_id"], "position_id": final["position_id"], "_id": {"$ne": oid}}))
+        clash = await tdb(request).applications.find_one({
+            "student_id": final["student_id"], "position_id": final["position_id"], "_id": {"$ne": oid}})
         if clash:
             raise HTTPException(409, "That student already has an application for this position.")
 
     cand = None
     if app_doc.get("status") == "approved":
-        cand = await db.candidates.find_one(org_query(request, {"application_id": app_id}))
+        cand = await tdb(request).candidates.find_one({"application_id": app_id})
         if cand and "position_id" in changes:
-            if await db.vote_events.count_documents(org_query(request, {"candidate_id": cand["_id"]})):
+            if await tdb(request).vote_events.count_documents({"candidate_id": cand["_id"]}):
                 raise HTTPException(409, "Votes have already been cast for this candidate, so their position "
                                          "can't be changed.")
 
@@ -6964,8 +7239,8 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     entry = {"at": now, "by": current_actor(request), "reason": reason, "changes": changes, "after": after}
 
     guard = {"_id": oid, "student_id": app_doc.get("student_id"), "status": app_doc.get("status")}
-    result = await db.applications.update_one(
-        org_query(request, guard), {"$set": set_doc, "$push": {"edit_history": entry}})
+    result = await tdb(request).applications.update_one(
+        guard, {"$set": set_doc, "$push": {"edit_history": entry}})
     if result.matched_count == 0:
         raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
 
@@ -6975,11 +7250,11 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
         if "image_url" in changes: cand_set["image_url"] = changes["image_url"]["new"]
         if "position_id" in changes: cand_set.update({"position": position_title, "order": position_order})
         if cand_set:
-            await db.candidates.update_one({"_id": cand["_id"]}, {"$set": cand_set})
+            await tdb(request).candidates.update_one({"_id": cand["_id"]}, {"$set": cand_set})
 
     links_revoked = 0
     if "student_id" in changes:
-        moved = await db.candidate_tokens.update_many(
+        moved = await tdb(request).candidate_tokens.update_many(
             {"org_id": org_id, "student_id": changes["student_id"]["old"]},
             {"$set": {"student_id": final["student_id"], "revoked": True}})
         links_revoked = moved.modified_count
@@ -7021,14 +7296,14 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
     """Bypass the Finance Commissioner gate — for cases where no Finance
     Commissioner is currently assigned. Voting can proceed after this."""
     oid = parse_oid(app_id, "application id")
-    app_doc = await db.applications.find_one(org_query(request, {"_id": oid}))
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
     if app_doc.get("finance_cleared"):
         raise HTTPException(400, "This application has already been finance-cleared.")
 
-    result = await db.applications.update_one(
-        org_query(request, {"_id": oid, "finance_cleared": {"$ne": True}}),
+    result = await tdb(request).applications.update_one(
+        {"_id": oid, "finance_cleared": {"$ne": True}},
         {"$set": {
             "finance_cleared": True,
             "finance_cleared_by": "superadmin_override",
@@ -7046,11 +7321,11 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
 async def superadmin_remove_candidate(candidate_id: str, request: Request):
     """Remove an approved candidate from the ballot instantly."""
     oid = parse_oid(candidate_id, "candidate id")
-    cand = await db.candidates.find_one(org_query(request, {"_id": oid}))
+    cand = await tdb(request).candidates.find_one({"_id": oid})
     if not cand:
         raise HTTPException(404, "Candidate not found.")
 
-    await db.candidates.delete_one(org_query(request, {"_id": oid}))
+    await tdb(request).candidates.delete_one({"_id": oid})
     await log_action("candidate_removed", current_actor(request), {
     "name": cand.get("name"), "position": cand.get("position")
     }, org_id=request.state.org_id)
@@ -7058,8 +7333,8 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
     # If the candidate came from an application, mark it removed
     if cand.get("application_id"):
         app_oid = parse_oid(cand["application_id"], "application id")
-        await db.applications.update_one(
-            org_query(request, {"_id": app_oid}),
+        await tdb(request).applications.update_one(
+            {"_id": app_oid},
             {"$set": {
                 "status": "removed",
                 "superadmin_override": True,
@@ -7069,7 +7344,7 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
         # Same as a commission-majority removal (§3.7): stop the certificate
         # from confirming, don't just unlink it, so a copy printed before
         # removal can't keep validating forever.
-        removed_app_doc = await db.applications.find_one(org_query(request, {"_id": app_oid}))
+        removed_app_doc = await tdb(request).applications.find_one({"_id": app_oid})
         if removed_app_doc:
             await _revoke_certificate_for_application(removed_app_doc, request.state.org_id)
 
@@ -7103,7 +7378,7 @@ async def get_election_results(request: Request):
         try:
             await require_admin(request)
         except HTTPException:
-            cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+            cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
             results_released = cfg.get("is_certified", False) or (
                 results_mode == "closed" and not cfg.get("is_open", True))
     cache_key = (str(request.state.org_id), bool(results_released))
@@ -7111,11 +7386,11 @@ async def get_election_results(request: Request):
         hit = _RESULTS_CACHE.get(cache_key)
         if hit and hit[0] > time.monotonic():
             return copy.deepcopy(hit[1])
-    voter_turnout = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    voter_turnout = await tdb(request).voters.count_documents({"has_voted": True})
     results = []
     if results_released:
         vote_counts = await get_vote_counts(request)
-        async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+        async for cand in tdb(request).candidates.find({}).sort("order", 1):
             results.append({
                 "id": str(cand["_id"]),
                 "name": cand["name"],
@@ -7139,7 +7414,7 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
     per-commissioner votes map from every application — the Overseer can see
     aggregate counts and outcomes, but never which commissioner voted which way.
     """
-    status_doc = await db.settings.find_one(org_query(request, {"name": "election_config"}))
+    status_doc = await tdb(request).settings.find_one({"name": "election_config"})
     election_status = {
         "is_open":      (status_doc or {}).get("is_open", True),
         "is_certified": (status_doc or {}).get("is_certified", False),
@@ -7147,14 +7422,14 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
         "end":          (status_doc or {}).get("end_time")
     }
 
-    total_voters   = await db.voters.count_documents(org_query(request))
-    voted_count    = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    total_voters   = await tdb(request).voters.count_documents({})
+    voted_count    = await tdb(request).voters.count_documents({"has_voted": True})
     total_commissioners = await get_commissioner_count(request.state.org_id)
 
     applications_summary = []
     overseer_keys = await _active_panel_keys(request.state.org_id)
     panel_count = await get_panel_count(request.state.org_id)
-    async for a in db.applications.find(org_query(request)).sort("submitted_at", -1):
+    async for a in tdb(request).applications.find({}).sort("submitted_at", -1):
         shaped = shape_application_for_role(a, "overseer", active_keys=overseer_keys, panel_count=panel_count)
         row = {
             "id":                 str(a["_id"]),
@@ -7174,7 +7449,7 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
         applications_summary.append(row)
 
     student_changes_summary = []
-    async for c in db.student_changes.find(org_query(request)).sort("requested_at", -1):
+    async for c in tdb(request).student_changes.find({}).sort("requested_at", -1):
         student_changes_summary.append({
             "id":            str(c["_id"]),
             "change_type":   c.get("change_type", ""),
@@ -7189,7 +7464,7 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
 
     vote_counts = await get_vote_counts(request)
     candidates_results = []
-    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+    async for cand in tdb(request).candidates.find({}).sort("order", 1):
         candidates_results.append({
             "name": cand["name"],
             "position": cand["position"],
@@ -7226,7 +7501,7 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
     data.full_name = normalize_name(data.full_name)
     data.student_id = normalize_student_id(data.student_id)
     data.attrs = await _validate_voter_attrs(request.state.org_id, data.attrs)
-    if await db.voters.find_one(org_query(request, {"student_id": data.student_id}), {"_id": 1}):
+    if await tdb(request).voters.find_one({"student_id": data.student_id}, {"_id": 1}):
         raise HTTPException(409, "Already registered, use Edit Student.")
     bypass = await upload_bypass_enabled(request)
     if not bypass and not data.reason.strip():
@@ -7240,7 +7515,7 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
         doc = {**data.dict(), "reason": reason, "change_type": "add", "status": "approved",
                "requested_at": now, "resolved_at": now, "decided_by": "upload_bypass",
                "decision_reason": "Superadmin upload bypass was enabled", "bypass": True}
-        result = await db.student_changes.insert_one(org_stamp(request, dict(doc)))
+        result = await tdb(request).student_changes.insert_one(dict(doc))
         await _execute_student_change(doc, request.state.org_id)
         summary = {"student_id": data.student_id, "full_name": data.full_name, "reason": reason, "bypass": True}
         await log_action("student_added_via_upload_bypass", current_actor(request), summary, org_id=request.state.org_id)
@@ -7248,20 +7523,20 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
                             current_actor(request), current_role(request) or "it_admin", summary)
         return {"status": "added", "id": str(result.inserted_id), "bypass": True}
     # Prevent duplicate pending requests for same student
-    existing = await db.student_changes.find_one(org_query(request, {
+    existing = await tdb(request).student_changes.find_one({
         "student_id":  data.student_id,
         "change_type": "add",
         "status":      "pending"
-    }))
+    })
     if existing:
         raise HTTPException(400, "A pending add request already exists for this student.")
 
-    result = await db.student_changes.insert_one(org_stamp(request, {
+    result = await tdb(request).student_changes.insert_one({
         **data.dict(),
         "change_type":  "add",
         "status":       "pending",
         "requested_at": datetime.utcnow()
-    }))
+    })
     await log_action("student_add_requested", data.requested_by, {
         "student_id": data.student_id,
         "full_name":  data.full_name,
@@ -7271,14 +7546,14 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
 
 @app.post("/superadmin/it-admins/{student_id:path}/reset-password")
 async def reset_it_admin_password(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter or not voter.get("is_it_admin"):
         raise HTTPException(404, "IT admin not found.")
 
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "it_admin_password_hash":        hashed,
@@ -7296,14 +7571,14 @@ async def reset_it_admin_password(student_id: str, request: Request):
 
 @app.post("/superadmin/commissioners/{student_id:path}/reset-password")
 async def reset_commissioner_password(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter or not voter.get("is_commissioner"):
         raise HTTPException(404, "Commissioner not found.")
 
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "commissioner_password_hash":        hashed,
@@ -7322,25 +7597,25 @@ async def reset_commissioner_password(student_id: str, request: Request):
 async def request_remove_student(data: ITAdminStudentRemove, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     await assert_roster_unfrozen(request)
     bind_identity(request, data.requested_by, "IT Admin account")
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         raise HTTPException(404, "Student not found in voter register.")
 
-    existing = await db.student_changes.find_one(org_query(request, {
+    existing = await tdb(request).student_changes.find_one({
         "student_id":  data.student_id,
         "change_type": "remove",
         "status":      "pending"
-    }))
+    })
     if existing:
         raise HTTPException(400, "A pending removal request already exists for this student.")
 
-    result = await db.student_changes.insert_one(org_stamp(request, {
+    result = await tdb(request).student_changes.insert_one({
         **data.dict(),
         "full_name":    student.get("full_name", ""),
         "change_type":  "remove",
         "status":       "pending",
         "requested_at": datetime.utcnow()
-    }))
+    })
     await log_action("student_remove_requested", data.requested_by, {
         "student_id": data.student_id,
         "full_name":  student.get("full_name", ""),
@@ -7352,7 +7627,7 @@ async def request_remove_student(data: ITAdminStudentRemove, request: Request, a
 @app.post("/it-admin/students/requests/{change_id}/cancel")
 async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     oid = parse_oid(change_id, "change id")
-    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
+    change = await tdb(request).student_changes.find_one({"_id": oid})
     if not change:
         raise HTTPException(404, "Request not found.")
     bind_identity(request, data.requested_by, "IT Admin account")
@@ -7361,8 +7636,8 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
     if change.get("status") != "pending":
         raise HTTPException(400, f"Cannot cancel a request that is already {change.get('status')}.")
 
-    await db.student_changes.update_one(
-        org_query(request, {"_id": oid}),
+    await tdb(request).student_changes.update_one(
+        {"_id": oid},
         {"$set": {
             "status":            "cancelled",
             "cancelled_at":      datetime.utcnow(),
@@ -7383,8 +7658,8 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
 async def get_my_requests(it_admin_id: str, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     bind_identity(request, it_admin_id, "IT Admin account")
     changes = []
-    async for c in db.student_changes.find(
-        org_query(request, {"requested_by": it_admin_id})
+    async for c in tdb(request).student_changes.find(
+        {"requested_by": it_admin_id}
     ).sort("requested_at", -1):
         c["_id"] = str(c["_id"])
         changes.append(c)
@@ -7406,7 +7681,7 @@ async def list_student_changes(request: Request, status: str = None):
         # Default: exclude cancelled so commission doesn't see withdrawn requests
         query["status"] = {"$nin": ["cancelled"]}
     changes = []
-    async for c in db.student_changes.find(query).sort("requested_at", -1):
+    async for c in tdb(request).student_changes.find(query).sort("requested_at", -1):
         c["_id"] = str(c["_id"])
         changes.append(c)
     return changes
@@ -7426,7 +7701,7 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
         raise HTTPException(400, "A reason is required to deny a request.")
 
     oid = parse_oid(change_id, "change id")
-    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
+    change = await tdb(request).student_changes.find_one({"_id": oid})
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") != "pending":
@@ -7434,10 +7709,10 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
 
     bind_identity(request, data.financial_controller_id, "Financial Controller account")
 
-    financial_controller = await db.voters.find_one(org_query(request, {
+    financial_controller = await tdb(request).voters.find_one({
         **get_forgiving_filter(data.financial_controller_id),
         "is_financial_controller": True
-    }))
+    })
     if not financial_controller:
         raise HTTPException(403, "Not a registered Financial Controller.")
 
@@ -7450,8 +7725,8 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
     # on to execute the change; the other gets a clean 409, not a silent
     # double-apply.
     status_value = "approved" if data.decision == "approve" else "denied"
-    claim = await db.student_changes.update_one(
-        org_query(request, {"_id": oid, "status": "pending"}),
+    claim = await tdb(request).student_changes.update_one(
+        {"_id": oid, "status": "pending"},
         {"$set": {
             "status":          status_value,
             "decided_by":      data.financial_controller_id,
@@ -7486,8 +7761,8 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
 @app.get("/superadmin/it-admins")
 async def list_it_admins(request: Request):
     result = []
-    async for v in db.voters.find(
-        org_query(request, {"is_it_admin": True}),
+    async for v in tdb(request).voters.find(
+        {"is_it_admin": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1, "it_admin_export_mode": 1}
     ):
         v["it_admin_export_mode"] = normalize_export_mode(v.get("it_admin_export_mode"))
@@ -7497,11 +7772,11 @@ async def list_it_admins(request: Request):
 
 @app.post("/superadmin/it-admins/{student_id:path}/toggle")
 async def toggle_it_admin(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     new_val = not voter.get("is_it_admin", False)
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_it_admin": new_val, **(await _invalidate_sessions(voter["_id"]))},
          "$unset": {"it_admin_export_mode": "", "it_admin_export_mode_set_by": "", "it_admin_export_mode_set_at": ""}}
@@ -7546,8 +7821,8 @@ def _export_row(v: dict, mode: str, enabled_fields: list[dict], max_phones: int)
 
 async def _it_admin_export_mode(request: Request, admin: dict) -> str:
     """Read the caller's mode from the DB on EVERY call. Never from the JWT, never cached."""
-    doc = await db.voters.find_one(
-        org_query(request, {"student_id": admin.get("sub"), "is_it_admin": True}),
+    doc = await tdb(request).voters.find_one(
+        {"student_id": admin.get("sub"), "is_it_admin": True},
         {"_id": 0, "it_admin_export_mode": 1})
     return normalize_export_mode((doc or {}).get("it_admin_export_mode"))
 
@@ -7561,13 +7836,13 @@ async def set_it_admin_export_mode(student_id: str, data: ExportModeUpdate, requ
                                    admin: dict = Depends(require_role("superadmin"))):
     if data.mode not in EXPORT_MODES:
         raise HTTPException(400, "Mode must be none, redacted or full.")
-    voter = await db.voters.find_one(org_query(request, {**get_forgiving_filter(student_id), "is_it_admin": True}))
+    voter = await tdb(request).voters.find_one({**get_forgiving_filter(student_id), "is_it_admin": True})
     if not voter:
         raise HTTPException(404, "That person is not an IT admin.")
     old = normalize_export_mode(voter.get("it_admin_export_mode"))
     if data.mode == old:
         return {"student_id": voter["student_id"], "it_admin_export_mode": old, "changed": False}
-    await db.voters.update_one({"_id": voter["_id"]}, {"$set": {
+    await tdb(request).voters.update_one({"_id": voter["_id"]}, {"$set": {
         "it_admin_export_mode": data.mode,
         "it_admin_export_mode_set_by": current_actor(request),
         "it_admin_export_mode_set_at": datetime.utcnow()}})
@@ -7605,14 +7880,14 @@ async def export_voter_register(data: VoterExportRequest, request: Request,
                             message="Too many exports. Please wait a few minutes and try again.")
 
     query = org_query(request)                                   # tenant scope: mandatory
-    if await db.voters.count_documents(query) > EXPORT_MAX_ROWS:
+    if await tdb(request).voters.count_documents(query) > EXPORT_MAX_ROWS:
         await log_action("voter_register_export_denied", actor, {"reason": "too_many_rows"}, org_id=org_id)
         raise HTTPException(413, f"The register is larger than the {EXPORT_MAX_ROWS:,}-row export limit.")
 
     fields = await get_voter_fields(request)
     enabled = [f for f in fields["fields"] if f.get("enabled")]
     projection = {"_id": 0, "full_name": 1, "student_id": 1, "phone_numbers": 1, "attrs": 1}   # allowlist
-    voters = [v async for v in db.voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)])]
+    voters = [v async for v in tdb(request).voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)])]
 
     max_phones = max([1] + [len(v.get("phone_numbers") or []) for v in voters])
     header = ["Registration Number", "Full Name", *[f"Phone {i}" for i in range(1, max_phones + 1)],
@@ -7663,7 +7938,7 @@ async def export_voter_register(data: VoterExportRequest, request: Request,
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-credentials")
 async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_commissioner"):
@@ -7672,7 +7947,7 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "commissioner_email":                data.email,
@@ -7730,8 +8005,8 @@ async def _panel_open_guard(request: Request):
 
 @app.get("/superadmin/vetting-panel")
 async def superadmin_list_panel(request: Request):
-    raw = [p async for p in db.panel_members.find(
-        org_query(request, {}), {"_id": 0, "password_hash": 0, "temp_password_expires": 0})]
+    raw = [p async for p in tdb(request).panel_members.find(
+        {}, {"_id": 0, "password_hash": 0, "temp_password_expires": 0})]
     rows = []
     for p in raw:
         row = _panel_public(p)
@@ -7747,8 +8022,8 @@ async def superadmin_list_panel(request: Request):
     chair_active = False
     for r in rows:
         r["is_chair"] = False
-        if r.get("student_id") and await db.voters.find_one(org_query(request, {
-                **get_forgiving_filter(r["student_id"]), "is_chief_commissioner": True})):
+        if r.get("student_id") and await tdb(request).voters.find_one({
+                **get_forgiving_filter(r["student_id"]), "is_chief_commissioner": True}):
             r["is_chair"] = True
             if r["active"]:
                 chair_active = True
@@ -7794,7 +8069,7 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
                                      "access. Set a fixed access end, or schedule the phase first.")
 
     if data.is_member:
-        voter = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+        voter = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
         if not voter:
             raise HTTPException(404, "Member not found on the voter roll.")
         if await _has_live_application(request, voter["student_id"]):
@@ -7802,8 +8077,8 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
         # A second record for the same person would count twice in the approval denominator (get_panel_count)
         # but vote under one key (_panel_vote_key), so unanimous / majority-of-cast outcomes could never be
         # reached. link-commissioner already refuses this; the direct-login route must too.
-        if await db.panel_members.find_one(org_query(request, {
-                "student_id": normalize_student_id(voter["student_id"])}), {"_id": 1}):
+        if await tdb(request).panel_members.find_one({
+                "student_id": normalize_student_id(voter["student_id"])}, {"_id": 1}):
             raise HTTPException(409, "This member is already on the panel list. Edit, re-issue credentials for, "
                                      "or activate the existing record instead of adding another.")
 
@@ -7834,7 +8109,7 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
         "added_at":          now,
         "removed_at":        None,
     }
-    await db.panel_members.insert_one(doc)
+    await tdb(request).panel_members.insert_one(doc)
     background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     sms_sent = await send_temp_password_sms(
         {"phone_numbers": doc["phone_numbers"], "full_name": doc["full_name"],
@@ -7856,11 +8131,11 @@ async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Req
     reason = data.appointment_reason.strip()
     if not reason:
         raise HTTPException(400, "An appointment reason is required.")
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not voter or not voter.get("is_commissioner"):
         raise HTTPException(404, "That person is not a commissioner.")
     sid = normalize_student_id(voter["student_id"])
-    existing = await db.panel_members.find_one(org_query(request, {"student_id": sid}))
+    existing = await tdb(request).panel_members.find_one({"student_id": sid})
     if existing:
         raise HTTPException(409, "This commissioner is already on the panel list."
                                  + ("" if existing.get("active") else " They are inactive: use Activate."))
@@ -7869,7 +8144,7 @@ async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Req
 
     panel_member_id = f"PM-{secrets.token_hex(6).upper()}"
     now = datetime.utcnow()
-    await db.panel_members.insert_one({
+    await tdb(request).panel_members.insert_one({
         "org_id":            request.state.org_id,
         "panel_member_id":   panel_member_id,
         "full_name":         voter.get("full_name", ""),
@@ -7901,7 +8176,7 @@ async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Req
 
 @app.patch("/superadmin/vetting-panel/{panel_member_id}")
 async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpdate, request: Request):
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": panel_member_id})
     if not p:
         raise HTTPException(404, "Panel member not found.")
     update: dict = {}
@@ -7950,7 +8225,7 @@ async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpda
                 raise
     if not update:
         raise HTTPException(400, "Nothing to change.")
-    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": update})
+    await tdb(request).panel_members.update_one({"_id": p["_id"]}, {"$set": update})
     await log_action("vetting_panel_member_updated", current_actor(request), {
         "panel_member_id": panel_member_id, "fields": sorted(update.keys())}, org_id=request.state.org_id)
     return {"status": "updated", "panel_member_id": panel_member_id}
@@ -7958,7 +8233,7 @@ async def superadmin_update_panelist(panel_member_id: str, data: PanelMemberUpda
 
 @app.post("/superadmin/vetting-panel/{panel_member_id}/set-credentials")
 async def superadmin_panel_set_credentials(panel_member_id: str, data: PanelMemberCredentials, request: Request):
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": panel_member_id})
     if not p:
         raise HTTPException(404, "Panel member not found.")
     temp_password = generate_temp_password()
@@ -7968,7 +8243,7 @@ async def superadmin_panel_set_credentials(panel_member_id: str, data: PanelMemb
     conflict = await _panel_email_conflict(request, email, exclude_pm_id=p["panel_member_id"])
     if conflict:
         raise HTTPException(409, conflict)
-    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": {
+    await tdb(request).panel_members.update_one({"_id": p["_id"]}, {"$set": {
         "email": email,
         "password_hash": hash_password(temp_password),
         "must_change_password": True,
@@ -7984,21 +8259,21 @@ async def superadmin_panel_set_credentials(panel_member_id: str, data: PanelMemb
 @app.post("/superadmin/vetting-panel/{panel_member_id}/active")
 async def superadmin_panel_set_active(panel_member_id: str, request: Request, background_tasks: BackgroundTasks, active: bool = True):
     await _panel_open_guard(request)
-    p = await db.panel_members.find_one(org_query(request, {"panel_member_id": panel_member_id}))
+    p = await tdb(request).panel_members.find_one({"panel_member_id": panel_member_id})
     if not p:
         raise HTTPException(404, "Panel member not found.")
     if active and p.get("student_id") and await _has_live_application(request, p["student_id"]):
         raise HTTPException(409, "This member has an application in progress and cannot be activated on the Vetting Panel.")
     if not active and p.get("active"):
         # Guide 7 item 6: never let the active panel drop below 3.
-        remaining = await db.panel_members.count_documents(org_query(request, {
-            "active": True, "panel_member_id": {"$ne": panel_member_id}}))
+        remaining = await tdb(request).panel_members.count_documents({
+            "active": True, "panel_member_id": {"$ne": panel_member_id}})
         if remaining < 3:
             raise HTTPException(409, "The Vetting Panel must keep at least 3 active panelists.")
     update = {"active": active, **(await _invalidate_sessions(p["_id"]))}
     # Stamp the removal on deactivation; clear it on re-activation so a live panelist never carries a stale date.
     update["removed_at"] = None if active else datetime.utcnow()
-    await db.panel_members.update_one({"_id": p["_id"]}, {"$set": update})
+    await tdb(request).panel_members.update_one({"_id": p["_id"]}, {"$set": update})
     background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     await log_action("vetting_panel_member_" + ("activated" if active else "deactivated"),
                      current_actor(request), {"panel_member_id": panel_member_id},
@@ -8014,15 +8289,15 @@ async def superadmin_panel_set_active(panel_member_id: str, request: Request, ba
 
 @app.post("/admin/switch-hat")
 async def switch_hat(request: Request, admin: dict = Depends(require_role("commission", "vetting"))):
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     if admin["role"] == "commission":
         target = "vetting"
         student_id = admin.get("sub")
-        voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+        voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
         if not voter or not voter.get("is_commissioner"):
             raise HTTPException(403, "Not a commissioner.")
-        panelist = await db.panel_members.find_one(org_query(request, {
-            "student_id": normalize_student_id(student_id), "active": True}))
+        panelist = await tdb(request).panel_members.find_one({
+            "student_id": normalize_student_id(student_id), "active": True})
         if not panelist:
             raise HTTPException(403, "You are not on the Vetting Panel.")
         if await _panel_access_ended(request, panelist):
@@ -8042,11 +8317,11 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role("commi
     # with panel credentials has not proven the commissioner password, so no commission token is issued.
     if not admin.get("via_hat"):
         raise HTTPException(403, "Sign in with your commissioner account to open the commission view.")
-    panel = await db.panel_members.find_one(org_query(request, {
-        "panel_member_id": admin.get("sub"), "active": True}))
+    panel = await tdb(request).panel_members.find_one({
+        "panel_member_id": admin.get("sub"), "active": True})
     if not panel or not panel.get("student_id"):
         raise HTTPException(403, "Only a linked commissioner can switch back.")
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(panel["student_id"])))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(panel["student_id"]))
     if not voter or not voter.get("is_commissioner"):
         raise HTTPException(403, "Only a linked commissioner can switch back.")
     new_token = create_access_token(
@@ -8062,18 +8337,18 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role("commi
 async def panel_link(request: Request, admin: dict = Depends(require_role("commission"))):
     """Whether the signed-in commissioner can switch to the Vetting Panel. Answers only for the
     caller (never lists who is on the panel), so the dashboard can hide the switch button."""
-    panelist = await db.panel_members.find_one(org_query(request, {
-        "student_id": normalize_student_id(admin.get("sub")), "active": True}))
+    panelist = await tdb(request).panel_members.find_one({
+        "student_id": normalize_student_id(admin.get("sub")), "active": True})
     linked = bool(panelist) and not await _panel_access_ended(request, panelist)
     # Guide 7.2: tell the Chairperson (and only them) when a tie is waiting for their decision,
     # so they know to switch to the panel view. Only a count; no votes or names.
     tie_waiting = 0
     if linked:
-        chair = await db.voters.find_one(org_query(request, {
-            **get_forgiving_filter(admin.get("sub")), "is_chief_commissioner": True}), {"_id": 1})
+        chair = await tdb(request).voters.find_one({
+            **get_forgiving_filter(admin.get("sub")), "is_chief_commissioner": True}, {"_id": 1})
         if chair:
-            tie_waiting = await db.applications.count_documents(org_query(request, {
-                "tied_pending_chief": True, "status": {"$nin": list(RESOLVED_STATUSES)}}))
+            tie_waiting = await tdb(request).applications.count_documents({
+                "tied_pending_chief": True, "status": {"$nin": list(RESOLVED_STATUSES)}})
     return {"panel_linked": linked, "tie_waiting": tie_waiting}
 
 
@@ -8084,8 +8359,8 @@ async def panel_link(request: Request, admin: dict = Depends(require_role("commi
 @app.get("/superadmin/financial-controllers")
 async def list_financial_controllers(request: Request):
     result = []
-    async for v in db.voters.find(
-        org_query(request, {"is_financial_controller": True}),
+    async for v in tdb(request).voters.find(
+        {"is_financial_controller": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "financial_controller_email": 1}
     ):
         result.append(v)
@@ -8097,12 +8372,12 @@ async def toggle_financial_controller(student_id: str, request: Request):
     """Grant or revoke Financial Controller status. The Financial Controller clears voter-register
     payments AND candidate payments. It may be held together with the commissioner role: the two
     portals and logins stay separate."""
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     new_val = not voter.get("is_financial_controller", False)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_financial_controller": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
@@ -8114,7 +8389,7 @@ async def toggle_financial_controller(student_id: str, request: Request):
 
 @app.post("/superadmin/financial-controllers/{student_id:path}/set-credentials")
 async def set_financial_controller_credentials(student_id: str, data: SetEmailOnly, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_financial_controller"):
@@ -8123,7 +8398,7 @@ async def set_financial_controller_credentials(student_id: str, data: SetEmailOn
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "financial_controller_email":                data.email,
@@ -8142,14 +8417,14 @@ async def set_financial_controller_credentials(student_id: str, data: SetEmailOn
 
 @app.post("/superadmin/financial-controllers/{student_id:path}/reset-password")
 async def reset_financial_controller_password(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter or not voter.get("is_financial_controller"):
         raise HTTPException(404, "Financial Controller not found.")
 
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "financial_controller_password_hash":        hashed,
@@ -8172,8 +8447,8 @@ async def reset_financial_controller_password(student_id: str, request: Request)
 @app.get("/superadmin/overseers")
 async def list_overseers(request: Request):
     result = []
-    async for v in db.voters.find(
-        org_query(request, {"is_overseer": True}),
+    async for v in tdb(request).voters.find(
+        {"is_overseer": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1}
     ):
         result.append(v)
@@ -8184,11 +8459,11 @@ async def list_overseers(request: Request):
 async def toggle_overseer(student_id: str, request: Request):
     """Grant or revoke Overseer status for any voter. Read-only role — never
     touches votes, applications, or student changes, only observes them."""
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     new_val = not voter.get("is_overseer", False)
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {"is_overseer": new_val, **(await _invalidate_sessions(voter["_id"]))}}
     )
@@ -8200,7 +8475,7 @@ async def toggle_overseer(student_id: str, request: Request):
 
 @app.post("/superadmin/overseers/{student_id:path}/set-credentials")
 async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     if not voter.get("is_overseer"):
@@ -8209,7 +8484,7 @@ async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request:
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "overseer_email":                data.email,
@@ -8228,14 +8503,14 @@ async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request:
 
 @app.post("/superadmin/overseers/{student_id:path}/reset-password")
 async def reset_overseer_password(student_id: str, request: Request):
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter or not voter.get("is_overseer"):
         raise HTTPException(404, "Overseer not found.")
 
     temp_password = generate_temp_password()
     hashed = hash_password(temp_password)
 
-    await db.voters.update_one(
+    await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
             "overseer_password_hash":        hashed,
@@ -8260,7 +8535,7 @@ async def superadmin_list_student_changes(request: Request, status: str = None):
     if status:
         query["status"] = status
     changes = []
-    async for c in db.student_changes.find(query).sort("requested_at", -1):
+    async for c in tdb(request).student_changes.find(query).sort("requested_at", -1):
         c["_id"] = str(c["_id"])
         changes.append(c)
     return changes
@@ -8270,7 +8545,7 @@ async def superadmin_list_student_changes(request: Request, status: str = None):
 async def superadmin_force_student_change_approve(change_id: str, request: Request):
     await assert_roster_unfrozen(request)
     oid = parse_oid(change_id, "change id")
-    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
+    change = await tdb(request).student_changes.find_one({"_id": oid})
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") in ("approved", "force_approved"):
@@ -8282,11 +8557,11 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
     # claims the request out of every non-final status — prevents a
     # superadmin force-approve from racing a Financial Controller decision
     # (or a duplicate click) into executing the change twice.
-    result = await db.student_changes.update_one(
-        org_query(request, {
+    result = await tdb(request).student_changes.update_one(
+        {
             "_id": oid,
             "status": {"$nin": ["approved", "force_approved", "denied", "force_denied", "cancelled"]},
-        }),
+        },
         {"$set": {
             "status":               "force_approved",
             "superadmin_override":  True,
@@ -8308,17 +8583,17 @@ async def superadmin_force_student_change_approve(change_id: str, request: Reque
 async def superadmin_force_student_change_deny(change_id: str, request: Request):
     await assert_roster_unfrozen(request)
     oid = parse_oid(change_id, "change id")
-    change = await db.student_changes.find_one(org_query(request, {"_id": oid}))
+    change = await tdb(request).student_changes.find_one({"_id": oid})
     if not change:
         raise HTTPException(404, "Change request not found.")
     if change.get("status") in ("denied", "force_denied", "cancelled"):
         raise HTTPException(400, f"Request is already {change.get('status')}.")
 
-    result = await db.student_changes.update_one(
-        org_query(request, {
+    result = await tdb(request).student_changes.update_one(
+        {
             "_id": oid,
             "status": {"$nin": ["approved", "force_approved", "denied", "force_denied", "cancelled"]},
-        }),
+        },
         {"$set": {
             "status":               "force_denied",
             "superadmin_override":  True,
@@ -8359,8 +8634,8 @@ async def superadmin_view_as(data: ViewAsRequest, request: Request,
     if data.role == "vetting":
         # Panelists live in panel_members and are keyed by panel_member_id (guide 6.3), so the
         # `student_id` field carries that id for this role. Read-only like every view-as token.
-        p = await db.panel_members.find_one(org_query(request, {
-            "panel_member_id": data.student_id, "active": True}))
+        p = await tdb(request).panel_members.find_one({
+            "panel_member_id": data.student_id, "active": True})
         if not p:
             raise HTTPException(404, "That person is not an active member of the Vetting Panel.")
         if await _panel_access_ended(request, p):
@@ -8378,7 +8653,7 @@ async def superadmin_view_as(data: ViewAsRequest, request: Request,
     flag = VIEW_AS_ROLE_FLAGS.get(data.role)
     if not flag:
         raise HTTPException(400, "Unknown admin role.")
-    voter = await db.voters.find_one(org_query(request, {**get_forgiving_filter(data.student_id), flag: True}))
+    voter = await tdb(request).voters.find_one({**get_forgiving_filter(data.student_id), flag: True})
     if not voter:
         raise HTTPException(404, "That person does not currently hold this admin role.")
     token = create_access_token(
@@ -8401,7 +8676,7 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
     # match on normalize_student_id(), so a reg no. saved as typed could never be found.
     data.student_id = normalize_student_id(data.student_id)
     data.attrs = await _validate_voter_attrs(request.state.org_id, data.attrs)
-    if await db.voters.find_one(org_query(request, {"student_id": data.student_id}), {"_id": 1}):
+    if await tdb(request).voters.find_one({"student_id": data.student_id}, {"_id": 1}):
         raise HTTPException(409, "Already registered, use Edit Student.")
     if not any(str(p or "").strip() for p in data.phones):
         raise HTTPException(400, "At least one phone number is required.")
@@ -8417,8 +8692,8 @@ async def superadmin_add_student(data: ITAdminStudentAdd, request: Request):
         "added_by": "superadmin", "add_reason": data.reason
     })
     set_doc.update(attr_set_paths(data.attrs))
-    await db.voters.update_one(
-        org_query(request, {"student_id": data.student_id}),
+    await tdb(request).voters.update_one(
+        {"student_id": data.student_id},
         {"$set": set_doc,
          # Defaults ONLY on insert (see _execute_student_change): never un-vote an existing voter or wipe roles.
          "$setOnInsert": {
@@ -8447,7 +8722,7 @@ async def superadmin_normalize_names(data: NormalizeNamesRequest, request: Reque
     """Title-case every stored person name in THIS organisation (register, applications,
     candidates, student-change requests). dry_run=True (the default) only reports what
     would change. Case/whitespace only; audit history is left as originally written."""
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     report = await run_name_backfill(db, org_id=org_id, dry_run=data.dry_run)
     if not data.dry_run and report["total_changed"]:
         await log_action("names_normalized", current_actor(request),
@@ -8468,7 +8743,7 @@ async def superadmin_check_reg_numbers(data: CheckRegNumbersRequest, request: Re
     """Find (and with fix=True repair) registration numbers not stored in canonical form
     (lowercase, no spaces) — such voters are on the register but cannot be found at login.
     Conflicts and voters who already voted are reported only, never modified."""
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     report = await audit_reg_numbers(db, org_id=org_id, fix=data.fix)
     if data.fix and report["total_fixed"]:
         await log_action("reg_numbers_normalized", current_actor(request),
@@ -8481,10 +8756,10 @@ async def superadmin_check_reg_numbers(data: CheckRegNumbersRequest, request: Re
 @app.post("/superadmin/students/remove")
 async def superadmin_remove_student(data: ITAdminStudentRemove, request: Request):
     await assert_roster_unfrozen(request)
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         raise HTTPException(404, "Student not found.")
-    await db.voters.delete_one(org_query(request, get_forgiving_filter(data.student_id)))
+    await tdb(request).voters.delete_one(get_forgiving_filter(data.student_id))
     await log_action("student_removed_by_superadmin", current_actor(request), {
         "student_id": data.student_id,
         "full_name":  student.get("full_name", ""),
@@ -8566,7 +8841,7 @@ async def lookup_students_for_edit(q: str, request: Request,
     if len(q) < 2:
         return []
     rx = {"$regex": re.escape(q), "$options": "i"}
-    cur = db.voters.find({"org_id": request.state.org_id, "$or": [{"student_id": rx}, {"full_name": rx}]}).limit(10)
+    cur = tdb(request).voters.find({"org_id": request.state.org_id, "$or": [{"student_id": rx}, {"full_name": rx}]}).limit(10)
     role = admin.get("role", "")
     fields = await get_voter_fields(request)
     enabled = {f["key"] for f in fields["fields"] if f.get("enabled")}
@@ -8625,7 +8900,7 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
             if any(voter.get(f) for f in STUDENT_ROLE_FLAGS):
                 raise HTTPException(409, "This student holds an admin/commission role, whose sessions and votes are "
                                          "keyed to the registration number. Remove the role before changing it.")
-            if await db.voters.find_one({"org_id": org_id, "student_id": candidate_sid, "_id": {"$ne": voter["_id"]}}):
+            if await tdb_for(org_id).voters.find_one({"org_id": org_id, "student_id": candidate_sid, "_id": {"$ne": voter["_id"]}}):
                 raise HTTPException(409, "Another student in this organization already has that registration number.")
             new_sid = candidate_sid
             events.append({"event": "student_registration_number_changed", "field": "student_id",
@@ -8674,21 +8949,22 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
     update_doc = {"$set": set_doc}
     if unset_doc:
         update_doc["$unset"] = unset_doc
-    updated = await db.voters.update_one(filter_doc, update_doc)
+    updated = await tdb_for(org_id).voters.update_one(filter_doc, update_doc)
     if updated.matched_count != 1:
         raise HTTPException(409, "This student was changed by someone else; reload and try again.")
 
     if new_sid != old_sid:
         # No unique index exists on (org_id, student_id), so re-check after writing and roll back
         # if a concurrent edit/import produced a duplicate.
-        if await db.voters.count_documents({"org_id": org_id, "student_id": new_sid}) > 1:
-            await db.voters.update_one(
+        if await tdb_for(org_id).voters.count_documents({"org_id": org_id, "student_id": new_sid}) > 1:
+            await tdb_for(org_id).voters.update_one(
                 {"_id": voter["_id"]},
                 {"$set": {"full_name": old_name, "student_id": old_sid, "phone_numbers": old_phones}})
             raise HTTPException(409, "Another student in this organization already has that registration number.")
         # Keep the student's own records attached to the new number.
-        for coll in (db.applications, db.exception_grants, db.contact_changes, db.candidate_tokens):
-            await coll.update_many({"org_id": org_id, "student_id": old_sid}, {"$set": {"student_id": new_sid}})
+        _t = tdb_for(org_id)
+        for coll in (_t.applications, _t.exception_grants, _t.contact_changes, _t.candidate_tokens):
+            await coll.update_many({"student_id": old_sid}, {"$set": {"student_id": new_sid}})
 
     return {"events": events, "old_sid": old_sid, "new_sid": new_sid, "old_name": old_name,
             "new_name": new_name, "old_phones": old_phones, "phones": phones, "attrs": new_attrs}
@@ -8700,7 +8976,7 @@ async def _write_student_audit(org_id, voter: dict, res: dict, reason: str, acto
     old_sid, new_sid = res["old_sid"], res["new_sid"]
     terms = sorted({old_sid, new_sid, res["old_name"].lower(), res["new_name"].lower()} - {""})
     for ev in res["events"]:
-        await db.student_edit_audit.insert_one({
+        await tdb_for(org_id).student_edit_audit.insert_one({
             "org_id": org_id, "student_key": str(voter["_id"]), "batch": batch,
             "event": ev["event"], "field": ev["field"], "old_value": ev["old"], "new_value": ev["new"],
             "reason": reason, "actor": actor, "actor_role": role, "at": now,
@@ -8724,7 +9000,7 @@ async def edit_student(data: StudentEditRequest, request: Request,
         raise HTTPException(400, "A reason is required for every change.")
 
     old_sid = normalize_student_id(data.student_id)
-    voter = await db.voters.find_one({"org_id": org_id, "student_id": old_sid})
+    voter = await tdb(request).voters.find_one({"org_id": org_id, "student_id": old_sid})
     if not voter:
         raise HTTPException(404, "Student not found in this organization.")
 
@@ -8741,13 +9017,13 @@ async def edit_student(data: StudentEditRequest, request: Request,
             role = admin.get("role", "")
             detail = "This voter's details can no longer be edited." if role == "it_admin" else "This voter has already voted; their details can no longer be edited."
             raise ApiError(409, detail, "already_voted")
-        name_changes = await db.student_edit_audit.count_documents({
+        name_changes = await tdb(request).student_edit_audit.count_documents({
             "org_id": org_id, "student_key": str(voter["_id"]), "event": "student_name_changed",
             "at": {"$gte": st["freeze_at"] or datetime(1970, 1, 1)}})
         if name_changes >= 2:
             raise ApiError(409, "This voter has already had 2 name corrections since the freeze.", "name_edit_cap")
         if data.attr_ops:
-            attr_changes = await db.student_edit_audit.count_documents({
+            attr_changes = await tdb(request).student_edit_audit.count_documents({
                 "org_id": org_id, "student_key": str(voter["_id"]), "event": "student_attr_changed",
                 "at": {"$gte": st["freeze_at"] or datetime(1970, 1, 1)}})
             if attr_changes + len(data.attr_ops) > 2:
@@ -8780,7 +9056,7 @@ async def student_edit_history(request: Request, q: str = "", limit: int = 100,
     """Read-only. Searching an OLD or NEW registration number (or a name) finds the student
     and every change ever made to that student, because each row carries the student's
     internal key and both numbers."""
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     limit = min(max(limit, 1), 500)
     q = q.strip()
     query: dict = {"org_id": org_id}
@@ -8788,11 +9064,11 @@ async def student_edit_history(request: Request, q: str = "", limit: int = 100,
         keys = set()
         exact = {normalize_student_id(q), q.lower()}
         rx = {"$regex": re.escape(q.lower())}
-        async for r in db.student_edit_audit.find(
+        async for r in tdb(request).student_edit_audit.find(
                 {"org_id": org_id, "$or": [{"search_terms": {"$in": list(exact)}}, {"search_terms": rx}]},
                 {"student_key": 1}):
             keys.add(r["student_key"])
-        async for v in db.voters.find({"org_id": org_id, "$or": [
+        async for v in tdb(request).voters.find({"org_id": org_id, "$or": [
                 {"student_id": normalize_student_id(q)},
                 {"full_name": {"$regex": re.escape(q), "$options": "i"}}]}, {"_id": 1}).limit(50):
             keys.add(str(v["_id"]))
@@ -8800,7 +9076,7 @@ async def student_edit_history(request: Request, q: str = "", limit: int = 100,
             return {"entries": []}
         query["student_key"] = {"$in": list(keys)}
     entries = []
-    async for r in db.student_edit_audit.find(query).sort("at", -1).limit(limit):
+    async for r in tdb(request).student_edit_audit.find(query).sort("at", -1).limit(limit):
         r["_id"] = str(r["_id"])
         entries.append(r)
     return {"entries": entries}
@@ -8833,10 +9109,414 @@ async def get_audit_log(request: Request, limit: int = 200, action: str = None):
     if action:
         query["action"] = {"$regex": action, "$options": "i"}
     logs = []
-    async for entry in db.audit_log.find(query).sort("timestamp", -1).limit(limit):
+    async for entry in tdb(request).audit_log.find(query).sort("timestamp", -1).limit(limit):
         entry["_id"] = str(entry["_id"])
         logs.append(entry)
     return logs
+
+
+# =============================================================================
+# DEMO MODE — per-organisation, safe, fake-number-only SMS capture
+# =============================================================================
+DEMO_SETTING = "demo_mode"
+DEMO_DEFAULT_DAYS = 3
+DEMO_MAX_DAYS = 14
+DEMO_INBOX_MAX = 200
+DEMO_INBOX_READ_MAX = 50
+DEMO_PHONE_PREFIX = re.sub(r"\D", "", os.getenv("DEMO_PHONE_PREFIX", "256700000")) or "256700000"
+
+
+class DemoEnableRequest(BaseModel):
+    reason: str = Field(..., max_length=300)
+    days: int = Field(DEMO_DEFAULT_DAYS, ge=1, le=DEMO_MAX_DAYS)
+
+
+class DemoReasonRequest(BaseModel):
+    reason: str = Field(..., max_length=300)
+
+
+class DemoExtendRequest(BaseModel):
+    reason: str = Field(..., max_length=300)
+    days: int = Field(1, ge=1, le=DEMO_MAX_DAYS)
+
+
+class DemoPhaseRequest(BaseModel):
+    phase: str = Field(..., max_length=32)
+
+
+async def _demo_active(org_id) -> bool:
+    if not org_id:
+        return False
+    doc = await cached_setting(org_id, DEMO_SETTING) or {}
+    exp = doc.get("expires_at")
+    if isinstance(exp, str):
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            exp = None
+    exp = naive_utc(exp) if exp else None
+    return bool(doc.get("enabled") and exp and exp > datetime.utcnow())
+
+
+async def _demo_capture(org_id: str, to_number: str, message_text: str, kind: str) -> str:
+    number = re.sub(r"\D", "", str(to_number or ""))
+    if not number.startswith(DEMO_PHONE_PREFIX):
+        await log_action("demo_sms_refused", "system", {"to": number[-4:] if number else "", "kind": kind}, org_id=org_id)
+        return "failed"
+    now = datetime.utcnow()
+    inbox = tdb_for(org_id).demo_inbox
+    await inbox.insert_one({"to": number, "kind": kind, "message": str(message_text or "")[:2000], "created_at": now})
+    # Keep only the newest N messages. This is intentionally tenant-scoped.
+    ids = []
+    async for row in inbox.find({}, {"_id": 1}).sort("created_at", -1).skip(DEMO_INBOX_MAX):
+        ids.append(row["_id"])
+    if ids:
+        await inbox.delete_many({"_id": {"$in": ids}})
+    return "ok"
+
+
+def _demo_reason(reason: str) -> str:
+    reason = (reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every demo-mode change.")
+    return reason[:300]
+
+
+async def _demo_snapshot(org_id: str) -> dict:
+    phases = await tdb_for(org_id).settings.find_one({"name": "election_phases"})
+    config = await tdb_for(org_id).settings.find_one({"name": "election_config"})
+    return {
+        "election_phases": {k: v for k, v in (phases or {}).items() if k != "_id"},
+        "election_config": {k: v for k, v in (config or {}).items() if k != "_id"},
+    }
+
+
+async def _demo_restore_snapshot(org_id: str, snapshot: dict) -> None:
+    for name, doc in (("election_phases", snapshot.get("election_phases") or {}),
+                      ("election_config", snapshot.get("election_config") or {})):
+        if doc:
+            clean = dict(doc)
+            clean["name"] = name
+            await tdb_for(org_id).settings.replace_one({"name": name}, clean, upsert=True)
+        else:
+            await tdb_for(org_id).settings.delete_one({"name": name})
+    invalidate_settings(org_id)
+
+
+DEMO_TAGGED_COLLECTIONS = ("voters", "positions", "panel_members", "applications", "candidates", "vote_events",
+                           "candidate_tokens", "certificates", "exception_grants", "nomination_uploads")
+async def _demo_fenced_reset(org_id: str, snapshot: dict) -> dict:
+    """Delete only synthetic demo principals/data; activity collections were empty at enable time."""
+    deleted = {}
+    dbs = tdb_for(org_id)
+    demo_files = [r async for r in dbs.nomination_uploads.find({"is_demo": True}, {"key": 1, "upload_id": 1})]
+    deleted["nomination_files"] = await _delete_nomination_objects(demo_files)
+    for name in DEMO_TAGGED_COLLECTIONS:
+        result = await getattr(dbs, name).delete_many({"is_demo": True})
+        deleted[name] = result.deleted_count
+    # OTP documents created by the demo are tagged; preserve any live OTP a real
+    # voter may have had before demo mode was enabled.
+    otp_res = await dbs.otps.delete_many({"is_demo": True})
+    deleted["otps"] = otp_res.deleted_count
+    otp_key_rx = {"key": {"$regex": f"^{re.escape(org_id)}:otp:DEMO-"}}
+    for name in ("otp_send_state", "otp_guess_state", "otp_attempts"):
+        if hasattr(db, name):
+            result = await getattr(db, name).delete_many(otp_key_rx)
+            deleted[name] = result.deleted_count
+    inbox = await dbs.demo_inbox.delete_many({})
+    deleted["demo_inbox"] = inbox.deleted_count
+    # Demo never sends billable SMS, so it does not mutate the org SMS budget.
+    # Leave any pre-demo usage accounting untouched on reset.
+    await _demo_restore_snapshot(org_id, snapshot)
+    return deleted
+
+
+async def _demo_counts(org_id: str) -> dict:
+    dbs = tdb_for(org_id)
+    return {
+        "voters": await dbs.voters.count_documents({"is_demo": True}),
+        "positions": await dbs.positions.count_documents({"is_demo": True}),
+        "panel_members": await dbs.panel_members.count_documents({"is_demo": True}),
+        "applications": await dbs.applications.count_documents({"is_demo": True}),
+        "candidates": await dbs.candidates.count_documents({"is_demo": True}),
+        "vote_events": await dbs.vote_events.count_documents({"is_demo": True}),
+        "inbox": await dbs.demo_inbox.count_documents({}),
+    }
+
+
+async def _demo_public_status(org_id: str) -> dict:
+    doc = await cached_setting(org_id, DEMO_SETTING) or {}
+    return {"enabled": bool(await _demo_active(org_id)),
+            "enabled_at": doc.get("enabled_at"), "expires_at": doc.get("expires_at")}
+
+
+@app.get("/demo/inbox")
+async def demo_inbox(request: Request):
+    org_id = require_org(request.state.org_id)
+    if not await _demo_active(org_id):
+        raise HTTPException(404, "Demo mode is not active.")
+    await _check_rate_limit(request, bucket="demo_inbox", limit=120, window_s=60,
+                            message="Too many inbox requests. Please try again shortly.")
+    items = []
+    async for row in tdb(request).demo_inbox.find({}).sort("created_at", -1).limit(DEMO_INBOX_READ_MAX):
+        items.append({"id": str(row["_id"]), "to": row.get("to", ""), "kind": row.get("kind", "notice"),
+                      "message": row.get("message", ""), "created_at": row.get("created_at")})
+    return {"enabled": True, "messages": items}
+
+
+@app.post("/superadmin/demo/enable")
+async def demo_enable(data: DemoEnableRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    org_id = require_org(request.state.org_id)
+    reason = _demo_reason(data.reason)
+    current = await cached_setting(org_id, DEMO_SETTING) or {}
+    if await _demo_active(org_id):
+        raise HTTPException(409, "Demo mode is already active.")
+    # An expired demo is already treated as off by _demo_active. Clean its fenced
+    # data before allowing a new enable, otherwise old demo applications would
+    # make the safety precondition fail forever.
+    prior_exp = naive_utc(current.get("expires_at")) if current.get("expires_at") else None
+    if current.get("enabled") and prior_exp and prior_exp <= datetime.utcnow():
+        await _demo_fenced_reset(org_id, current.get("snapshot") or {})
+        await tdb(request).settings.update_one({"name": DEMO_SETTING}, {"$set": {"enabled": False, "expires_at": datetime.utcnow()}})
+        invalidate_settings(org_id, DEMO_SETTING)
+        await log_action("demo_disabled", "system", {"reason": "Automatic expiry cleanup before re-enable"}, org_id=org_id)
+    apps = await tdb(request).applications.count_documents({})
+    votes = await tdb(request).vote_events.count_documents({})
+    config = await tdb(request).settings.find_one({"name": "election_config"}) or {}
+    if apps or votes or config.get("is_certified"):
+        raise HTTPException(409, "Demo mode can only be enabled before applications/votes exist and before certification.")
+    now = datetime.utcnow()
+    expiry = now + timedelta(days=data.days)
+    snapshot = await _demo_snapshot(org_id)
+    doc = {"name": DEMO_SETTING, "enabled": True, "enabled_at": now, "expires_at": expiry,
+           "enabled_by": current_actor(request), "snapshot": snapshot}
+    await tdb(request).settings.update_one({"name": DEMO_SETTING}, {"$set": org_stamp(request, doc)}, upsert=True)
+    invalidate_settings(org_id, DEMO_SETTING)
+    await log_action("demo_enabled", current_actor(request),
+                     {"reason": reason, "days": data.days, "expires_at": expiry}, org_id=org_id)
+    return await _demo_public_status(org_id)
+
+
+async def _demo_require_active(request: Request) -> dict:
+    org_id = require_org(request.state.org_id)
+    if not await _demo_active(org_id):
+        raise HTTPException(409, "Demo mode is not active.")
+    return await tdb(request).settings.find_one({"name": DEMO_SETTING}) or {}
+
+
+@app.post("/superadmin/demo/extend")
+async def demo_extend(data: DemoExtendRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    doc = await _demo_require_active(request)
+    reason = _demo_reason(data.reason)
+    now = datetime.utcnow()
+    enabled_at = naive_utc(doc.get("enabled_at")) or now
+    current_exp = naive_utc(doc.get("expires_at")) or now
+    new_exp = max(current_exp, now) + timedelta(days=data.days)
+    cap = enabled_at + timedelta(days=DEMO_MAX_DAYS)
+    if new_exp > cap:
+        raise HTTPException(400, f"Demo mode cannot run for more than {DEMO_MAX_DAYS} days from enablement.")
+    await tdb(request).settings.update_one({"name": DEMO_SETTING}, {"$set": {"expires_at": new_exp}})
+    invalidate_settings(request.state.org_id, DEMO_SETTING)
+    await log_action("demo_extended", current_actor(request),
+                     {"reason": reason, "days": data.days, "expires_at": new_exp}, org_id=request.state.org_id)
+    return await _demo_public_status(request.state.org_id)
+
+
+@app.post("/superadmin/demo/seed")
+async def demo_seed(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    doc = await _demo_require_active(request)
+    org_id = require_org(request.state.org_id)
+    now = datetime.utcnow()
+    expires = naive_utc(doc.get("expires_at")) or (now + timedelta(days=DEMO_DEFAULT_DAYS))
+    dbs = tdb(request)
+    created = {"voters": 0, "roles": 0, "panelists": 0, "applications": 0, "positions": 0}
+    credentials = dict((doc.get("credentials") or {}))
+
+    # Reserved fake voters. Refuse collisions with any untagged roster entry:
+    # otherwise seeding a role onto a real voter would make reset destructive.
+    reserved_ids = [f"DEMO-{i:03d}" for i in range(1, 41)]
+    collisions = await dbs.voters.find(
+        {"student_id": {"$in": reserved_ids}, "is_demo": {"$ne": True}},
+        {"student_id": 1},
+    ).to_list(length=41)
+    if collisions:
+        ids = ", ".join(sorted(v.get("student_id", "?") for v in collisions[:5]))
+        extra = "…" if len(collisions) > 5 else ""
+        raise HTTPException(409, f"Reserved demo voter IDs are already in use: {ids}{extra}")
+    voter_docs = []
+    for i in range(1, 41):
+        sid = f"DEMO-{i:03d}"
+        if await dbs.voters.find_one({"student_id": sid}):
+            continue
+        voter_docs.append({"student_id": sid, "full_name": f"Demo Voter {i:03d}",
+                           "phone_numbers": [f"{DEMO_PHONE_PREFIX}{100+i:03d}"],
+                           "has_voted": False, "last_status": "idle", "is_demo": True,
+                           "is_commissioner": False, "is_it_admin": False,
+                           "is_financial_controller": False, "is_overseer": False})
+    if voter_docs:
+        await dbs.voters.insert_many(voter_docs)
+        created["voters"] = len(voter_docs)
+
+    # Create sample positions only when the organisation has none, matching the guide's "if none exist" rule.
+    positions = [p async for p in dbs.positions.find({}).sort("order", 1).limit(3)]
+    if not positions:
+        for i, title in enumerate(("President", "Vice President", "Treasurer")):
+            r = await dbs.positions.insert_one({"title": title, "description": "Demo election position", "order": i,
+                                                "application_fee": 0, "is_demo": True})
+            positions.append(await dbs.positions.find_one({"_id": r.inserted_id}))
+            created["positions"] += 1
+    if not positions:
+        raise HTTPException(409, "No election positions are available for the demo.")
+
+    role_specs = [
+        ("IT admin", "DEMO-001", "it_admin_email", "it_admin_password_hash", "it_admin_must_change_password", "it_admin_temp_password_expires", "is_it_admin", "demo.itadmin@example.invalid"),
+        ("Commissioner", "DEMO-002", "commissioner_email", "commissioner_password_hash", "commissioner_must_change_password", "commissioner_temp_password_expires", "is_commissioner", "demo.commissioner@example.invalid"),
+        ("Financial Controller", "DEMO-003", "financial_controller_email", "financial_controller_password_hash", "financial_controller_must_change_password", "financial_controller_temp_password_expires", "is_financial_controller", "demo.finance@example.invalid"),
+        ("Overseer", "DEMO-004", "overseer_email", "overseer_password_hash", "overseer_must_change_password", "overseer_temp_password_expires", "is_overseer", "demo.overseer@example.invalid"),
+    ]
+    for role_label, sid, email_field, hash_field, must_field, exp_field, flag_field, email in role_specs:
+        voter = await dbs.voters.find_one({"student_id": sid})
+        if not voter:
+            continue
+        cred = credentials.get(role_label.lower()) or {}
+        password = cred.get("password") or generate_temp_password()
+        await dbs.voters.update_one({"_id": voter["_id"]}, {"$set": {
+            email_field: email, hash_field: hash_password(password), must_field: False, exp_field: expires, flag_field: True, "is_demo": True}})
+        credentials[role_label.lower()] = {"email": email, "password": password, "student_id": sid}
+        created["roles"] += 1
+
+    existing_panels = [p async for p in dbs.panel_members.find({"is_demo": True})]
+    for i in range(1, 4):
+        pid = f"DEMO-PANEL-{i}"
+        if any(p.get("panel_member_id") == pid for p in existing_panels):
+            continue
+        password = generate_temp_password()
+        email = f"demo.panel{i}@example.invalid"
+        await dbs.panel_members.insert_one({"panel_member_id": pid, "email": email, "full_name": f"Demo Panelist {i}",
+                                            "password_hash": hash_password(password), "active": True,
+                                            "is_member": False, "access_expires_at": expires,
+                                            "must_change_password": False, "temp_password_expires": expires,
+                                            "confidentiality_required": False, "confidentiality_accepted": True,
+                                            "confidentiality_version": CONFIDENTIALITY_VERSION, "is_demo": True,
+                                            "created_at": now})
+        credentials[f"panelist_{i}"] = {"email": email, "password": password, "panel_member_id": pid}
+        created["panelists"] += 1
+
+    await tdb(request).settings.update_one({"name": DEMO_SETTING}, {"$set": {"credentials": credentials}})
+    invalidate_settings(org_id, DEMO_SETTING)
+
+    # A few synthetic applications are created idempotently. These are tagged so reset never touches real applications.
+    existing_demo_apps = [a async for a in dbs.applications.find({"is_demo": True}).limit(6)]
+    if not existing_demo_apps:
+        nom_cfg = await get_nomination_form(org_id)
+        pos = positions[0]
+        for i in range(1, 5):
+            sid = f"DEMO-{i+10:03d}"
+            voter = await dbs.voters.find_one({"student_id": sid}) or await dbs.voters.find_one({"is_demo": True})
+            if not voter:
+                continue
+            doc = {"student_id": voter["student_id"], "full_name": voter.get("full_name", ""), "position_id": str(pos["_id"]),
+                   "manifesto": f"Demo manifesto for candidate {i}.", "image_url": "", "payment_method": "Demo", "payment_proof_url": "https://example.invalid/demo-receipt",
+                   "nomination_form": None, "nomination_form_required": bool(nom_cfg["enabled"] and nom_cfg["required"]),
+                   "round_id": (await get_phase_schedule(request))["round_id"], "status": "pending", "votes": {}, "removal_votes": {},
+                   "fee_required": int(pos.get("application_fee") or 0), "finance_cleared": False,
+                   "finance_cleared_by": None, "finance_cleared_at": None, "submitted_at": now,
+                   "application_snapshot": {"student_id": voter["student_id"], "full_name": voter.get("full_name", ""), "position_title": pos.get("title", ""),
+                                             "manifesto": f"Demo manifesto for candidate {i}.", "image_url": "", "submitted_at": now},
+                   "denial_snapshot": None, "certificate_id": None, "certificate_issued_at": None, "is_demo": True}
+            await dbs.applications.insert_one(doc)
+            created["applications"] += 1
+
+    return {"status": "seeded", "created": created, "credentials": credentials, "counts": await _demo_counts(org_id)}
+
+
+@app.post("/superadmin/demo/phase")
+async def demo_phase(data: DemoPhaseRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    await _demo_require_active(request)
+    org_id = require_org(request.state.org_id)
+    phase = data.phase.strip().lower()
+    if phase not in PHASE_NAMES:
+        raise HTTPException(400, f"Phase must be one of: {', '.join(PHASE_NAMES)}.")
+    if phase == "voting":
+        await _demo_prepare_for_voting(request)
+    now = datetime.utcnow()
+    short = timedelta(minutes=2)
+    later = timedelta(hours=2)
+    phases = {}
+    idx = PHASE_NAMES.index(phase)
+    for i, name in enumerate(PHASE_NAMES):
+        if i < idx:
+            phases[name] = {"start": now - later - timedelta(minutes=(idx-i)*5), "end": now - short, "enforced": True}
+        elif i == idx:
+            phases[name] = {"start": now - short, "end": now + timedelta(hours=1), "enforced": True}
+        else:
+            phases[name] = {"start": now + timedelta(hours=1) + timedelta(minutes=(i-idx)*5),
+                            "end": now + timedelta(hours=2) + timedelta(minutes=(i-idx)*5), "enforced": True}
+    sched = await get_phase_schedule(request)
+    await _write_phase_schedule(org_id, phases, sched.get("timezone") or DEFAULT_ELECTION_TZ, sched.get("round_id") or DEFAULT_ROUND_ID)
+    # Voting is a real gate in the application. Open it only for the voting demo window; results closes it.
+    await tdb(request).settings.update_one({"name": "election_config"}, {"$set": org_stamp(request, {"name": "election_config", "is_open": phase == "voting"})}, upsert=True)
+    invalidate_settings(org_id, "election_config")
+    return {"status": "phase_set", "phase": phase, "schedule": await get_phase_schedule(request)}
+
+
+async def _demo_prepare_for_voting(request: Request) -> None:
+    org_id = require_org(request.state.org_id)
+    # Ensure the seed created its panel and applications.
+    await demo_seed(request, request.state.admin or {})
+    panelists = await _live_panelists(org_id)
+    if len(panelists) < 3:
+        raise HTTPException(409, "Demo voting needs 3 active demo panelists.")
+    policy = (await security_settings_for(org_id))["approval_policy"]
+    # Resolve up to three demo applications through the same resolution path the real vetting route uses.
+    apps = [a async for a in tdb(request).applications.find({"is_demo": True}).sort("submitted_at", 1).limit(3)]
+    for idx, app in enumerate(apps):
+        if app.get("status") in RESOLVED_STATUSES:
+            continue
+        fc = await tdb(request).voters.find_one({"student_id": "DEMO-003", "is_financial_controller": True, "is_demo": True})
+        if not fc:
+            raise HTTPException(409, "Demo financial controller account is missing; reseed demo data.")
+        await _finance_clear_application_core(str(app["_id"]),
+                                              FinanceClear(financial_controller_id=fc["student_id"], reason="Demo payment cleared"),
+                                              request, fc)
+        choice = "approve" if idx < 2 else "deny"
+        votes = { _panel_vote_key(p): choice for p in panelists[:3] }
+        await tdb(request).applications.update_one({"_id": app["_id"]}, {"$set": {"votes": votes}})
+        refreshed = await tdb(request).applications.find_one({"_id": app["_id"]})
+        await _resolve_application(str(app["_id"]), refreshed, org_id)
+
+
+@app.post("/superadmin/demo/reset")
+async def demo_reset(data: DemoReasonRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    doc = await _demo_require_active(request)
+    reason = _demo_reason(data.reason)
+    deleted = await _demo_fenced_reset(request.state.org_id, doc.get("snapshot") or {})
+    # Reset removes demo principals, so previously returned temporary credentials
+    # must not remain visible in status until a fresh seed recreates them.
+    await tdb(request).settings.update_one({"name": DEMO_SETTING}, {"$unset": {"credentials": ""}})
+    invalidate_settings(request.state.org_id, DEMO_SETTING)
+    await log_action("demo_reset", current_actor(request), {"reason": reason, "deleted": deleted}, org_id=request.state.org_id)
+    return {"status": "reset", "deleted": deleted, "enabled": True, "expires_at": (await _demo_public_status(request.state.org_id))["expires_at"]}
+
+
+@app.post("/superadmin/demo/disable")
+async def demo_disable(data: DemoReasonRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    doc = await _demo_require_active(request)
+    reason = _demo_reason(data.reason)
+    deleted = await _demo_fenced_reset(request.state.org_id, doc.get("snapshot") or {})
+    await tdb(request).settings.update_one({"name": DEMO_SETTING}, {"$set": {"enabled": False, "expires_at": datetime.utcnow(), "enabled_by": doc.get("enabled_by")}})
+    invalidate_settings(request.state.org_id, DEMO_SETTING)
+    await log_action("demo_disabled", current_actor(request), {"reason": reason, "deleted": deleted}, org_id=request.state.org_id)
+    return {"status": "disabled", "enabled": False}
+
+
+@app.get("/superadmin/demo/status")
+async def demo_status(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    org_id = require_org(request.state.org_id)
+    doc = await cached_setting(org_id, DEMO_SETTING) or {}
+    active = await _demo_active(org_id)
+    return {"enabled": active, "enabled_at": doc.get("enabled_at"), "expires_at": doc.get("expires_at"),
+            "counts": await _demo_counts(org_id) if active else {}, "credentials": (doc.get("credentials") or {}) if active else {}}
 
 
 # =============================================================================
@@ -8850,7 +9530,7 @@ async def get_admin_schedule(request: Request):
     """Read-only phase schedule + legacy voting window, for the countdown
     widget mounted in all five dashboards."""
     schedule = await get_phase_schedule(request)
-    config = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    config = await tdb(request).settings.find_one({"name": "election_config"}) or {}
     now = datetime.utcnow()
 
     phases = []
@@ -8928,18 +9608,7 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
             "timezone": old_schedule["timezone"],
         })
 
-    await db.settings.update_one(
-        org_query(request, {"name": "election_phases"}),
-        {"$set": org_stamp(request, {
-            "name": "election_phases",
-            "phases": stored,
-            "round_id": data.round_id or DEFAULT_ROUND_ID,
-            "timezone": tz_name,
-            "updated_at": datetime.utcnow(),
-        })},
-        upsert=True,
-    )
-    invalidate_settings(request.state.org_id)
+    await _write_phase_schedule(request.state.org_id, stored, tz_name, data.round_id or DEFAULT_ROUND_ID)
     await log_action("phases_scheduled", current_actor(request), {
         "round_id": data.round_id, "timezone": tz_name,
         "phases": {k: {"enforced": v["enforced"], "start_utc": v["start"].isoformat() if v["start"] else None,
@@ -8950,10 +9619,10 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
     # Design 5.3(2): recompute lock strength from the new window and log it whenever W changes.
     if "voting" in stored:
         params = await guess_params(request)
-        prior = await db.settings.find_one(org_query(request, {"name": "otp_derived"})) or {}
+        prior = await tdb(request).settings.find_one({"name": "otp_derived"}) or {}
         if int(prior.get("window_s", -1)) != int(params["window_s"]):
-            await db.settings.update_one(
-                org_query(request, {"name": "otp_derived"}),
+            await tdb(request).settings.update_one(
+                {"name": "otp_derived"},
                 {"$set": org_stamp(request, {"name": "otp_derived", "window_s": int(params["window_s"])})}, upsert=True)
             await log_action("otp_lock_params_changed", current_actor(request), {
                 "window_s": int(params["window_s"]), "guess_budget": round(params["budget"], 1),
@@ -8963,12 +9632,12 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
         new_start = stored["voting"].get("start")
         if new_start is not None and new_start.tzinfo is not None:      # pydantic hands us aware datetimes
             new_start = new_start.astimezone(timezone.utc).replace(tzinfo=None)
-        prev_round = (await db.settings.find_one(org_query(request, {"name": "otp_derived"})) or {}).get("round_id")
+        prev_round = (await tdb(request).settings.find_one({"name": "otp_derived"}) or {}).get("round_id")
         if new_start and new_start > datetime.utcnow():
             await _save_security(request, {"freeze_lifted_at": None})
         elif prev_round and prev_round != (data.round_id or DEFAULT_ROUND_ID):
             await _save_security(request, {"freeze_lifted_at": datetime.utcnow(), "epoch_at": datetime.utcnow()})
-        await db.settings.update_one(org_query(request, {"name": "otp_derived"}),
+        await tdb(request).settings.update_one({"name": "otp_derived"},
                                      {"$set": {"round_id": data.round_id or DEFAULT_ROUND_ID}})
     return {"status": "saved", "round_id": data.round_id or DEFAULT_ROUND_ID}
 
@@ -8977,7 +9646,7 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
 async def get_admin_roadmap(request: Request):
     """Read-only for any admin role (matches /admin/schedule's transparency
     rule); only superadmin can write via POST /admin/roadmap below."""
-    doc = await db.settings.find_one(org_query(request, {"name": "election_roadmap"}))
+    doc = await tdb(request).settings.find_one({"name": "election_roadmap"})
     return {
         "milestones": (doc or {}).get("milestones", []),
         "week_start_day": (doc or {}).get("week_start_day", 1),
@@ -8996,8 +9665,8 @@ async def set_roadmap(data: RoadmapUpdate, request: Request,
     event happens; later weeks start on `week_start_day`). Rows are stored
     and returned in the order given, never re-sorted."""
     stored = [m.model_dump() for m in data.milestones]
-    await db.settings.update_one(
-        org_query(request, {"name": "election_roadmap"}),
+    await tdb(request).settings.update_one(
+        {"name": "election_roadmap"},
         {"$set": org_stamp(request, {
             "name": "election_roadmap",
             "milestones": stored,
@@ -9036,7 +9705,7 @@ async def get_public_election_roadmap(request: Request):
     "today" in that zone. The 4 enforced phases are deliberately NOT exposed
     here — they're an admin-facing view of when the system switches state,
     not voter information."""
-    doc = await db.settings.find_one(org_query(request, {"name": "election_roadmap"}))
+    doc = await tdb(request).settings.find_one({"name": "election_roadmap"})
     schedule = await get_phase_schedule(request)
     return {
         "milestones": (doc or {}).get("milestones", []),
@@ -9056,7 +9725,7 @@ async def get_public_election_roadmap(request: Request):
 @app.get("/admin/exception-grants")
 async def list_exception_grants(request: Request):
     grants = []
-    async for g in db.exception_grants.find(org_query(request)).sort("granted_at", -1).limit(200):
+    async for g in tdb(request).exception_grants.find({}).sort("granted_at", -1).limit(200):
         g["_id"] = str(g["_id"])
         grants.append(g)
     return grants
@@ -9072,7 +9741,7 @@ async def create_exception_grant(data: ExceptionGrantCreate, request: Request,
     if data.expires_at and data.expires_at <= datetime.utcnow():
         raise HTTPException(400, "Expiry must be in the future.")
 
-    student = await db.voters.find_one(org_query(request, get_forgiving_filter(data.student_id)))
+    student = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
     if not student:
         raise HTTPException(404, "That student is not on the voter register.")
 
@@ -9087,7 +9756,7 @@ async def create_exception_grant(data: ExceptionGrantCreate, request: Request,
         "round_id": await current_round_id(request),
         "revoked": False,
     })
-    result = await db.exception_grants.insert_one(doc)
+    result = await tdb(request).exception_grants.insert_one(doc)
     await log_action("phase_exception_granted", current_actor(request), {
         "student_id": doc["student_id"],
         "full_name": doc["full_name"],
@@ -9105,10 +9774,10 @@ async def revoke_exception_grant(grant_id: str, request: Request,
         oid = ObjectId(grant_id)
     except Exception:
         raise HTTPException(400, "Invalid grant id.")
-    grant = await db.exception_grants.find_one(org_query(request, {"_id": oid}))
+    grant = await tdb(request).exception_grants.find_one({"_id": oid})
     if not grant:
         raise HTTPException(404, "Grant not found.")
-    await db.exception_grants.update_one(
+    await tdb(request).exception_grants.update_one(
         {"_id": oid},
         {"$set": {"revoked": True, "revoked_at": datetime.utcnow(), "revoked_by": current_actor(request)}},
     )
@@ -9154,9 +9823,9 @@ async def get_admin_audit_log(request: Request, limit: int = 200, action: str = 
             # searchable by actor for anyone but the superadmin.
             hidden_actions.append("application_vote_cast")
         query.setdefault("$and", []).append({"action": {"$nin": hidden_actions}})
-    total = await db.audit_log.count_documents(query)
+    total = await tdb(request).audit_log.count_documents(query)
     logs = []
-    async for entry in db.audit_log.find(query).sort("timestamp", -1).skip(skip).limit(limit):
+    async for entry in tdb(request).audit_log.find(query).sort("timestamp", -1).skip(skip).limit(limit):
         entry["_id"] = str(entry["_id"])
         if not privileged:
             details = entry.get("details") or {}
@@ -9198,8 +9867,8 @@ async def list_audit_checkpoints(request: Request, limit: int = 100):
             "chain_hash": cp.get("chain_hash"),
             "created_at": cp.get("created_at"),
         })
-    anchor_failures = await db.audit_log.count_documents(
-        org_query(request, {"action": "audit_checkpoint_anchor_failed"})
+    anchor_failures = await tdb(request).audit_log.count_documents(
+        {"action": "audit_checkpoint_anchor_failed"}
     )
     return {"checkpoints": rows, "anchor_failures": anchor_failures}
 
@@ -9216,7 +9885,7 @@ async def analytics_turnout_velocity(request: Request, bucket: str = "hour"):
         raise HTTPException(400, "Bucket must be 'hour' or 'day'.")
     fmt = "%Y-%m-%dT%H:00" if bucket == "hour" else "%Y-%m-%d"
     series = []
-    async for row in db.vote_events.aggregate([
+    async for row in tdb(request).vote_events.aggregate([
         {"$match": org_query(request)},
         {"$group": {"_id": {"$dateToString": {"format": fmt, "date": "$cast_at"}}, "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
@@ -9243,7 +9912,7 @@ async def analytics_funnel(request: Request):
     of each. idle -> otp_sent -> authenticated -> completed."""
     stages = ["idle", "otp_sent", "authenticated", "completed"]
     counts = {stage: 0 for stage in stages}
-    async for row in db.voters.aggregate([
+    async for row in tdb(request).voters.aggregate([
         {"$match": org_query(request)},
         {"$group": {"_id": {"$ifNull": ["$last_status", "idle"]}, "count": {"$sum": 1}}},
     ]):
@@ -9274,11 +9943,11 @@ async def analytics_funnel(request: Request):
 async def analytics_undervote(request: Request):
     """Positions where fewer votes were cast than there were completed voters
     — i.e. voters skipped that race. Nothing in the system checked this."""
-    completed = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    completed = await tdb(request).voters.count_documents({"has_voted": True})
     vote_counts = await get_vote_counts(request)
 
     by_position: dict[str, int] = {}
-    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+    async for cand in tdb(request).candidates.find({}).sort("order", 1):
         title = cand.get("position", "Unknown Position")
         by_position[title] = by_position.get(title, 0) + vote_counts.get(str(cand["_id"]), 0)
 
@@ -9325,7 +9994,7 @@ async def analytics_anomalies(request: Request, limit: int = 100):
     # endpoint, so the redaction has to be repeated here rather than shared.
     privileged = current_role(request) == "superadmin"
     events = []
-    async for entry in db.audit_log.find(query).sort("timestamp", -1).limit(limit):
+    async for entry in tdb(request).audit_log.find(query).sort("timestamp", -1).limit(limit):
         entry["_id"] = str(entry["_id"])
         if not privileged:
             details = entry.get("details") or {}
@@ -9339,7 +10008,7 @@ async def analytics_anomalies(request: Request, limit: int = 100):
 
     since = datetime.utcnow() - timedelta(hours=24)
     summary = []
-    async for row in db.audit_log.aggregate([
+    async for row in tdb(request).audit_log.aggregate([
         {"$match": org_query(request, {"action": {"$in": watched}, "timestamp": {"$gte": since}})},
         {"$group": {"_id": "$action", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
@@ -9353,18 +10022,18 @@ async def analytics_anomalies(request: Request, limit: int = 100):
 async def analytics_overview(request: Request):
     """Compact roster/turnout snapshot — the landing view for IT Admin, which
     previously had no visibility into election state at all."""
-    total = await db.voters.count_documents(org_query(request))
-    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
-    config = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    total = await tdb(request).voters.count_documents({})
+    voted = await tdb(request).voters.count_documents({"has_voted": True})
+    config = await tdb(request).settings.find_one({"name": "election_config"}) or {}
     return {
         "total_registered": total,
         "voted": voted,
         "turnout_pct": round((voted / total) * 100, 1) if total else 0.0,
-        "candidates": await db.candidates.count_documents(org_query(request)),
-        "positions": await db.positions.count_documents(org_query(request)),
-        "applications_pending": await db.applications.count_documents(org_query(request, {"status": "pending"})),
-        "student_changes_pending": await db.student_changes.count_documents(org_query(request, {"status": "pending"})),
-        "with_phone_on_file": await db.voters.count_documents(org_query(request, {"phone_numbers": {"$ne": []}})),
+        "candidates": await tdb(request).candidates.count_documents({}),
+        "positions": await tdb(request).positions.count_documents({}),
+        "applications_pending": await tdb(request).applications.count_documents({"status": "pending"}),
+        "student_changes_pending": await tdb(request).student_changes.count_documents({"status": "pending"}),
+        "with_phone_on_file": await tdb(request).voters.count_documents({"phone_numbers": {"$ne": []}}),
         "is_open": config.get("is_open", True),
         "is_certified": config.get("is_certified", False),
     }
@@ -9379,7 +10048,7 @@ async def _turnout_groups(request: Request, key: str) -> list[dict]:
                     "voted": {"$sum": {"$cond": [{"$eq": ["$has_voted", True]}, 1, 0]}}}},
     ]
     merged: dict[str, dict] = {}
-    async for g in db.voters.aggregate(pipeline):
+    async for g in tdb(request).voters.aggregate(pipeline):
         label = g["_id"] if isinstance(g["_id"], str) and g["_id"].strip() else UNRECORDED_LABEL
         m = merged.setdefault(label, {"label": label, "registered": 0, "voted": 0})
         m["registered"] += g["registered"]
@@ -9392,8 +10061,8 @@ async def analytics_turnout_breakdown(request: Request):
     """Turnout per enabled voter field (gender, programme, ...). Admin-only, live, unsuppressed counts.
     Never includes how anyone voted."""
     vf = await get_voter_fields(request)
-    total = await db.voters.count_documents(org_query(request))
-    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    total = await tdb(request).voters.count_documents({})
+    voted = await tdb(request).voters.count_documents({"has_voted": True})
     return {
         "total": {"registered": total, "voted": voted},
         "fields": [{"key": f["key"], "label": f["label"], "public": f["public"],
@@ -9407,9 +10076,9 @@ async def admin_voter_stats(request: Request, admin: dict = Depends(require_role
     """CUSTOM-1 (restored): headline voter numbers for the superadmin Voters tab.
     Counts only - no voter is identified and nothing says how anyone voted. `sections` is registered/voted
     per enabled voter field (faculty, hostel, ...); field keys come from the org's own config, never the request."""
-    total = await db.voters.count_documents(org_query(request))
-    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
-    with_phone = await db.voters.count_documents(org_query(request, {"phone_numbers": {"$exists": True, "$ne": []}}))
+    total = await tdb(request).voters.count_documents({})
+    voted = await tdb(request).voters.count_documents({"has_voted": True})
+    with_phone = await tdb(request).voters.count_documents({"phone_numbers": {"$exists": True, "$ne": []}})
     vf = await get_voter_fields(request)
     sections = []
     for f in vf["fields"]:
@@ -9441,12 +10110,12 @@ async def admin_voter_stats(request: Request, admin: dict = Depends(require_role
 
 @app.get("/admin/official-report")
 async def get_official_report(request: Request):
-    config = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
-    branding = await db.settings.find_one(org_query(request, {"name": "branding"})) or {}
+    config = await tdb(request).settings.find_one({"name": "election_config"}) or {}
+    branding = await tdb(request).settings.find_one({"name": "branding"}) or {}
 
     commissioners = []
-    async for c in db.voters.find(
-        org_query(request, {"is_commissioner": True}),
+    async for c in tdb(request).voters.find(
+        {"is_commissioner": True},
         {"_id": 0, "full_name": 1, "commissioner_role": 1, "is_chief_commissioner": 1,
          "is_deputy_chief_commissioner": 1},
     ):
@@ -9470,10 +10139,10 @@ async def get_official_report(request: Request):
     # for the same election. Duplicated here rather than calling the other
     # route internally because this one runs behind auth and needs to stay a
     # single round trip for the frontend.
-    voter_turnout = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    voter_turnout = await tdb(request).voters.count_documents({"has_voted": True})
     vote_counts = await get_vote_counts(request)
     results = []
-    async for cand in db.candidates.find(org_query(request)).sort("order", 1):
+    async for cand in tdb(request).candidates.find({}).sort("order", 1):
         results.append({
             "id": str(cand["_id"]),
             "name": cand["name"],
@@ -9508,9 +10177,9 @@ async def get_official_report(request: Request):
          "decided_by": c.get("decided_by"), "decided_at": c.get("decided_at"), "status": c.get("status"),
          "evidence_type": c.get("evidence_type"), "notice_status": c.get("notice_status"),
          "breakglass": bool(c.get("breakglass"))}
-        async for c in db.contact_changes.find(org_query(request, {
+        async for c in tdb(request).contact_changes.find({
             "status": {"$in": ["approved", "denied", "expired", "failed"]},
-            "requested_at": {"$gte": _epoch(sec_r)}})).sort("requested_at", 1).limit(1000)
+            "requested_at": {"$gte": _epoch(sec_r)}}).sort("requested_at", 1).limit(1000)
     ]
 
     await log_action("official_report_generated", current_actor(request), {
@@ -9579,15 +10248,15 @@ async def get_public_voter_roll(request: Request):
         request, bucket="voter_roll", limit=ROLL_RATE_LIMIT, window_s=ROLL_RATE_WINDOW_S,
         message="Too many requests. Please try again shortly.",
     )
-    voted = await db.voters.count_documents(org_query(request, {"has_voted": True}))
+    voted = await tdb(request).voters.count_documents({"has_voted": True})
     if voted < PUBLIC_ROLL_THRESHOLD:
         # Below the threshold the server returns nothing at all, so a small
         # turnout can't be de-anonymised by reading the network response.
         return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": False, "roll": []}
 
     roll = []
-    cursor = db.voters.find(
-        org_query(request, {"has_voted": True}), {"_id": 0, "full_name": 1}
+    cursor = tdb(request).voters.find(
+        {"has_voted": True}, {"_id": 0, "full_name": 1}
     ).limit(PUBLIC_ROLL_MAX)
     async for v in cursor:
         roll.append({"full_name": _mask_name(v.get("full_name", ""))})
@@ -9596,7 +10265,7 @@ async def get_public_voter_roll(request: Request):
 
 async def _election_closed(request: Request) -> bool:
     """Voting is over: master switch off, results certified, or the enforced voting window has ended."""
-    cfg = await db.settings.find_one(org_query(request, {"name": "election_config"})) or {}
+    cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
     if cfg.get("is_certified") or not cfg.get("is_open", True):
         return True
     return voting_window_state(await get_phase_schedule(request), datetime.utcnow())["ended"]
@@ -9705,8 +10374,8 @@ def _capkey(sid: str) -> str:
 
 
 async def _save_security(request: Request, updates: dict):
-    await db.settings.update_one(
-        org_query(request, {"name": "security_settings"}),
+    await tdb(request).settings.update_one(
+        {"name": "security_settings"},
         {"$set": org_stamp(request, {"name": "security_settings", **updates, "updated_at": datetime.utcnow()})},
         upsert=True)
     invalidate_settings(request.state.org_id)
@@ -9721,15 +10390,15 @@ async def _is_chief(request: Request) -> bool:
 
 
 async def _branding(request: Request) -> dict:
-    return await db.settings.find_one(org_query(request, {"name": "branding"})) or {}
+    return await tdb(request).settings.find_one({"name": "branding"}) or {}
 
 
 # ── Contact-change requests ─────────────────────────────────────────────────
 
 async def _expire_contact_changes(request: Request):
     now = datetime.utcnow()
-    async for c in db.contact_changes.find(org_query(request, {"status": "pending", "expires_at": {"$lt": now}})):
-        r = await db.contact_changes.update_one({"_id": c["_id"], "status": "pending"},
+    async for c in tdb(request).contact_changes.find({"status": "pending", "expires_at": {"$lt": now}}):
+        r = await tdb(request).contact_changes.update_one({"_id": c["_id"], "status": "pending"},
                                                 {"$set": {"status": "expired", "decided_at": now}})
         if r.modified_count:
             await append_ledger(request.state.org_id, "contact_change_expired", c["student_id"], "system", "system",
@@ -9763,7 +10432,7 @@ async def _validate_contact_change(data: ContactChangeRequest, voter: dict, org_
             raise HTTPException(400, "That is already this student's registration number.")
         if any(voter.get(f) for f in STUDENT_ROLE_FLAGS):
             raise HTTPException(409, "This student holds an admin/commission role; the registration number cannot be changed.")
-        if await db.voters.find_one(_oq(org_id, {"student_id": new_sid})):
+        if await tdb_for(org_id).voters.find_one({"student_id": new_sid}):
             raise HTTPException(409, "Another student in this organization already has that registration number.")
         ch["new_value"], ch["expected_old"] = new_sid, voter["student_id"]
     return ch
@@ -9772,7 +10441,7 @@ async def _validate_contact_change(data: ContactChangeRequest, voter: dict, org_
 @app.post("/it-admin/contact-changes/request")
 async def request_contact_change(data: ContactChangeRequest, request: Request,
                                  admin: dict = Depends(require_role("it_admin", "superadmin"))):
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     sec = await get_security_settings(request)
     st = await roster_status(request, sec)
     if st["phase"] == "pre_freeze":
@@ -9788,7 +10457,7 @@ async def request_contact_change(data: ContactChangeRequest, request: Request,
     if len(note) < (20 if data.evidence_type == "other_documented" else 3):
         raise HTTPException(400, "Describe the evidence you checked (at least 20 characters for 'other_documented').")
 
-    voter = await db.voters.find_one(_oq(org_id, get_forgiving_filter(data.student_id)))
+    voter = await tdb_for(org_id).voters.find_one(get_forgiving_filter(data.student_id))
     if not voter:
         raise HTTPException(404, "Student not found in this organization.")
     if voter.get("has_voted"):
@@ -9798,8 +10467,8 @@ async def request_contact_change(data: ContactChangeRequest, request: Request,
         raise HTTPException(403, "You cannot request a change to your own record.")
 
     await _expire_contact_changes(request)
-    approved = await db.contact_changes.count_documents(_oq(org_id, {
-        "student_id": voter["student_id"], "status": "approved", "requested_at": {"$gte": _epoch(sec)}}))
+    approved = await tdb_for(org_id).contact_changes.count_documents({
+        "student_id": voter["student_id"], "status": "approved", "requested_at": {"$gte": _epoch(sec)}})
     if approved >= sec["contact_change_max_per_voter"]:
         raise HTTPException(409, f"This voter already has {approved} approved contact changes (the maximum).")
     ch = await _validate_contact_change(data, voter, org_id)
@@ -9811,7 +10480,7 @@ async def request_contact_change(data: ContactChangeRequest, request: Request,
            "status": "pending", "expires_at": now + timedelta(hours=sec["contact_change_ttl_hours"]),
            "decided_by": None, "decided_at": None, "decision_note": "", "notice_status": None}
     try:
-        res = await db.contact_changes.insert_one(doc)
+        res = await tdb(request).contact_changes.insert_one(doc)
     except DuplicateKeyError:
         raise HTTPException(409, "This voter already has a pending contact-change request.")
     await append_ledger(org_id, "contact_change_requested", voter["student_id"], actor, role,
@@ -9826,13 +10495,13 @@ async def request_contact_change(data: ContactChangeRequest, request: Request,
 async def cancel_contact_change(change_id: str, data: ContactChangeCancel, request: Request,
                                 admin: dict = Depends(require_role("it_admin", "superadmin"))):
     oid = parse_oid(change_id, "change id")
-    c = await db.contact_changes.find_one(org_query(request, {"_id": oid}))
+    c = await tdb(request).contact_changes.find_one({"_id": oid})
     if not c:
         raise HTTPException(404, "Request not found.")
     actor = current_actor(request)
     if current_role(request) != "superadmin" and normalize_student_id(c["requested_by"]) != normalize_student_id(actor):
         raise HTTPException(403, "You can only cancel your own requests.")
-    r = await db.contact_changes.update_one(
+    r = await tdb(request).contact_changes.update_one(
         {"_id": oid, "status": "pending"},
         {"$set": {"status": "cancelled", "decided_by": actor, "decided_at": datetime.utcnow(),
                   "decision_note": data.reason.strip()}})
@@ -9847,10 +10516,10 @@ async def _cc_warnings(request: Request, c: dict) -> list[dict]:
     ch, out = c["change"], []
     nv = ch.get("new_value")
     if nv and ch["type"] != "registration_number_change":
-        on_voters = await db.voters.count_documents(org_query(request, {
-            "phone_numbers": nv, "student_id": {"$ne": c["student_id"]}}))
-        in_pending = await db.contact_changes.count_documents(org_query(request, {
-            "status": "pending", "change.new_value": nv, "_id": {"$ne": c["_id"]}}))
+        on_voters = await tdb(request).voters.count_documents({
+            "phone_numbers": nv, "student_id": {"$ne": c["student_id"]}})
+        in_pending = await tdb(request).contact_changes.count_documents({
+            "status": "pending", "change.new_value": nv, "_id": {"$ne": c["_id"]}})
         if on_voters:
             out.append({"code": "new_number_on_other_voter",
                         "message": f"This new number is already registered to {on_voters} other voter(s)."})
@@ -9865,7 +10534,7 @@ async def _cc_view(request: Request, c: dict, role: str) -> dict:
     full = role in ("it_admin", "superadmin")
     old = ch.get("expected_old")
     old_masked = (_mask_student_id(old) if ch["type"] == "registration_number_change" else _mask_phone(old)) if old else None
-    live_otp = bool(await db.otps.find_one(org_query(request, {"student_id": c["student_id"]})))
+    live_otp = bool(await tdb(request).otps.find_one({"student_id": c["student_id"]}))
     return {
         "id": str(c["_id"]),
         "student_id": c["student_id"] if full else _mask_student_id(c["student_id"]),
@@ -9883,11 +10552,11 @@ async def _cc_view(request: Request, c: dict, role: str) -> dict:
 
 async def _cc_stats(request: Request, sec: dict) -> dict:
     since = _epoch(sec)
-    rows = [c async for c in db.contact_changes.find(
-        org_query(request, {"requested_at": {"$gte": since}, "status": {"$in": ["approved", "pending"]}}),
+    rows = [c async for c in tdb(request).contact_changes.find(
+        {"requested_at": {"$gte": since}, "status": {"$in": ["approved", "pending"]}},
         {"status": 1, "decided_by": 1, "change": 1, "notice_status": 1})]
     approved = [c for c in rows if c["status"] == "approved"]
-    electorate = await db.voters.count_documents(org_query(request))
+    electorate = await tdb(request).voters.count_documents({})
     by_approver: dict = {}
     for c in approved:
         by_approver[c.get("decided_by")] = by_approver.get(c.get("decided_by"), 0) + 1
@@ -9898,8 +10567,8 @@ async def _cc_stats(request: Request, sec: dict) -> dict:
         if nv and c["change"]["type"] != "registration_number_change":
             seen[nv] = seen.get(nv, 0) + 1
     pct = (100.0 * len(approved) / electorate) if electorate else 0.0
-    resets = [{"actor": a["actor"], "at": a["timestamp"]} async for a in db.audit_log.find(org_query(request, {
-        "action": "otp_reset_admin_alert", "timestamp": {"$gte": datetime.utcnow() - timedelta(hours=24)}}))
+    resets = [{"actor": a["actor"], "at": a["timestamp"]} async for a in tdb(request).audit_log.find({
+        "action": "otp_reset_admin_alert", "timestamp": {"$gte": datetime.utcnow() - timedelta(hours=24)}})
         .sort("timestamp", -1).limit(10)]
     return {
         "approved_total": len(approved), "pending_total": len(rows) - len(approved), "electorate": electorate,
@@ -9928,7 +10597,7 @@ async def list_contact_changes(request: Request, status: str | None = None,
         q["status"] = status
     if role == "it_admin":
         q["requested_by"] = current_actor(request)          # IT admins only ever see their own requests
-    items = [await _cc_view(request, c, role) async for c in db.contact_changes.find(q).sort("requested_at", -1).limit(300)]
+    items = [await _cc_view(request, c, role) async for c in tdb(request).contact_changes.find(q).sort("requested_at", -1).limit(300)]
     out = {"items": items, "role": role, "roster": await roster_status(request, sec)}
     if role != "it_admin":
         out["stats"] = await _cc_stats(request, sec)
@@ -9947,11 +10616,11 @@ async def contact_changes_digest(request: Request,
     until = min(datetime.utcnow(), st["freeze_at"]) if st["freeze_at"] else datetime.utcnow()
     privileged = await _can_undo_digest(request, admin)
     entries = []
-    async for r in db.student_edit_audit.find(org_query(request, {
+    async for r in tdb(request).student_edit_audit.find({
             "at": {"$lte": until},
             "event": {"$in": ["phone_added", "phone_removed", "phone_changed",
                               "student_registration_number_changed", "student_name_changed"]},
-    })).sort("at", -1).limit(1000):
+    }).sort("at", -1).limit(1000):
         mk = ({"student_registration_number_changed": _mask_student_id,
                "student_name_changed": _mask_name}.get(r["event"], _mask_phone))
         entries.append({
@@ -9985,9 +10654,9 @@ async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Reque
     if len(reason) < 10:
         raise HTTPException(400, "Undoing a change needs a written reason (10+ characters).")
 
-    org_id = request.state.org_id
+    org_id = require_org(request.state.org_id)
     oid = parse_oid(entry_id, "entry id")
-    rec = await db.student_edit_audit.find_one({"org_id": org_id, "_id": oid})
+    rec = await tdb(request).student_edit_audit.find_one({"org_id": org_id, "_id": oid})
     if not rec:
         raise HTTPException(404, "Audit entry not found.")
     if rec.get("event") not in ("phone_added", "phone_removed", "phone_changed",
@@ -9998,7 +10667,7 @@ async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Reque
     if rec.get("undoes"):
         raise HTTPException(400, "This entry is itself an undo and can't be undone again here.")
 
-    voter = await db.voters.find_one({"org_id": org_id, "_id": ObjectId(rec["student_key"])})
+    voter = await tdb(request).voters.find_one({"org_id": org_id, "_id": ObjectId(rec["student_key"])})
     if not voter:
         raise HTTPException(404, "The student this change applied to no longer exists.")
 
@@ -10010,11 +10679,12 @@ async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Reque
     if field == "student_id":
         if voter["student_id"] != new_value:
             raise HTTPException(409, "The registration number has changed again since this edit; review manually.")
-        if await db.voters.find_one({"org_id": org_id, "student_id": old_value, "_id": {"$ne": voter["_id"]}}):
+        if await tdb(request).voters.find_one({"org_id": org_id, "student_id": old_value, "_id": {"$ne": voter["_id"]}}):
             raise HTTPException(409, "Another student now holds that registration number; can't restore it automatically.")
-        await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"student_id": old_value}})
-        for coll in (db.applications, db.exception_grants, db.contact_changes, db.candidate_tokens):
-            await coll.update_many({"org_id": org_id, "student_id": new_value}, {"$set": {"student_id": old_value}})
+        await tdb(request).voters.update_one({"_id": voter["_id"]}, {"$set": {"student_id": old_value}})
+        _t = tdb_for(org_id)
+        for coll in (_t.applications, _t.exception_grants, _t.contact_changes, _t.candidate_tokens):
+            await coll.update_many({"student_id": new_value}, {"$set": {"student_id": old_value}})
         new_voter_sid = old_value
     elif field == "phone_numbers":
         phones = list(voter.get("phone_numbers", []))
@@ -10030,18 +10700,18 @@ async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Reque
             if new_value not in phones:
                 raise HTTPException(409, "The phone number has changed again since this edit; review manually.")
             phones[phones.index(new_value)] = old_value
-        await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"phone_numbers": phones}})
+        await tdb(request).voters.update_one({"_id": voter["_id"]}, {"$set": {"phone_numbers": phones}})
     elif field == "full_name":
         if voter.get("full_name", "") != new_value:
             raise HTTPException(409, "The name has changed again since this edit; review manually.")
-        await db.voters.update_one({"_id": voter["_id"]}, {"$set": {"full_name": old_value}})
+        await tdb(request).voters.update_one({"_id": voter["_id"]}, {"$set": {"full_name": old_value}})
     else:
         raise HTTPException(400, "This kind of entry can't be undone here.")
 
     now = datetime.utcnow()
-    await db.student_edit_audit.update_one({"_id": rec["_id"]}, {"$set": {
+    await tdb(request).student_edit_audit.update_one({"_id": rec["_id"]}, {"$set": {
         "undone_at": now, "undone_by": actor, "undo_reason": reason}})
-    await db.student_edit_audit.insert_one({
+    await tdb(request).student_edit_audit.insert_one({
         "org_id": org_id, "student_key": rec["student_key"], "batch": secrets.token_hex(8),
         "event": f"{rec['event']}_undone", "field": field, "old_value": new_value, "new_value": old_value,
         "reason": reason, "actor": actor, "actor_role": role, "at": now,
@@ -10086,7 +10756,7 @@ async def _decide_contact_change(change_id: str, data: ContactChangeDecision, re
     org_id, oid = request.state.org_id, parse_oid(change_id, "change id")
     sec = await get_security_settings(request)
     await _expire_contact_changes(request)
-    c = await db.contact_changes.find_one(org_query(request, {"_id": oid}))
+    c = await tdb(request).contact_changes.find_one({"_id": oid})
     if not c:
         raise HTTPException(404, "Contact-change request not found.")
     if c["status"] != "pending":
@@ -10098,8 +10768,8 @@ async def _decide_contact_change(change_id: str, data: ContactChangeDecision, re
         raise HTTPException(403, "The person who requested a change cannot decide it.")
     if actor_n == c["student_id"]:
         raise HTTPException(403, "You cannot decide a change to your own record.")
-    if role == "commission" and not await db.voters.find_one(org_query(request, {
-            **get_forgiving_filter(actor), "is_commissioner": True})):
+    if role == "commission" and not await tdb(request).voters.find_one({
+            **get_forgiving_filter(actor), "is_commissioner": True}):
         raise HTTPException(403, "Not a registered commissioner.")
 
     now = datetime.utcnow()
@@ -10109,19 +10779,19 @@ async def _decide_contact_change(change_id: str, data: ContactChangeDecision, re
             raise ApiError(409, "Please review the warnings and tick 'I have checked' to approve.",
                            "warnings_unacknowledged", warnings=warnings)
         cap = (sec["cap_overrides"].get("approver_daily") or {}).get(_capkey(actor), sec["approver_daily_cap"])
-        done_today = await db.contact_changes.count_documents(org_query(request, {
-            "decided_by": actor, "status": "approved", "decided_at": {"$gte": now - timedelta(days=1)}}))
+        done_today = await tdb(request).contact_changes.count_documents({
+            "decided_by": actor, "status": "approved", "decided_at": {"$gte": now - timedelta(days=1)}})
         if done_today >= cap:
             raise ApiError(429, f"Daily approval limit reached ({cap}). The chief commissioner can raise it.", "approver_cap")
-        electorate = await db.voters.count_documents(org_query(request))
-        total_approved = await db.contact_changes.count_documents(org_query(request, {
-            "status": "approved", "requested_at": {"$gte": _epoch(sec)}}))
+        electorate = await tdb(request).voters.count_documents({})
+        total_approved = await tdb(request).contact_changes.count_documents({
+            "status": "approved", "requested_at": {"$gte": _epoch(sec)}})
         if electorate and 100.0 * total_approved / electorate >= sec["quota_hard_cap_pct"] and not await _is_chief(request):
             raise ApiError(409, "The election-wide contact-change limit has been reached. "
                                 "Only the chief commissioner can approve further changes.", "quota_hard_stop")
 
-    claim = await db.contact_changes.update_one(
-        org_query(request, {"_id": oid, "status": "pending", "expires_at": {"$gt": now}}),
+    claim = await tdb(request).contact_changes.update_one(
+        {"_id": oid, "status": "pending", "expires_at": {"$gt": now}},
         {"$set": {"status": "approved" if data.decision == "approve" else "denied", "decided_by": actor,
                   "decided_role": role, "decided_at": now, "decision_note": note, "breakglass": breakglass,
                   "warnings_acknowledged": bool(data.acknowledge_warnings)}})
@@ -10136,10 +10806,10 @@ async def _decide_contact_change(change_id: str, data: ContactChangeDecision, re
         return {"status": "denied"}
 
     async def _fail(msg: str):
-        await db.contact_changes.update_one({"_id": oid}, {"$set": {"status": "failed", "decision_note": f"{note} | FAILED: {msg}"}})
+        await tdb(request).contact_changes.update_one({"_id": oid}, {"$set": {"status": "failed", "decision_note": f"{note} | FAILED: {msg}"}})
         await append_ledger(org_id, "contact_change_failed", c["student_id"], actor, role, {"change_id": change_id, "why": msg})
 
-    voter = await db.voters.find_one(_oq(org_id, {"_id": ObjectId(c["student_key"])}))
+    voter = await tdb_for(org_id).voters.find_one({"_id": ObjectId(c["student_key"])})
     if not voter or voter.get("has_voted"):
         await _fail("voter missing or already voted")
         raise HTTPException(409, "This voter has already voted (or was removed), so the change was not applied.")
@@ -10159,7 +10829,7 @@ async def _decide_contact_change(change_id: str, data: ContactChangeDecision, re
                                {"requested_by": c["requested_by"], "approved_by": actor, "change_id": change_id})
     await reset_voter_otp_state(org_id, [res["old_sid"], res["new_sid"]])       # D5: nothing issued before survives
     notice = await _notify_old_number(request, c, res["old_phones"], res["new_sid"])
-    await db.contact_changes.update_one({"_id": oid}, {"$set": {"notice_status": notice}})
+    await tdb(request).contact_changes.update_one({"_id": oid}, {"$set": {"notice_status": notice}})
     await append_ledger(org_id, "contact_change_approved", res["new_sid"], actor, role, {
         "change_id": change_id, "type": ch["type"], "requested_by": c["requested_by"], "evidence": c["evidence_type"],
         "notice": notice, "breakglass": breakglass})
@@ -10169,10 +10839,10 @@ async def _decide_contact_change(change_id: str, data: ContactChangeDecision, re
         "student_id": _mask_student_id(res["new_sid"]), "type": ch["type"], "requested_by": c["requested_by"],
         "notice": notice, "breakglass": breakglass}, org_id=org_id)
 
-    electorate = await db.voters.count_documents(org_query(request))
-    total_approved = await db.contact_changes.count_documents(org_query(request, {
-        "status": "approved", "requested_at": {"$gte": _epoch(sec)}}))
-    if electorate and 100.0 * total_approved / electorate >= sec["quota_alert_pct"] and not await db.roster_ledger.find_one(
+    electorate = await tdb(request).voters.count_documents({})
+    total_approved = await tdb(request).contact_changes.count_documents({
+        "status": "approved", "requested_at": {"$gte": _epoch(sec)}})
+    if electorate and 100.0 * total_approved / electorate >= sec["quota_alert_pct"] and not await tdb(request).roster_ledger.find_one(
             {"org_id": org_id, "event": "contact_quota_alert", "ts": {"$gte": _epoch(sec)}}):
         await append_ledger(org_id, "contact_quota_alert", "election", "system", "system", {"approved": total_approved})
         await log_action("contact_change_quota_alert", "system", {"approved": total_approved, "electorate": electorate}, org_id=org_id)
@@ -10222,7 +10892,7 @@ async def search_voters_for_otp_reset(q: str, request: Request,
     if len(q) < 2:
         return []
     rx = {"$regex": re.escape(q), "$options": "i"}
-    cur = db.voters.find(org_query(request, {"$or": [{"student_id": rx}, {"full_name": rx}]}),
+    cur = tdb(request).voters.find({"$or": [{"student_id": rx}, {"full_name": rx}]},
                           {"_id": 0, "student_id": 1, "full_name": 1}).limit(10)
     return [{"student_id": v["student_id"], "full_name": v.get("full_name", "")} async for v in cur]
 
@@ -10245,12 +10915,12 @@ async def search_admins_for_cap_override(q: str, request: Request,
         "is_financial_controller": "Financial Controller",
         "is_overseer": "Overseer",
     }
-    cur = db.voters.find(org_query(request, {
+    cur = tdb(request).voters.find({
         "$and": [
             {"$or": [{"student_id": rx}, {"full_name": rx}]},
             {"$or": [{f: True} for f in STUDENT_ROLE_FLAGS]},
         ]
-    }), {"_id": 0, "student_id": 1, "full_name": 1, **{f: 1 for f in role_labels}}).limit(10)
+    }, {"_id": 0, "student_id": 1, "full_name": 1, **{f: 1 for f in role_labels}}).limit(10)
     out = []
     async for v in cur:
         label = next((label for flag, label in role_labels.items() if v.get(flag)), "Admin")
@@ -10269,19 +10939,19 @@ async def reset_otp_limits(student_id: str, data: OtpResetRequest, request: Requ
     if len(data.note.strip()) < 3:
         raise HTTPException(400, "A short note is required.")
     org_id, sec = request.state.org_id, await get_security_settings(request)
-    voter = await db.voters.find_one(org_query(request, get_forgiving_filter(student_id)))
+    voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
     if not voter:
         raise HTTPException(404, "Voter not found.")
     sid, actor, role, now = voter["student_id"], current_actor(request), current_role(request), datetime.utcnow()
     base = {"org_id": org_id, "event": "otp_limits_reset", "ts": {"$gte": _epoch(sec)}}
 
-    if await db.roster_ledger.count_documents({**base, "ref_id": sid, "ts": {"$gte": max(_epoch(sec), now - timedelta(days=1))}}) \
+    if await tdb(request).roster_ledger.count_documents({**base, "ref_id": sid, "ts": {"$gte": max(_epoch(sec), now - timedelta(days=1))}}) \
             >= sec["reset_per_voter_daily"]:
         raise ApiError(429, "This voter has reached today's reset limit. Ask the commission to review.", "reset_voter_daily_cap")
-    if await db.roster_ledger.count_documents({**base, "ref_id": sid}) >= sec["reset_per_voter_election"]:
+    if await tdb(request).roster_ledger.count_documents({**base, "ref_id": sid}) >= sec["reset_per_voter_election"]:
         raise ApiError(429, "This voter has reached the reset limit for this election.", "reset_voter_election_cap")
 
-    hourly = await db.roster_ledger.count_documents({**base, "actor": actor, "ts": {"$gte": now - timedelta(hours=1)}})
+    hourly = await tdb(request).roster_ledger.count_documents({**base, "actor": actor, "ts": {"$gte": now - timedelta(hours=1)}})
     hard = (sec["cap_overrides"].get("reset_hourly") or {}).get(_capkey(actor), sec["reset_admin_hourly_hard_cap"])
     if hourly >= hard:
         raise ApiError(429, f"Hourly reset limit reached ({hard}). The chief commissioner can lift it.", "reset_admin_hard_cap")
@@ -10289,8 +10959,8 @@ async def reset_otp_limits(student_id: str, data: OtpResetRequest, request: Requ
     await clear_otp_limit_state(org_id, [sid])
     await append_ledger(org_id, "otp_limits_reset", sid, actor, role, {"reason": data.reason, "note": data.note.strip()})
     await log_action("otp_limits_reset", actor, {"student_id": _mask_student_id(sid), "reason": data.reason, "role": role}, org_id=org_id)
-    if hourly + 1 > sec["reset_admin_hourly_alert"] and not await db.audit_log.find_one(org_query(request, {
-            "action": "otp_reset_admin_alert", "actor": actor, "timestamp": {"$gte": now - timedelta(hours=1)}})):
+    if hourly + 1 > sec["reset_admin_hourly_alert"] and not await tdb(request).audit_log.find_one({
+            "action": "otp_reset_admin_alert", "actor": actor, "timestamp": {"$gte": now - timedelta(hours=1)}}):
         await log_action("otp_reset_admin_alert", actor, {"resets_last_hour": hourly + 1}, org_id=org_id)   # alert only, never blocks
     return {"status": "reset"}
 
@@ -10317,7 +10987,7 @@ async def get_sms_usage(request: Request, admin: dict = Depends(require_role("su
     v30 = sum(1 for t in usage.get("recent_verifies", []) if t > cut)
     sent_otp, verified = usage.get("sent_otp", 0), usage.get("verified_total", 0)
     total = sec["sms_budget_total"]
-    voters = await db.voters.count_documents(org_query(request))
+    voters = await tdb(request).voters.count_documents({})
     return {
         "sent_total": usage.get("sent_total", 0), "sent_otp": sent_otp, "sent_notice": usage.get("sent_notice", 0),
         "verified_total": verified, "send_to_verify_ratio": round(verified / sent_otp, 3) if sent_otp else None,
@@ -10373,7 +11043,7 @@ async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
 async def superadmin_get_security_settings(request: Request):
     sec = await get_security_settings(request)
     params = await guess_params(request, sec)
-    voters = await db.voters.count_documents(org_query(request))
+    voters = await tdb(request).voters.count_documents({})
     return {
         "settings": {k: v for k, v in sec.items() if k not in ("cap_overrides", "epoch_at", "freeze_lifted_at")},
         "roster": await roster_status(request, sec),
@@ -10446,12 +11116,26 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
         await log_action("security_settings_changed", actor, {"reason": reason, "changes": diff}, org_id=request.state.org_id)
         await append_ledger(request.state.org_id, "security_settings_changed", "election", actor, "superadmin",
                             {"reason": reason, **{k: v["new"] for k, v in diff.items()}})
-    if "approval_policy" in updates:
-        await _resweep_pending_after_policy_change(request.state.org_id)
-        await log_action("approval_policy_resweep", actor, {
-            "reason": reason, "new_policy": updates["approval_policy"],
-        }, org_id=request.state.org_id)
-    return await superadmin_get_security_settings(request)
+    warning = None
+    # Only when the policy actually CHANGED. The Security form posts every field on each save, so
+    # `"approval_policy" in updates` is true even for an unrelated edit; re-evaluating every open
+    # application each time was slow and could fail AFTER the new settings were already stored,
+    # which showed "Save failed" for a save that had in fact been applied.
+    if "approval_policy" in diff:
+        try:
+            await _resweep_pending_after_policy_change(request.state.org_id)
+            await log_action("approval_policy_resweep", actor, {
+                "reason": reason, "new_policy": updates["approval_policy"],
+            }, org_id=request.state.org_id)
+        except Exception:
+            # The settings are saved and logged; report the follow-up problem instead of a false failure.
+            logger.exception("approval_policy resweep failed after the policy was saved")
+            warning = ("Settings saved, but re-checking the open applications under the new approval policy "
+                       "failed. They will be re-evaluated as new votes arrive; check the server log.")
+    out = await superadmin_get_security_settings(request)
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 # ── Optional voter fields (gender / programme / custom) ─────────────────────
@@ -10504,14 +11188,14 @@ async def superadmin_put_voter_fields(data: VoterFieldsUpdate, request: Request)
     if new_fields == cur["fields"] and min_group == cur["min_group_size"] and not purge:
         raise HTTPException(400, "Nothing to change.")
 
-    await db.settings.update_one(
-        org_query(request, {"name": "voter_fields"}),
+    await tdb(request).settings.update_one(
+        {"name": "voter_fields"},
         {"$set": org_stamp(request, {
             "name": "voter_fields", "min_group_size": min_group, "updated_at": datetime.utcnow(),
             "fields": [{k: f[k] for k in ("key", "label", "enabled", "public")} for f in new_fields]})},
         upsert=True)
     if purge:
-        await db.voters.update_many(org_query(request), {"$unset": {f"attrs.{k}": "" for k in purge}})
+        await tdb(request).voters.update_many({}, {"$unset": {f"attrs.{k}": "" for k in purge}})
 
     def brief(fl): return {f["key"]: (f["enabled"], f["public"]) for f in fl}
     details = {"reason": reason, "fields": {k: {"enabled": v[0], "public": v[1]} for k, v in brief(new_fields).items()
@@ -10534,7 +11218,7 @@ async def superadmin_put_voter_fields(data: VoterFieldsUpdate, request: Request)
 # waiting for Financial Controller approval. OFF by default. Every flip is audit-logged + ledgered.
 
 async def upload_bypass_enabled(request: Request) -> bool:
-    doc = await db.settings.find_one(org_query(request, {"name": "upload_bypass"})) or {}
+    doc = await tdb(request).settings.find_one({"name": "upload_bypass"}) or {}
     return bool(doc.get("enabled"))
 
 
@@ -10554,8 +11238,8 @@ async def superadmin_put_upload_bypass(data: UploadBypassUpdate, request: Reques
     reason = data.reason.strip()
     if len(reason) < 3:
         raise HTTPException(400, "A reason is required for every change.")
-    await db.settings.update_one(
-        org_query(request, {"name": "upload_bypass"}),
+    await tdb(request).settings.update_one(
+        {"name": "upload_bypass"},
         {"$set": org_stamp(request, {"name": "upload_bypass", "enabled": data.enabled,
                                      "updated_by": current_actor(request), "updated_at": datetime.utcnow()})},
         upsert=True)
@@ -10582,7 +11266,7 @@ def _clean_momo_number(raw: str) -> str:
 
 
 async def get_payment_info(request: Request) -> dict:
-    doc = await db.settings.find_one(org_query(request, {"name": "payment_info"})) or {}
+    doc = await tdb(request).settings.find_one({"name": "payment_info"}) or {}
     return {"mobile_money_number": doc.get("mobile_money_number") or "",
             "mobile_money_name": doc.get("mobile_money_name") or ""}
 
@@ -10618,10 +11302,353 @@ async def superadmin_put_payment_info(data: PaymentInfoUpdate, request: Request)
     new = {"mobile_money_number": number, "mobile_money_name": name}
     if new == old:
         raise HTTPException(400, "Nothing to change.")
-    await db.settings.update_one(
-        org_query(request, {"name": "payment_info"}),
+    await tdb(request).settings.update_one(
+        {"name": "payment_info"},
         {"$set": org_stamp(request, {"name": "payment_info", **new, "updated_at": datetime.utcnow()})},
         upsert=True)
     await log_action("payment_info_changed", current_actor(request),
                      {"reason": reason, "old": old, "new": new}, org_id=request.state.org_id)
     return new
+
+
+# ===============================================================================================
+# NOMINATION FORM (settings) - phase N1
+#
+# A per-organisation, superadmin-configured section of the application: instructions, a downloadable
+# blank form, and whether applicants must upload the signed copy. Same pattern as payment_info: a
+# settings doc, a public read, a superadmin write that needs a reason and writes an audit row.
+# The applicant upload route (/apply/upload-document) is N2 (below); the read-back route arrives in N3; the
+# document sniffing helper below is written now so they reuse it rather than re-implement it.
+# ===============================================================================================
+NOMINATION_SETTING = "nomination_form"
+NOMINATION_TITLE_MAX = 80
+NOMINATION_INSTRUCTIONS_MAX = 2000
+NOMINATION_ALLOWED_TYPES = ("pdf", "docx")          # canonical order for storage and display
+NOMINATION_MAX_MB_RANGE = (1, 10)
+NOMINATION_TEMPLATE_MAX_BYTES = 10 * 1024 * 1024    # the blank form uses the largest size an org may allow
+NOMINATION_FILENAME_MAX = 120
+NOMINATION_DOCX_MAX_UNCOMPRESSED = 100 * 1024 * 1024  # refuse zip bombs; we only list the archive, never extract it
+_DOC_MIME = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _nomination_defaults() -> dict:
+    return {"enabled": False, "required": True, "title": "Nomination Form", "instructions": "",
+            "template_file": None, "accepted_types": ["pdf"], "max_mb": 5}
+
+
+def _nomination_from_doc(doc: dict | None) -> dict:
+    """Stored settings doc -> clean config (defaults filled in, bookkeeping fields dropped)."""
+    out = _nomination_defaults()
+    doc = doc or {}
+    for k in out:
+        if k in doc and doc[k] is not None:
+            out[k] = doc[k]
+    tf = out.get("template_file")
+    out["template_file"] = ({"url": tf.get("url", ""), "filename": tf.get("filename", "")}
+                            if isinstance(tf, dict) and tf.get("url") else None)
+    out["accepted_types"] = [t for t in NOMINATION_ALLOWED_TYPES if t in (out["accepted_types"] or [])] or ["pdf"]
+    return out
+
+
+async def get_nomination_form(org_id) -> dict:
+    return _nomination_from_doc(await cached_setting(org_id, NOMINATION_SETTING))
+
+
+def _safe_filename(raw: str, default: str = "document") -> str:
+    """Client filenames are attacker-controlled: drop any path, control characters and odd punctuation, cap the length."""
+    name = (raw or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(c for c in name if c.isprintable() and c not in '<>:"|?*\x7f').strip(" .")
+    name = re.sub(r"\s+", " ", name)
+    if len(name) > NOMINATION_FILENAME_MAX:
+        stem, dot, ext = name.rpartition(".")
+        name = (stem[:NOMINATION_FILENAME_MAX - len(ext) - 1] + "." + ext) if dot and len(ext) <= 8 else name[:NOMINATION_FILENAME_MAX]
+    return name or default
+
+
+def _sniff_document(content: bytes, accepted: list[str] | tuple[str, ...]) -> str:
+    """Return "pdf" or "docx" from the file's real bytes, or raise 400. Content-Type and filename are never consulted.
+
+    PDF: must start with %PDF-.  DOCX: a ZIP prefix alone matches any zip, so also require the two parts every
+    Word file has and refuse macro containers."""
+    if content.startswith(b"%PDF-"):
+        kind = "pdf"
+    elif content.startswith(b"PK\x03\x04"):
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                infos = z.infolist()
+                names = {i.filename for i in infos}
+                if sum(i.file_size for i in infos) > NOMINATION_DOCX_MAX_UNCOMPRESSED:
+                    raise HTTPException(400, "That file is not a valid Word document.")
+        except zipfile.BadZipFile:
+            raise HTTPException(400, "That file is not a valid PDF or Word document.")
+        if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+            raise HTTPException(400, "That file is not a valid Word document.")
+        if any(n.lower().endswith("vbaproject.bin") for n in names):
+            raise HTTPException(400, "Word documents containing macros are not accepted.")
+        kind = "docx"
+    else:
+        raise HTTPException(400, "That file is not a valid PDF or Word document.")
+    if kind not in accepted:
+        allowed = " or ".join(t.upper() for t in NOMINATION_ALLOWED_TYPES if t in accepted)
+        raise HTTPException(400, f"Only {allowed} files are accepted.")
+    return kind
+
+
+def _nomination_public_view(cfg: dict) -> dict:
+    """What an applicant needs and nothing more. Disabled -> a bare flag, no instructions or links leak."""
+    if not cfg["enabled"]:
+        return {"enabled": False}
+    return {k: cfg[k] for k in ("enabled", "required", "title", "instructions", "template_file", "accepted_types", "max_mb")}
+
+
+@app.get("/nomination-form")
+async def public_nomination_form(request: Request):
+    """Public (see _is_public): applicants load it before they have any session."""
+    return _nomination_public_view(await get_nomination_form(request.state.org_id))
+
+
+class NominationTemplateIn(BaseModel):
+    url: str = Field(..., max_length=500)
+    filename: str = Field("", max_length=200)
+
+
+class NominationFormUpdate(BaseModel):
+    """Partial update: any field left out is unchanged. `reason` is always required."""
+    enabled: bool | None = None
+    required: bool | None = None
+    title: str | None = Field(None, max_length=200)
+    instructions: str | None = Field(None, max_length=10000)
+    accepted_types: list[str] | None = Field(None, max_length=10)
+    max_mb: int | None = None
+    template_file: NominationTemplateIn | None = None
+    clear_template_file: bool = False
+    reason: str = Field(..., max_length=300)
+
+
+def _clean_plain_text(raw: str, *, multiline: bool) -> str:
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    if any((ord(c) < 32 and not (multiline and c in "\n\t")) or ord(c) == 127 for c in text):
+        raise HTTPException(400, "Text contains characters that are not allowed.")
+    if multiline:
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+    return " ".join(text.split())
+
+
+def _require_https_url(url: str) -> str:
+    url = (url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc or any(ord(c) <= 32 for c in url):
+        raise HTTPException(400, "The form link must be a secure https:// address.")
+    return url
+
+
+@app.put("/superadmin/nomination-form")
+async def superadmin_put_nomination_form(data: NominationFormUpdate, request: Request):
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required for every change.")
+    org_id = request.state.org_id
+    old = await get_nomination_form(org_id)
+    new = copy.deepcopy(old)
+
+    if data.enabled is not None:
+        new["enabled"] = data.enabled
+    if data.required is not None:
+        new["required"] = data.required
+    if data.title is not None:
+        title = _clean_plain_text(data.title, multiline=False)
+        if not title or len(title) > NOMINATION_TITLE_MAX:
+            raise HTTPException(400, f"The title must be 1 to {NOMINATION_TITLE_MAX} characters.")
+        new["title"] = title
+    if data.instructions is not None:
+        instructions = _clean_plain_text(data.instructions, multiline=True)
+        if len(instructions) > NOMINATION_INSTRUCTIONS_MAX:
+            raise HTTPException(400, f"The instructions must be at most {NOMINATION_INSTRUCTIONS_MAX} characters.")
+        new["instructions"] = instructions
+    if data.accepted_types is not None:
+        wanted = {str(t).strip().lower() for t in data.accepted_types}
+        if not wanted or not wanted <= set(NOMINATION_ALLOWED_TYPES):
+            raise HTTPException(400, "Accepted file types must be PDF, DOCX, or both.")
+        new["accepted_types"] = [t for t in NOMINATION_ALLOWED_TYPES if t in wanted]
+    if data.max_mb is not None:
+        lo, hi = NOMINATION_MAX_MB_RANGE
+        if not lo <= data.max_mb <= hi:
+            raise HTTPException(400, f"The maximum size must be between {lo} and {hi} MB.")
+        new["max_mb"] = data.max_mb
+    if data.clear_template_file and data.template_file is not None:
+        raise HTTPException(400, "Either set the form link or clear it, not both.")
+    if data.clear_template_file:
+        new["template_file"] = None
+    elif data.template_file is not None:
+        filename = _safe_filename(data.template_file.filename, "nomination-form")
+        new["template_file"] = {"url": _require_https_url(data.template_file.url), "filename": filename}
+
+    if new == old:
+        raise HTTPException(400, "Nothing to change.")
+    await _save_nomination_form(request, new)
+    await log_action("nomination_form_changed", current_actor(request),
+                     {"reason": reason, "old": old, "new": new}, org_id=org_id)
+    return new
+
+
+async def _save_nomination_form(request: Request, cfg: dict) -> None:
+    org_id = request.state.org_id
+    await tdb(request).settings.update_one(
+        {"name": NOMINATION_SETTING},
+        {"$set": org_stamp(request, {"name": NOMINATION_SETTING, **cfg, "updated_at": datetime.utcnow()})},
+        upsert=True)
+    invalidate_settings(org_id, NOMINATION_SETTING)   # without this the public read serves the old value for up to the cache TTL
+
+
+@app.post("/superadmin/nomination-form/template")
+async def superadmin_upload_nomination_template(request: Request, file: UploadFile = File(...),
+                                                reason: str = Form("")):
+    """Upload the blank form applicants download. Public by nature (anyone filling in the application gets it),
+    so a normal public Cloudinary raw upload is right here; the *completed* forms uploaded by applicants are
+    the sensitive ones and are handled separately (N2)."""
+    reason = reason.strip()
+    if len(reason) < 3 or len(reason) > 300:
+        raise HTTPException(400, "A reason is required for every change.")
+    content = await file.read(NOMINATION_TEMPLATE_MAX_BYTES + 1)   # never buffer an unbounded body
+    if len(content) > NOMINATION_TEMPLATE_MAX_BYTES:
+        raise HTTPException(400, f"The form must be under {NOMINATION_TEMPLATE_MAX_BYTES // (1024 * 1024)}MB.")
+    kind = _sniff_document(content, NOMINATION_ALLOWED_TYPES)
+    org_id = request.state.org_id
+    stem = _safe_filename(file.filename or "", "nomination-form").rsplit(".", 1)[0] or "nomination-form"
+    filename = f"{stem[:NOMINATION_FILENAME_MAX - 6]}.{kind}"
+    try:
+        # Raw resources keep their extension inside the public id, which is what makes the download open correctly.
+        result = cloudinary.uploader.upload(
+            content, folder=f"ballotbox/nomination-templates/{org_id}", resource_type="raw",
+            public_id=f"{secrets.token_hex(8)}.{kind}", use_filename=False, unique_filename=False)
+        url = _require_https_url(result["secure_url"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cloudinary nomination template upload failed: {e}")
+        await alert_warning("Cloudinary upload failing (nomination template)",
+                            f"{type(e).__name__}: {e}\nOrg: {org_id}")
+        raise HTTPException(502, "Form upload failed. Please try again.")
+
+    old = await get_nomination_form(org_id)
+    new = {**old, "template_file": {"url": url, "filename": filename}}
+    await _save_nomination_form(request, new)
+    await log_action("nomination_form_template_uploaded", current_actor(request),
+                     {"reason": reason, "filename": filename, "bytes": len(content), "type": kind,
+                      "replaced": bool(old["template_file"])}, org_id=org_id)
+    return new
+
+
+# ── Phase N2: completed (signed) forms go to a PRIVATE bucket, never to Cloudinary ─────────────────────────
+NOMINATION_UPLOAD_TTL_HOURS = 24      # an upload must be attached to an application within this long
+_NOMINATION_MIME = {"pdf": "application/pdf",
+                    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
+@app.post("/apply/upload-document")
+async def apply_upload_document(request: Request, file: UploadFile = File(...)):
+    """Public (applicants have no login). Stores the signed form in the private bucket and returns only an opaque
+    `upload_id`, which the applicant sends with /apply. No storage key or link is ever returned."""
+    await _check_document_upload_rate_limit(request)
+    await assert_phase_open(request, "applications")
+    org_id = require_org(request.state.org_id)
+    cfg = await get_nomination_form(org_id)
+    if not cfg["enabled"]:
+        raise HTTPException(404, "A nomination form is not required for this election.")
+    max_bytes = cfg["max_mb"] * 1024 * 1024
+    content = await file.read(max_bytes + 1)          # never buffer an unbounded body
+    if len(content) > max_bytes:
+        analytics.set_reason(request, "too_large")
+        raise HTTPException(400, f"The form must be under {cfg['max_mb']}MB.")
+    try:
+        kind = _sniff_document(content, cfg["accepted_types"])
+    except HTTPException:
+        analytics.set_reason(request, "bad_file_type")
+        raise
+    if not nomination_storage.is_configured():
+        logger.error("Nomination form storage is not configured: " + ", ".join(nomination_storage.missing_settings()))
+        await alert_critical("Nomination form storage not configured",
+                             f"Missing: {', '.join(nomination_storage.missing_settings())}\nOrg: {org_id}")
+        analytics.set_reason(request, "upload_failed")
+        raise HTTPException(503, "Form upload is temporarily unavailable. Please try again later.")
+
+    upload_id = secrets.token_hex(16)
+    key = f"nomination-forms/{org_id}/{upload_id}.{kind}"
+    filename = _safe_filename(file.filename or "", "nomination-form")
+    stem = filename.rsplit(".", 1)[0] or "nomination-form"
+    filename = f"{stem[:NOMINATION_FILENAME_MAX - 6]}.{kind}"
+    try:
+        await run_in_threadpool(nomination_storage.put_object, key, content, _NOMINATION_MIME[kind])
+    except Exception as e:
+        logger.error(f"Nomination form upload failed: {type(e).__name__}: {e}")
+        await alert_critical("Nomination form storage failing",
+                             f"{type(e).__name__}: {e}\nOrg: {org_id}")
+        analytics.set_reason(request, "upload_failed")
+        raise HTTPException(502, "Form upload failed. Please try again.")
+    now = datetime.utcnow()
+    await tdb(request).nomination_uploads.insert_one({
+        "upload_id": upload_id, "key": key, "filename": filename, "kind": kind, "bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(), "status": "pending",
+        "created_at": now, "uploaded_at": now,
+        "is_demo": bool(await _demo_active(org_id)),
+    })
+    try:
+        await _sweep_stale_nomination_uploads(tdb(request))
+    except Exception as e:
+        logger.warning(f"Nomination sweep skipped: {type(e).__name__}")
+    return {"upload_id": upload_id, "filename": filename, "kind": kind, "bytes": len(content)}
+
+
+async def _delete_nomination_objects(rows) -> int:
+    """Best-effort removal of private files. A storage error never blocks the caller; the record is kept so a
+    later sweep can retry."""
+    removed = 0
+    if not nomination_storage.is_configured():
+        return 0
+    for row in rows:
+        try:
+            await run_in_threadpool(nomination_storage.delete_object, row["key"])
+            removed += 1
+        except Exception as e:
+            logger.warning(f"Nomination file cleanup failed for {row.get('upload_id')}: {type(e).__name__}")
+    return removed
+
+
+async def _sweep_stale_nomination_uploads(dbs, limit: int = 25) -> int:
+    """Pending uploads never attached to an application within the TTL: delete file, then record.
+    Attached uploads are NEVER touched (the application depends on them)."""
+    cutoff = datetime.utcnow() - timedelta(hours=NOMINATION_UPLOAD_TTL_HOURS)
+    rows = [r async for r in dbs.nomination_uploads.find(
+        {"status": "pending", "$or": [{"created_at": {"$lt": cutoff}},
+                                      {"created_at": {"$exists": False}, "uploaded_at": {"$lt": cutoff}}]}).limit(limit)]
+    n = 0
+    for r in rows:
+        if nomination_storage.is_configured():
+            try:
+                await run_in_threadpool(nomination_storage.delete_object, r["key"])
+            except Exception as e:
+                logger.warning(f"Stale nomination file cleanup failed: {type(e).__name__}")
+                continue
+        await dbs.nomination_uploads.delete_one({"_id": r["_id"]})
+        n += 1
+    return n
+
+
+async def _claim_nomination_upload(request: Request, upload_id: str, student_id: str, position_id: str) -> dict:
+    """Atomically attach a pending upload to this application attempt. One upload serves one application, so a
+    leaked or reused id cannot be attached twice. Unknown, stale or used ids all give the same answer."""
+    cutoff = datetime.utcnow() - timedelta(hours=NOMINATION_UPLOAD_TTL_HOURS)
+    doc = await tdb(request).nomination_uploads.find_one_and_update(
+        {"upload_id": upload_id, "status": "pending",
+         "$or": [{"created_at": {"$gte": cutoff}}, {"created_at": {"$exists": False}, "uploaded_at": {"$gte": cutoff}}]},
+        {"$set": {"status": "attached", "student_id": student_id, "position_id": position_id,
+                  "attached_at": datetime.utcnow()}},
+    )
+    if not doc:
+        raise HTTPException(400, "The uploaded nomination form could not be used. Please upload it again.")
+    return doc

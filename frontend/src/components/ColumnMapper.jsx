@@ -66,7 +66,7 @@ export default function ColumnMapper({ data, mapping, onMapping, onHeaderRow, on
           const vals = (mapping[t.key] || []).length ? mapping[t.key] : [''];
           const missing = t.required && !vals.some(v => v !== '');
           return (
-            <div key={t.key} style={{ ...mapRow, borderColor: missing ? '#e74c3c' : 'var(--border-color)' }}>
+            <div key={t.key} style={{ ...mapRow, borderColor: missing ? 'var(--bp-no, #e74c3c)' : 'var(--border-color)' }}>
               <div style={{ minWidth: 0 }}>
                 <b style={{ fontSize: 13 }}>{t.label}{t.required ? ' *' : ''}</b>
                 {t.multi && <div style={{ fontSize: 11, opacity: 0.55 }}>

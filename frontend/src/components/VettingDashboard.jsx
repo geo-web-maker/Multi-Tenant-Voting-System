@@ -5,6 +5,7 @@ import AdminHeader, { useLastSynced } from './AdminHeader';
 import { LoadingBlock } from './Spinner.jsx';
 import ManifestoText from './ManifestoText';
 import TabBar from './TabBar';
+import ConsoleFrame from './ConsoleFrame';
 import usePolling from '../hooks/usePolling';
 import { usePersistedTab } from '../session';
 import { faceCropUrl } from '../cloudinaryImage';
@@ -141,6 +142,12 @@ export default function VettingDashboard({ onLogout }) {
     || (a.student_id || '').toLowerCase().includes(q)
     || (a.position_title || '').toLowerCase().includes(q);
   const list = tab === 'pending' ? pending : resolved.filter(matches);
+  const openNomination = async (id) => {
+    setBusy((b) => ({ ...b, [`nomination-${id}`]: true }));
+    try { const res = await api.get(`/admin/applications/${id}/nomination-form`); window.open(res.data.url, '_blank', 'noopener,noreferrer'); }
+    catch (e) { toast(e.response?.data?.detail || 'Could not open the nomination form.', { kind: 'error' }); }
+    finally { setBusy((b) => ({ ...b, [`nomination-${id}`]: false })); }
+  };
 
   return (
     <Shell>
@@ -158,14 +165,16 @@ export default function VettingDashboard({ onLogout }) {
         ) : null}
       />
 
-      <TabBar
-        tabs={[
-          { id: 'pending', label: <>Pending</>, count: pending.length },
-          { id: 'resolved', label: <>Resolved</>, count: resolved.length },
-        ]}
-        activeTab={tab}
-        onChange={setTab}
-      />
+      <ConsoleFrame nav={(
+        <TabBar
+          tabs={[
+            { id: 'pending', label: <>Pending</>, count: pending.length },
+            { id: 'resolved', label: <>Resolved</>, count: resolved.length },
+          ]}
+          activeTab={tab}
+          onChange={setTab}
+        />
+      )}>
       <div style={{ marginBottom: '20px' }} />
 
       {tab === 'resolved' && (
@@ -194,6 +203,7 @@ export default function VettingDashboard({ onLogout }) {
               <span style={pill}>{p.cast} of {p.panel_count} voted</span>
             </div>
             <ManifestoText text={app.manifesto} />
+            <NominationRow app={app} onView={openNomination} busy={busy[`nomination-${id}`]} />
 
             {!cleared && <p style={note}>Waiting for finance clearance before voting opens.</p>}
             {app.my_vote && <p style={note}>You voted to {app.my_vote}.</p>}
@@ -239,15 +249,22 @@ export default function VettingDashboard({ onLogout }) {
             {app.decided_at && <p style={note}>Decided {new Date(app.decided_at).toLocaleDateString()}.</p>}
             {split && <p style={note}>Panel split: {split.approve} approve, {split.deny} deny.</p>}
             {app.decided_by_tie_break && <p style={note}>Decided by the Chairperson's tie-break.</p>}
+            <NominationRow app={app} onView={openNomination} busy={busy[`nomination-${id}`]} />
             <p style={note}>Reason: {app.final_reason || 'No reason recorded'}</p>
           </div>
         );
       })}
+      </ConsoleFrame>
     </Shell>
   );
 }
 
 // Same outer-wrap + dashboard-shell frame every other dashboard uses.
+function NominationRow({ app, onView, busy }) {
+  if (app.has_nomination_form) return <div style={{ ...note, display: 'flex', alignItems: 'center', gap: 8 }}><span>Nomination form: {app.nomination_form_filename || 'submitted'}</span><button style={hatBtn} disabled={busy} onClick={() => onView(app.id || app._id)}>{busy ? 'Opening…' : 'View'}</button></div>;
+  return <p style={note}>Nomination form: {app.nomination_form_required ? 'Required — not uploaded' : 'Not required at submission'}</p>;
+}
+
 function ConfidentialityGate({ me, accepting, onAccept, onLogout }) {
   const [agreed, setAgreed] = useState(false);
   const points = [
@@ -338,9 +355,9 @@ const note     = { fontSize: '13px', margin: '10px 0 0', opacity: 0.85 };
 const row      = { display: 'flex', gap: '10px', marginTop: '12px' };
 const tieBox   = { marginTop: '12px', padding: '12px', borderRadius: '8px', border: '1px solid var(--warning)' };
 const input    = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', marginBottom: '8px' };
-const btnBase  = { padding: '8px 16px', borderRadius: '8px', border: 'none', color: '#fff', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' };
-const btnApprove = { ...btnBase, backgroundColor: '#2ecc71' };
-const btnDeny    = { ...btnBase, backgroundColor: '#e74c3c' };
+const btnBase  = { padding: '8px 16px', borderRadius: '8px', border: 'none', color: 'var(--bp-ai, #fff)', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' };
+const btnApprove = { ...btnBase, backgroundColor: 'var(--bp-ok, #2ecc71)' };
+const btnDeny    = { ...btnBase, backgroundColor: 'var(--bp-no, #e74c3c)' };
 const hatBtn   = { padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
 
 const gateCard   = { width: '100%', maxWidth: '460px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '32px 28px', border: '1px solid var(--border-color)', boxShadow: '0 8px 30px rgba(0,0,0,0.08)', boxSizing: 'border-box' };

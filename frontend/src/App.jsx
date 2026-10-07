@@ -8,6 +8,8 @@ import { HelpMenuProvider } from './context/HelpMenuContext';
 import LoginErrorActions from './components/LoginErrorActions';
 import HelpPanel from './components/HelpPanel';
 import { initAnalytics, trackPage, pageName } from './analytics';
+import { getTemplate } from './template';
+import { derivePhase } from './phase';
 
 // Detects whether a logo image is mostly dark (e.g. dark linework on a
 // transparent PNG) so it can be inverted to stay visible against the dark
@@ -51,11 +53,13 @@ function useLogoNeedsInvert(logoUrl, theme) {
 }
 import { FabTrigger } from './components/HelpTriggers';
 import { showHelpFab } from './helpItems';
+import DemoInbox from './components/DemoInbox';
 import usePolling from './hooks/usePolling';
 import { fetchBootstrap } from './bootstrap';
 import { Icon } from './components/icons.jsx';
 import TurnstileWidget from './components/TurnstileWidget';
 import VoterLoginInputs from './components/VoterLoginInputs';
+import { useOptionalConfirm } from './components/UIFeedback';
 import { turnstileConfigured } from './supportLink';
 import {
   restoreAdminView, loadPublicView, savePublicView,
@@ -674,9 +678,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
   // "Vote Now" is a full sign-out (resetFlow). A signed-in admin who taps it by accident would lose
   // their session, so ask first. No admin token -> no dialog (plain voter reset). (WP-7c)
-  const handleVoteNow = () => {
+  const confirmDialog = useOptionalConfirm();
+  const handleVoteNow = async () => {
     if (sessionStorage.getItem(ADMIN_TOKEN_KEY)
-      && !window.confirm("You will be signed out. Continue?")) {
+      && !(await confirmDialog("You will be signed out. Continue?", {
+        title: 'Sign out?', confirmText: 'Sign out', cancelText: 'Stay signed in',
+      }))) {
       return;
     }
     resetFlow();
@@ -701,8 +708,17 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     return <Suspense fallback={<LoadingBlock text="Loading…" />}><VerifyCertificate certificateId={verifyId} /></Suspense>;
   }
 
+  // Blueprint template seam (BP-T2): null in the default UI, so every branch below falls through to today's markup.
+  const bp = getTemplate();
+  // Public views get the template's 520px column; the default UI gets the node back untouched (no extra div).
+  // Class hooks for the voter flow (undefined in the default UI, so no class attribute is added there).
+  const k = bp ? bp.cls : null;
+  const cardProps = () => (bp ? { className: k.card } : { style: cardStyle });
+  const wrapPublic = (node, wide = false) => (bp ? <bp.PublicWrap wide={wide}>{node}</bp.PublicWrap> : node);
+
   return (
     <HelpMenuProvider>
+    <DemoInbox />
     <div style={containerStyle} className="app-shell">
       {(view === "voter" || view === "apply") && (
         <>
@@ -735,72 +751,90 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           transition: 'max-width 0.3s ease' 
         }} className="app-column">
         
-        <nav className="no-print" style={navBarStyle}>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>
-            <button
-              onClick={toggleTheme}
-              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-              style={{
-                background: 'none', border: '1px solid var(--border-color)',
-                borderRadius: '20px', padding: '6px 12px', cursor: 'pointer',
-                fontSize: '13px', color: 'var(--text-color)',
-                display: 'flex', alignItems: 'center', gap: '6px',
-              }}
-            >
-              {theme === 'dark' ? <>Light</> : <>Dark</>}
-            </button>
-          </div>
-          {logoUrl && <img src={logoUrl} alt="Logo" style={logoStyle} />}
-          <span style={{
-            color: 'var(--text-color)',
-            fontSize: '13px',
-            fontWeight: '700',
-            letterSpacing: '1px',
-            textTransform: 'uppercase',
-            opacity: 0.8,
-            marginTop: '-10px',
-            textAlign: 'center'
-          }}>
-            {orgName} Election Portal
-          </span>
-          
-          <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button data-track="nav-vote" onClick={handleVoteNow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
-              Vote Now
-            </button>
-        
-            <button data-track="nav-results" onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
-              Live Results
-            </button>
-        
-            <button data-track="nav-apply" onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
-              Apply
-            </button>
-
-            {/* Deliberately NOT shown while view === "voter": that flow is
-                someone actively proving they're a different identity (via
-                OTP), and a leftover admin session from earlier in the tab
-                has nothing to do with who's typing right now. Showing this
-                shortcut there meant anyone who knew an admin's voter
-                credentials (student ID + name — not a secret) could open
-                the voter OTP screen and skip straight into the admin
-                dashboard with zero re-authentication, on any device/tab
-                where an admin had once logged in and not explicitly logged
-                out. Restricted to results/apply — the two read-only pages
-                this was actually built for. */}
-            {adminRole && (view === "results" || view === "apply") && (
-              <button onClick={() => setView(adminRole)} style={backToAdminBtnStyle}>
-                Back to Admin
+        {bp ? (
+          <bp.TitleBlockHeader
+            orgName={orgName}
+            logoUrl={logoUrl}
+            logoNeedsInvert={logoNeedsInvert}
+            phase={derivePhase(electionStatus)?.state || null}
+            view={view}
+            step={step}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onVoteNow={handleVoteNow}
+            onNavigate={setView}
+            showBackToAdmin={Boolean(adminRole && (view === "results" || view === "apply"))}
+            onBackToAdmin={() => setView(adminRole)}
+            role={bp.ROLE_LABELS[view] || ''}
+          />
+        ) : (
+          <nav className="no-print" style={navBarStyle}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>
+              <button
+                onClick={toggleTheme}
+                title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                style={{
+                  background: 'none', border: '1px solid var(--border-color)',
+                  borderRadius: '20px', padding: '6px 12px', cursor: 'pointer',
+                  fontSize: '13px', color: 'var(--text-color)',
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                {theme === 'dark' ? <>Light</> : <>Dark</>}
               </button>
-            )}
-          </div>
-        </nav>
+            </div>
+            {logoUrl && <img src={logoUrl} alt="Logo" style={logoStyle} />}
+            <span style={{
+              color: 'var(--text-color)',
+              fontSize: '13px',
+              fontWeight: '700',
+              letterSpacing: '1px',
+              textTransform: 'uppercase',
+              opacity: 0.8,
+              marginTop: '-10px',
+              textAlign: 'center'
+            }}>
+              {orgName} Election Portal
+            </span>
+          
+            <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button data-track="nav-vote" onClick={handleVoteNow} style={view === "voter" && step === 1 ? activeNavBtnStyle : navBtnStyle}>
+                Vote Now
+              </button>
+        
+              <button data-track="nav-results" onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
+                Live Results
+              </button>
+        
+              <button data-track="nav-apply" onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
+                Apply
+              </button>
+
+              {/* Deliberately NOT shown while view === "voter": that flow is
+                  someone actively proving they're a different identity (via
+                  OTP), and a leftover admin session from earlier in the tab
+                  has nothing to do with who's typing right now. Showing this
+                  shortcut there meant anyone who knew an admin's voter
+                  credentials (student ID + name — not a secret) could open
+                  the voter OTP screen and skip straight into the admin
+                  dashboard with zero re-authentication, on any device/tab
+                  where an admin had once logged in and not explicitly logged
+                  out. Restricted to results/apply — the two read-only pages
+                  this was actually built for. */}
+              {adminRole && (view === "results" || view === "apply") && (
+                <button onClick={() => setView(adminRole)} style={backToAdminBtnStyle}>
+                  Back to Admin
+                </button>
+              )}
+            </div>
+          </nav>
+        )}
 
         <Suspense fallback={<LoadingBlock text="Loading…" />}>
-        {view === "results" && <Results apiBase={API_BASE} />}
+        {view === "results" && wrapPublic(<Results apiBase={API_BASE} />, true)}
         {view === "superadmin" && <SuperAdminDashboard onLogout={resetFlow} />}
         {view === "commission" && <CommissionDashboard onLogout={resetFlow} />}
-        {view === "apply" && <ApplicantPortal />}
+        {view === "apply" && wrapPublic(<ApplicantPortal />)}
         {view === "it_admin" && <ITAdminDashboard onLogout={resetFlow} />}
         {view === "financial_controller" && <FinancialControllerDashboard onLogout={resetFlow} />}
         {view === "overseer" && <OverseerDashboard onLogout={resetFlow} />}
@@ -811,10 +845,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         </Suspense>
         
         
-        {view === "voter" && (
+        {view === "voter" && wrapPublic((
           <div style={{ width: '100%' }}>
             {step === 1 && (
-              <div style={cardStyle}>
+              <div {...cardProps()}>
               <h1 style={{ textAlign: 'center', color: 'var(--text-color)' }}>
                 {isAdminPath ? "Admin Login" : "Voter Login"}
               </h1>
@@ -822,21 +856,27 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               
               {isAdminPath ? (
                 <>
+                  {bp && <bp.FieldLabel htmlFor="admin-email">Email address</bp.FieldLabel>}
                   <input
                     key="admin-email"
                     name="admin-email"
-                    style={inputStyle}
+                    id={bp ? 'admin-email' : undefined}
+                    className={k?.in}
+                    style={bp ? undefined : inputStyle}
                     value={studentId}
                     onChange={e => { setStudentId(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
                     placeholder="Email address"
                     type="email"
                     autoComplete="email"
                   />
+                  {bp && <bp.FieldLabel htmlFor="admin-password">Password</bp.FieldLabel>}
                   <div style={{ position: 'relative', marginBottom: '15px' }}>
                     <input
                       key="admin-password"
                       name="admin-password"
-                      style={{ ...inputStyle, marginBottom: 0, paddingRight: '46px' }}
+                      id={bp ? 'admin-password' : undefined}
+                      className={k?.in}
+                      style={bp ? { marginBottom: 0, paddingRight: '46px' } : { ...inputStyle, marginBottom: 0, paddingRight: '46px' }}
                       value={name}
                       onChange={e => { setName(e.target.value); setNeedsTotp(false); setTotpCode(""); }}
                       placeholder="Password e.g. Comm@2026!"
@@ -858,9 +898,12 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                       </svg>
                     </button>
                   </div>
+                  {needsTotp && bp && <bp.FieldLabel htmlFor="admin-totp">Authenticator code</bp.FieldLabel>}
                   {needsTotp && (
                     <input
-                      style={inputStyle}
+                      id={bp ? 'admin-totp' : undefined}
+                      className={k?.in}
+                      style={bp ? undefined : inputStyle}
                       value={totpCode}
                       onChange={e => setTotpCode(e.target.value)}
                       placeholder="Authenticator code"
@@ -883,7 +926,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 data-track="login-submit"
                 onClick={() => handleVerifyIdentity()}
                 disabled={(!isElectionOpen && !isAdminPath) || isVerifying || captchaPending}
-                style={{
+                className={k?.btn}
+                style={bp ? { opacity: isVerifying ? 0.7 : 1, cursor: isVerifying ? 'wait' : 'pointer' } : {
                   ...primaryBtnStyle,
                   backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7',
                   opacity: isVerifying ? 0.7 : 1,
@@ -892,14 +936,14 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               >
                 {isVerifying ? <><Icon name="loading" /> Verifying…</> : (isAdminPath ? "Log In" : "Verify & Send Code")}
               </button>
-              <button data-track="login-switch-admin" onClick={switchLoginMode} style={linkBtnStyle}>
+              <button data-track="login-switch-admin" onClick={switchLoginMode} className={k?.lnk} style={bp ? undefined : linkBtnStyle}>
                 {isAdminPath ? "Switch to Voter Login" : "Are you an admin? Log in here"}
               </button>
               </div>
             )}
 
             {step === 1.5 && (
-              <div style={cardStyle}>
+              <div {...cardProps()}>
                 <h2 style={{ textAlign: 'center' }}>Select Phone Number</h2>
                 <p style={{ textAlign: 'center', opacity: 0.8, marginBottom: '20px' }}>Choose where to receive your code:</p>
                 {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
@@ -908,17 +952,18 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     key={index}
                     onClick={() => { setSelectedPhone(num); handleVerifyIdentity(index); }}
                     disabled={isVerifying || captchaPending}
-                    style={{ ...selectionBtnStyle, opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' }}
+                    className={k?.ghost}
+                    style={bp ? { opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' } : { ...selectionBtnStyle, opacity: isVerifying ? 0.6 : 1, cursor: isVerifying ? 'wait' : 'pointer' }}
                   >
                     {isVerifying ? 'Sending…' : `Receive code on ${num}`}
                   </button>
                 ))}
-                <button onClick={() => setStep(1)} style={{ ...linkBtnStyle, color: 'var(--danger)' }}>Cancel</button>
+                <button onClick={() => setStep(1)} className={k?.lnk} style={bp ? undefined : { ...linkBtnStyle, color: 'var(--danger)' }}>Cancel</button>
               </div>
             )}
 
             {step === 2 && (
-              <div style={cardStyle}>
+              <div {...cardProps()}>
                <OtpInput otp={otp} feedback={otpFeedback}
                  setOtp={(v) => { setOtp(v); setOtpFeedback(f => (f && !f.lock_until ? null : f)); }}   // editing clears a plain error, never a lockout
                  onVerify={handleVerifyOtp} phoneNumber={selectedPhone} onBack={() => setStep(1)} isSubmitting={isVerifying}
@@ -930,7 +975,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     <>
                       {needsCaptcha && <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaKey} />}
                       <button data-track="otp-resend" onClick={() => handleVerifyIdentity(phoneIdxRef.current)} disabled={captchaPending || isVerifying}
-                        style={{ ...resendBtnStyle, opacity: captchaPending ? 0.5 : 1 }}>Resend SMS</button>
+                        className={k?.sm}
+                        style={bp ? { opacity: captchaPending ? 0.5 : 1 } : { ...resendBtnStyle, opacity: captchaPending ? 0.5 : 1 }}>Resend SMS</button>
                     </>
                   )}
                 </div>
@@ -958,15 +1004,15 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                     style={{ animation: 'vote-check-draw 0.35s ease-out 0.4s forwards' }} />
                 </svg>
                 <h2 style={{ color: 'var(--success)' }}>Vote Cast Successfully!</h2>
-                <button onClick={resetFlow} style={{ ...primaryBtnStyle, backgroundColor: '#2ecc71' }}>Return Home</button>
+                <button onClick={resetFlow} style={{ ...primaryBtnStyle, backgroundColor: 'var(--bp-ok, #2ecc71)' }}>Return Home</button>
               </div>
             )}
           </div>
-        )}
+        ))}
 
         {mustChangePassword && (
           <div className="overlay-fade-in" style={modalOverlayStyle}>
-            <div className="modal-content panel-fade-in" style={{ ...modalContentStyle, maxWidth: '420px' }}>
+            <div className="modal-content panel-fade-in" role="dialog" aria-modal="true" aria-label="Set a new password" style={{ ...modalContentStyle, maxWidth: '420px' }}>
               <h2 style={{ textAlign: 'center', marginTop: 0, color: 'var(--text-color)' }}>Set a New Password</h2>
               <p style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
                 For your security, you must set a new password before continuing.
@@ -1015,7 +1061,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         
         {statusModal.show && (
           <div className="overlay-fade-in" style={modalOverlayStyle}>
-            <div className="modal-content panel-fade-in" style={modalContentStyle}>
+            <div className="modal-content panel-fade-in" role="dialog" aria-modal="true" aria-label={statusModal.type === 'success' ? 'Success' : 'Notice'} style={modalContentStyle}>
               <div style={{ fontSize: '50px', marginBottom: '10px', textAlign: 'center' }}>
                 {statusModal.type === 'success' ? <Icon name="success" /> : <Icon name="warning" />}
               </div>
@@ -1109,6 +1155,9 @@ const BOOT_STAGES = {
 
 function BootSplash({ orgName, logoUrl, exiting, stage }) {
   const st = BOOT_STAGES[stage] || BOOT_STAGES.connecting;
+  const bp = getTemplate();
+  // Blueprint look: same stages, copy and dot colours; the spinner ring becomes the initials stamp.
+  if (bp) return <bp.BootSplash orgName={orgName} logoUrl={logoUrl} exiting={exiting} text={st.text} label={st.label} dot={st.dot} />;
   return (
     <div style={{ ...bootWrapStyle, ...(exiting ? bootWrapExitStyle : null) }}>
       <div style={bootCardStyle}>
@@ -1240,6 +1289,6 @@ const selectionBtnStyle = { width: '100%', padding: '15px', backgroundColor: '#f
 
 const linkBtnStyle = { background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', marginTop: '15px', width: '100%' };
 
-const resendBtnStyle = { background: 'none', border: '1px solid #2ecc71', color: 'var(--success)', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '600' };
+const resendBtnStyle = { background: 'none', border: '1px solid var(--bp-ok, #2ecc71)', color: 'var(--success)', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '600' };
 
 export default App;

@@ -144,8 +144,6 @@ async def read_live_otp(org_slug: str, student_id: str) -> str | None:
     org = await db.organizations.find_one({"slug": org_slug})
     org_id = str((org or {}).get("_id", ""))
     doc = await db.otps.find_one({"org_id": org_id, "student_id": student_id})
-    if not doc:
-        doc = await db.otps.find_one({"student_id": student_id})  # legacy/no-org fallback
     return (doc or {}).get("code")
 
 

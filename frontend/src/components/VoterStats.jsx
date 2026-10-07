@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { startPolling } from '../hooks/usePolling';
+import { getTemplate } from '../template';
 
 /**
  * CUSTOM-1 (restored): headline voter numbers for the superadmin Voters tab.
@@ -21,6 +22,8 @@ export default function VoterStats() {
 
   if (err && !d) return <p style={muted}>Could not load voter statistics.</p>;
   if (!d) return <p style={muted}>Loading voter statistics…</p>;
+  const bp = getTemplate();
+  if (bp?.VoterStatsView) return <bp.VoterStatsView d={d} />;   // all hooks are above: safe early return (R12)
   const sms = d.sms || {};
   return (
     <div data-testid="voter-stats">

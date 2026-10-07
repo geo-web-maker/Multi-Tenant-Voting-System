@@ -61,7 +61,7 @@ async def test_patch_external_to_phase_without_end_is_refused(env):
                                json={"expires_with_phase": "vetting"})
     assert r.status_code == 400, r.text
     doc = await env.db.panel_members.find_one({"panel_member_id": "PM-EXT002"})
-    assert doc["expires_with_phase"] is None and doc["access_expires_at"] is not None
+    assert doc.get("expires_with_phase") is None and doc["access_expires_at"] is not None
 
 
 # 6. Re-activating clears the stale removal stamp.

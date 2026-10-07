@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { startPolling } from '../hooks/usePolling';
 import { useRevealReady } from './RevealGroup';
+import { getTemplate } from '../template';
 
 /**
  * Turnout by voter field (gender, programme, any custom field the org switched on).
@@ -11,6 +12,7 @@ import { useRevealReady } from './RevealGroup';
  *    already folded into "Other" (/election-results/turnout-breakdown)
  */
 function FieldTable({ label, groups, note }) {
+  const bp = getTemplate();
   return (
     <div style={{ marginTop: 14 }}>
       <b style={{ fontSize: 13 }}>{label}</b>
@@ -18,17 +20,24 @@ function FieldTable({ label, groups, note }) {
         <p style={muted}>{note || 'No data.'}</p>
       ) : (
         <div style={{ marginTop: 6 }}>
-          {groups.map(g => (
-            <div key={g.label} style={{ marginBottom: 8 }}>
+          {groups.map(g => {
+            // Blueprint: the group becomes a meter (turnout bar in the accent); default keeps the original div + inline bar.
+            const Row = bp ? bp.Meter : 'div';
+            const rowProps = bp ? { pct: Math.min(100, g.pct), accent: true } : { style: { marginBottom: 8 } };
+            return (
+            <Row key={g.label} {...rowProps}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
                 <span style={{ overflowWrap: 'anywhere' }}>{g.label}</span>
                 <span style={{ whiteSpace: 'nowrap' }}><b>{g.voted}</b> / {g.registered} ({g.pct}%)</span>
               </div>
-              <div style={{ height: 6, background: 'var(--border-color)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
-                <div style={{ width: `${Math.min(100, g.pct)}%`, height: '100%', background: 'var(--info)' }} />
-              </div>
-            </div>
-          ))}
+              {!bp && (
+                <div style={{ height: 6, background: 'var(--border-color)', borderRadius: 3, overflow: 'hidden', marginTop: 3 }}>
+                  <div style={{ width: `${Math.min(100, g.pct)}%`, height: '100%', background: 'var(--info)' }} />
+                </div>
+              )}
+            </Row>
+            );
+          })}
         </div>
       )}
     </div>
@@ -36,6 +45,7 @@ function FieldTable({ label, groups, note }) {
 }
 
 export function AdminTurnoutBreakdown() {
+  const bp = getTemplate();
   const [data, setData] = useState(null);
   const [settled, setSettled] = useState(false);
   useEffect(() => {
@@ -48,17 +58,18 @@ export function AdminTurnoutBreakdown() {
   useRevealReady(settled);
   if (!data || data.fields.length === 0) return null;
   return (
-    <div style={{ ...panel, marginTop: 14 }} className="card-pad">
+    <div style={bp ? { marginTop: 14 } : { ...panel, marginTop: 14 }} className={bp ? bp.cls.card : 'card-pad'}>
       <strong style={{ fontSize: 13 }}>Turnout by group</strong>
       <p style={muted}>Voted / registered. Visible to admins only; small groups are shown here but never published.</p>
       {data.fields.map(f => (
-        <FieldTable key={f.key} label={<>{f.label}{f.public && <span style={pill}>public after close</span>}</>} groups={f.groups} />
+        <FieldTable key={f.key} label={<>{f.label}{f.public && (bp ? <> <bp.Pill tone="mute">public after close</bp.Pill></> : <span style={pill}>public after close</span>)}</>} groups={f.groups} />
       ))}
     </div>
   );
 }
 
 export function PublicTurnoutBreakdown() {
+  const bp = getTemplate();
   const [data, setData] = useState(null);
   useEffect(() => {
     let live = true, stop = null;
@@ -73,13 +84,13 @@ export function PublicTurnoutBreakdown() {
   }, []);
   if (!data?.available || data.fields.length === 0) return null;
   return (
-    <div style={{ marginTop: 40, padding: 25, backgroundColor: 'var(--card-bg)', borderRadius: 15, border: '1px solid var(--border-color)' }}>
+    <div style={bp ? { marginTop: 40 } : { marginTop: 40, padding: 25, backgroundColor: 'var(--card-bg)', borderRadius: 15, border: '1px solid var(--border-color)' }} className={bp ? bp.cls.card : undefined}>
       <h3 style={{ fontSize: 18, color: 'var(--text-color)', margin: '0 0 4px' }}>Turnout by group</h3>
       {data.fields.map(f => (
         <FieldTable key={f.key} label={f.label} groups={f.groups}
           note="Not shown: the groups are too small to publish without identifying individuals." />
       ))}
-      <p style={{ fontSize: 11, color: '#64748b', marginTop: 14 }}>
+      <p style={{ fontSize: 11, color: 'var(--bp-mu, #64748b)', marginTop: 14 }}>
         Turnout only, not how anyone voted. Groups under {data.min_group_size} registered voters are combined into "Other".
       </p>
     </div>

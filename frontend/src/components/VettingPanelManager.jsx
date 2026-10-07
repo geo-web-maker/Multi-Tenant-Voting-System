@@ -3,6 +3,7 @@ import api from '../api';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import ViewAsButton from './ViewAsButton';
 import { regNo } from '../regNo';
+import { getTemplate } from '../template';
 
 // Superadmin: appoint, reissue credentials for and (de)activate Vetting Panel members (guide 6.3, 7, 13.1).
 const BLANK = {
@@ -175,7 +176,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                     <b style={{ color: 'var(--text-color)' }}>{p.full_name}</b>
                     <span style={badge}>{p.is_member ? 'Member' : 'External'}</span>
                     {p.is_chair && <span style={badge}>Chairperson</span>}
-                    {!p.active && <span style={{ ...badge, color: '#e74c3c', backgroundColor: 'color-mix(in srgb, #e74c3c 15%, transparent)' }}>Inactive</span>}
+                    {!p.active && <InactiveBadge />}
                     <br />
                     {p.student_id && <><small style={{ opacity: 0.6 }}>{regNo(p.student_id)}</small><br /></>}
                     {!p.student_id && p.affiliation && <><small style={{ opacity: 0.6 }}>{p.affiliation}</small><br /></>}
@@ -417,10 +418,17 @@ const inp      = { padding: '10px 12px', borderRadius: '8px', border: '1px solid
 const grid     = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8, marginTop: 8 };
 const checkRow = { display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, fontSize: '13px' };
 const labelStyle = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: '12px' };
-const btn      = { padding: '10px 18px', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const btn      = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const greenBtn = { ...btn, backgroundColor: 'var(--success)' };
 const ghostBtn = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
 const tabOn    = { ...ghostBtn, borderColor: 'var(--info)', color: 'var(--info)', fontWeight: 'bold' };
-const redLink  = { background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
+const redLink  = { background: 'none', border: 'none', color: 'var(--bp-no, #e74c3c)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const infoBox  = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--info)', marginBottom: 12, fontSize: '13px' };
 const warnBox  = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--warning)', marginBottom: 12, fontSize: '13px' };
+
+// "Inactive" panel-member tag. Default: the same <span> as before. Blueprint: a negative status pill.
+function InactiveBadge() {
+  const bp = getTemplate();
+  if (bp?.StatusPill) return <bp.StatusPill tone="neg" style={{ marginLeft: '8px' }}>Inactive</bp.StatusPill>;
+  return <span style={{ ...badge, color: 'var(--bp-no, #e74c3c)', backgroundColor: 'color-mix(in srgb, var(--bp-no, #e74c3c) 15%, transparent)' }}>Inactive</span>;
+}

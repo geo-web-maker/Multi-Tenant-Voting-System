@@ -4,8 +4,7 @@ Run this AFTER the local backend is up and running (uvicorn main:app --reload).
 
 Creates:
   - Three orgs: "kyuccu", "ask", "umosan" (for multi-org testing)
-  - A legacy/no-org dataset (no X-Org-Slug header — tests single-tenant fallback)
-  - Positions + candidates for each of the four (skipped if already seeded —
+  - Positions + candidates for each of the three (skipped if already seeded —
     see org_already_seeded() — so re-running this script doesn't duplicate them)
   - N voters per dataset, imported via CSV (same real path ASK's IT admin uses)
   - One IT Admin, Commissioner, Financial Controller, and Overseer per org,
@@ -202,20 +201,6 @@ async def seed_org(client: httpx.AsyncClient, token: str, org: dict) -> dict:
     return {"voter_ids": voter_ids, "roles": roles}
 
 
-async def seed_legacy_no_org(client: httpx.AsyncClient, token: str) -> list[str]:
-    """No X-Org-Slug header at all — tests the legacy/single-tenant fallback
-    path where request.state.org_id stays None throughout."""
-    print(f"\n=== Seeding legacy/no-org dataset ===")
-    headers = {"Authorization": f"Bearer {token}"}  # no X-Org-Slug
-
-    if await org_already_seeded(client, headers):
-        print("  [legacy] candidates already exist, skipping positions/candidates re-seed")
-    else:
-        await seed_positions_and_candidates(client, headers, "legacy")
-
-    return await seed_voters(client, headers, "legacy", "legacy")
-
-
 async def main():
     async with httpx.AsyncClient(timeout=300.0) as client:
         print("Logging in as superadmin...")
@@ -225,9 +210,6 @@ async def main():
         all_data = {}
         for org in ORGS:
             all_data[org["slug"]] = await seed_org(client, token, org)
-
-        legacy_voter_ids = await seed_legacy_no_org(client, token)
-        all_data["_legacy_no_org"] = {"voter_ids": legacy_voter_ids, "roles": {}}
 
         print("\n=== Done ===")
         total = 0

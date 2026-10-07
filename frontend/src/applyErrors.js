@@ -19,6 +19,8 @@ export function mapApplyError(err, { online = true } = {}) {
   switch (res.status) {
     case 400:
       if (/5\s?mb/i.test(text)) return 'That image is over 5 MB. Use a smaller photo or screenshot.';
+      if (/nomination form is required|signed nomination form/i.test(text)) return 'Please upload the signed nomination form before submitting.';
+      if (/could not be used|upload.*again/i.test(text) && /nomination/i.test(text)) return 'Your nomination form upload expired or was already used. Upload it again.';
       if (/already/i.test(text)) return text || 'An application for this student has already been submitted.';
       if (/only jpeg|allowed/i.test(text)) return 'That file type is not supported. Use a JPEG, PNG, WEBP or GIF image.';
       return text || 'Please check your entries and try again.';
@@ -40,11 +42,12 @@ export const FIELD_LABELS = {
   manifesto: 'Manifesto',
   payment_method: 'Payment method',
   payment_proof: 'Payment receipt',
+  nomination_form: 'Signed nomination form',
 };
-const ORDER = ['student_id', 'full_name', 'position_id', 'manifesto', 'payment_method', 'payment_proof'];
+const ORDER = ['student_id', 'full_name', 'position_id', 'manifesto', 'nomination_form', 'payment_method', 'payment_proof'];
 
 /** One pass over the whole form. Returns the missing fields in page order: [{ field, label }]. */
-export function missingFields(v) {
+export function missingFields(v, { nominationRequired = false } = {}) {
   const empty = {
     student_id: !String(v.student_id || '').trim(),
     full_name: !String(v.full_name || '').trim(),
@@ -52,6 +55,7 @@ export function missingFields(v) {
     manifesto: !String(v.manifesto || '').trim(),
     payment_method: !v.payment_method,
     payment_proof: !v.payment_proof,
+    nomination_form: nominationRequired && !v.nomination_form,
   };
   return ORDER.filter(f => empty[f]).map(field => ({ field, label: FIELD_LABELS[field] }));
 }
@@ -68,10 +72,14 @@ export function imageBlockReason(file) {
 }
 
 /** Button/status text for the current step. The photo step is skipped when no photo was chosen. */
-export function stepLabel(step, hasPhoto) {
+export function stepLabel(step, hasPhoto, nominationEnabled = false) {
   const names = hasPhoto
-    ? ['Checking your details', 'Uploading photo', 'Uploading receipt', 'Submitting']
-    : ['Checking your details', 'Uploading receipt', 'Submitting'];
+    ? (nominationEnabled
+        ? ['Checking your details', 'Uploading photo', 'Uploading nomination form', 'Uploading receipt', 'Submitting']
+        : ['Checking your details', 'Uploading photo', 'Uploading receipt', 'Submitting'])
+    : (nominationEnabled
+        ? ['Checking your details', 'Uploading nomination form', 'Uploading receipt', 'Submitting']
+        : ['Checking your details', 'Uploading receipt', 'Submitting']);
   const i = Math.min(Math.max(step, 1), names.length);
   return `${names[i - 1]} (${i}/${names.length})`;
 }

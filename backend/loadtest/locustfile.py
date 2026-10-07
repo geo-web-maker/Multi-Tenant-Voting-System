@@ -46,8 +46,9 @@ DB_NAME = os.getenv("MONGO_DB_NAME", "electiondbaccounting")
 # at random in on_start() — this generates real concurrent cross-tenant
 # traffic in a single run, which is the actual thing worth load-testing for
 # a multi-tenant system (does org isolation hold under concurrent load, not
-# just sequential manual checks). "" = the legacy/no-org dataset.
-ORGS_TO_TEST = ["kyuccu", "ask", "umosan", ""]
+# just sequential manual checks). Every entry must be a real org slug: the
+# backend rejects requests without X-Org-Slug (there is no legacy/no-org dataset any more).
+ORGS_TO_TEST = ["kyuccu", "ask", "umosan"]
 
 # Reads the same SEED_VOTERS_PER_ORG env var seed_test_data.py uses, so the
 # two scripts can't silently drift — set it once, both pick it up. Falls
@@ -112,8 +113,8 @@ class VoterUser(HttpUser):
     def on_start(self):
         self.org_slug = random.choice(ORGS_TO_TEST)
         self.org_id = ORG_IDS[self.org_slug]
-        self.voter_prefix = self.org_slug if self.org_slug else "legacy"
-        self.headers = {"X-Org-Slug": self.org_slug} if self.org_slug else {}
+        self.voter_prefix = self.org_slug
+        self.headers = {"X-Org-Slug": self.org_slug}
 
     @task
     def full_voting_flow(self):
@@ -205,7 +206,7 @@ class ResultsViewerUser(HttpUser):
 
     def on_start(self):
         self.org_slug = random.choice(ORGS_TO_TEST)
-        self.headers = {"X-Org-Slug": self.org_slug} if self.org_slug else {}
+        self.headers = {"X-Org-Slug": self.org_slug}
         self._ticks = 0
 
     @task

@@ -19,14 +19,14 @@ export default function VerifyCertificate({ certificateId }) {
   const { loading, data, notFound, failed } = state;
   const valid = data?.verified;
   const revoked = data && !data.verified;
-  const color = valid ? '#2ecc71' : '#e74c3c';
+  const color = valid ? 'var(--bp-ok, #2ecc71)' : 'var(--bp-no, #e74c3c)';
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 20, background: 'var(--bg-color)' }}>
       <div style={{ width: '100%', maxWidth: 460, background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: 16, padding: 28, textAlign: 'center', color: 'var(--text-color)' }}>
         <div style={{ fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', opacity: 0.55, marginBottom: 12 }}>Certificate verification</div>
         {loading && <LoadingBlock text="Checking our records…" />}
-        {failed && <p style={{ color: '#e74c3c' }}>Could not reach the server. Please try again.</p>}
+        {failed && <p style={{ color: 'var(--bp-no, #e74c3c)' }}>Could not reach the server. Please try again.</p>}
         {(notFound || revoked || valid) && (
           <>
             <div style={{ fontSize: 22, fontWeight: 800, color, marginBottom: 6 }}>

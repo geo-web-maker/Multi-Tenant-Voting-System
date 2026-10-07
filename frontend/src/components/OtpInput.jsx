@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { buildSupportLink, fmtWait } from '../supportLink';
 import { cleanOtp } from '../loginErrors';
+import { getTemplate } from '../template';
 
 /**
  * feedback = { message, attempts_remaining, retry_after, reason } from the last /verify-otp response.
@@ -29,6 +30,18 @@ export default function OtpInput({
   const disabled = otp.length < 6 || isSubmitting || locked;
   const help = buildSupportLink(supportPhone, orgName, studentId, 'my code is not working');
 
+  // Blueprint template: six presentation cells over the one real input; all state and handlers stay here.
+  const bp = getTemplate();
+  if (bp) {
+    return (
+      <bp.OtpScreen
+        otp={otp} onChange={(e) => setOtp(cleanOtp(e.target.value))} inputRef={inputRef} phoneNumber={phoneNumber}
+        locked={locked} lockLabel={fmtWait(lockLeft)} hasError={hasError} feedback={feedback} disabled={disabled}
+        isSubmitting={isSubmitting} onVerify={onVerify} onBack={onBack} help={help}
+      />
+    );
+  }
+
   return (
     <div style={{ textAlign: 'center', color: 'var(--text-color)' }}>
       <h2 style={{ fontSize: '18px', marginBottom: '20px', fontWeight: '500' }}>
@@ -41,7 +54,7 @@ export default function OtpInput({
         onChange={(e) => setOtp(cleanOtp(e.target.value))}   // no maxLength: a pasted "123 456" must not be cut to 5 digits
         style={{
           fontSize: '32px', width: '220px', textAlign: 'center', padding: '12px',
-          backgroundColor: 'var(--surface-2)', border: hasError ? '2px solid #e74c3c' : '2px solid var(--border-color)',
+          backgroundColor: 'var(--surface-2)', border: hasError ? '2px solid var(--bp-no, #e74c3c)' : '2px solid var(--border-color)',
           borderRadius: '12px', color: 'var(--text-color)', letterSpacing: '8px', outline: 'none', opacity: locked ? 0.5 : 1,
         }}
       />
@@ -66,7 +79,7 @@ export default function OtpInput({
           data-track="otp-submit"
           onClick={onVerify} disabled={disabled}
           style={{
-            backgroundColor: disabled ? 'var(--surface-2)' : '#2ecc71', color: 'white', padding: '12px 30px',
+            backgroundColor: disabled ? 'var(--surface-2)' : 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ai, #fff)', padding: '12px 30px',
             border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: disabled ? 'default' : 'pointer',
           }}
         >

@@ -132,7 +132,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
                 <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', margin: '6px 0' }}>
                   <input type="checkbox" checked={Boolean(ack[c.id])} onChange={e => setAck({ ...ack, [c.id]: e.target.checked })} /> I have checked
                 </label>)}
-              <button disabled={busy === c.id} style={{ ...btn, background: '#e74c3c', marginTop: 6 }} onClick={() => forceApprove(c)}>Break-glass approve</button>
+              <button disabled={busy === c.id} style={{ ...btn, background: 'var(--bp-no, #e74c3c)', marginTop: 6 }} onClick={() => forceApprove(c)}>Break-glass approve</button>
             </>
           )}
           {c.status === 'pending' && !readOnly && (
@@ -143,8 +143,8 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
                 </label>)}
               <p style={muted}>If the old number is still reachable, phone it and ask whether the voter asked for this. A “no” means deny and escalate. Expires {fmt(c.expires_at)}.</p>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button disabled={busy === c.id} style={{ ...btn, background: '#2ecc71', flex: 1 }} onClick={() => decide(c, 'approve')}>Approve</button>
-                <button disabled={busy === c.id} style={{ ...btn, background: '#e74c3c', flex: 1 }} onClick={() => decide(c, 'deny')}>Deny</button>
+                <button disabled={busy === c.id} style={{ ...btn, background: 'var(--bp-ok, #2ecc71)', flex: 1 }} onClick={() => decide(c, 'approve')}>Approve</button>
+                <button disabled={busy === c.id} style={{ ...btn, background: 'var(--bp-no, #e74c3c)', flex: 1 }} onClick={() => decide(c, 'deny')}>Deny</button>
               </div>
             </>
           )}
@@ -186,12 +186,12 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
 }
 
 const Flag = ({ children }) => (
-  <p style={{ margin: '6px 0', padding: '6px 10px', borderRadius: 8, fontSize: 12, background: 'rgba(230,126,34,0.12)', border: '1px solid #e67e22' }}>
+  <p style={{ margin: '6px 0', padding: '6px 10px', borderRadius: 8, fontSize: 12, background: 'rgba(230,126,34,0.12)', border: '1px solid var(--bp-wn, #e67e22)' }}>
     <Icon name="warning" /> {children}</p>
 );
 const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 14, background: 'var(--card-bg)' };
 const muted = { fontSize: 12, opacity: 0.75, margin: '4px 0' };
 const ghost = { padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontSize: 12 };
-const btn = { padding: '10px 14px', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
+const btn = { padding: '10px 14px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
 const th = { textAlign: 'left', padding: 6, borderBottom: '1px solid var(--border-color)', whiteSpace: 'nowrap' };
 const td = { padding: 6, borderBottom: '1px solid var(--border-color)' };

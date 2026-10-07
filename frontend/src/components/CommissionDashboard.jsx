@@ -12,12 +12,14 @@ import ReceiptLink from './ReceiptLink';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import { LoadingBlock } from './Spinner.jsx';
+import { getTemplate } from '../template';
 
 // Pre-P4 tab ids that may still be remembered in this tab's session.
 const LEGACY_TABS = ['pending', 'approved', 'denied', 'removed'];
 
 export default function CommissionDashboard({ onLogout }) {
   const toast = useToast();
+  const bp = getTemplate(); // render-time: null => the standard UI
 
   const [activeTab, setActiveTab]       = usePersistedTab('commission', 'outcomes');
   const [applications, setApplications] = useState([]);
@@ -234,7 +236,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div key={app.id} style={outcomeCard}>
             <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
               <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>{app.full_name || 'Applicant'}</b>
-              <span style={statusBadge(app.status)}>{(app.status || '').toUpperCase()}</span>
+              <StatusBadge status={app.status}>{(app.status || '').toUpperCase()}</StatusBadge>
             </div>
             <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>
               {app.position_title}{app.student_id ? ` · ${regNo(app.student_id)}` : ''}
@@ -270,9 +272,9 @@ export default function CommissionDashboard({ onLogout }) {
                       <b style={{ color: 'var(--text-color)', fontSize: '15px' }}>
                         {change.change_type === 'add' ? <>Add Student</> : <>Remove Student</>}
                       </b>
-                      <span style={{ ...statusBadge(change.status), marginLeft: '10px' }}>
+                      <StatusBadge status={change.status} style={{ marginLeft: '10px' }}>
                         {change.status.toUpperCase()}
-                      </span>
+                      </StatusBadge>
                     </div>
                     <small style={{ opacity: 0.45 }}>
                       {new Date(change.requested_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
@@ -333,7 +335,7 @@ export default function CommissionDashboard({ onLogout }) {
               <>
                 <div style={{ ...tallyRow, marginTop: 0, marginBottom: '20px' }}>
                   <span style={{ opacity: 0.6, fontSize: '12px' }}>Voter turnout:</span>
-                  <span style={{ color: '#2ecc71', fontWeight: '700', fontSize: '15px' }}>
+                  <span style={{ color: 'var(--bp-ok, #2ecc71)', fontWeight: '700', fontSize: '15px' }}>
                     {liveResults.voter_turnout.voted_count} / {liveResults.voter_turnout.total_voters}
                   </span>
                   <span style={{ opacity: 0.6, fontSize: '13px' }}>
@@ -360,7 +362,7 @@ export default function CommissionDashboard({ onLogout }) {
                       <small style={{ opacity: 0.5 }}>
                         {pos.total_votes} vote{pos.total_votes !== 1 ? 's' : ''} cast
                         {pos.candidates.length > 1 && (
-                          <span style={{ marginLeft: '8px', color: '#2ecc71', fontWeight: '600' }}>
+                          <span style={{ marginLeft: '8px', color: 'var(--bp-ok, #2ecc71)', fontWeight: '600' }}>
                             +{pos.candidates[0].votes - pos.candidates[1].votes} lead
                             {' '}({(pos.candidates[0].pct_of_position - pos.candidates[1].pct_of_position).toFixed(1)}%)
                           </span>
@@ -368,8 +370,12 @@ export default function CommissionDashboard({ onLogout }) {
                       </small>
                      </div>                     
                     <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {pos.candidates.map((c, idx) => (
-                        <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {pos.candidates.map((c, idx) => {
+                        // Blueprint: the row becomes a meter (bar = accent for the leader); default keeps the original div + inline bar.
+                        const Row = bp ? bp.Meter : 'div';
+                        const rowProps = bp ? { pct: c.pct_of_position, accent: idx === 0 } : { style: { display: 'flex', flexDirection: 'column', gap: '4px' } };
+                        return (
+                        <Row key={c.id} {...rowProps}>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
                             <span style={{ fontSize: '12px', opacity: 0.5, width: '16px', flexShrink: 0 }}>{idx + 1}.</span>
                             <span style={{ flex: 1, fontSize: '13px', color: 'var(--text-color)', fontWeight: idx === 0 ? '700' : '400' }}>
@@ -382,11 +388,14 @@ export default function CommissionDashboard({ onLogout }) {
                               {c.votes} ({c.pct_of_position}%)
                             </span>
                           </div>
+                          {!bp && (
                           <div style={{ marginLeft: '24px', height: '8px', backgroundColor: 'var(--card-bg)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-                            <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? '#2ecc71' : 'var(--border-color)' }} />
+                            <div style={{ width: `${c.pct_of_position}%`, height: '100%', backgroundColor: idx === 0 ? 'var(--bp-ok, #2ecc71)' : 'var(--border-color)' }} />
                           </div>
-                        </div>
-                      ))}
+                        )}
+                        </Row>
+                      );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -417,12 +426,19 @@ function statusBadge(status) {
     pending:  { background: 'color-mix(in srgb, var(--warning) 20%, transparent)', color: 'var(--warning)' },
     approved: { background: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' },
     denied:   { background: 'color-mix(in srgb, var(--danger) 20%, transparent)',  color: 'var(--danger)' },
-    removed:  { background: '#95a5a620', color: '#95a5a6' },
+    removed:  { background: 'var(--bp-mu-tint, #95a5a620)', color: 'var(--bp-mu, #95a5a6)' },
   };
   return {
     fontSize: '10px', padding: '3px 8px', borderRadius: '10px', fontWeight: 'bold',
     ...(map[status] || {}),
   };
+}
+
+// Status badge. Default: the same <span> as before. Blueprint: the shared status pill (one tone map for every console).
+function StatusBadge({ status, style, children }) {
+  const bp = getTemplate();
+  if (bp?.StatusPill) return <bp.StatusPill status={status} style={style}>{children}</bp.StatusPill>;
+  return <span style={{ ...statusBadge(status), ...style }}>{children}</span>;
 }
 
 // ── Styles ──

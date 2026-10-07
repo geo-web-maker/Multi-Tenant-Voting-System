@@ -433,3 +433,64 @@ HUMAN checks pending: decide whether to approve D2d-be.
 - F2 (housekeeping): nothing removed. Owner was unsure which of pnpm/npm lockfiles, Procfile/Dockerfile/railpack and `demo_results_mode*.py` are live, so all were kept.
 - Last verified totals (E1): backend 300 passed, frontend 260 passed, lint 0/0, build OK. F1 adds 3 frontend tests that are unverified.
 - HUMAN: rotate secrets from the earlier zip's env files; run the card HUMAN checks (phone layouts, Slow 3G, Atlas indexes, `/health` keep-warm ping).
+
+# Blueprint Console (BP-T0 … BP-T10) — final table
+Source: BLUEPRINT_TEMPLATE_GUIDE.md §7 and §13; per-card notes in progress/BP-*.md.
+
+| Item | Status |
+|---|---|
+| Switch | `VITE_UI_TEMPLATE=blueprint`, build time, per deployment; default UI unchanged (G1) |
+| Frontend tests | 584 pass default and 584 pass with the template on (G3); lint 0/0 (574 at T10 + 10 dialog tests) |
+| Bundle | default entry 34,996 B gz; blueprint entry 35,628 B gz; blueprint chunk 11,191 B gz (budget 30 KB) |
+| Hex ratchet | 394 literals ceiling (`src/hexRatchet.test.js`) |
+| E1–E13 (guide §7) | as written in the guide; no further deviations recorded in T0–T10 |
+| E14 dialogs (post-T10 audit) | No browser dialogs remain: Vote Now sign-out confirm (`App.jsx`) and Finance "Reverse clearance" use the in-app dialog. **Default template: dialog looks exactly as before**; only invisible behaviour was added (`role=dialog`/`alertdialog` + accessible name, Escape, focus start/restore, Tab wrap). **Blueprint**: visible title, card look, 48 px pill buttons, stacked on phones, via N10-N14 and the dialog rules in `blueprint.css`; `.modal-content` modals get the accent top edge. `UIFeedback.dialog.test.jsx` fails if a native `window.confirm/alert/prompt` is reintroduced |
+| T10 additions | focus ring extended to summary/role=button/tabindex; reduced motion for meter bars; README section |
+| Known behaviour change | IT Admin `force_denied` badge shows as negative (shared status map) instead of warn (BP-T8c) |
+| Left bare on purpose | AdminDashboard.jsx (legacy, unrendered), FinalReport and `.print-only` blocks, CandidateStatusPortal print sheet, `icons.jsx` dotGreen, PhaseBanner THEME (replaced in blueprint) |
+| HUMAN, pending | keyboard/screen-reader walk, 200 % zoom, print PDF comparison, device checks, Tier B "ok" columns, 18×4 mockup comparison, D1–D9 owner sign-off |
+
+# Legacy (no-org) tenant removed
+- `org_query()`, `org_stamp()` and `_oq()` no longer fall back to an unscoped filter / `org_id=None`; they raise 400 via `require_org()`. The same applies to `get_commissioner_count`, `_resolve_position_title`, `_position_fee`, `_create_candidate_from_application` and the contact-change apply/remove paths.
+- `REQUIRE_ORG_CONTEXT` is removed: a missing `X-Org-Slug` is always a 400, except the token/id-scoped and superadmin-bootstrap prefixes in `ORG_EXEMPT_PREFIXES`.
+- `/verify-admin`: only the superadmin may sign in without `X-Org-Slug`; IT admin, financial controller, overseer, commissioner and the rest are refused before any lookup.
+- `/admin/reset-election` and `backup.snapshot_before_destructive()` are single-tenant only (`all_tenants` removed). `wipe_election_data.py` now requires `--org-slug` and only deletes that org's documents (`ip_send_stats`, a tenant-less per-IP throttle, is no longer wiped by it).
+- Seed and load-test scripts no longer create or hit a "legacy/no-org" dataset.
+- Before deploying: open Superadmin > Security > **Legacy data check** (it also runs on demand with "Check again"). It lists documents that belong to no organization, including the old `default` SMS counter and OTP-limit keys, and lets the superadmin **assign** each group to an organization or **remove** it. `migrate_assign_org.py <org_id>` still works for a bulk backfill.
+- Legacy data check: `GET /superadmin/legacy-data`, `POST /superadmin/legacy-data/assign`, `POST /superadmin/legacy-data/delete` (superadmin only; exempt from the X-Org-Slug requirement because it spans tenants). Removal needs the typed phrase `DELETE LEGACY DATA` and a successful B2 safety snapshot (`backup.snapshot_legacy_data`) when backed-up collections are involved; otherwise nothing is deleted. `vote_events`, `audit_checkpoints` and `roster_ledger` are remove-only (their hash chain / anchors include the org). Tenant-less system events (organization created, unauthenticated 401s) are now stamped `scope: "system"` in `audit_log` so they are not reported as legacy. Not run in the sandbox: pytest and vitest. New tests: `backend/tests/test_legacy_data_check.py`, `frontend/src/components/LegacyDataPanel.test.jsx`.
+- NOT run in the sandbox (no network for pip): the backend test suite. `py_compile` passes on every changed file; run `pytest` locally. New tests: `backend/tests/test_no_legacy_tenant.py`.
+
+# Security / SMS save fixes
+- `PUT /superadmin/security-settings` re-swept every open application on EVERY save (the form posts all fields, so `approval_policy` was always in `updates`). It now only runs when the policy actually changed, and a failure there no longer turns an already-saved change into an error: the response is 200 with a `warning` string.
+- Security panel: each form (security, SMS routing, SMS budget) now has its own reason box; they used to share one value, and the budget form had no box of its own. After any failed or timed-out save the panel re-reads the server, so it never shows stale values for a change that was applied.
+- New tests: `backend/tests/test_security_save.py`. Not run in the sandbox (no network for pip).
+
+# Nomination form, phase N1 (settings, public read, template upload)
+- New settings doc `nomination_form` (per org): `enabled, required, title, instructions, template_file{url,filename}, accepted_types, max_mb`. Defaults: disabled, required, PDF only, 5 MB.
+- `GET /nomination-form` is public (added to the `_is_public` GET set). Disabled returns only `{"enabled": false}`.
+- `PUT /superadmin/nomination-form` is a **partial update** (fields left out are unchanged), needs a `reason` (>=3 chars), returns 400 "Nothing to change.", audits `nomination_form_changed` with old/new, and calls `invalidate_settings`. Template URL must be `https://`; clear it with `clear_template_file: true`.
+- `POST /superadmin/nomination-form/template` (multipart: `file`, `reason`) uploads the blank PDF/DOCX as a public Cloudinary raw file (up to 10 MB), stores `{url, filename}`, audits `nomination_form_template_uploaded` (no URL in the log).
+- Helpers reused by N2: `_sniff_document(content, accepted)` (magic bytes; DOCX must contain `[Content_Types].xml` and `word/document.xml`, no `vbaProject.bin`) and `_safe_filename`.
+- No new collection yet (`nomination_uploads` is N2). `tdb`/lint unchanged. Tests: `backend/tests/test_nomination_form.py` (21). Full backend suite: 497 passed (476 + 21).
+- NOT verified: the `cloudinary.uploader.upload(..., resource_type="raw", public_id="<id>.<ext>")` call against the real service (tests monkeypatch it). Try one real template upload after deploying.
+
+# Nomination form, phase N2 (signed forms to a private B2 bucket)
+- Completed forms are stored in a **private Backblaze B2 bucket**, not Cloudinary (they carry signatures and IDs). New module `backend/nomination_storage.py` is the only code that knows about B2 (`put_object`, `presigned_get_url`, `delete_object`, `is_configured`), so switching store later is a one-file change.
+- **Separate credentials**: `NOMINATION_B2_ENDPOINT / _KEY_ID / _APPLICATION_KEY / _BUCKET_NAME` (documented in `backend.env`). The backup `B2_*` values are never used or borrowed. The client is built on first use, so missing values cannot stop the app booting; uploads then return 503 and send a critical alert.
+- `POST /apply/upload-document` (public, added to `PUBLIC_PATHS`; same IP upload rate limit and `applications` phase gate as the photo upload). Needs the form enabled (else 404). Size limit is the org's `max_mb`; type is decided from the real bytes with `_sniff_document` against the org's `accepted_types`. Key: `nomination-forms/<org_id>/<random 128-bit id>.<ext>`. Returns only `{upload_id, filename, kind, bytes}`: no key, no link.
+- New tenant collection `nomination_uploads` (`tenant_db.TENANT_COLLECTIONS`, legacy check list): `upload_id, key, filename, kind, bytes, sha256, status (pending|attached), uploaded_at, student_id, position_id, attached_at, application_id`.
+- `POST /apply` takes optional `nomination_upload_id`. Form enabled + required + no id -> 400 before anything is stored. An id is claimed atomically (pending -> attached, same org, uploaded within 24 h), so one upload serves one application; unknown, stale, foreign and reused ids all get the same 400. If the application insert fails the claim is released. The application stores `nomination_form: {upload_id, filename, kind, bytes}` (or `null`); the storage key stays in `nomination_uploads`. Audit `application_submitted` gains `nomination_form` (filename). Form disabled: an id is ignored and not consumed.
+- `presigned_get_url` is ready (5-minute cap, forces download with a sanitised filename) but **no route uses it yet**; the staff read-back route is N3.
+- Not done in N2: front-end upload step (later card), cleanup of uploads never attached to an application (they sit in `nomination_uploads` as `pending`; the bucket lifecycle rule is the backstop), per-election lifecycle/retention, and org-deletion cleanup of the bucket.
+- Tests: `backend/tests/test_nomination_upload.py` (15). Full backend suite: 512 passed (497 + 15).
+- NOT verified: real calls to B2 (`put_object`, presigned GET) are faked in tests; the presigned URL is only checked offline for expiry and forced download. Do one real upload and download after setting the env values.
+- **Bucket setup (human)**: create a NEW private bucket (do not enable Object Lock if forms must ever be deleted early); create an application key limited to that bucket with read/write/delete files; add a lifecycle rule to hide/delete files under `nomination-forms/` after the retention you choose.
+
+# Nomination form, phase N3 (staff read-back and role shaping)
+- `GET /admin/applications/{id}/nomination-form` returns a presigned link (5 min, forced download, `Cache-Control: no-store`) plus `filename / kind / bytes / expires_in`. It never returns a storage key. Roles: `vetting`, `superadmin`, `overseer`; `commission` only once the application is resolved (same rule as `list_applications`); IT admin, financial controller and anyone else get 403. The route sits under the existing `/admin/applications` panel prefix, so the panel's confidentiality gate and access-expiry checks still apply first.
+- Every issued link writes `nomination_form_viewed` (`application_id`, `role`; plus `viewed_by_superadmin` for a view-as session). Failed lookups (404/403/502/503) write no row, because no link was issued. Storage not configured -> 503 + critical alert; presign failure -> 502 + critical alert.
+- `shape_application_for_role` now replaces `nomination_form` with `has_nomination_form`, `nomination_form_filename`, `nomination_form_required` for **every** role, superadmin included, so the upload id never reaches a browser. The nomination form is deliberately NOT in `_FINANCE_ONLY_APPLICATION_FIELDS` (the panel needs it).
+- **Small change to N2 code:** `/apply` now also stores `nomination_form_required` (snapshot of `enabled and required` at submit time; the A2 design asked for it and N2 had skipped it). Older applications have no such field and read as `false` ("Not required at submission" in the UI).
+- Not done: front-end (card N4: hook, superadmin panel, applicant section, vetting-row View button, snapshots). Corrections after submit and late attachment stay out of scope for v1.
+- Tests: `backend/tests/test_nomination_readback.py` (13). Full backend suite: 525 passed (512 + 13).
+- NOT verified: a real B2 presigned download (faked in tests, as in N2). The N2 human checks still apply.

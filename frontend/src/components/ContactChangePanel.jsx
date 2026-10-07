@@ -115,5 +115,5 @@ export default function ContactChangePanel({ student = null, compact = false }) 
 const box = { border: '1px solid var(--border-color)', borderRadius: 10, padding: 12, background: 'var(--card-bg)' };
 const muted = { fontSize: 12, opacity: 0.7, margin: '4px 0 8px' };
 const inp = { width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 10, borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--surface-2)', color: 'var(--text-color)' };
-const btn = { marginTop: 10, padding: '10px 16px', borderRadius: 8, border: 'none', background: '#2ecc71', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const btn = { marginTop: 10, padding: '10px 16px', borderRadius: 8, border: 'none', background: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ai, #fff)', fontWeight: 700, cursor: 'pointer' };
 const ghost = { padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontSize: 12 };

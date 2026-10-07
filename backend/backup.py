@@ -602,13 +602,15 @@ async def _missed_run_check(db, mode: str) -> None:
 # --------------------------------------------------------------------------
 # Pre-reset / pre-wipe safety snapshot (4.4)
 # --------------------------------------------------------------------------
-async def snapshot_before_destructive(db, org_id, label: str, all_tenants: bool = False) -> list[dict]:
-    """Dump the tenant (or every tenant) to B2 BEFORE deleting anything. Raises on any
-    failure; callers must abort the destructive action when this raises."""
+async def snapshot_before_destructive(db, org_id, label: str) -> list[dict]:
+    """Dump ONE tenant to B2 BEFORE deleting anything. Raises on any failure; callers must abort
+    the destructive action when this raises. A missing org_id is refused (no all-tenants mode)."""
+    if not org_id:
+        raise BackupError("snapshot_before_destructive requires an org_id")
     cfg = load_config()
     client = make_client(cfg)
     known = await list_tenants(db)
-    tenants = known if all_tenants else [
+    tenants = [
         next((t for t in known if t["org_id"] == org_id), {"org_id": org_id, "slug": None})]
     out = []
     for org in tenants:
@@ -616,6 +618,18 @@ async def snapshot_before_destructive(db, org_id, label: str, all_tenants: bool 
         await _log_run(db, tenant_key(org["org_id"]), f"safety:{label}", True, res["bytes_gz"], res)
         out.append(res)
     return out
+
+
+async def snapshot_legacy_data(db, label: str) -> dict:
+    """Dump the ownerless (org_id missing/null) documents to B2 before they are deleted from the
+    superadmin 'Legacy data' check. This is the ONLY place a null org is accepted, and it is
+    read-only. Raises on any failure; the caller must abort the delete when this raises."""
+    cfg = load_config()
+    client = make_client(cfg)
+    org = {"org_id": None, "slug": None}
+    res = await backup_tenant(db, client, cfg, org, "safety", label=label)
+    await _log_run(db, tenant_key(None), f"safety:{label}", True, res["bytes_gz"], res)
+    return res
 
 
 # --------------------------------------------------------------------------

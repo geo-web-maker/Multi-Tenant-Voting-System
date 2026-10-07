@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from './icons.jsx';
 import { trackPage } from '../analytics';
+import { getTemplate } from '../template';
 
 const RAIL_COLLAPSED_KEY = 'tabbar-rail-collapsed';
 
@@ -196,7 +197,7 @@ function ListItem({ t, isActive, onChange, tabRef }) {
   );
 }
 
-export default function TabBar({ tabs, groups, activeTab, onChange, className = '' }) {
+function DefaultTabBar({ tabs, groups, activeTab, onChange, className = '' }) {
   const isMobile = useIsMobile();
   useEffect(() => {
     const role = sessionStorage.getItem('admin_role');
@@ -345,6 +346,13 @@ export default function TabBar({ tabs, groups, activeTab, onChange, className = 
   // that's the point — mobile no longer has a layout of its own to
   // maintain separately from flat mode's.)
   return null;
+}
+
+// Template seam (BP-T7a, R12): the existing component above is untouched; this wrapper picks the console sidebar when the
+// Blueprint template is registered. Same props, same handlers. getTemplate() is read at render time.
+export default function TabBar(props) {
+  const bp = getTemplate();
+  return bp ? <bp.ConsoleSidebar {...props} /> : <DefaultTabBar {...props} />;
 }
 
 /* ── styles (layout-only; visual language lives in index.css so both

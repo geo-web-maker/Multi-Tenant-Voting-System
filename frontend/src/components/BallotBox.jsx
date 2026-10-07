@@ -5,6 +5,7 @@ import { loadBallot, saveBallot, clearBallot } from '../session';
 import { faceCropUrl } from '../cloudinaryImage';
 import { LoadingBlock } from './Spinner.jsx';
 import { castBallot, checkVoteStatus } from '../voteOutcome';
+import { getTemplate } from '../template';
 
 export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, propCandidates, isPreview = false, orgName = "" }) {
   const [candidates, setCandidates] = useState(propCandidates || []);
@@ -162,7 +163,11 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
     }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', color: '#fff' }}><LoadingBlock text="Loading…" color="#fff" /></div>;
+  // Template seam: `bp` is null in the standard UI; every branch below falls through to the original markup.
+  const bp = getTemplate();
+  const k = bp ? bp.cls : null;
+
+  if (loading) return <div style={{ textAlign: 'center', color: 'var(--bp-tx, #fff)' }}><LoadingBlock text="Loading…" color="var(--bp-tx, #fff)" /></div>;
 
   const groupedCandidates = candidates.reduce((groups, c) => {
     const pos = c.position || "Other";
@@ -175,26 +180,28 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
     <div style={{ textAlign: 'center', color: 'var(--text-color)', paddingBottom: '120px' }}>
       {isPreview && (
       <div style={{ 
-        backgroundColor: '#fee2e2', 
-        color: '#b91c1c', 
+        backgroundColor: 'var(--bp-no-tint, #fee2e2)', 
+        color: 'var(--bp-no, #b91c1c)', 
         padding: '15px', 
         borderRadius: '12px', 
         margin: '10px 10px 25px 10px', 
         fontWeight: '800',
-        border: '1px solid #fecaca' 
+        border: '1px solid var(--bp-no-edge, #fecaca)' 
       }}>
         <Icon name="warning" /> SAMPLE BALLOT GUIDE - VOTING DISABLED
       </div>
     )}
-      <h1 style={{ color: '#3b82f6', fontSize: '24px' }}>{orgName ? `${orgName} ELECTION`.toUpperCase() : "ELECTION"}</h1>
+      {bp && <bp.StepBar step={2} of={3} />}
+      <h1 style={{ color: 'var(--bp-tx, #3b82f6)', fontSize: '24px' }}>{orgName ? `${orgName} ELECTION`.toUpperCase() : "ELECTION"}</h1>
       
       {Object.keys(groupedCandidates).map((pos) => (
-        <div key={pos} style={{ marginBottom: '30px', padding: '0 10px' }}>
+        <div key={pos} className={k?.block} style={k ? undefined : { marginBottom: '30px', padding: '0 10px' }}>
           {/* The Header (Fixes the visibility of position names) */}
+          {bp ? <bp.PositionHeading>{pos}</bp.PositionHeading> : (
           <h3 
             className="position-header" 
             style={{ 
-              color: '#1e293b',             // Dark text for contrast on gold
+              color: 'var(--bp-ai, #1e293b)',             // Dark text for contrast on gold
               backgroundColor: 'var(--warning)',
               padding: '12px 20px', 
               borderRadius: '10px', 
@@ -209,17 +216,26 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
           >
             {pos}
           </h3>
+          )}
           
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={k ? undefined : { display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {groupedCandidates[pos].map(c => {
               const isSelected = ballot[pos] === (c._id || c.id);
+              if (bp) {
+                return (
+                  <bp.CandidateRow
+                    key={c._id || c.id} name={c.name} image={c.image_url} selected={isSelected}
+                    onToggle={() => handleSelect(pos, c._id || c.id)}
+                  />
+                );
+              }
               return (
                 <div 
                   key={c._id || c.id} 
                   onClick={() => handleSelect(pos, c._id || c.id)}
                   style={{ 
                     ...horizontalCardStyle, 
-                    border: isSelected ? '2px solid #3b82f6' : '1px solid var(--border-color)',
+                    border: isSelected ? '2px solid var(--bp-ac, #3b82f6)' : '1px solid var(--border-color)',
                     backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'var(--card-bg)'
                   }}
                 >
@@ -234,10 +250,10 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                   {/* 2. The Tick Box (Pushed to the far right) */}
                   <div style={{ 
                     ...tickBoxStyle, 
-                    backgroundColor: isSelected ? '#3b82f6' : 'transparent',
-                    borderColor: isSelected ? '#3b82f6' : 'var(--border-color)'
+                    backgroundColor: isSelected ? 'var(--bp-ac, #3b82f6)' : 'transparent',
+                    borderColor: isSelected ? 'var(--bp-ac, #3b82f6)' : 'var(--border-color)'
                   }}>
-                    {isSelected && <span style={{ color: '#fff', fontSize: '14px', fontWeight: 'bold' }}><Icon name="check" /></span>}
+                    {isSelected && <span style={{ color: 'var(--bp-ai, #fff)', fontSize: '14px', fontWeight: 'bold' }}><Icon name="check" /></span>}
                   </div>
                 </div>
               );
@@ -247,7 +263,9 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
       ))}
 
       {/* FOOTER BAR */}
-      {!isPreview && (
+      {!isPreview && (bp ? (
+      <bp.BottomDock count={Object.keys(ballot).length} onClear={() => setShowClearConfirm(true)} onReview={openSummary} />
+      ) : (
       <div style={footerBarStyle}>
         <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', maxWidth: '600px', margin: '0 auto' }}>
           <button 
@@ -267,19 +285,19 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
           </button>
         </div>
       </div>
-      )}
+      ))}
 
       {/* CLEAR ALL CONFIRMATION MODAL */}
       {!isPreview && showClearConfirm && (
         <div className="overlay-fade-in" style={modalOverlayStyle}>
-          <div className="modal-content panel-fade-in" style={{...modalContentStyle, textAlign: 'center'}}>
-            <h2 style={{ color: '#e11d48', marginTop: 0, fontWeight: '800' }}>
+          <div className="modal-content panel-fade-in" role="dialog" aria-modal="true" aria-label="Reset entire ballot" style={{...modalContentStyle, textAlign: 'center'}}>
+            <h2 style={{ color: 'var(--bp-no, #e11d48)', marginTop: 0, fontWeight: '800' }}>
               Reset Entire Ballot?
             </h2>
             <p style={{ color: 'var(--text-muted)' }}>This will clear all your currently selected candidates. This action cannot be undone.</p>
-            <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
-              <button onClick={() => setShowClearConfirm(false)} style={cancelBtnStyle}>Keep My Votes</button>
-              <button onClick={confirmClearAll} style={{...confirmBtnStyle, backgroundColor: '#e11d48'}}>Yes, Clear All</button>
+            <div className={k?.row2} style={k ? undefined : { display: 'flex', gap: '15px', marginTop: '20px' }}>
+              <button onClick={() => setShowClearConfirm(false)} className={k?.ghost} style={k ? undefined : cancelBtnStyle}>Keep My Votes</button>
+              <button onClick={confirmClearAll} className={k?.danger} style={k ? undefined : {...confirmBtnStyle, backgroundColor: '#e11d48'}}>Yes, Clear All</button>
             </div>
           </div>
         </div>
@@ -288,7 +306,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
       {/* SUMMARY MODAL */}
       {!isPreview && showSummary && (
         <div style={modalOverlayStyle} className="overlay-fade-in">
-          <div className="modal-content panel-fade-in" style={modalContentStyle}>
+          <div className="modal-content panel-fade-in" role="dialog" aria-modal="true" aria-label="Review your ballot" style={modalContentStyle}>
             <h2 style={{marginTop: 0 }}>Review Your Ballot</h2>
             <p style={{fontSize: '14px', marginBottom: '10px' }}>Verify your selections. Once submitted, you cannot change your vote.</p>
             
@@ -301,7 +319,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                 return (
                   <div key={pos} style={summaryRowStyle}>
                     {/* Position Name on the Left */}
-                    <strong style={{ color: '#2563eb', fontSize: '13px', flex: '1' }}>
+                    <strong style={{ color: 'var(--bp-ac, #2563eb)', fontSize: '13px', flex: '1' }}>
                       {pos}:
                     </strong>
                     
@@ -342,15 +360,16 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
               })}
             </div>
 
-            <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
-              <button onClick={() => setShowSummary(false)} style={cancelBtnStyle}>Change Selections</button>
+            <div className={k?.row2} style={k ? undefined : { display: 'flex', gap: '15px', marginTop: '20px' }}>
+              <button onClick={() => setShowSummary(false)} className={k?.ghost} style={k ? undefined : cancelBtnStyle}>Change Selections</button>
               <button 
                 data-track="ballot-submit"
                 onClick={submitFinalBallot} 
                 disabled={isVoting || countdown > 0} 
-                style={{
+                className={k?.btn}
+                style={k ? undefined : {
                     ...confirmBtnStyle, 
-                    backgroundColor: (isVoting || countdown > 0) ? '#94a3b8' : '#10b981'
+                    backgroundColor: (isVoting || countdown > 0) ? 'var(--bp-mu, #94a3b8)' : 'var(--bp-ok, #10b981)'
                 }}
               >
                 {isVoting ? (slowCast ? "Still sending…" : "Casting...") : countdown > 0 ? `Wait (${countdown}s)` : "Confirm & Cast Vote"}
@@ -368,25 +387,27 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
      {/* ONLY SHOW MODAL FOR ERRORS NOW */}
         {statusModal.show && statusModal.type === 'error' && (
           <div className="overlay-fade-in" style={modalOverlayStyle}>
-            <div className="modal-content panel-fade-in" style={{...modalContentStyle, textAlign: 'center'}}>
+            <div className="modal-content panel-fade-in" role="dialog" aria-modal="true" aria-label={statusModal.title || 'Notice'} style={{...modalContentStyle, textAlign: 'center'}}>
               <div style={{ fontSize: '50px', marginBottom: '10px' }}><Icon name="warning" /></div>
               
-              <h2 style={{ color: '#e11d48' }}>{statusModal.title}</h2>
+              <h2 style={{ color: 'var(--bp-no, #e11d48)' }}>{statusModal.title}</h2>
               <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>{statusModal.message}</p>
         
               {statusModal.action && (
                 <button
                   onClick={statusModal.action.run} disabled={checking}
-                  style={{ ...confirmBtnStyle, backgroundColor: '#10b981', width: '100%', marginBottom: '10px' }}
+                  className={k?.btn}
+                  style={k ? { marginBottom: 'var(--bp-s3)' } : { ...confirmBtnStyle, backgroundColor: 'var(--bp-ok, #10b981)', width: '100%', marginBottom: '10px' }}
                 >
                   {checking ? 'Checking…' : statusModal.action.label}
                 </button>
               )}
               <button 
                 onClick={() => setStatusModal({ ...statusModal, show: false })} 
-                style={{
+                className={k ? (statusModal.action ? k.ghost : k.btn) : undefined}
+                style={k ? undefined : {
                   ...confirmBtnStyle, 
-                  backgroundColor: '#3b82f6', 
+                  backgroundColor: 'var(--bp-ac, #3b82f6)', 
                   width: '100%'
                 }}
               >
@@ -414,9 +435,9 @@ const summaryRowStyle = {
 };
 const clearAllBtnStyle = { flex: 1, whiteSpace: 'nowrap', backgroundColor: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '16px 18px', borderRadius: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' };
 const cancelBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontWeight: '600', cursor: 'pointer', backgroundColor: 'transparent' };
-const confirmBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: 'none', color: '#fff', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' };
+const confirmBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: 'none', color: 'var(--bp-ai, #fff)', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' };
 const footerBarStyle = { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'var(--card-bg)', padding: '24px', borderTop: '1px solid var(--border-color)', zIndex: 1000 };
-const submitBallotBtnStyle = { backgroundColor: '#3b82f6', color: 'white', border: 'none', padding: '16px 20px', borderRadius: '14px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' };
+const submitBallotBtnStyle = { backgroundColor: 'var(--bp-ac, #3b82f6)', color: 'var(--bp-ai, #fff)', border: 'none', padding: '16px 20px', borderRadius: '14px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' };
 
 const horizontalCardStyle = {
   display: 'flex',
