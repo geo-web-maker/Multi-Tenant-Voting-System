@@ -376,7 +376,7 @@ html[data-template="blueprint"] {
 
   /* apply form (BP-T6). Layout-only inline styles stay in the component; colour/shape inline styles are dropped for these classes. */
   .bp-apply { padding-bottom: calc(var(--bp-s7) * 2); }   /* room so the floating Help button never covers Submit (96) */
-  .bp-apply h2 { text-align: center; margin: 0 0 var(--bp-s5); }
+  html[data-template="blueprint"] .bp-apply h2 { text-align: center; margin: 0 0 var(--bp-s5); font-size: 28px; line-height: 36px; letter-spacing: .04em; }
   .bp-apply p { margin: 0 0 var(--bp-s2); }
   .bp-apply p:last-child { margin-bottom: 0; }
   .bp-sec { font: 700 12px/16px var(--bp-fm); text-transform: uppercase; letter-spacing: .06em; color: var(--bp-mu); margin: 0 0 var(--bp-s3); }
