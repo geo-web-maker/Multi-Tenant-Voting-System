@@ -388,7 +388,7 @@ const handleSubmit = async (e) => {
                 {nominationForm.instructions || 'Download the blank form, complete and sign it, then upload the completed copy below.'}
               </div>
               {nominationForm.template_file?.url ? (
-                <a href={nominationForm.template_file.url} download={nominationForm.template_file.filename || true} target="_blank" rel="noreferrer" style={sx({ ...greenBtn, display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 14 })} className={k?.btn} data-track="apply-nomination-download">
+                <a href={nominationForm.template_file.download_url || nominationForm.template_file.url} download target="_blank" rel="noreferrer" style={sx({ ...greenBtn, display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 14 })} className={k?.btn} data-track="apply-nomination-download">
                   Download blank form
                 </a>
               ) : (

@@ -11575,10 +11575,27 @@ def _nomination_public_view(cfg: dict) -> dict:
     return {**{k: cfg[k] for k in ("enabled", "required", "title", "instructions", "template_file", "accepted_types", "max_mb")}, **phone}
 
 
+def _nomination_download_url(url: str, org_name: str) -> str:
+    """Cloudinary `fl_attachment:<name>` makes the browser save the blank form as "<Org>_Nomination_Form.<ext>"
+    instead of the random public id. The `download` attribute is ignored on cross-origin links, so the name has
+    to come from the URL. Falls back to the plain URL if it is not a Cloudinary raw upload URL."""
+    marker = "/raw/upload/"
+    if marker not in url:
+        return url
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", f"{org_name} Nomination Form").strip("_")[:80] or "Nomination_Form"
+    head, tail = url.split(marker, 1)
+    return f"{head}{marker}fl_attachment:{stem}/{tail}"
+
+
 @app.get("/nomination-form")
 async def public_nomination_form(request: Request):
     """Public (see _is_public): applicants load it before they have any session."""
-    return _nomination_public_view(await get_nomination_form(request.state.org_id))
+    view = _nomination_public_view(await get_nomination_form(request.state.org_id))
+    tf = view.get("template_file")
+    if tf and tf.get("url"):
+        org_name = (await _branding(request)).get("org_name") or ""
+        view["template_file"] = {**tf, "download_url": _nomination_download_url(tf["url"], org_name)}
+    return view
 
 
 class NominationTemplateIn(BaseModel):

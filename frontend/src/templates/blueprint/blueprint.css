@@ -333,7 +333,10 @@ html[data-template="blueprint"] {
   /* centred boot screen, otp, steps, charts */
   .bp-cen { display: grid; place-items: center; flex: 1; padding: var(--bp-s5); }
   .bp-cen .bp-card { max-width: 384px; text-align: center; padding: var(--bp-s7) var(--bp-s6); }
-  .bp-cen .bp-logo, .bp-boot-stamp { width: 72px; height: 72px; margin: 0 auto var(--bp-s5); font-size: 20px; }
+  .bp-cen .bp-logo { width: 72px; height: 72px; margin: 0 auto var(--bp-s5); font-size: 20px; }
+  /* Boot splash: bigger logo, no dashed registration frame around it. */
+  .bp-logo.bp-boot-stamp { width: 128px; height: 128px; margin: 0 auto var(--bp-s5); font-size: 36px; }
+  .bp-logo.bp-boot-stamp::before { display: none; }
   .bp-dot {
     display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bp-wn);
     margin-right: var(--bp-s2); animation: bp-pulse 1.2s infinite;
