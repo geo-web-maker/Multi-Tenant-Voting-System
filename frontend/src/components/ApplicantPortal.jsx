@@ -345,6 +345,19 @@ const handleSubmit = async (e) => {
     );
   }
 
+  // ── Show the page only once everything it needs has arrived (positions, nomination form, payment details),
+  // so nothing pops in or shifts after the first paint. Each request resolves or fails, so this can't hang. ──
+  const pageReady = !posLoading && !nominationForm.loading && paymentInfo?.loaded !== false;
+  if (!pageReady) {
+    return (
+      <div style={sx(outerWrap)} className="outer-wrap">
+        <div style={sx({ maxWidth: '620px', margin: '0 auto', width: '100%', textAlign: 'center', padding: '80px 0' })} role="status" aria-live="polite" aria-busy="true">
+          <Icon name="loading" /> <span style={{ marginLeft: 8, opacity: 0.8 }}>Loading application…</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={sx(outerWrap)} className="outer-wrap">
       <div style={sx({ maxWidth: '620px', margin: '0 auto', width: '100%' })} className={k?.apply}>

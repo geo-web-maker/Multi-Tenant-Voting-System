@@ -11,14 +11,15 @@ const EMPTY = { number: '', name: '' };
 
 export function usePaymentInfo(pollMs = 0) {
   const [info, setInfo] = React.useState(EMPTY);
+  const [loaded, setLoaded] = React.useState(false); // true once the first request has finished (success or failure)
   const load = React.useCallback(async () => {
     const res = await api.get('/payment-info');
     setInfo({ number: res.data?.mobile_money_number || '', name: res.data?.mobile_money_name || '' });
   }, []);
-  React.useEffect(() => { load().catch(() => {}); }, [load]);
+  React.useEffect(() => { load().catch(() => {}).finally(() => setLoaded(true)); }, [load]);
   // A number that changes while someone is mid-application must not leave them paying the old one.
   usePolling(load, pollMs, pollMs > 0);
-  return info;
+  return React.useMemo(() => ({ ...info, loaded }), [info, loaded]);
 }
 
 // Stored as digits with the country code ("256772123456"); people dial and copy the local form.

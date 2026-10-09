@@ -12,6 +12,7 @@ import HelpPanel from './components/HelpPanel';
 import { initAnalytics, trackPage, pageName } from './analytics';
 import { getTemplate } from './template';
 import { logoNeedsInvertFromPixels } from './logoInvert';
+import { prefetchNominationForm } from './nominationForm';
 
 // Detects whether a logo image is dark, colourless line-art (e.g. black linework on a
 // transparent PNG) so it can be inverted to stay visible against the dark
@@ -65,6 +66,9 @@ import {
 } from './session';
 
 // Heavy, role-specific screens load on demand so a voter's first paint isn't paying for every dashboard.
+// Start fetching the nomination-form config now so the Apply page has it the moment it renders.
+prefetchNominationForm();
+
 const BallotBoxLazy = lazy(() => import('./components/BallotBox'));
 // Wrapper so both call sites (real ballot, sample-ballot preview) get a Suspense boundary without JSX changes.
 function BallotBox(props) {
