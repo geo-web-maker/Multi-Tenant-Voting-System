@@ -337,6 +337,9 @@ html[data-template="blueprint"] {
   /* Boot splash: bigger logo, no dashed registration frame around it. */
   .bp-logo.bp-boot-stamp { width: 128px; height: 128px; margin: 0 auto var(--bp-s5); font-size: 36px; }
   .bp-logo.bp-boot-stamp::before { display: none; }
+  /* Header logo: no dashed frame, so it can fill the title block (header is 56-64px tall). */
+  .bp-tl .bp-logo { width: 48px; height: 48px; }
+  .bp-tl .bp-logo::before { display: none; }
   .bp-dot {
     display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bp-wn);
     margin-right: var(--bp-s2); animation: bp-pulse 1.2s infinite;
@@ -418,6 +421,7 @@ html[data-template="blueprint"] {
     .bp-tl, .bp-cell { min-height: var(--bp-hh); }
     .bp-tl { padding: 0 var(--bp-s3); gap: var(--bp-s3); }
     .bp-logo { width: 36px; height: 36px; }
+    .bp-tl .bp-logo { width: 44px; height: 44px; }
     .bp-bt b { font-size: 11px; letter-spacing: .04em; }
     .bp-cell { padding: 0 var(--bp-s3); }
     .bp-cell small, .bp-cell.bp-sheet, .bp-crumb, .bp-lg { display: none; }
