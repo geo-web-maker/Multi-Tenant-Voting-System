@@ -20,12 +20,19 @@ _APP = {"status": "pending", "finance_cleared": True, "fee_required": 5000,
         "finance_history": [{"action": "clearance_reversed", "reason": "forged"}], "votes": {}}
 
 
-@pytest.mark.parametrize("role", ["vetting", "overseer", "it_admin", "commission"])
+@pytest.mark.parametrize("role", ["vetting", "overseer", "commission"])
 def test_non_finance_roles_get_no_payment_details(role):
     out = main.shape_application_for_role(dict(_APP), role)
     for f in main._FINANCE_ONLY_APPLICATION_FIELDS:
         assert f not in out
     assert out["finance_cleared"] is True and out["fee_required"] == 5000   # dashboards still need these
+
+
+def test_it_admin_gets_a_whitelisted_stage_only_row():
+    out = main.shape_application_for_role(dict(_APP), "it_admin")
+    for f in main._FINANCE_ONLY_APPLICATION_FIELDS + ("votes", "fee_required", "finance_cleared"):
+        assert f not in out
+    assert out["stage"] in main.STAGE_LABELS
 
 
 @pytest.mark.parametrize("role", ["financial_controller", "superadmin"])

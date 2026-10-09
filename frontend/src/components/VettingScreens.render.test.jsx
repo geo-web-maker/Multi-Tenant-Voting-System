@@ -209,6 +209,23 @@ describe('VettingPanelManager', () => {
     }));
   });
 
+  it('lists every kind of admin, labelled by role, from the server', async () => {
+    routeGet({
+      '/superadmin/vetting-panel': panel,
+      '/superadmin/panel-eligible-admins': [
+        { student_id: 'it1', full_name: 'Ian Tumusiime', roles: ['IT Admin'] },
+        { student_id: 'ov1', full_name: 'Olive Auma', roles: ['Overseer'] },
+        { student_id: 'u1', full_name: 'Grace Namu', roles: ['Commissioner'] },   // already on the panel
+      ],
+    });
+    render(<VettingPanelManager />);
+    await screen.findByText('Ian Tumusiime');
+    expect(screen.getByText('IT Admin')).toBeTruthy();
+    expect(screen.getByText('Overseer')).toBeTruthy();
+    expect(screen.getByText(/Overseer access is paused while they serve/)).toBeTruthy();
+    expect(screen.queryAllByText('+ Add to Panel')).toHaveLength(2);
+  });
+
   it('does not offer someone who is already on the panel', async () => {
     routeGet({ '/superadmin/vetting-panel': panel });
     render(<VettingPanelManager voters={[{ student_id: 'U1', full_name: 'Grace Namu' }]} />);

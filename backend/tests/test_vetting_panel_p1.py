@@ -258,9 +258,9 @@ async def test_switch_back_returns_to_commissioner_view(env):
     assert r.json()["role"] == "commission"
 
 
-async def test_only_commission_or_vetting_can_switch(env):
-    r = await env.client.post("/admin/switch-hat", headers=env.it)
-    assert r.status_code == 403
+async def test_superadmin_cannot_switch_and_unlinked_admin_cannot(env):
+    assert (await env.client.post("/admin/switch-hat", headers=env.sa)).status_code == 403
+    assert (await env.client.post("/admin/switch-hat", headers=env.it)).status_code == 403   # not on the panel
 
 
 # ---- Migration script ------------------------------------------------------------------------

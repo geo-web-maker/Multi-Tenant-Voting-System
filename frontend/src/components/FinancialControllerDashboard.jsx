@@ -3,6 +3,7 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { useIdText } from '../idText';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
+import PanelHatButton from './PanelHatButton';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
@@ -201,6 +202,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
           onRefresh={() => fetchAll()}
           refreshing={loading}
           onLogout={onLogout}
+          actions={<PanelHatButton />}
         />
 
         {/* Financial Controller ID prompt — shown if not stored yet */}

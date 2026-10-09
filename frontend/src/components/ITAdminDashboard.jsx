@@ -8,9 +8,11 @@ import ConsoleFrame from './ConsoleFrame';
 import RevealGroup from './RevealGroup';
 import { RosterStats, RecentActivity } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
+import PanelHatButton from './PanelHatButton';
 import usePolling from '../hooks/usePolling';
 import { Icon } from './icons.jsx';
 import ITAdminStudentEdit from './ITAdminStudentEdit';
+import ApplicationStages from './ApplicationStages';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import useRosterStatus from '../hooks/useRosterStatus';
 import { previewPhone } from '../studentEdit';
@@ -230,6 +232,7 @@ export default function ITAdminDashboard({ onLogout }) {
     // only the three roster-change tabs. Overview is now the landing tab.
     { id: 'overview', label: <>Overview</> },
     { id: 'voters', label: <>Voters</> },
+    { id: 'applications', label: <>Applications</> },
     ...(rosterFrozen ? [] : [{ id: 'add', label: <>Add Student</> }]),
     { id: 'edit',     label: <>Edit Student</> },
     ...(rosterFrozen ? [] : [{ id: 'remove', label: <>Remove Student</> }]),
@@ -250,6 +253,7 @@ export default function ITAdminDashboard({ onLogout }) {
           onRefresh={() => { fetchMyRequests(); if (removeSearch.trim().length >= 2) fetchVoters(removeSearch.trim()); }}
           refreshing={loading}
           onLogout={onLogout}
+          actions={<PanelHatButton />}
         />
 
         {!itAdminId && (
@@ -408,6 +412,8 @@ export default function ITAdminDashboard({ onLogout }) {
             />
           </>
         )}
+
+        {activeTab === 'applications' && <ApplicationStages />}
 
         {activeTab === 'edit' && <ITAdminStudentEdit initialStudentId={editStudentId} />}
 

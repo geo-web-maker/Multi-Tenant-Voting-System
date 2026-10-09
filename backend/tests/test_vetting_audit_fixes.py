@@ -21,7 +21,7 @@ async def test_panel_link_true_for_linked_commissioner_and_no_tie_for_non_chair(
     await _linked_commissioner(env)
     await env.db.applications.insert_one({"org_id": env.org_id, "status": "pending", "tied_pending_chief": True})
     r = await env.client.get("/admin/panel-link", headers=_tok(env, "com1", "commission"))
-    assert r.json() == {"panel_linked": True, "tie_waiting": 0}
+    assert r.json() == {"panel_linked": True, "tie_waiting": 0, "overseer_paused": False}
 
 
 async def test_chairperson_is_told_how_many_ties_wait(env):
@@ -35,9 +35,13 @@ async def test_chairperson_is_told_how_many_ties_wait(env):
     assert r.json()["tie_waiting"] == 1
 
 
-async def test_panel_link_is_commission_only(env):
-    await _panelist(env)
+async def test_panel_link_is_for_admin_roles_not_panel_tokens(env):
+    # Any admin role may ask (the answer is only about the caller); a panel token may not.
     r = await env.client.get("/admin/panel-link", headers=env.it)
+    assert r.status_code == 200 and r.json()["panel_linked"] is False
+    await _panelist(env)
+    tok = create_access_token(subject="PM-AAA111", role="vetting", org_id=env.org_id)
+    r = await env.client.get("/admin/panel-link", headers={"Authorization": f"Bearer {tok}", "X-Org-Slug": "t1"})
     assert r.status_code == 403
 
 

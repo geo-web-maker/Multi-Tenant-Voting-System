@@ -34,6 +34,7 @@ import DemoControlsPanel from './DemoControlsPanel';
 import UploadBypassPanel from './UploadBypassPanel';
 import ViewAsButton from './ViewAsButton';
 import { LoadingBlock } from './Spinner.jsx';
+import LoginStatusBadge from './LoginStatusBadge.jsx';
 import RevealGroup from './RevealGroup';
 import AnalyticsPanel from './AnalyticsPanel';
 import ExportModeControl from './ExportModeControl';
@@ -659,6 +660,7 @@ const handleResetOverseerPassword = async (studentId) => {
     toast(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
+    fetchOverseers();
   } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
@@ -798,6 +800,7 @@ const handleResetItAdminPassword = async (studentId) => {
     toast(res.data.sms_notified
       ? 'New temporary password sent via SMS.'
       : 'Password reset, but SMS failed to send.');
+    fetchItAdmins();
   } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   finally { setResetting(prev => ({ ...prev, [studentId]: false })); }
 };
@@ -2037,6 +2040,8 @@ const handleSuperAdminRemoveStudent = async () => {
                           <small style={{ color: 'var(--info)' }}>{a.it_admin_email}</small>
                         </>
                       )}
+                      <br />
+                      <LoginStatusBadge state={a.login_state} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                       <ViewAsButton studentId={a.student_id} role="it_admin" />
@@ -2045,9 +2050,9 @@ const handleSuperAdminRemoveStudent = async () => {
                     </button>
                     </div>
                   </div>
+                  <ExportModeControl name={a.full_name} mode={a.it_admin_export_mode || 'none'}
+                    disabled={!!exportSaving[a.student_id]} onChange={(m) => handleSetExportMode(a, m)} />
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <ExportModeControl name={a.full_name} mode={a.it_admin_export_mode || 'none'}
-                      disabled={!!exportSaving[a.student_id]} onChange={(m) => handleSetExportMode(a, m)} />
                     <input
                       style={{ ...inp, flex: 1, minWidth: '180px' }}
                       placeholder="Email"
@@ -2368,6 +2373,8 @@ const handleSuperAdminRemoveStudent = async () => {
                           <small style={{ color: 'var(--info)' }}>{a.overseer_email}</small>
                         </>
                       )}
+                      <br />
+                      <LoginStatusBadge state={a.login_state} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                       <ViewAsButton studentId={a.student_id} role="overseer" />

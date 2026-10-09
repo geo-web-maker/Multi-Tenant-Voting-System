@@ -36,6 +36,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
   const [editing, setEditing] = useState(null);   // panel_member_id whose details are being edited
   const [mode, setMode] = useState('commissioners');       // 'commissioners' = quick-pick current commissioners, 'roll' = any voter, 'external' = outside person
   const [search, setSearch] = useState('');
+  const [admins, setAdmins] = useState(null);   // every admin-role holder, from the server (null until loaded)
   const [picked, setPicked] = useState(null);     // the voter chosen from the roll, awaiting credentials
 
   const load = useCallback(async () => {
@@ -48,6 +49,11 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
   }, [toast]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    api.get('/superadmin/panel-eligible-admins')
+      .then((res) => { if (Array.isArray(res?.data)) setAdmins(res.data); })
+      .catch(() => { /* fall back to the commissioner list passed in */ });
+  }, []);
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
 
@@ -56,16 +62,16 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
     if (!form.appointment_reason.trim()) return toast('An appointment reason is required.', { kind: 'error' });
     setSaving(true);
     try {
-      // No email, phone or password: they reach the panel from their own Commission screen.
+      // No email, phone or password: they reach the panel from a button on their own admin screen.
       await api.post('/superadmin/vetting-panel/link-commissioner', {
         student_id: picked.student_id, appointment_reason: form.appointment_reason,
       });
-      toast(`${picked.full_name} can now open the Vetting Panel from their commissioner screen.`);
+      toast(`${picked.full_name} can now open the Vetting Panel from their own screen.`);
       setForm(BLANK);
       setPicked(null);
       await load();
     } catch (err) {
-      toast(err.response?.data?.detail || 'Could not add the commissioner.', { kind: 'error' });
+      toast(err.response?.data?.detail || 'Could not add this person.', { kind: 'error' });
     } finally {
       setSaving(false);
     }
@@ -137,7 +143,9 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
     .filter((v) => !q || v.full_name?.toLowerCase().includes(q) || v.student_id?.toLowerCase().includes(q));
   const SHOWN = 50;
 
-  const commOptions = commissioners
+  // Any admin can sit on the panel. Until the server list arrives, fall back to the commissioners passed in.
+  const adminList = admins || commissioners.map((c) => ({ ...c, roles: ['Commissioner'] }));
+  const commOptions = adminList
     .filter((c) => !onPanel.has((c.student_id || '').toLowerCase()))
     .filter((c) => !q || c.full_name?.toLowerCase().includes(q) || c.student_id?.toLowerCase().includes(q));
   const pickVoter = (v) => {
@@ -226,7 +234,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
         <div>
           <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Add to the Panel</h4>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-            <button type="button" style={mode === 'commissioners' ? tabOn : ghostBtn} onClick={() => switchMode('commissioners')}>Commissioners</button>
+            <button type="button" style={mode === 'commissioners' ? tabOn : ghostBtn} onClick={() => switchMode('commissioners')}>Admins</button>
             <button type="button" style={mode === 'roll' ? tabOn : ghostBtn} onClick={() => switchMode('roll')}>Voter roll</button>
             <button type="button" style={mode === 'external' ? tabOn : ghostBtn} onClick={() => switchMode('external')}>Outside person</button>
           </div>
@@ -234,15 +242,15 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
           {mode === 'commissioners' && !picked && (
             <>
               <input style={{ ...inp, marginBottom: '12px' }}
-                placeholder="Search commissioners by name or ID…"
+                placeholder="Search admins by name or ID…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)} />
               <div style={{ border: '1px solid var(--border-color)', borderRadius: '10px', maxHeight: '400px', overflowY: 'auto' }}>
                 {commOptions.length === 0 && (
                   <p style={{ opacity: 0.5, padding: '12px 14px', margin: 0 }}>
-                    {commissioners.length === 0
-                      ? 'There are no commissioners yet.'
-                      : (q ? 'No matching commissioners.' : 'Every commissioner is already on the panel.')}
+                    {adminList.length === 0
+                      ? 'There are no admins yet.'
+                      : (q ? 'No matching admins.' : 'Every admin is already on the panel.')}
                   </p>
                 )}
                 {commOptions.map((c) => (
@@ -250,6 +258,8 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                     <div>
                       <b style={{ color: 'var(--text-color)' }}>{c.full_name}</b>
                       {c.is_chief_commissioner && <span style={badge}>Chief</span>}
+                      {(c.roles || []).map((r) => <span key={r} style={badge}>{r}</span>)}
+                      {(c.roles || []).includes('Overseer') && <><br /><small style={{ opacity: 0.6 }}>Overseer access is paused while they serve.</small></>}
                       <br />
                       <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
                     </div>
@@ -305,7 +315,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
               )}
               {mode === 'commissioners' ? (
                 <>
-                  <p style={meta}>No new login: they open the Vetting Panel from a button on their own commissioner screen.</p>
+                  <p style={meta}>No new login: they open the Vetting Panel from a button on their own admin screen.</p>
                   <textarea style={{ ...inp, minHeight: 60 }} placeholder="Reason for appointment (required)" required value={form.appointment_reason} onChange={set('appointment_reason')} />
                   <button type="submit" disabled={saving} style={{ ...greenBtn, opacity: saving ? 0.6 : 1 }}>
                     {saving ? 'Adding…' : 'Add to Panel'}

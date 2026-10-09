@@ -136,6 +136,9 @@ async def test_no_role_ever_receives_the_upload_id_or_storage_key(env, store, si
         assert upload_id not in r.text and key not in r.text and "nomination-forms" not in r.text, who
         row = r.json()[0]
         assert "nomination_form" not in row
+        if who == "it":      # IT admins get a whitelisted, stage-only row: no nomination-form metadata at all
+            assert "has_nomination_form" not in row
+            continue
         assert row["has_nomination_form"] is True and row["nomination_form_filename"] == "signed.pdf"
         assert row["nomination_form_required"] is True
 

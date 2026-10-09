@@ -349,10 +349,29 @@ const handleSubmit = async (e) => {
   // so nothing pops in or shifts after the first paint. Each request resolves or fails, so this can't hang. ──
   const pageReady = !posLoading && !nominationForm.loading && paymentInfo?.loaded !== false;
   if (!pageReady) {
+    // Same frame and heading as the loaded page, with placeholders shaped like the form, so the page
+    // fills in rather than switching from a spinner to a different layout.
+    const bar = (w, h = 12, mb = 0) => <span className="skel" style={{ width: w, height: h, marginBottom: mb }} />;
+    const field = (labelW) => (<div style={{ marginBottom: 14 }}>{bar(labelW, 10, 8)}{bar('100%', 42)}</div>);
     return (
       <div style={sx(outerWrap)} className="outer-wrap">
-        <div style={sx({ maxWidth: '620px', margin: '0 auto', width: '100%', textAlign: 'center', padding: '80px 0' })} role="status" aria-live="polite" aria-busy="true">
-          <Icon name="loading" /> <span style={{ marginLeft: 8, opacity: 0.8 }}>Loading application…</span>
+        <div style={sx({ maxWidth: '620px', margin: '0 auto', width: '100%' })} className={k?.apply} role="status" aria-live="polite" aria-busy="true">
+          <span className="sr-only-skel">Loading application form…</span>
+          <div style={sx({ textAlign: 'center', marginBottom: '28px' })}>
+            <h2 style={sx({ color: 'var(--text-color)', margin: '0 0 6px' })}>Apply for a Position</h2>
+          </div>
+          <div style={sx({ ...infoBox, marginBottom: '24px' })} className={k?.accBan} aria-hidden="true">
+            {bar('42%', 12, 14)}{bar('92%', 10, 10)}{bar('84%', 10, 10)}{bar('70%', 10)}
+          </div>
+          <div style={sx(card)} className={k?.card} aria-hidden="true">
+            {bar('30%', 12, 18)}{field('34%')}{field('46%')}
+          </div>
+          <div style={sx(card)} className={k?.card} aria-hidden="true">
+            {bar('22%', 12, 18)}{bar('100%', 54, 10)}{bar('100%', 54, 10)}{bar('100%', 54)}
+          </div>
+          <div style={sx(card)} className={k?.card} aria-hidden="true">
+            {bar('26%', 12, 18)}{bar('100%', 96)}
+          </div>
         </div>
       </div>
     );

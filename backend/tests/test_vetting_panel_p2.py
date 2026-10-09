@@ -64,7 +64,7 @@ async def test_majority_uses_panel_size_not_commissioner_count(env):
 
 
 # ---- Progress only while pending; the shape is decided per role (guide 7.1) ------------------
-async def test_pending_shows_progress_not_the_split_and_overseer_matches(env):
+async def test_pending_shows_progress_to_the_panel_only_and_overseer_sees_the_stage(env):
     await env.seed_panel()
     aid = await _ready_application(env)
     await _vote(env, aid, env.pan1, "approve", "com1")
@@ -75,7 +75,8 @@ async def test_pending_shows_progress_not_the_split_and_overseer_matches(env):
 
     over = (await env.client.get("/overseer/dashboard", headers=env.over)).json()
     row = [a for a in over["applications"] if a["id"] == aid][0]
-    assert row["votes_cast"] == 1 and row["panel_count"] == 2
+    assert row["stage"] == "with_panel" and "votes_cast" not in row and "final_split" not in row   # tier 1
+    assert "awaiting_final_decision" not in row
     assert "approve_count" not in row and "deny_count" not in row and "removal_approve_count" not in row
 
     it_view = (await env.client.get("/admin/applications", headers=env.it)).json()[0]
@@ -169,3 +170,36 @@ async def test_vetting_cannot_be_scheduled_with_fewer_than_three_panelists(env):
                                    "end": (START + timedelta(days=3)).isoformat(), "enforced": True}}}
     r = await env.client.post("/admin/schedule/phases", headers=env.sa, json=body)
     assert r.status_code == 409 and "3 active panelists" in r.json()["detail"]
+
+
+# ---- Visibility tiers: only the Vetting Panel sees vote counts; everyone else sees the stage ----
+async def test_it_admin_application_list_is_stage_only(env):
+    await env.seed_panel()
+    aid = await _ready_application(env)
+    await _vote(env, aid, env.pan1, "approve", "com1")
+
+    rows = (await env.client.get("/it-admin/applications", headers=env.it)).json()
+    row = [r for r in rows if r["_id"] == aid][0]
+    assert row["stage"] == "with_panel" and row["stage_label"] == "With the Vetting Panel"
+    allowed = {"_id", "student_id", "full_name", "position_id", "position_title", "position_order",
+               "submitted_at", "status", "stage", "stage_label"}
+    assert set(row) <= allowed            # whitelist: no votes, progress, reasons or payment fields
+
+
+async def test_finance_stage_shows_only_where_a_fee_applies(env):
+    await env.seed_panel()
+    pid = await _mk_position(env)
+    await env.voter("v9", "Fee Payer", ("256700000099",))
+    app_doc = await _apply(env, pid, "v9", "Fee Payer")
+    await env.db.applications.update_one({"_id": app_doc["_id"]}, {"$set": {"fee_required": 50000, "finance_cleared": False}})
+    rows = (await env.client.get("/it-admin/applications", headers=env.it)).json()
+    assert [r for r in rows if r["_id"] == str(app_doc["_id"])][0]["stage"] == "finance_pending"
+    await env.db.applications.update_one({"_id": app_doc["_id"]}, {"$set": {"finance_rejected": True}})
+    rows = (await env.client.get("/it-admin/applications", headers=env.it)).json()
+    assert [r for r in rows if r["_id"] == str(app_doc["_id"])][0]["stage"] == "finance_rejected"
+
+
+async def test_only_it_admin_and_superadmin_may_open_the_it_admin_list(env):
+    await env.seed_panel()
+    assert (await env.client.get("/it-admin/applications", headers=env.over)).status_code == 403
+    assert (await env.client.get("/it-admin/applications", headers=env.pan1)).status_code in (401, 403)

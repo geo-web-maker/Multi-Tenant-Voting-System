@@ -35,3 +35,7 @@ HUMAN: npm run build, frontend tests, backend pytest (including test_vetting_pan
 and test_vetting_panel_p2.py); run seed_test_data.py + seed_advanced_scenarios.py end to
 end and confirm the nomtest panel votes resolve through the switch-hat step; grep the repo
 yourself for "commissioner vote" / "Full consensus" to confirm nothing was missed.
+
+## Follow-up: any admin on the panel
+See progress/VP-LINK-COMMISSIONER.md. Tests: backend/tests/test_vetting_panel_any_admin.py, frontend PanelHatButton.test.jsx
+and VettingScreens.render.test.jsx. Two existing tests updated (panel-link now answers for all admin roles).

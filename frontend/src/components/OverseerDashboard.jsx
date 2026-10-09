@@ -10,6 +10,7 @@ import { ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
+import PanelHatButton from './PanelHatButton';
 import { LoadingBlock } from './Spinner.jsx';
 import { getTemplate } from '../template';
 
@@ -22,6 +23,7 @@ export default function OverseerDashboard({ onLogout }) {
   const [data, setData]       = useState(null);
   const [liveResults, setLiveResults] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [paused, setPaused]   = useState(false);   // serving on the Vetting Panel: overseer access is paused
   const [lastSynced, markSynced] = useLastSynced();
   const [tab, setTab]         = usePersistedTab('overseer', 'applications');
 
@@ -38,9 +40,11 @@ export default function OverseerDashboard({ onLogout }) {
       ]);
       setData(dashRes.data);
       setLiveResults(resultsRes.data);
+      setPaused(false);
       markSynced();
     } catch (e) {
-      console.error('Failed to fetch overseer dashboard:', e);
+      if (e.response?.data?.code === 'overseer_paused') { setPaused(true); setData(null); }
+      else console.error('Failed to fetch overseer dashboard:', e);
     } finally {
       if (!silent) setLoading(false);
     }
@@ -74,7 +78,18 @@ export default function OverseerDashboard({ onLogout }) {
           onRefresh={() => fetchDashboard()}
           refreshing={loading}
           onLogout={onLogout}
+          actions={<PanelHatButton onStatus={(st) => { if (st?.overseer_paused) setPaused(true); }} />}
         />
+
+        {paused && (
+          <div style={infoBox}>
+            <p style={{ margin: 0, fontWeight: 600, color: 'var(--text-color)' }}>Overseer access paused</p>
+            <p style={{ margin: '6px 0 0', fontSize: '13px', opacity: 0.75 }}>
+              You are serving on the Vetting Panel, so you cannot also oversee it. Use “Switch to Vetting Panel” above.
+              Overseer access returns when your panel service ends.
+            </p>
+          </div>
+        )}
 
         {!overseerId && (
           <div style={{ ...infoBox, borderColor: 'var(--bp-no, #e74c3c40)', marginBottom: '20px' }}>
@@ -84,11 +99,11 @@ export default function OverseerDashboard({ onLogout }) {
           </div>
         )}
 
-        {!data && loading && (
+        {!paused && !data && loading && (
           <div style={emptyState}><LoadingBlock text="Loading platform data…" /></div>
         )}
 
-        {data && (
+        {data && !paused && (
           <>
             {/* ── Summary cards ── */}
             {bp ? (
@@ -147,9 +162,7 @@ export default function OverseerDashboard({ onLogout }) {
                     </div>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>{a.position_id}</p>
                     <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
-                      {a.final_split
-                        ? <>Panel split: <Icon name="success" /> {a.final_split.approve} approve · <Icon name="error" /> {a.final_split.deny} deny{a.decided_by_tie_break && ' · decided by tie-break'}</>
-                        : <>{a.votes_cast} of {a.panel_count} voted</>}
+                      Stage: {a.stage_label}
                       {a.finance_cleared && <> · Finance cleared</>}
                     </p>
                   </div>

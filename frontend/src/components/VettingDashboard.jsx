@@ -11,7 +11,7 @@ import usePolling from '../hooks/usePolling';
 import { usePersistedTab } from '../session';
 import { faceCropUrl } from '../cloudinaryImage';
 import { regNo } from '../regNo';
-import { switchHat, PANEL_LINKED_KEY } from '../hatSwitch';
+import { switchHat, PANEL_LINKED_KEY, HAT_BACK_LABEL_KEY } from '../hatSwitch';
 
 const RESOLVED = ['approved', 'denied', 'removed'];
 
@@ -32,6 +32,9 @@ export default function VettingDashboard({ onLogout }) {
   const [meError, setMeError] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const linked = sessionStorage.getItem(PANEL_LINKED_KEY) === '1';
+  const backLabel = sessionStorage.getItem(HAT_BACK_LABEL_KEY) || 'Commissioner';
+  // An overseer's own role stays paused while they serve, so there is nothing to switch back to.
+  const canSwitchBack = linked && backLabel !== 'Overseer';
 
   const loadMe = useCallback(async () => {
     setMeError(false);
@@ -160,9 +163,9 @@ export default function VettingDashboard({ onLogout }) {
         onRefresh={() => load()}
         refreshing={loading}
         onLogout={onLogout}
-        actions={linked ? (
-          <button style={hatBtn} onClick={() => switchHat().catch(() => toast('Could not switch back.', { kind: 'error' }))}>
-            Switch back to Commissioner
+        actions={canSwitchBack ? (
+          <button style={hatBtn} onClick={() => switchHat().catch((e) => toast(e.response?.data?.detail || 'Could not switch back.', { kind: 'error' }))}>
+            {`Switch back to ${backLabel}`}
           </button>
         ) : null}
       />

@@ -599,6 +599,16 @@ async def auth_guard_middleware(request: Request, call_next):
         return JSONResponse(status_code=403, content={
             "detail": "You must change your temporary password before continuing."})
 
+    # An overseer who is serving on the Vetting Panel does not oversee it: overseer access is paused
+    # (everything but the hat switch, the notice check and sign-out). View-as sessions are exempt so
+    # the superadmin can still see what the overseer sees.
+    if payload.get("role") == "overseer" and not payload.get("view_only") \
+            and request.url.path not in OVERSEER_PAUSED_ALLOWED_PATHS \
+            and await _active_panel_record(request, payload.get("sub")):
+        return JSONResponse(status_code=403, content={
+            "detail": "Overseer access is paused while you serve on the Vetting Panel. "
+                      "Switch to the panel view.", "code": "overseer_paused"})
+
     if payload.get("role") == "vetting" and request.url.path.startswith(PANEL_GUARDED_PREFIXES) \
             and not request.url.path.startswith(PANEL_ALLOWED_PREFIXES):
         return JSONResponse(status_code=403, content={"detail": "The Vetting Panel cannot access this area."})
@@ -1351,6 +1361,7 @@ CONFIDENTIALITY_NOTICE = (
     "You are serving on the Vetting Panel as a non-member. Everything you see here is confidential: "
     "applicant details, votes, panel discussion and the reasons behind decisions. Do not share or copy it. "
     "Your access ends automatically at the time shown below.")
+OVERSEER_PAUSED_ALLOWED_PATHS = {"/admin/switch-hat", "/admin/panel-link", "/admin/set-password", "/admin/logout"}
 SCOPE_PASSWORD_CHANGE_ONLY = "password_change_only"
 PASSWORD_CHANGE_ONLY_ALLOWED_PATHS = {"/admin/set-password", "/admin/logout"}
 
@@ -2049,12 +2060,45 @@ def _shape_nomination_fields(out: dict) -> None:
     out["nomination_form_required"] = bool(out.get("nomination_form_required"))   # absent on older applications
 
 
+# Visibility tiers for applications. Tier 1 = the stage only (no vote information); only the Vetting Panel
+# (and the superadmin, for diagnosis) see vote counts. Every other role is held to tier 1 below.
+STAGE_LABELS = {
+    "finance_pending":  "Pending financial approval",
+    "finance_rejected": "Payment rejected",
+    "with_panel":       "With the Vetting Panel",
+    "approved":         "Approved",
+    "denied":           "Denied",
+    "removed":          "Removed",
+}
+
+
+def application_stage(app: dict) -> str:
+    """One stage code per application, derived from existing fields (nothing is stored). Deliberately coarse:
+    'with_panel' also covers 'all votes in' and 'tied, waiting for the chair', so it never hints at voting."""
+    status = app.get("status", "pending")
+    if status in RESOLVED_STATUSES:
+        return status
+    if (app.get("fee_required") or 0) > 0 and not app.get("finance_cleared"):
+        return "finance_rejected" if app.get("finance_rejected") else "finance_pending"
+    return "with_panel"
+
+
+_IT_ADMIN_APPLICATION_FIELDS = ("_id", "student_id", "full_name", "position_id", "position_title",
+                                "position_order", "submitted_at", "status")
+
+
 def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = None,
                                active_keys=frozenset(), panel_count: int = 0,
                                is_chair_panelist: bool = False) -> dict:
     """Guide 7.1: the one place that decides what each role may see of an application.
     Returns a copy. Only the superadmin receives the raw vote maps."""
     out = dict(app)
+    stage = application_stage(app)
+    if role == "it_admin":
+        # Whitelist, not blacklist: a field added to applications later never reaches this role by accident.
+        shaped = {f: out[f] for f in _IT_ADMIN_APPLICATION_FIELDS if f in out}
+        shaped["stage"], shaped["stage_label"] = stage, STAGE_LABELS[stage]
+        return shaped
     _shape_nomination_fields(out)       # every role, superadmin included: the browser never gets an upload id
     raw = _dedupe_votes(app.get("votes", {}))
     votes = {k: v for k, v in raw.items() if k in active_keys}
@@ -2065,6 +2109,7 @@ def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = 
     awaiting = (not resolved) and panel_count > 0 and cast == panel_count
     tied = (not resolved) and bool(app.get("tied_pending_chief"))
 
+    out["stage"], out["stage_label"] = stage, STAGE_LABELS[stage]
     if role == "superadmin":
         out["progress"] = {"cast": cast, "panel_count": panel_count}
         out["awaiting_final_decision"] = awaiting
@@ -2080,7 +2125,7 @@ def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = 
     out.pop("decided_by_tie_break", None)
     out.pop("final_reason", None)
 
-    if role in ("vetting", "overseer"):
+    if role == "vetting":   # vote counts: Vetting Panel only (everyone else is tier 1)
         out["progress"] = {"cast": cast, "panel_count": panel_count}
         out["awaiting_final_decision"] = awaiting
         if resolved:
@@ -6998,6 +7043,24 @@ async def list_commissioners(request: Request):
         result.append(v)
     return result
     
+@app.get("/superadmin/panel-eligible-admins")
+async def list_panel_eligible_admins(request: Request):
+    """Everyone who holds any admin role (commissioner, IT admin, overseer, financial controller), each
+    with the labels of the roles they hold, for the Vetting Panel quick-pick. Any of them can be linked
+    to the panel (no extra login) and reach it from their own dashboard via /admin/switch-hat."""
+    proj = {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1,
+            **{f: 1 for f in HAT_ROLE_FLAGS.values()}}
+    result = []
+    async for v in tdb(request).voters.find({"$or": [{f: True} for f in HAT_ROLE_FLAGS.values()]}, proj):
+        result.append({
+            "student_id": v["student_id"], "full_name": v.get("full_name", ""),
+            "is_chief_commissioner": bool(v.get("is_chief_commissioner")),
+            "roles": [HAT_ROLE_LABELS[r] for r in _held_hat_roles(v)],
+        })
+    result.sort(key=lambda r: (r["full_name"] or "").lower())
+    return result
+
+
 @app.post("/superadmin/commissioners/{student_id:path}/set-chief")
 async def set_chief_commissioner(student_id: str, request: Request):
     voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
@@ -7635,15 +7698,11 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
             "position_id":        a.get("position_id", ""),
             "status":             a.get("status", "pending"),
             "finance_cleared":    a.get("finance_cleared", False),
-            "votes_cast":         shaped["progress"]["cast"],
-            "panel_count":        panel_count,
-            "awaiting_final_decision": shaped["awaiting_final_decision"],
+            "stage":              shaped["stage"],
+            "stage_label":        shaped["stage_label"],
             "submitted_at":       a.get("submitted_at"),
-            # No vote maps, and no approve/deny split while pending (guide 7.1). Removal fields dropped.
+            # Tier 1: the stage only. No vote counts, split or tie-break marker (only the Vetting Panel sees those).
         }
-        if "final_split" in shaped:
-            row["final_split"] = shaped["final_split"]
-            row["decided_by_tie_break"] = bool(shaped.get("decided_by_tie_break"))
         applications_summary.append(row)
 
     student_changes_summary = []
@@ -7852,6 +7911,19 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
     return {"status": "cancelled"}
 
 
+@app.get("/it-admin/applications")
+async def it_admin_applications(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Applicant list with stages for the people who answer applicants' questions. Stage only (tier 1)."""
+    org_id = require_org(request.state.org_id)
+    rows = []
+    async for a in tdb(request).applications.find(org_query(request)).sort("submitted_at", -1):
+        a["_id"] = str(a["_id"])
+        if a.get("position_id"):
+            a["position_title"], a["position_order"] = await _resolve_position_title(a["position_id"], org_id)
+        rows.append(shape_application_for_role(a, "it_admin"))
+    return rows
+
+
 @app.get("/it-admin/students/my-requests/{it_admin_id}")
 async def get_my_requests(it_admin_id: str, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     bind_identity(request, it_admin_id, "IT Admin account")
@@ -7956,14 +8028,32 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
 # SUPERADMIN — IT ADMIN MANAGEMENT + STUDENT CHANGE OVERRIDES
 # =============================================================================
 
+def _login_state(v: dict, prefix: str) -> str:
+    """Where a staff member is in first-login set-up, without exposing any credential data.
+    no_credentials -> none sent yet; awaiting -> temp password sent, not yet replaced;
+    expired -> temp password lapsed before it was replaced; active -> they set their own password."""
+    if not v.get(f"{prefix}_password_hash"):
+        return "no_credentials"
+    if not v.get(f"{prefix}_must_change_password", True):
+        return "active"
+    expires = v.get(f"{prefix}_temp_password_expires")
+    if expires and datetime.utcnow() > expires:
+        return "expired"
+    return "awaiting"
+
+
 @app.get("/superadmin/it-admins")
 async def list_it_admins(request: Request):
     result = []
     async for v in tdb(request).voters.find(
         {"is_it_admin": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1, "it_admin_export_mode": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1, "it_admin_export_mode": 1,
+         "it_admin_password_hash": 1, "it_admin_must_change_password": 1, "it_admin_temp_password_expires": 1}
     ):
         v["it_admin_export_mode"] = normalize_export_mode(v.get("it_admin_export_mode"))
+        v["login_state"] = _login_state(v, "it_admin")
+        for k in ("it_admin_password_hash", "it_admin_must_change_password", "it_admin_temp_password_expires"):
+            v.pop(k, None)
         result.append(v)
     return result
 
@@ -8323,21 +8413,23 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
 
 @app.post("/superadmin/vetting-panel/link-commissioner")
 async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Request, background_tasks: BackgroundTasks):
-    """Guide 5.2: a commissioner sits on the panel as an extension of their own screens. The record is
-    linked by student_id and carries NO password and NO email, so nothing is texted and there is nothing to
-    log in with: they reach the panel through /admin/switch-hat from the Commission dashboard. The
-    appointment reason is required and goes into the audit trail like any other appointment."""
+    """Guide 5.2: any admin (commissioner, IT admin, overseer or financial controller) sits on the panel as
+    an extension of their own screens. The record is linked by student_id and carries NO password and NO
+    email, so nothing is texted and there is nothing to log in with: they reach the panel through
+    /admin/switch-hat from their own dashboard. The appointment reason is required and goes into the
+    audit trail like any other appointment. (Route name kept for compatibility.)"""
     await _panel_open_guard(request)
     reason = data.appointment_reason.strip()
     if not reason:
         raise HTTPException(400, "An appointment reason is required.")
     voter = await tdb(request).voters.find_one(get_forgiving_filter(data.student_id))
-    if not voter or not voter.get("is_commissioner"):
-        raise HTTPException(404, "That person is not a commissioner.")
+    held = _held_hat_roles(voter)
+    if not held:
+        raise HTTPException(404, "That person does not hold an admin role.")
     sid = normalize_student_id(voter["student_id"])
     existing = await tdb(request).panel_members.find_one({"student_id": sid})
     if existing:
-        raise HTTPException(409, "This commissioner is already on the panel list."
+        raise HTTPException(409, "This person is already on the panel list."
                                  + ("" if existing.get("active") else " They are inactive: use Activate."))
     if await _has_live_application(request, voter["student_id"]):
         raise HTTPException(409, "This member has an application in progress and cannot sit on the Vetting Panel.")
@@ -8368,7 +8460,7 @@ async def superadmin_link_commissioner(data: PanelCommissionerLink, request: Req
     })
     background_tasks.add_task(_safe_resweep, request.state.org_id, include_removals=False)
     await log_action("vetting_panel_member_added", current_actor(request), {
-        "panel_member_id": panel_member_id, "is_member": True, "linked_commissioner": True,
+        "panel_member_id": panel_member_id, "is_member": True, "linked_commissioner": True, "linked_roles": held,
         "reason": reason, "sms_notified": False,
     }, org_id=request.state.org_id)
     return {"status": "added", "panel_member_id": panel_member_id, "sms_notified": False}
@@ -8482,20 +8574,45 @@ async def superadmin_panel_set_active(panel_member_id: str, request: Request, ba
 
 
 # =============================================================================
-# COMMISSIONER — HAT SWITCH (guide 5.2)
+# ADMIN — HAT SWITCH (guide 5.2)
 # =============================================================================
-# A commissioner linked to an ACTIVE panel member can switch to the panel view.
-# One token has one role, so switching issues a new token and revokes the old one.
+# Any admin linked to an ACTIVE panel member can switch to the panel view and back. One token has one
+# role, so switching issues a new token and revokes the old one. The panel token remembers which role
+# it came from (hat_role) so "switch back" returns each person to their own screen.
+# Overseer: while serving on the panel the overseer role is PAUSED (see auth_guard_middleware), so an
+# overseer never oversees their own votes. Financial controller: deliberately no extra rule.
+
+HAT_ROLE_FLAGS = {"commission": "is_commissioner", "it_admin": "is_it_admin",
+                  "financial_controller": "is_financial_controller", "overseer": "is_overseer"}
+HAT_ROLE_LABELS = {"commission": "Commissioner", "it_admin": "IT Admin",
+                   "financial_controller": "Financial Controller", "overseer": "Overseer"}
+HAT_ROLES = tuple(HAT_ROLE_FLAGS)
+
+
+def _held_hat_roles(voter: dict | None) -> list[str]:
+    return [r for r, f in HAT_ROLE_FLAGS.items() if voter and voter.get(f)]
+
+
+async def _active_panel_record(request: Request, student_id) -> dict | None:
+    """The person's ACTIVE panel record whose access has not ended, or None."""
+    if not student_id:
+        return None
+    panelist = await tdb(request).panel_members.find_one({
+        "student_id": normalize_student_id(student_id), "active": True})
+    if not panelist or await _panel_access_ended(request, panelist):
+        return None
+    return panelist
+
 
 @app.post("/admin/switch-hat")
-async def switch_hat(request: Request, admin: dict = Depends(require_role("commission", "vetting"))):
+async def switch_hat(request: Request, admin: dict = Depends(require_role(*HAT_ROLES, "vetting"))):
     org_id = require_org(request.state.org_id)
-    if admin["role"] == "commission":
-        target = "vetting"
+    if admin["role"] in HAT_ROLE_FLAGS:
+        origin = admin["role"]
         student_id = admin.get("sub")
         voter = await tdb(request).voters.find_one(get_forgiving_filter(student_id))
-        if not voter or not voter.get("is_commissioner"):
-            raise HTTPException(403, "Not a commissioner.")
+        if not voter or not voter.get(HAT_ROLE_FLAGS[origin]):
+            raise HTTPException(403, f"Not a {HAT_ROLE_LABELS[origin].lower()}.")
         panelist = await tdb(request).panel_members.find_one({
             "student_id": normalize_student_id(student_id), "active": True})
         if not panelist:
@@ -8505,51 +8622,59 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role("commi
         new_token = create_access_token(
             subject=panelist["panel_member_id"], role="vetting", org_id=org_id,
             full_name=panelist.get("full_name", ""), scope="full",
-            extra_claims={"via_hat": True})
-        # The commission token's jti is what gets revoked; the old token then stops working.
+            extra_claims={"via_hat": True, "hat_role": origin})
+        # The origin token's jti is what gets revoked; the old token then stops working.
         await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
         await log_action("hat_switched", student_id, {
-            "from": "commission", "to": "vetting", "panel_member_id": panelist["panel_member_id"]}, org_id=org_id)
-        return {"status": "switched", "role": "vetting", "access_token": new_token}
+            "from": origin, "to": "vetting", "panel_member_id": panelist["panel_member_id"]}, org_id=org_id)
+        return {"status": "switched", "role": "vetting", "access_token": new_token,
+                "back_to": origin, "back_label": HAT_ROLE_LABELS[origin]}
 
-    # role == vetting: switch back to the commissioner view
-    # Only a session that began as a commissioner login may return to it. A panelist who signed in directly
-    # with panel credentials has not proven the commissioner password, so no commission token is issued.
+    # role == vetting: switch back to the role the session came from.
+    # Only a session that began as an admin login may return to it. A panelist who signed in directly
+    # with panel credentials has not proven an admin password, so no admin token is issued.
     if not admin.get("via_hat"):
-        raise HTTPException(403, "Sign in with your commissioner account to open the commission view.")
+        raise HTTPException(403, "Sign in with your admin account to open that view.")
+    origin = admin.get("hat_role") or "commission"   # tokens issued before hat_role existed were commissioners
+    if origin not in HAT_ROLE_FLAGS:
+        raise HTTPException(403, "Only a linked admin can switch back.")
+    if origin == "overseer":
+        # Overseer access stays paused for as long as they serve; ending the service (or their
+        # panel access) ends this session, and a fresh overseer login works again.
+        raise HTTPException(403, "Overseer access is paused while you serve on the Vetting Panel.")
     panel = await tdb(request).panel_members.find_one({
         "panel_member_id": admin.get("sub"), "active": True})
     if not panel or not panel.get("student_id"):
-        raise HTTPException(403, "Only a linked commissioner can switch back.")
+        raise HTTPException(403, "Only a linked admin can switch back.")
     voter = await tdb(request).voters.find_one(get_forgiving_filter(panel["student_id"]))
-    if not voter or not voter.get("is_commissioner"):
-        raise HTTPException(403, "Only a linked commissioner can switch back.")
+    if not voter or not voter.get(HAT_ROLE_FLAGS[origin]):
+        raise HTTPException(403, "You no longer hold that role.")
     new_token = create_access_token(
-        subject=voter["student_id"], role="commission", org_id=org_id,
+        subject=voter["student_id"], role=origin, org_id=org_id,
         full_name=voter.get("full_name", ""), scope="full")
     await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
     await log_action("hat_switched", voter["student_id"], {
-        "from": "vetting", "to": "commission"}, org_id=org_id)
-    return {"status": "switched", "role": "commission", "access_token": new_token}
+        "from": "vetting", "to": origin}, org_id=org_id)
+    return {"status": "switched", "role": origin, "access_token": new_token}
 
 
 @app.get("/admin/panel-link")
-async def panel_link(request: Request, admin: dict = Depends(require_role("commission"))):
-    """Whether the signed-in commissioner can switch to the Vetting Panel. Answers only for the
+async def panel_link(request: Request, admin: dict = Depends(require_role(*HAT_ROLES))):
+    """Whether the signed-in admin can switch to the Vetting Panel. Answers only for the
     caller (never lists who is on the panel), so the dashboard can hide the switch button."""
-    panelist = await tdb(request).panel_members.find_one({
-        "student_id": normalize_student_id(admin.get("sub")), "active": True})
-    linked = bool(panelist) and not await _panel_access_ended(request, panelist)
+    panelist = await _active_panel_record(request, admin.get("sub"))
+    linked = bool(panelist)
     # Guide 7.2: tell the Chairperson (and only them) when a tie is waiting for their decision,
     # so they know to switch to the panel view. Only a count; no votes or names.
     tie_waiting = 0
-    if linked:
+    if linked and admin["role"] == "commission":
         chair = await tdb(request).voters.find_one({
             **get_forgiving_filter(admin.get("sub")), "is_chief_commissioner": True}, {"_id": 1})
         if chair:
             tie_waiting = await tdb(request).applications.count_documents({
                 "tied_pending_chief": True, "status": {"$nin": list(RESOLVED_STATUSES)}})
-    return {"panel_linked": linked, "tie_waiting": tie_waiting}
+    return {"panel_linked": linked, "tie_waiting": tie_waiting,
+            "overseer_paused": linked and admin["role"] == "overseer"}
 
 
 # =============================================================================
@@ -8649,8 +8774,12 @@ async def list_overseers(request: Request):
     result = []
     async for v in tdb(request).voters.find(
         {"is_overseer": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1,
+         "overseer_password_hash": 1, "overseer_must_change_password": 1, "overseer_temp_password_expires": 1}
     ):
+        v["login_state"] = _login_state(v, "overseer")
+        for k in ("overseer_password_hash", "overseer_must_change_password", "overseer_temp_password_expires"):
+            v.pop(k, None)
         result.append(v)
     return result
 
