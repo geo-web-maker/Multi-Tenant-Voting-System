@@ -419,27 +419,36 @@ html[data-template="blueprint"] {
   @media (max-width: 768px) {
     .bp-top { height: auto; flex-wrap: wrap; margin: var(--bp-s2) var(--bp-gut) var(--bp-s3); }
     .bp-tl, .bp-cell { min-height: var(--bp-hh); }
-    /* brand block gets its own full-width row, so the org name is no longer squeezed to "K..." by the theme/status cells */
-    .bp-tl { flex: 1 0 100%; padding: var(--bp-s2) var(--bp-s3); gap: var(--bp-s3); }
+    /* Compact mobile header. Row 1: logo + org name + theme button. Row 2: status on one line. Row 3: nav.
+       Root cause of the squeezed logo: index.css forces `.no-print img { height: 90px !important }` (<=600px) and the header
+       carries .no-print, so the logo image was stretched to 90px inside a 40px box. Overridden below with matching !important. */
+    .bp-top.no-print { padding: 0 !important; gap: 0 !important; }
+    .bp-tl { flex: 1 1 0; min-height: 52px; padding: var(--bp-s2) var(--bp-s3); gap: var(--bp-s3); }
     .bp-logo { width: 36px; height: 36px; }
-    /* logo: fixed square that can never be stretched or shrunk by the row */
     .bp-tl .bp-logo {
-      width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px;
+      width: 40px; height: 40px; min-width: 40px; min-height: 40px; flex: 0 0 40px;
       align-self: center; aspect-ratio: 1 / 1; overflow: hidden;
     }
-    .bp-tl .bp-logo img { width: 100%; height: 100%; object-fit: contain; }
-    /* bigger title that may wrap to two lines instead of truncating */
+    .bp-top.no-print .bp-logo img { width: 100% !important; height: 100% !important; max-height: 100% !important; object-fit: contain; }
+    /* org name: readable, wraps to at most two lines instead of truncating to "K..." */
     .bp-bt b {
-      font-size: 15px; line-height: 20px; letter-spacing: .03em;
+      font-size: 13px; line-height: 17px; letter-spacing: .03em;
       white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     }
-    .bp-bt small { font-size: 12px; }
-    /* theme toggle + status share the second row */
-    .bp-cell { flex: 1 1 0; justify-content: center; border-top: 1px dashed var(--bp-line); }
-    .bp-theme { border-left: 0; }
+    .bp-bt small { font-size: 10px; line-height: 14px; }
+    /* theme toggle sits at the right of row 1 */
+    .bp-cell.bp-theme { min-height: 0; border-left: 0; padding: 0 var(--bp-s3) 0 0; flex: 0 0 auto; }
+    .bp-top.no-print .bp-theme button { padding: 6px 12px !important; min-height: 34px; }
+    /* status: one slim full-width line (label + countdown side by side) */
+    .bp-cell.bp-status {
+      flex: 1 0 100%; min-height: 0; flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center;
+      gap: 0 var(--bp-s3); padding: var(--bp-s1) var(--bp-s3); border-left: 0; border-top: 1px dashed var(--bp-line);
+    }
+    .bp-cell.bp-status b { font-size: 12px; line-height: 18px; }
+    .bp-cell.bp-status .bp-sd { font-size: 11px; line-height: 18px; }
     .bp-cell { padding: 0 var(--bp-s3); }
     .bp-cell small, .bp-cell.bp-sheet, .bp-crumb, .bp-lg { display: none; }
-    .bp-top nav { order: 3; flex: 1 0 100%; padding: var(--bp-s2) var(--bp-s2) var(--bp-s3); border-left: 0; border-top: 1px dashed var(--bp-line); }
+    .bp-top nav { order: 3; flex: 1 0 100%; padding: var(--bp-s2); border-left: 0; border-top: 1px dashed var(--bp-line); }
     /* the pills are <button>s, so the old `nav a` rule never matched: centre the row and share the width evenly */
     .bp-top nav { justify-content: center; gap: var(--bp-s2); }
     .bp-top nav a, .bp-top nav button { flex: 1 1 auto; max-width: 180px; justify-content: center; }
