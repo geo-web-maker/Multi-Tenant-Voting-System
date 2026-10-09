@@ -1350,6 +1350,8 @@ const handleSuperAdminRemoveStudent = async () => {
                     <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
                     <br />
                     <small style={{ color: 'var(--info)' }}>Role: {c.commissioner_role || 'Commissioner'}</small>
+                    <br />
+                    <LoginStatusBadge state={c.login_state} lastLogin={c.last_login_at} />
                   </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                       <ViewAsButton studentId={c.student_id} role="commission" />
@@ -2041,7 +2043,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         </>
                       )}
                       <br />
-                      <LoginStatusBadge state={a.login_state} />
+                      <LoginStatusBadge state={a.login_state} lastLogin={a.last_login_at} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                       <ViewAsButton studentId={a.student_id} role="it_admin" />
@@ -2288,6 +2290,8 @@ const handleSuperAdminRemoveStudent = async () => {
                           <small style={{ color: 'var(--info)' }}>{a.financial_controller_email}</small>
                         </>
                       )}
+                      <br />
+                      <LoginStatusBadge state={a.login_state} lastLogin={a.last_login_at} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                       <ViewAsButton studentId={a.student_id} role="financial_controller" />
@@ -2374,7 +2378,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         </>
                       )}
                       <br />
-                      <LoginStatusBadge state={a.login_state} />
+                      <LoginStatusBadge state={a.login_state} lastLogin={a.last_login_at} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
                       <ViewAsButton studentId={a.student_id} role="overseer" />

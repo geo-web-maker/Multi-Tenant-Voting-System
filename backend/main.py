@@ -4823,6 +4823,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         expires = it_admin.get("it_admin_temp_password_expires")
         if expires and datetime.utcnow() > expires and it_admin.get("it_admin_must_change_password"):
             raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
+        await _stamp_login(tdb(request).voters, it_admin, "it_admin")
         await log_action("it_admin_login", it_admin["student_id"], {"email": data.email}, org_id=request.state.org_id)
         token = _login_token_for(it_admin, "it_admin", "it_admin_must_change_password", request.state.org_id)
         return {
@@ -4847,6 +4848,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         expires = financial_controller.get("financial_controller_temp_password_expires")
         if expires and datetime.utcnow() > expires and financial_controller.get("financial_controller_must_change_password"):
             raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
+        await _stamp_login(tdb(request).voters, financial_controller, "financial_controller")
         await log_action("financial_controller_login", financial_controller["student_id"], {"email": data.email}, org_id=request.state.org_id)
         token = _login_token_for(financial_controller, "financial_controller",
                                   "financial_controller_must_change_password", request.state.org_id)
@@ -4872,6 +4874,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         expires = overseer.get("overseer_temp_password_expires")
         if expires and datetime.utcnow() > expires and overseer.get("overseer_must_change_password"):
             raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
+        await _stamp_login(tdb(request).voters, overseer, "overseer")
         await log_action("overseer_login", overseer["student_id"], {"email": data.email}, org_id=request.state.org_id)
         token = _login_token_for(overseer, "overseer", "overseer_must_change_password", request.state.org_id)
         return {
@@ -4903,6 +4906,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
         if await _external_has_no_end(request, panelist):
             raise HTTPException(status_code=401, detail="Your panel access has no end date set yet. "
                                                         "Ask the superadmin to set one.")
+        await _stamp_login(tdb(request).panel_members, panelist, "")
         await log_action("vetting_panel_login", panelist["panel_member_id"],
                          {"email": data.email, "is_member": panelist.get("is_member", False)},
                          org_id=request.state.org_id)
@@ -4945,6 +4949,8 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     expires = commissioner.get("commissioner_temp_password_expires")
     if expires and datetime.utcnow() > expires and commissioner.get("commissioner_must_change_password"):
         raise HTTPException(status_code=401, detail="Your temporary password has expired. Ask the superadmin for a new one.")
+
+    await _stamp_login(tdb(request).voters, commissioner, "commissioner")
 
     await log_action("commissioner_login", commissioner["student_id"], {"email": data.email}, org_id=request.state.org_id)
     token = _login_token_for(commissioner, "commission", "commissioner_must_change_password", request.state.org_id)
@@ -7038,8 +7044,14 @@ async def list_commissioners(request: Request):
     result = []
     async for v in tdb(request).voters.find(
         {"is_commissioner": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_deputy_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "is_chief_commissioner": 1, "is_deputy_chief_commissioner": 1, "commissioner_role": 1, "commissioner_email": 1,
+         "commissioner_password_hash": 1, "commissioner_must_change_password": 1,
+         "commissioner_temp_password_expires": 1, "commissioner_temp_login_at": 1, "commissioner_last_login_at": 1}
     ):
+        v.update(_login_stage_fields(v, "commissioner"))
+        for k in ("commissioner_password_hash", "commissioner_must_change_password", "commissioner_temp_password_expires",
+                  "commissioner_temp_login_at", "commissioner_last_login_at"):
+            v.pop(k, None)
         result.append(v)
     return result
     
@@ -8030,16 +8042,45 @@ async def financial_controller_decide_student_change(change_id: str, data: Finan
 
 def _login_state(v: dict, prefix: str) -> str:
     """Where a staff member is in first-login set-up, without exposing any credential data.
-    no_credentials -> none sent yet; awaiting -> temp password sent, not yet replaced;
-    expired -> temp password lapsed before it was replaced; active -> they set their own password."""
-    if not v.get(f"{prefix}_password_hash"):
+    no_credentials -> none sent yet; awaiting -> temp password sent, never used to sign in;
+    logged_in -> signed in with the temp password but has not replaced it; expired -> temp password
+    lapsed before it was replaced; active -> they set their own password.
+    prefix "" is the vetting-panel record (unprefixed field names)."""
+    p = f"{prefix}_" if prefix else ""
+    if not v.get(f"{p}password_hash"):
         return "no_credentials"
-    if not v.get(f"{prefix}_must_change_password", True):
+    if not v.get(f"{p}must_change_password", True):
         return "active"
-    expires = v.get(f"{prefix}_temp_password_expires")
+    expires = v.get(f"{p}temp_password_expires")
     if expires and datetime.utcnow() > expires:
         return "expired"
+    seen = v.get(f"{p}temp_login_at")
+    # A stamp only counts for the CURRENT temp password: a reset issues a new one that expires later
+    # than the old login happened, so a stale stamp falls before (expires - TTL) and is ignored.
+    if seen and (not expires or seen >= expires - timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS, seconds=5)):
+        return "logged_in"
     return "awaiting"
+
+
+def _login_stage_fields(v: dict, prefix: str) -> dict:
+    """login_state + last_login_at for a list row (callers strip the raw credential fields)."""
+    p = f"{prefix}_" if prefix else ""
+    last = v.get(f"{p}last_login_at")
+    return {"login_state": _login_state(v, prefix), "last_login_at": iso_utc(last) if last else None}
+
+
+async def _stamp_login(coll, doc: dict, prefix: str) -> None:
+    """Record a successful sign-in so the superadmin can see which stage each admin is at.
+    Best effort: a failed stamp must never block a login."""
+    p = f"{prefix}_" if prefix else ""
+    now = datetime.utcnow()
+    fields = {f"{p}last_login_at": now}
+    if doc.get(f"{p}must_change_password", True):
+        fields[f"{p}temp_login_at"] = now
+    try:
+        await coll.update_one({"_id": doc["_id"]}, {"$set": fields})
+    except Exception:
+        pass
 
 
 @app.get("/superadmin/it-admins")
@@ -8048,11 +8089,13 @@ async def list_it_admins(request: Request):
     async for v in tdb(request).voters.find(
         {"is_it_admin": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "it_admin_email": 1, "it_admin_export_mode": 1,
-         "it_admin_password_hash": 1, "it_admin_must_change_password": 1, "it_admin_temp_password_expires": 1}
+         "it_admin_password_hash": 1, "it_admin_must_change_password": 1, "it_admin_temp_password_expires": 1,
+         "it_admin_temp_login_at": 1, "it_admin_last_login_at": 1}
     ):
         v["it_admin_export_mode"] = normalize_export_mode(v.get("it_admin_export_mode"))
-        v["login_state"] = _login_state(v, "it_admin")
-        for k in ("it_admin_password_hash", "it_admin_must_change_password", "it_admin_temp_password_expires"):
+        v.update(_login_stage_fields(v, "it_admin"))
+        for k in ("it_admin_password_hash", "it_admin_must_change_password", "it_admin_temp_password_expires",
+                  "it_admin_temp_login_at", "it_admin_last_login_at"):
             v.pop(k, None)
         result.append(v)
     return result
@@ -8296,10 +8339,14 @@ async def _panel_open_guard(request: Request):
 @app.get("/superadmin/vetting-panel")
 async def superadmin_list_panel(request: Request):
     raw = [p async for p in tdb(request).panel_members.find(
-        {}, {"_id": 0, "password_hash": 0, "temp_password_expires": 0})]
+        {}, {"_id": 0})]
     rows = []
     for p in raw:
         row = _panel_public(p)
+        row.update(_login_stage_fields(p, ""))
+        # Members linked to a voter row have no password of their own; they reach the panel via their role login.
+        if row["login_state"] == "no_credentials" and p.get("is_member"):
+            row["login_state"] = "role_login"
         # The real end, resolved live from the timeline (earlier of fixed date and phase end).
         row["access_ends_at"] = iso_utc(await _panel_access_end(request, p))
         rows.append(row)
@@ -8686,8 +8733,16 @@ async def list_financial_controllers(request: Request):
     result = []
     async for v in tdb(request).voters.find(
         {"is_financial_controller": True},
-        {"_id": 0, "student_id": 1, "full_name": 1, "financial_controller_email": 1}
+        {"_id": 0, "student_id": 1, "full_name": 1, "financial_controller_email": 1,
+         "financial_controller_password_hash": 1, "financial_controller_must_change_password": 1,
+         "financial_controller_temp_password_expires": 1, "financial_controller_temp_login_at": 1,
+         "financial_controller_last_login_at": 1}
     ):
+        v.update(_login_stage_fields(v, "financial_controller"))
+        for k in ("financial_controller_password_hash", "financial_controller_must_change_password",
+                  "financial_controller_temp_password_expires", "financial_controller_temp_login_at",
+                  "financial_controller_last_login_at"):
+            v.pop(k, None)
         result.append(v)
     return result
 
@@ -8775,10 +8830,12 @@ async def list_overseers(request: Request):
     async for v in tdb(request).voters.find(
         {"is_overseer": True},
         {"_id": 0, "student_id": 1, "full_name": 1, "overseer_email": 1,
-         "overseer_password_hash": 1, "overseer_must_change_password": 1, "overseer_temp_password_expires": 1}
+         "overseer_password_hash": 1, "overseer_must_change_password": 1, "overseer_temp_password_expires": 1,
+         "overseer_temp_login_at": 1, "overseer_last_login_at": 1}
     ):
-        v["login_state"] = _login_state(v, "overseer")
-        for k in ("overseer_password_hash", "overseer_must_change_password", "overseer_temp_password_expires"):
+        v.update(_login_stage_fields(v, "overseer"))
+        for k in ("overseer_password_hash", "overseer_must_change_password", "overseer_temp_password_expires",
+                  "overseer_temp_login_at", "overseer_last_login_at"):
             v.pop(k, None)
         result.append(v)
     return result

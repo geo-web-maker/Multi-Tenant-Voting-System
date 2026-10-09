@@ -1,3 +1,4 @@
+import LoginStatusBadge from './LoginStatusBadge.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
@@ -189,6 +190,8 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                     {p.student_id && <><small style={{ opacity: 0.6 }}>{regNo(p.student_id)}</small><br /></>}
                     {!p.student_id && p.affiliation && <><small style={{ opacity: 0.6 }}>{p.affiliation}</small><br /></>}
                     <small style={{ color: 'var(--info)' }}>{p.email}</small>
+                    <br />
+                    <LoginStatusBadge state={p.login_state} lastLogin={p.last_login_at} />
                     {(p.access_ends_at || p.access_expires_at || p.expires_with_phase) && (
                       <>
                         <br />
