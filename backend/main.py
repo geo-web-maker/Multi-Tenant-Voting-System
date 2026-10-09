@@ -2094,6 +2094,39 @@ def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = 
     return out
 
 
+_AUDIT_SID_RE = re.compile(r"[A-Za-z0-9\-]+(?:/[A-Za-z0-9\-]+){2,}")   # registration-number shape: 3+ segments split by "/"
+_AUDIT_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+
+
+def _scrub_audit_text(text: str) -> str:
+    """Mask registration numbers and email addresses typed into free text (e.g. an admin's `reason`)."""
+    text = _AUDIT_EMAIL_RE.sub(lambda m: _mask_email(m.group(0)), text)
+    # Needs a letter somewhere, so plain dates such as 12/05/2026 in a reason are left alone.
+    return _AUDIT_SID_RE.sub(lambda m: _mask_student_id(m.group(0)) if re.search(r"[A-Za-z]", m.group(0)) else m.group(0), text)
+
+
+def _mask_audit_identifiers(entry: dict) -> None:
+    """Extra masking for every admin role except the superadmin (activity-log transparency without
+    broadcasting full student IDs, emails or uploaded-file names). Mutates `entry` in place."""
+    actor = entry.get("actor")
+    if isinstance(actor, str):
+        if "@" in actor:
+            entry["actor"] = _mask_email(actor)
+        elif _AUDIT_SID_RE.fullmatch(actor):
+            entry["actor"] = _mask_student_id(actor)
+    details = entry.get("details")
+    if not isinstance(details, dict):
+        return
+    details.pop("nomination_form", None)   # uploaded file names often contain a real name
+    for key, val in list(details.items()):
+        if not isinstance(val, str):
+            continue
+        if key == "student_id":
+            details[key] = _mask_student_id(val)
+        else:
+            details[key] = _scrub_audit_text(val)
+
+
 def _redact_panel_audit(entry: dict, role: str | None = None):
     """Non-superadmin view of audit entries that would reveal who voted how, or the split (guide 8.1)."""
     action = entry.get("action")
@@ -10002,6 +10035,7 @@ async def get_admin_audit_log(request: Request, limit: int = 200, action: str = 
                 details["ip"] = _mask_ip(details["ip"])
             if entry.get("action") == "admin_login_locked":
                 entry["actor"] = _mask_email(entry.get("actor", ""))
+            _mask_audit_identifiers(entry)
             _redact_panel_audit(entry, current_role(request))
         logs.append(entry)
     return {"total": total, "limit": limit, "skip": skip, "entries": logs}
@@ -10171,6 +10205,7 @@ async def analytics_anomalies(request: Request, limit: int = 100):
                 details["ip"] = _mask_ip(details["ip"])
             if entry.get("action") == "admin_login_locked":
                 entry["actor"] = _mask_email(entry.get("actor", ""))
+            _mask_audit_identifiers(entry)   # student-ID actors (OTP lockouts, phase exceptions) and free-text reasons
         events.append(entry)
 
     since = datetime.utcnow() - timedelta(hours=24)
