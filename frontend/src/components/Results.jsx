@@ -508,5 +508,5 @@ const voterRowStyle = { display: 'flex', justifyContent: 'space-between', paddin
 const privacyLockStyle = { padding: '20px', textAlign: 'center', color: 'var(--text-muted)' };
 const thresholdBarStyle = { width: '100%', height: '8px', background: 'var(--border-color)', borderRadius: '4px', overflow: 'hidden' };
 const printBtnStyle = {
-  padding: '12px 24px', backgroundColor: '#1e293b', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
+  padding: '12px 24px', backgroundColor: 'var(--bp-ac, #1e293b)', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
 };
