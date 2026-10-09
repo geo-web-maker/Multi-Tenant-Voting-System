@@ -14,14 +14,16 @@ export function Stamp({ name, logoUrl, invert = false, className = '' }) {
   );
 }
 
-/** "● Voting Open" cell. Renders nothing while the phase is unknown. */
-export function StatusCell({ phase }) {
+/** "● Voting Open" cell, with an optional live detail line (countdown / closing time). Renders nothing while the phase is unknown.
+ *  role="status" is on the label only: the detail ticks every second and must not be announced. */
+export function StatusCell({ phase, detail = '' }) {
   const label = STATUS_LABELS[phase];
   if (!label) return null;
   return (
     <div className="bp-cell bp-status">
       <small>Status</small>
-      <b><i className={`bp-dot${phase === 'voting_open' ? ' bp-ok' : ''}`} />{label}</b>
+      <b role="status"><i className={`bp-dot${phase === 'voting_open' ? ' bp-ok' : ''}`} />{label}</b>
+      {detail && <span className="bp-sd">{detail}</span>}
     </div>
   );
 }

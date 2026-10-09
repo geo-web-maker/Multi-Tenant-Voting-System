@@ -76,7 +76,7 @@ const fabStyle = {
   display: 'flex', alignItems: 'center', gap: '8px',
   padding: '10px 24px',
   backgroundColor: 'var(--brand-primary, #003366)',
-  color: '#ffffff',
+  color: 'var(--brand-on-primary, white)',
   border: '2px solid var(--brand-accent, #f1c40f)',
   borderRadius: '30px',
   cursor: 'pointer',

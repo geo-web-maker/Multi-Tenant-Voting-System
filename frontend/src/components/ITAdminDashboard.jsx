@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
@@ -16,12 +17,14 @@ import { previewPhone } from '../studentEdit';
 import './ITAdminDashboard.css';
 import { regNo } from '../regNo';
 import VoterList from './VoterList';
+import VoterImportPanel from './VoterImportPanel';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import VoterRegisterExport from './VoterRegisterExport';
 import { getTemplate } from '../template';
 
 
 export default function ITAdminDashboard({ onLogout }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
@@ -30,6 +33,7 @@ export default function ITAdminDashboard({ onLogout }) {
   const itAdminName = sessionStorage.getItem('it_admin_name') || '';
 
   const [activeTab, setActiveTab] = usePersistedTab('it_admin', 'overview');
+  const [voterListKey, setVoterListKey] = useState(0);   // bumped after an import to reload the register
   const [myRequests, setMyRequests] = useState([]);
   const [loading, setLoading]       = useState(false);
   const [lastSynced, markSynced]    = useLastSynced();
@@ -125,7 +129,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
     const cleanPhones = addForm.phones.map(p => p.trim()).filter(Boolean);
 
-    if (!addForm.student_id.trim()) { setAddError('Student ID is required.'); return; }
+    if (!addForm.student_id.trim()) { setAddError(`${idText.short} is required.`); return; }
     if (!addForm.full_name.trim())  { setAddError('Full name is required.');  return; }
     if (!cleanPhones.length)        { setAddError('At least one phone number is required.'); return; }
     const invalidPhone = cleanPhones.find(p => !previewPhone(p));
@@ -173,7 +177,7 @@ export default function ITAdminDashboard({ onLogout }) {
     setRemoveError('');
     setRemoveSuccess('');
 
-    if (!removeForm.student_id.trim()) { setRemoveError('Student ID is required.'); return; }
+    if (!removeForm.student_id.trim()) { setRemoveError(`${idText.short} is required.`); return; }
     if (!removeForm.reason.trim())     { setRemoveError('Reason is required.');     return; }
 
     setRemoveSubmitting(true);
@@ -276,8 +280,8 @@ export default function ITAdminDashboard({ onLogout }) {
               {bypass && <p style={{ margin: '0 0 10px', fontSize: '12px', opacity: 0.7 }}>Bypass is ON: reason and proof of payment are optional and the voter is added immediately.</p>}
 
               <form onSubmit={handleAddSubmit} style={formCol}>
-                <label style={lbl}>Student Registration Number *</label>
-                <input style={inp} placeholder="e.g. 22/U/IED/1086/GV"
+                <label style={lbl}>{idText.label} *</label>
+                <input style={inp} placeholder={`e.g. ${idText.firstId}`}
                   value={addForm.student_id}
                   onChange={e => setAddForm({ ...addForm, student_id: e.target.value })} />
 
@@ -376,7 +380,7 @@ export default function ITAdminDashboard({ onLogout }) {
             <aside style={card} className="itadmin-summary" aria-label="Live summary">
               <h4 style={cardTitle}>Summary</h4>
               {[
-                ['Registration Number', regNo(addForm.student_id.trim())],
+                [idText.short, regNo(addForm.student_id.trim())],
                 ['Name', addForm.full_name.trim()],
                 ['Phone Number(s)', addForm.phones.map(p => p.trim()).filter(Boolean)
                   .map(p => previewPhone(p) || `${p} (invalid)`).join(', ')],
@@ -395,7 +399,9 @@ export default function ITAdminDashboard({ onLogout }) {
         {activeTab === 'voters' && (
           <>
             <VoterRegisterExport />
+            <VoterImportPanel frozen={rosterFrozen} onImported={() => setVoterListKey(k => k + 1)} />
             <VoterList
+              key={voterListKey}
               onEdit={(sid) => { setEditStudentId(sid); setActiveTab('edit'); }}
               onRemove={!rosterFrozen ? (v) => { setRemoveForm({ ...removeForm, student_id: v.student_id }); setRemoveSearch(`${v.full_name} (${regNo(v.student_id)})`); setActiveTab('remove'); } : undefined}
               onResetOtp={(sid) => { setEditStudentId(sid); setActiveTab('reset_otp'); }}
@@ -419,11 +425,11 @@ export default function ITAdminDashboard({ onLogout }) {
               </p>
 
               <form onSubmit={handleRemoveSubmit} style={formCol}>
-                <label style={lbl}>Student Registration Number *</label>
+                <label style={lbl}>{idText.label} *</label>
                 <div style={{ position: 'relative' }}>
                   <input
                     style={inp}
-                    placeholder="Search by name or student ID…"
+                    placeholder={`Search by name or ${idText.noun}…`}
                     value={removeSearch}
                     onChange={e => {
                       setRemoveSearch(e.target.value);
@@ -486,7 +492,7 @@ export default function ITAdminDashboard({ onLogout }) {
               <h4 style={cardTitle}>Summary</h4>
               {[
                 ['Student', removeForm.student_id ? (voters.find(v => v.student_id === removeForm.student_id)?.full_name || '') : ''],
-                ['Registration Number', regNo(removeForm.student_id)],
+                [idText.short, regNo(removeForm.student_id)],
                 ['Reason', removeForm.reason.trim()],
               ].map(([k, v]) => (
                 <div key={k} className="itadmin-kv"><span>{k}</span><b>{v || '—'}</b></div>

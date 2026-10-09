@@ -1,18 +1,13 @@
 import { useEffect, useState } from 'react';
 import { getTemplate } from '../template';
-
-// Sample IDs/names cycled in the login placeholder animation.
-const examples = [
-  { id: "23/U/BCS/10245/GV", name: "Ayebale Elizabeth" },
-  { id: "22/U/ISD/08940/PD", name: "Namusoke Dorothy Nalwadda" },
-  { id: "23/U/AGE/11223/GV", name: "Kaggwa Paul" },
-  { id: "21/U/BSE/44556/PE", name: "Sserwadda Valentino" },
-  { id: "23/U/BPH/00341/GV", name: "Bakanansa Jesca" }
-];
+import { useIdText } from '../idText';
 
 // Owns the typing-placeholder animation state so each 40-120 ms tick
 // re-renders only these two inputs, never App.
 export default function VoterLoginInputs({ studentId, setStudentId, name, setName, inputStyle }) {
+  const idText = useIdText();
+  // Sample IDs/names cycled in the placeholder animation: this organisation's own (Branding), else the defaults.
+  const examples = idText.ids.map((id, i) => ({ id, name: idText.names[i % idText.names.length] }));
   const [placeholderText, setPlaceholderText] = useState({ id: "", name: "" });
   const [isDeleting, setIsDeleting] = useState(false);
   const [loopNum, setLoopNum] = useState(0);
@@ -53,11 +48,11 @@ export default function VoterLoginInputs({ studentId, setStudentId, name, setNam
 
     const timer = setTimeout(handleTyping, typingSpeed);
     return () => clearTimeout(timer);
-  }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name]);
+  }, [placeholderText, isDeleting, loopNum, typingSpeed, studentId, name, idText]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bp = getTemplate();
   if (bp) {
-    return <bp.VoterFields studentId={studentId} setStudentId={setStudentId} name={name} setName={setName} idPlaceholder={placeholderText.id} namePlaceholder={placeholderText.name} />;
+    return <bp.VoterFields studentId={studentId} setStudentId={setStudentId} name={name} setName={setName} idLabel={idText.label} idPlaceholder={placeholderText.id} namePlaceholder={placeholderText.name} />;
   }
   return (
     <>
@@ -67,7 +62,7 @@ export default function VoterLoginInputs({ studentId, setStudentId, name, setNam
         style={inputStyle}
         value={studentId}
         onChange={e => setStudentId(e.target.value)}
-        placeholder={`Student Registration Number e.g. ${placeholderText.id}`}
+        placeholder={`${idText.label} e.g. ${placeholderText.id}`}
         autoComplete="off"
       />
       <input

@@ -1,3 +1,4 @@
+import { getIdText } from './idText';
 import { MAX_IMAGE_BYTES, ACCEPT_IMAGES } from './imageFile';
 
 // Pure helpers for the apply form (WP-6e). Kept out of the component so every case can be tested as a table.
@@ -25,7 +26,7 @@ export function mapApplyError(err, { online = true } = {}) {
       if (/only jpeg|allowed/i.test(text)) return 'That file type is not supported. Use a JPEG, PNG, WEBP or GIF image.';
       return text || 'Please check your entries and try again.';
     case 403: return text || 'Applications are not open right now.';
-    case 404: return text || 'Your Student ID was not found on the voter register. Please contact IT support.';
+    case 404: return text || `Your ${getIdText().noun} was not found on the voter register. Please contact IT support.`;
     case 422: return text || 'Please check your entries and try again.';
     case 429: return 'Too many attempts. Wait a minute, then try again.';
     case 502: case 503: case 504: return 'The upload service is busy. Please try again in a moment.';
@@ -36,21 +37,23 @@ export function mapApplyError(err, { online = true } = {}) {
 }
 
 export const FIELD_LABELS = {
-  student_id: 'Student registration number',
+  get student_id() { return getIdText().label.charAt(0).toUpperCase() + getIdText().label.slice(1).toLowerCase(); },
   full_name: 'Full name',
+  phone: 'Phone number',
   position_id: 'Position',
   manifesto: 'Manifesto',
   payment_method: 'Payment method',
   payment_proof: 'Payment receipt',
   nomination_form: 'Signed nomination form',
 };
-const ORDER = ['student_id', 'full_name', 'position_id', 'manifesto', 'nomination_form', 'payment_method', 'payment_proof'];
+const ORDER = ['student_id', 'full_name', 'phone', 'position_id', 'manifesto', 'nomination_form', 'payment_method', 'payment_proof'];
 
 /** One pass over the whole form. Returns the missing fields in page order: [{ field, label }]. */
-export function missingFields(v, { nominationRequired = false } = {}) {
+export function missingFields(v, { nominationRequired = false, phoneRequired = false } = {}) {
   const empty = {
     student_id: !String(v.student_id || '').trim(),
     full_name: !String(v.full_name || '').trim(),
+    phone: phoneRequired && String(v.phone || '').replace(/\D/g, '').length < 9,
     position_id: !v.position_id,
     manifesto: !String(v.manifesto || '').trim(),
     payment_method: !v.payment_method,

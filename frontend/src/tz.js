@@ -67,6 +67,16 @@ export function fmtZoned(v, tz) {
   }).format(d);
 }
 
+/** Compact version for tight spots (header status cell): "12 Jan, 08:00 EAT". */
+export function fmtShort(v, tz) {
+  const d = parseUtc(v);
+  if (!d) return '';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, day: 'numeric', month: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+  }).format(d);
+}
+
 export function zoneList() {
   try { return Intl.supportedValuesOf('timeZone'); } catch { /* older browsers */ }
   return ['Africa/Kampala', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo', 'Europe/London',

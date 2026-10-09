@@ -10,6 +10,10 @@
   --border-color: #e2e2e5;
   --text-color: #1e2530;      /* near-navy charcoal, ties back to brand */
   --text-muted: #6b7280;
+  /* Toast pairs: each fill has its own ink, all >= 4.5:1. Dark theme = pale fill + dark ink. */
+  --toast-info-bg: #334155; --toast-info-fg: #ffffff;
+  --toast-ok-bg:   #15803d; --toast-ok-fg:   #ffffff;
+  --toast-err-bg:  #b91c1c; --toast-err-fg:  #ffffff;
   --brand-primary: #003366;
   --brand-accent:  #f1c40f;
 
@@ -40,6 +44,9 @@
     --border-color: #2a3145;
     --text-color: #e7e9ee;
     --text-muted: #9aa3b5;
+    --toast-info-bg: #cbd5e1; --toast-info-fg: #0f172a;
+    --toast-ok-bg:   #4ade80; --toast-ok-fg:   #052e16;
+    --toast-err-bg:  #fca5a5; --toast-err-fg:  #450a0a;
   }
 }
 
@@ -51,6 +58,9 @@
   --border-color: #e2e2e5;
   --text-color: #1e2530;
   --text-muted: #6b7280;
+  --toast-info-bg: #334155; --toast-info-fg: #ffffff;
+  --toast-ok-bg:   #15803d; --toast-ok-fg:   #ffffff;
+  --toast-err-bg:  #b91c1c; --toast-err-fg:  #ffffff;
 }
 
 [data-theme="dark"] {
@@ -60,6 +70,9 @@
   --border-color: #2a3145;
   --text-color: #e7e9ee;
   --text-muted: #9aa3b5;
+  --toast-info-bg: #cbd5e1; --toast-info-fg: #0f172a;
+  --toast-ok-bg:   #4ade80; --toast-ok-fg:   #052e16;
+  --toast-err-bg:  #fca5a5; --toast-err-fg:  #450a0a;
 }
 
 /* Global sizing model. Without this every element defaulted to content-box,
@@ -212,11 +225,11 @@ button:hover {
   .position-header {
   all: unset; 
   display: block !important;
-  background-color: #f1c40f !important; /* <--- CHANGED TO GOLD */
-  color: #1e293b !important;            /* <--- CHANGED TO DARK NAVY */
+  background-color: var(--brand-accent, #f1c40f) !important; /* org accent (gold if unset) */
+  color: var(--brand-on-accent, #1e293b) !important; /* readable ink for whatever the accent is */
   padding: 12px 20px !important;
   border-radius: 10px !important;
-  border-left: 6px solid #2c3e50 !important; /* <--- DARKER ACCENT */
+  border-left: 6px solid var(--brand-stripe, #2c3e50) !important; /* visible edge beside the accent */
   font-weight: 800 !important;
   text-transform: uppercase !important;
   margin-bottom: 20px !important;

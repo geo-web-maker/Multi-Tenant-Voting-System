@@ -2,6 +2,7 @@
 // standalone IT admin screen). Only logic lives here: no layout, so the two UIs stay separate.
 // Both screens call the SAME backend endpoint (POST /admin/students/edit).
 import api from './api';
+import { getIdText } from './idText';
 
 export const lookupStudents = (q) =>
   api.get('/admin/students/lookup', { params: { q } }).then((r) => r.data);
@@ -49,9 +50,9 @@ export function computeChanges(d) {
   else if (name !== d.original.full_name) rows.push({ id: 'name', label: 'Name', from: d.original.full_name, to: name });
 
   const sid = normId(d.new_student_id);
-  if (!sid) errors.push('Registration number cannot be empty.');
+  if (!sid) errors.push(`${getIdText().nounCap} cannot be empty.`);
   else if (sid !== d.original.student_id) {
-    rows.push({ id: 'sid', label: 'Registration Number', from: d.original.student_id, to: sid });
+    rows.push({ id: 'sid', label: getIdText().short, from: d.original.student_id, to: sid });
   }
 
   d.phones.forEach((p) => {
@@ -116,7 +117,7 @@ export function buildPayload(d, reason) {
 export const EVENT_LABELS = {
   student_name_changed: 'Name changed',
   student_attr_changed: 'Optional field changed',
-  student_registration_number_changed: 'Registration number changed',
+  get student_registration_number_changed() { return `${getIdText().nounCap} changed`; },
   phone_added: 'Phone added',
   phone_removed: 'Phone removed',
   phone_changed: 'Phone changed',
@@ -154,5 +155,5 @@ export const EVIDENCE_TYPES = [
 ];
 export const CHANGE_LABELS = {
   phone_change: 'Change phone number', phone_add: 'Add phone number',
-  phone_remove: 'Remove phone number', registration_number_change: 'Change registration number',
+  phone_remove: 'Remove phone number', get registration_number_change() { return `Change ${getIdText().noun}`; },
 };

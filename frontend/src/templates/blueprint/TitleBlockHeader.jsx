@@ -3,7 +3,9 @@
 // "active tab / tab count" sheet cell, all read from the chrome store the sidebar publishes to.
 import { useEffect } from 'react';
 import { Stamp, StatusCell, SheetCell } from './primitives';
+import LiveStatus from './LiveStatus';
 import { setChrome, useChrome } from '../../templateChrome';
+import { derivePhase } from '../../phase';
 
 const NAV = [
   { key: 'vote', label: 'Vote Now', track: 'nav-vote' },
@@ -12,10 +14,12 @@ const NAV = [
 ];
 
 export default function TitleBlockHeader({
-  orgName, logoUrl, logoNeedsInvert = false, phase = null, view, step, theme,
+  orgName, logoUrl, logoNeedsInvert = false, phase = null, status = null, view, step, theme,
   onToggleTheme, onVoteNow, onNavigate, showBackToAdmin = false, onBackToAdmin, role = '',
 }) {
   const chrome = useChrome();
+  // Applications open -> the Apply tab gets a soft highlight (replaces the old "Apply now" button in the banner).
+  const applyOpen = (status ? derivePhase(status)?.state : phase) === 'apply_open';
   // Flat dashboards have no groups: the sidebar uses the role as the crumb group, so publish it from here.
   useEffect(() => {
     setChrome({ role });
@@ -49,7 +53,7 @@ export default function TitleBlockHeader({
           <button
             key={n.key} type="button" data-track={n.track} onClick={onClick[n.key]}
             aria-current={active === n.key ? 'page' : undefined}
-            className={active === n.key ? 'bp-on' : undefined}
+            className={active === n.key ? 'bp-on' : (n.key === 'apply' && applyOpen ? 'bp-hl' : undefined)}
           >
             {n.label}
           </button>
@@ -66,7 +70,8 @@ export default function TitleBlockHeader({
           {theme === 'dark' ? 'Light' : 'Dark'}
         </button>
       </div>
-      <StatusCell phase={phase} />
+      {/* `status` (raw /election-status) gives a live cell with countdown; `phase` alone still gives the static label. */}
+      {status ? <LiveStatus status={status} /> : <StatusCell phase={phase} />}
       {sheet && <SheetCell n={sheet} of={3} />}
       {consoleSheet && <SheetCell n={consoleSheet.n} of={consoleSheet.of} />}
       <i className="bp-rule" aria-hidden="true" />

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = path.dirname(fileURLToPath(import.meta.url));
 const HEX = /#[0-9a-fA-F]{3,8}\b/g;
-const HEX_CEILING = 394; // recorded at the end of BP-T9
+const HEX_CEILING = 389; // lowered after brand-colour wiring (was 394, end of BP-T9)
 // Swept for the template: none of these literals may appear bare (outside var(--x, <literal>)).
 const SWEPT_BARE = /(?<![0-9A-Za-z#])#(2ecc71|10b981|e74c3c|ef4444|e67e22|3498db|3b82f6)\b(?![0-9a-fA-F])/;
 const SWEPT_FILES = ['SecurityPanel','ContactChangesQueue','ResetOtpLimitsPanel','VoterImportReview','VoterFieldsPanel',

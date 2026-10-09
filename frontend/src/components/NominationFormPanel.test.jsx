@@ -5,12 +5,13 @@ import NominationFormPanel from './NominationFormPanel';
 
 const get = vi.fn();
 const put = vi.fn();
-vi.mock('../api', () => ({ default: { get: (...a) => get(...a), put: (...a) => put(...a), post: vi.fn() } }));
+const post = vi.fn();
+vi.mock('../api', () => ({ default: { get: (...a) => get(...a), put: (...a) => put(...a), post: (...a) => post(...a) } }));
 vi.mock('../template', () => ({ getTemplate: () => null }));
 
 describe('NominationFormPanel', () => {
   beforeEach(() => {
-    get.mockReset(); put.mockReset();
+    get.mockReset(); put.mockReset(); post.mockReset();
     get.mockResolvedValue({ data: {
       enabled: false, required: true, title: 'Nomination Form', instructions: 'Download and sign it.',
       template_file: null, accepted_types: ['pdf'], max_mb: 5,
@@ -39,5 +40,25 @@ describe('NominationFormPanel', () => {
     await screen.findByDisplayValue('Nomination Form');
     const checks = screen.getAllByRole('checkbox');
     expect(checks[1]).toBeDisabled();
+  });
+  it('Test storage shows each step and a clear verdict', async () => {
+    post.mockResolvedValue({ data: { ok: false, steps: [
+      { name: 'Settings present', ok: true, detail: 'All four NOMINATION_B2_* values are set.' },
+      { name: 'Write file', ok: false, detail: 'AccessDenied: not allowed' },
+    ] } });
+    render(<NominationFormPanel />);
+    await screen.findByDisplayValue('Nomination Form');
+    fireEvent.click(screen.getByTestId('test-storage'));
+    expect(await screen.findByText('Storage is not working yet.')).toBeTruthy();
+    expect(post).toHaveBeenCalledWith('/superadmin/nomination-form/test-storage');
+    expect(screen.getByText(/AccessDenied/)).toBeTruthy();
+  });
+
+  it('Test storage says so when everything works', async () => {
+    post.mockResolvedValue({ data: { ok: true, steps: [{ name: 'Delete file', ok: true, detail: 'gone' }] } });
+    render(<NominationFormPanel />);
+    await screen.findByDisplayValue('Nomination Form');
+    fireEvent.click(screen.getByTestId('test-storage'));
+    expect(await screen.findByText(/Storage works/)).toBeTruthy();
   });
 });

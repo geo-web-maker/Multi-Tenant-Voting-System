@@ -6,7 +6,7 @@ import {
   Star, Palette, Settings, Building2, Monitor, MessageCircle, BookOpen, Users, User, Search,
   Trash2, FileText, Send, Camera, ClipboardList, Mail, Eye, Pause, Play, RefreshCw, Sun, Moon,
   Lock, ArrowLeft, ArrowRight, Check, X, Plus, Minus, Circle, TrendingUp,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, Copy,
 } from 'lucide-react';
 
 // ICON POLICY — use an icon only when it does a job text alone can't:
@@ -26,7 +26,7 @@ const ICONS = {
   pin: [Pin], zap: [Zap], ban: [Ban], save: [Save], star: [Star], palette: [Palette],
   settings: [Settings], building: [Building2], monitor: [Monitor], chat: [MessageCircle],
   book: [BookOpen], users: [Users], user: [User], search: [Search], trash: [Trash2],
-  file: [FileText], send: [Send], camera: [Camera], clipboard: [ClipboardList], mail: [Mail],
+  file: [FileText], copy: [Copy], send: [Send], camera: [Camera], clipboard: [ClipboardList], mail: [Mail],
   eye: [Eye], pause: [Pause], play: [Play], refresh: [RefreshCw], sun: [Sun], moon: [Moon],
   lock: [Lock], back: [ArrowLeft], next: [ArrowRight], check: [Check], close: [X], plus: [Plus],
   minus: [Minus], trend: [TrendingUp], chevronDown: [ChevronDown], chevronUp: [ChevronUp],

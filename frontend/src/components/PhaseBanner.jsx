@@ -1,7 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { derivePhase, formatCountdown } from '../phase';
-import { parseUtc } from '../tz';
-import { getTemplate } from '../template';
+import React from 'react';
+import { usePhase } from '../usePhase';
 
 // One prominent notice on the voter card. Informational only: the login form below is untouched and
 // the server stays the authority (exception grants can still let a specific student through).
@@ -37,28 +35,13 @@ function copy(state, d, appsClosed) {
 }
 
 export default function PhaseBanner({ status, onApply, style }) {
-  const [now, setNow] = useState(() => Date.now());
-  const info = derivePhase(status, now);
-  const target = info?.countdownTo ? parseUtc(info.countdownTo) : null;
-  const targetMs = target ? target.getTime() : null;
-
-  // One-second clock, only while there is a next milestone to count down to. When the applications
-  // deadline passes, derivePhase flips the banner to "closed" and the clock re-targets voting opening.
-  useEffect(() => {
-    if (targetMs == null) return undefined;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [targetMs]);
+  const { info, left } = usePhase(status);
 
   if (!info) return null;
   const { state, dates, appsClosed } = info;
   const t = THEME[state];
   const c = copy(state, dates, appsClosed);
   const rows = c.rows.filter(Boolean);
-  const left = targetMs != null ? formatCountdown(targetMs - now) : null;
-  // Blueprint template: same state, copy and countdown, different rendering (hooks above have already run).
-  const bp = getTemplate();
-  if (bp) return <bp.PhaseBannerView state={state} title={c.title} rows={rows} left={left} countdownLabel={info.countdownLabel} onApply={onApply} style={style} />;
   // Colour is set explicitly everywhere: in dark mode a global text colour was winning over the
   // banner's own, leaving light text on the light-blue box (unreadable).
   const txt = { color: t.fg, textAlign: 'center' };

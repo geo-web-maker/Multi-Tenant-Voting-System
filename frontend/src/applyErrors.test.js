@@ -36,6 +36,13 @@ describe('B1: validation helpers', () => {
     expect(missingFields({ student_id: '  ', full_name: 'A', position_id: 'p', manifesto: 'm', payment_method: 'x', payment_proof: {} }).map(x => x.field)).toEqual(['student_id']);
     expect(missingFields({ student_id: 's', full_name: 'A', position_id: 'p', manifesto: 'm', payment_method: 'x', payment_proof: {} })).toEqual([]);
   });
+  it('phone is only required when the org asks for it, and needs at least 9 digits', () => {
+    const ok = { student_id: 's', full_name: 'A', position_id: 'p', manifesto: 'm', payment_method: 'x', payment_proof: {} };
+    expect(missingFields({ ...ok })).toEqual([]);
+    expect(missingFields({ ...ok }, { phoneRequired: true }).map(x => x.field)).toEqual(['phone']);
+    expect(missingFields({ ...ok, phone: '12 34' }, { phoneRequired: true }).map(x => x.field)).toEqual(['phone']);
+    expect(missingFields({ ...ok, phone: '0772 123 456' }, { phoneRequired: true })).toEqual([]);
+  });
   it('block reasons are fixed labels', () => {
     expect(imageBlockReason(null)).toBe('missing_field');
     expect(imageBlockReason({ type: 'application/pdf', size: 10, name: 'a.pdf' })).toBe('bad_file_type');

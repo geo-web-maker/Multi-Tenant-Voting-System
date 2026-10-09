@@ -252,14 +252,16 @@ const toastContainerStyle = {
 };
 
 const toastStyle = {
-  padding: '12px 16px', borderRadius: '10px', color: 'var(--bp-ai, #fff)', fontSize: '14px',
+  padding: '12px 16px', borderRadius: '10px', fontSize: '14px',
   boxShadow: '0 8px 20px rgba(0,0,0,0.25)', cursor: 'pointer', lineHeight: 1.4,
 };
 
+// Background and ink always come as a pair (--toast-* in index.css, remapped by the blueprint bridge),
+// so neither can fall back on its own and leave dark text on a mid-grey fill.
 const toastKindStyle = {
-  info:    { backgroundColor: 'var(--bp-mu, #334155)' },
-  success: { backgroundColor: 'var(--bp-ok, #16a34a)' },
-  error:   { backgroundColor: 'var(--bp-no, #dc2626)' },
+  info:    { backgroundColor: 'var(--toast-info-bg)', color: 'var(--toast-info-fg)' },
+  success: { backgroundColor: 'var(--toast-ok-bg)',   color: 'var(--toast-ok-fg)' },
+  error:   { backgroundColor: 'var(--toast-err-bg)',  color: 'var(--toast-err-fg)' },
 };
 
 const overlayStyle = {

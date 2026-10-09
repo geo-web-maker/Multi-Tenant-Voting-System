@@ -1,5 +1,6 @@
 import React from 'react';
 import { momoDisplay, momoLocalDigits } from '../paymentInfo';
+import { Icon } from './icons.jsx';
 
 /** Shows the Mobile Money number applicants pay to and the name it is registered under, with a Copy button.
  *  Renders nothing until the superadmin has set them (see ../paymentInfo.js). */
@@ -26,19 +27,19 @@ export default function MobileMoneyNumber({ info, style }) {
 
   return (
     <div role="group" aria-label="Mobile Money payment details" style={{ ...box, ...style }}>
-      <div style={{ fontSize: 12, opacity: 0.75 }}>Pay by Mobile Money to</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '2px 0' }}>
-        {canCopy ? (
+      <div style={label}>Pay by Mobile Money to</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', margin: '6px 0 10px' }}>
+        <strong translate="no" style={numberText}>{momoDisplay(info.number)}</strong>
+        {canCopy && (
           <button type="button" data-track="apply-copy-number" onClick={copy} aria-label="Copy payment number"
-            style={numberBtn}>
-            <strong translate="no" style={{ fontSize: 20, letterSpacing: '0.02em' }}>{momoDisplay(info.number)}</strong>
-            <span style={{ fontSize: 12, opacity: 0.75, marginLeft: 8 }}>{copied ? 'Copied' : 'Tap to copy'}</span>
+            style={{ ...copyBtn, ...(copied ? copiedBtn : null) }}>
+            <Icon name={copied ? 'check' : 'copy'} />
+            <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
           </button>
-        ) : (
-          <strong translate="no" style={{ fontSize: 20, letterSpacing: '0.02em', color: 'var(--text-color)' }}>{momoDisplay(info.number)}</strong>
         )}
       </div>
-      <div style={{ fontSize: 13 }}>Registered name: <strong>{info.name}</strong></div>
+      <div style={label}>Registered name</div>
+      <div translate="no" style={nameText}>{info.name}</div>
     </div>
   );
 }
@@ -62,5 +63,13 @@ function legacyCopy(text) {
   } catch { return false; }
 }
 
-const box = { padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border-color)', background: 'var(--card-bg)' };
-const numberBtn = { display: 'inline-flex', alignItems: 'center', minHeight: 44, padding: '4px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', cursor: 'pointer' };
+// Colours come from the template accent (--bp-ac / --bp-ai, set from the org's branding by brandColors.js) with
+// legacy fallbacks, so the same markup follows branding in the default and blueprint templates.
+const ACCENT = 'var(--bp-ac, var(--brand-primary, navy))';
+const ACCENT_INK = 'var(--bp-ai, var(--brand-on-primary, white))';
+const box = { padding: '12px 14px', borderRadius: 10, border: '1px solid var(--border-color)', background: 'var(--card-bg)' };
+const label = { fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', opacity: 0.7 };
+const numberText = { fontSize: 26, lineHeight: 1.2, fontWeight: 800, letterSpacing: '0.02em', color: 'var(--text-color)', userSelect: 'all' };
+const nameText = { fontSize: 18, lineHeight: 1.3, fontWeight: 800, color: 'var(--text-color)', marginTop: 2 };
+const copyBtn = { display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 44, padding: '0 18px', borderRadius: 99, border: `2px solid ${ACCENT}`, background: ACCENT, color: ACCENT_INK, fontWeight: 700, fontSize: 14, cursor: 'pointer' };
+const copiedBtn = { background: 'transparent', color: 'var(--text-color)' };

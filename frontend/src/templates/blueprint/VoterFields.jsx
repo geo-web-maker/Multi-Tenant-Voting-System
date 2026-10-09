@@ -2,14 +2,14 @@
 // reusing the placeholder wording. The typing-placeholder animation stays in VoterLoginInputs.
 import { FieldLabel } from './primitives';
 
-export default function VoterFields({ studentId, setStudentId, name, setName, idPlaceholder, namePlaceholder }) {
+export default function VoterFields({ studentId, setStudentId, name, setName, idLabel = 'Student Registration Number', idPlaceholder, namePlaceholder }) {
   return (
     <>
-      <FieldLabel htmlFor="voter-reg-no">Student Registration Number</FieldLabel>
+      <FieldLabel htmlFor="voter-reg-no">{idLabel}</FieldLabel>
       <input
         key="voter-reg-no" id="voter-reg-no" name="voter-reg-no" className="bp-in"
         value={studentId} onChange={(e) => setStudentId(e.target.value)}
-        placeholder={`Student Registration Number e.g. ${idPlaceholder}`} autoComplete="off"
+        placeholder={`${idLabel} e.g. ${idPlaceholder}`} autoComplete="off"
       />
       <FieldLabel htmlFor="voter-full-name">Full Name</FieldLabel>
       <input

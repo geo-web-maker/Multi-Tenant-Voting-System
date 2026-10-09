@@ -149,6 +149,9 @@ html[data-template="blueprint"] {
 
   /* content column, card, fields, buttons */
   .bp-wrap { max-width: 520px; margin: 0 auto; padding: 0 var(--bp-gut) var(--bp-s6); }
+  /* structure parity with the standard UI: public pages (login, OTP, ballot, apply, results) sit centred in the space under the header, as .app-shell's justify-content: center does there. :has() keeps the dashboards untouched; a browser without it keeps the old top-aligned layout. */
+  html[data-template="blueprint"] .app-column:has(> .bp-wrap) { display: flex; flex-direction: column; flex: 1 1 auto; }
+  html[data-template="blueprint"] .app-column > .bp-wrap { width: 100%; box-sizing: border-box; margin-block: auto; padding-top: var(--bp-s5); }
   .bp-card {
     background: var(--bp-sf); border: 1px solid var(--bp-line); border-top: 3px solid var(--bp-ac);
     border-radius: var(--bp-r); padding: var(--bp-pad); margin-bottom: var(--bp-s4); box-shadow: var(--bp-sh);
@@ -178,7 +181,7 @@ html[data-template="blueprint"] {
   }
 
   /* login / otp controls (BP-T3) */
-  input.bp-in, select.bp-in { display: block; width: 100%; box-sizing: border-box; margin: 0 0 var(--bp-s3); font: 16px system-ui; }
+  input.bp-in, select.bp-in { display: block; width: 100%; box-sizing: border-box; margin: 0 0 var(--bp-s3); font: 16px system-ui; text-overflow: ellipsis; }
   .bp-lbl { display: block; margin: 0 0 var(--bp-s1); }
   button.bp-btn, a.bp-btn { width: 100%; box-sizing: border-box; border: 0; text-decoration: none; }
   button.bp-btn.bp-ghost, a.bp-btn.bp-ghost { border: 1px solid var(--bp-line-ui); }
@@ -312,6 +315,15 @@ html[data-template="blueprint"] {
   .bp-g4 { grid-template-columns: repeat(4, 1fr); }
   .bp-ov { overflow-x: auto; }
   table.bp-rs { width: 100%; font-size: 13px; }
+  /* structure parity with the standard UI's .table-scroll: beside the 240 rail a table gets less room, so cells keep their natural width and the box scrolls sideways instead of wrapping names, phone numbers and button labels mid-word. Phones keep the card rows below. */
+  td button { white-space: nowrap; }
+  @media (min-width: 769px) {
+    table.bp-rs th, table.bp-rs td { white-space: nowrap; }
+    table.bp-rs td button { flex: none; }
+    /* when the table does scroll sideways, the Actions column stays pinned so Edit / Remove never leave the screen */
+    table.bp-rs th:last-child, table.bp-rs td:last-child { position: sticky; right: 0; border-left: 1px solid var(--bp-line); }
+    table.bp-rs td:last-child { background: var(--bg-color); }
+  }
 
   /* centred boot screen, otp, steps, charts */
   .bp-cen { display: grid; place-items: center; flex: 1; padding: var(--bp-s5); }
@@ -368,8 +380,9 @@ html[data-template="blueprint"] {
   .bp-in[aria-invalid="true"] { border-color: var(--bp-no); }
   .bp-apply .bp-count { margin: 0; }
   .bp-apply .bp-count.bp-lim { color: var(--bp-wn); font-weight: 700; }
-  .bp-fee { font: 800 24px/32px var(--bp-fm); color: var(--bp-tx); margin: var(--bp-s1) 0 var(--bp-s2); }
+  .bp-fee, .bp-apply .bp-ban p.bp-fee { display: inline-block; font: 800 30px/40px var(--bp-fm); color: var(--bp-tx); margin: var(--bp-s2) 0 var(--bp-s3); padding: var(--bp-s1) var(--bp-s4); background: var(--bp-tint); border: 1px solid var(--bp-ac-edge); border-radius: var(--bp-rs); }
   .bp-apply .bp-lnk.bp-inl { display: inline; width: auto; margin: 0; padding: 0; text-align: left; font: inherit; font-weight: 700; color: var(--bp-tx); text-decoration: underline; }
+  .bp-apply .bp-ban .bp-lnk.bp-inl { font-size: 13px; line-height: 24px; } /* same 13px as the fee text beside it, as in the default template */
   /* option rows (position, payment method): selected = accent border + outline + tick, never colour alone */
   .bp-opt { min-height: var(--bp-tap); margin-bottom: var(--bp-s3); }
   .bp-opt p { margin: 0; }
@@ -401,7 +414,9 @@ html[data-template="blueprint"] {
     .bp-cell { padding: 0 var(--bp-s3); }
     .bp-cell small, .bp-cell.bp-sheet, .bp-crumb, .bp-lg { display: none; }
     .bp-top nav { order: 3; flex: 1 0 100%; padding: var(--bp-s2) var(--bp-s2) var(--bp-s3); border-left: 0; border-top: 1px dashed var(--bp-line); }
-    .bp-top nav a { flex: 1; justify-content: center; }
+    /* the pills are <button>s, so the old `nav a` rule never matched: centre the row and share the width evenly */
+    .bp-top nav { justify-content: center; gap: var(--bp-s2); }
+    .bp-top nav a, .bp-top nav button { flex: 1 1 auto; max-width: 180px; justify-content: center; }
     .bp-shell { display: flex; flex-direction: column; gap: 0; }
     .bp-side {
       order: 2; position: static; max-height: none; margin: 0 var(--bp-gut) var(--bp-s3); padding: var(--bp-s2);
@@ -472,8 +487,8 @@ html[data-template="blueprint"] {
   }
 
   /* ===== NEUTRALISERS ===== */
-  /* N1 App.jsx:316-318 - org branding is written inline on <html>; pin the template accent (D1). N2/N3 (App shell) and N5/N6 (dashboard shell, BP-T7a) are below. */
-  html[data-template="blueprint"] { --brand-primary: var(--bp-ac) !important; --brand-accent: var(--bp-ac) !important; }
+  /* N1 App.jsx:321 - org branding is written inline on <html> (brandColors.js sets --bp-ac to the org accent, nudged to read on the template's surfaces, plus --bp-ai ink). The template is single-accent, so every screen that still asks for --brand-* gets that same colour and its ink (D1). N2/N3 (App shell) and N5/N6 (dashboard shell, BP-T7a) are below. */
+  html[data-template="blueprint"] { --brand-primary: var(--bp-ac) !important; --brand-accent: var(--bp-ac) !important; --brand-on-primary: var(--bp-ai) !important; --brand-on-accent: var(--bp-ai) !important; }
   /* N2 App.jsx:1229 containerStyle - 20px padding, centred, min-height 100vh on .app-shell (the full-width header must touch the edges) */
   html[data-template="blueprint"] .app-shell { padding: 0 !important; justify-content: flex-start !important; }
   /* N3 App.jsx:743 inline maxWidth 500px on .app-column - the header is full width; .bp-wrap centres the content at 520 */
@@ -482,17 +497,35 @@ html[data-template="blueprint"] {
   html[data-template="blueprint"] .modal-content { border-radius: var(--bp-r) !important; border-top: 3px solid var(--bp-ac) !important; box-shadow: var(--bp-sh) !important; }
   /* N5 SuperAdminDashboard.jsx:2479 outerWrap (same const in CommissionDashboard.jsx:429 and the other dashboards) - inline padding 20px and a solid page background that would hide the grid. Dashboards only (.app-column > .outer-wrap); the apply page's outer-wrap sits inside .bp-wrap and is left alone. A gutter instead of 0 so toolbar, org bar and rail align. */
   html[data-template="blueprint"] .app-column > .outer-wrap { padding: 0 var(--bp-gut) var(--bp-s5) !important; background: transparent !important; }
-  /* width: 100% (was auto): IT Admin / Financial / Overseer wrap the shell in a ROW flexbox (justify-content: center), so `auto` made the card shrink-wrap its content and every tab came out a different width. AdminDashboard also carries an inline width 95% / maxWidth 1200px, hence max-width: none. Super Admin/Commission use a column wrapper and were already full width. */
+  /* width: 100% (was auto): IT Admin / Financial / Overseer wrap the shell in a ROW flexbox (justify-content: center), so `auto` made the card shrink-wrap its content and every tab came out a different width. Super Admin/Commission use a column wrapper and were already full width. */
   /* N6 SuperAdminDashboard.jsx:2486 container (same const in CommissionDashboard.jsx:430 and the other dashboards) - inline card look, plus the 600px phone reset in index.css; the content pane becomes the mockup card (D4) */
   html[data-template="blueprint"] .dashboard-shell {
     background: var(--bp-sf) !important; border: 1px solid var(--bp-line) !important; border-top: 3px solid var(--bp-ac) !important;
-    border-radius: var(--bp-r) !important; box-shadow: var(--bp-sh) !important; padding: var(--bp-pad) !important; width: 100% !important; max-width: none !important;
+    border-radius: var(--bp-r) !important; box-shadow: var(--bp-sh) !important; padding: var(--bp-pad) !important; width: 100% !important;
   }
-  /* N8 VoterList.jsx:91 table const - inline minWidth 760px would keep the card-row table wider than a phone */
-  html[data-template="blueprint"] table.bp-rs { min-width: 0 !important; }
+  /* Mobile/tablet bottom bar: the rail is position: fixed (out of flow), so whatever follows it needs room under
+     the content to scroll clear of it. The old `.dash-main` reserve above lost to N6 (`.dashboard-shell { padding:
+     ... !important }`) on every dashboard whose content pane is also the shell, and never applied to the flat
+     dashboards' `.bp-frame-main`, so the last rows stayed hidden behind the bar. Cover any sibling after the rail. */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .dash-body > .bp-side ~ * {
+      padding-bottom: calc(var(--bp-pad) + 96px + env(safe-area-inset-bottom, 0px)) !important;
+      box-sizing: border-box;
+    }
+    /* the voting screen's Clear / Review dock is fixed too */
+    html[data-template="blueprint"] .bp-wrap:has(.bp-dock) { padding-bottom: calc(var(--bottom-bar-height, 80px) + var(--bp-s6) + env(safe-area-inset-bottom, 0px)); }
+  }
+  /* N8 VoterList.jsx:91 table const - inline minWidth 760px would keep the card-row table wider than a phone; desktop keeps it so the table scrolls instead of squeezing */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] table.bp-rs { min-width: 0 !important; }
+  }
   /* N9 VoterList.jsx:92-93 th/td consts - inline border-bottom on every cell; on phones each row is a bordered block instead */
   @media (max-width: 768px) {
     html[data-template="blueprint"] table.bp-rs td { border-bottom: 0 !important; }
+  }
+  /* N15 VoterList.jsx:93 th const - inline opacity .65 would let scrolled columns show through the pinned Actions header (desktop only, where it is pinned) */
+  @media (min-width: 769px) {
+    html[data-template="blueprint"] table.bp-rs th:last-child { opacity: 1 !important; }
   }
   /* N10 UIFeedback.jsx:269 dialogStyle - the in-app confirm/prompt dialog: inline radius 16, padding 24, 1px border and a black shadow; becomes the mockup card */
   html[data-template="blueprint"] .ui-dialog {

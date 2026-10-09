@@ -93,3 +93,72 @@ def presigned_get_url(key: str, filename: str, expires: int = PRESIGN_SECONDS) -
 
 def delete_object(key: str) -> None:
     _get_client().delete_object(Bucket=_bucket(), Key=key)
+
+
+def _why(e: Exception) -> str:
+    """Short, secret-free reason for a failed step: the storage error code if there is one, else the class name."""
+    resp = getattr(e, "response", None)
+    err = (resp or {}).get("Error", {}) if isinstance(resp, dict) else {}
+    code, msg = err.get("Code"), err.get("Message")
+    if code:
+        return f"{code}: {msg}"[:200] if msg else str(code)
+    return f"{type(e).__name__}: {e}"[:200]
+
+
+def self_test(key: str) -> dict:
+    """Superadmin 'Test storage': write a tiny file, read it back, make a download link and open it, delete it,
+    and confirm it is gone. Each step reports ok / not ok with a short reason; later steps are skipped once one
+    fails (the delete still runs if the write worked, so a failed test never leaves a file behind).
+    Blocking: callers run it in a threadpool. Never returns or logs a key, secret or the link itself."""
+    steps: list[dict] = []
+
+    def add(name: str, ok: bool, detail: str = "") -> bool:
+        steps.append({"name": name, "ok": ok, "detail": detail})
+        return ok
+
+    missing = missing_settings()
+    if not add("Settings present", not missing,
+               "All four NOMINATION_B2_* values are set." if not missing else "Missing: " + ", ".join(missing)):
+        return {"ok": False, "steps": steps}
+    try:
+        _get_client()
+        add("Storage client", True, "Created.")
+    except Exception as e:
+        add("Storage client", False, str(e))
+        return {"ok": False, "steps": steps}
+
+    body = b"%PDF-1.4 nomination storage self-test"
+    written = False
+    try:
+        try:
+            put_object(key, body, "application/pdf")
+            written = add("Write file", True, "The key can write to the bucket.")
+        except Exception as e:
+            add("Write file", False, _why(e) + " (check the endpoint, key ID, key secret, bucket name and that the key may write to this bucket)")
+        if written:
+            try:
+                got = _get_client().get_object(Bucket=_bucket(), Key=key)["Body"].read()
+                add("Read file back", got == body, "Matches what was written." if got == body else "Read back different content.")
+            except Exception as e:
+                add("Read file back", False, _why(e) + " (the key needs read access)")
+            try:
+                import urllib.request
+                url = presigned_get_url(key, "selftest.pdf", 60)
+                with urllib.request.urlopen(url, timeout=10) as r:   # the exact kind of link staff receive
+                    ok = r.status == 200 and r.read() == body
+                add("Staff download link", ok, "The short-lived link downloads the file." if ok else "The link did not return the file.")
+            except Exception as e:
+                add("Staff download link", False, _why(e))
+    finally:
+        if written:
+            try:
+                delete_object(key)
+                try:
+                    _get_client().head_object(Bucket=_bucket(), Key=key)
+                    add("Delete file", False, "Delete was accepted but the file is still readable. Check the bucket has no Object Lock.")
+                except Exception as e:
+                    gone = str((getattr(e, "response", None) or {}).get("Error", {}).get("Code", "")) in ("404", "NoSuchKey", "NotFound")
+                    add("Delete file", gone, "The key can delete, and the file is gone." if gone else _why(e))
+            except Exception as e:
+                add("Delete file", False, _why(e) + " (the key needs delete access, and the bucket must not have Object Lock; the test file may remain under nomination-forms/_selftest/)")
+    return {"ok": all(s["ok"] for s in steps), "steps": steps}

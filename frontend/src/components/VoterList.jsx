@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { regNo } from '../regNo';
 import { Icon } from './icons.jsx';
@@ -6,6 +7,7 @@ import { errMsg } from '../studentEdit';
 import { getTemplate } from '../template';
 
 export default function VoterList({ showStatus = false, onEdit, onRemove, onResetOtp }) {
+  const idText = useIdText();
   const [fields, setFields] = useState([]);
   const [q, setQ] = useState('');
   const [missingPhone, setMissingPhone] = useState(false);
@@ -40,7 +42,7 @@ export default function VoterList({ showStatus = false, onEdit, onRemove, onRese
     <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
       <div style={{ flex: '1 1 280px' }}>
         <input style={inp} value={q} maxLength={80} onChange={e => { setQ(e.target.value); setPage(1); }}
-          placeholder="Search by name or registration number" aria-label="Search voters" />
+          placeholder={`Search by name or ${idText.noun}`} aria-label="Search voters" />
       </div>
       <label style={check}><input type="checkbox" checked={missingPhone} onChange={e => { setMissingPhone(e.target.checked); setPage(1); }} /> No phone on file</label>
       <button type="button" style={ghost} onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
@@ -49,14 +51,14 @@ export default function VoterList({ showStatus = false, onEdit, onRemove, onRese
     <div className="table-scroll-y voter-table" style={{ overflowX: 'auto', border: '1px solid var(--border-color)', borderRadius: 10 }}>
       <table style={table} className={bp ? 'bp-rs' : undefined}>
         <thead><tr>
-          <th style={th}>Name</th><th style={th}>Registration Number</th><th style={th}>Phone on file</th>
+          <th style={th}>Name</th><th style={th}>{idText.label}</th><th style={th}>Phone on file</th>
           {fields.map(f => <th key={f.key} style={th}>{f.label}</th>)}
           {showStatus && <th style={th}>Status</th>}
           <th style={th}>Actions</th>
         </tr></thead>
         <tbody>
           {data.results.map(v => <tr key={v.student_id}>
-            <td style={td} {...L('Name')}>{v.full_name}</td><td style={td} {...L('Registration Number')}><code>{regNo(v.student_id)}</code></td>
+            <td style={td} {...L('Name')}>{v.full_name}</td><td style={td} {...L(idText.label)}><code>{regNo(v.student_id)}</code></td>
             <td style={td} {...L('Phone on file')}>{v.phone_numbers?.length ? v.phone_numbers.join(', ') : <span style={{ opacity: .55 }}>None</span>}</td>
             {fields.map(f => <td key={f.key} style={td} {...L(f.label)}>{v.attrs?.[f.key] || <span style={{ opacity: .45 }}>—</span>}</td>)}
             {showStatus && <td style={td} {...L('Status')}>{bp

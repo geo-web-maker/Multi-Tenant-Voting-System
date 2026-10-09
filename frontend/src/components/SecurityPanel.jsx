@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { startPolling } from '../hooks/usePolling';
 import { useToast, useConfirm } from './UIFeedback';
@@ -385,6 +386,7 @@ function NameNormalizerTile() {
 
 /** Superadmin maintenance: find registration numbers stored in a form the app cannot look up. */
 function RegNumberCheckTile() {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
@@ -393,8 +395,8 @@ function RegNumberCheckTile() {
   const run = async (fix) => {
     if (fix) {
       const ok = await confirm(
-        'Rewrite the affected registration numbers to the standard stored form (lowercase, no spaces)? Students shown as conflicts, and students who have already voted, are NOT touched. They are listed for manual review.',
-        { confirmText: 'Fix registration numbers' });
+        `Rewrite the affected ${idText.noun}s to the standard stored form (lowercase, no spaces)? Students shown as conflicts, and students who have already voted, are NOT touched. They are listed for manual review.`,
+        { confirmText: `Fix ${idText.noun}s` });
       if (!ok) return;
     }
     setBusy(true);
@@ -402,16 +404,16 @@ function RegNumberCheckTile() {
       const res = (await api.post('/superadmin/maintenance/check-reg-numbers', { fix })).data;
       setR(res);
       if (fix) toast(`Fixed ${res.total_fixed} record(s).`, { kind: 'success' });
-      else toast(res.issues_found ? `${res.issues_found} record(s) need attention.` : 'All registration numbers are in the correct form.');
-    } catch (e) { toast(errMsg(e, 'Registration number check failed.'), { kind: 'error' }); }
+      else toast(res.issues_found ? `${res.issues_found} record(s) need attention.` : `All ${idText.noun}s are in the correct form.`);
+    } catch (e) { toast(errMsg(e, `${idText.nounCap} check failed.`), { kind: 'error' }); }
     finally { setBusy(false); }
   };
 
   const fixable = r ? r.voters.fixable + Object.values(r.other).reduce((n, c) => n + c.non_canonical, 0) : 0;
   return (
     <div style={box}>
-      <b style={{ fontSize: 14 }}>Registration number check</b>
-      <p style={note}>Registration numbers are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
+      <b style={{ fontSize: 14 }}>{idText.nounCap} check</b>
+      <p style={note}>{idText.nounCap}s are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
       <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(false)}>Check database</button>
       <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !r || r.fix || fixable === 0} onClick={() => run(true)}>Fix</button>
       {r && (

@@ -44,7 +44,7 @@ async function open() {
   return out;
 }
 async function fillAll(c, { photo = false } = {}) {
-  fireEvent.change(screen.getByPlaceholderText(/22\/U\/IED/), { target: { value: '22/U/IED/1086/GV' } });
+  fireEvent.change(screen.getByPlaceholderText(/23\/U\/BCS/), { target: { value: '22/U/IED/1086/GV' } });
   fireEvent.change(screen.getByPlaceholderText(/Ayebale/), { target: { value: 'Ayebale Elizabeth' } });
   fireEvent.click(screen.getByText('Chairperson'));
   fireEvent.change(screen.getByPlaceholderText(/I am running/), { target: { value: 'Vote for me' } });

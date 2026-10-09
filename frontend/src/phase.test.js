@@ -84,3 +84,29 @@ describe('apply window countdown', () => {
     expect(r.countdownLabel).toBe('Voting opens in');
   });
 });
+
+describe('Timeline-driven header state (voting unscheduled)', () => {
+  const T = '2026-10-09T03:20:00Z';
+  const base = { timezone: 'Africa/Kampala', is_open: true, voting_phase: 'open', applications_phase: 'open' };
+  const now = Date.parse(T);
+
+  it('applications window live + voting has no schedule -> apply_open, counting down to the close', () => {
+    const r = derivePhase({ ...base, applications_active: true, voting_scheduled: false, applications_closes_at: '2026-10-12T03:17:00' }, now);
+    expect(r.state).toBe('apply_open');
+    expect(r.countdownLabel).toBe('Applications close in');
+  });
+  it('a scheduled voting window keeps its own say', () => {
+    expect(derivePhase({ ...base, applications_active: true, voting_scheduled: true }, now).state).toBe('voting_open');
+  });
+  it('applications window not live -> plain voting_open (master switch only), as before', () => {
+    expect(derivePhase({ ...base, applications_active: false, voting_scheduled: false }, now).state).toBe('voting_open');
+  });
+  it('flips to voting_open the moment the applications deadline passes, without a refetch', () => {
+    const s = { ...base, applications_active: true, voting_scheduled: false, applications_closes_at: '2026-10-09T03:20:00' };
+    expect(derivePhase(s, now - 1000).state).toBe('apply_open');
+    expect(derivePhase(s, now + 1000).state).toBe('voting_open');
+  });
+  it('master switch off still wins', () => {
+    expect(derivePhase({ ...base, is_open: false, applications_active: true, voting_scheduled: false }, now).state).toBe('voting_closed');
+  });
+});

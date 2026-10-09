@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ContactChangePanel from './ContactChangePanel';
@@ -13,6 +14,7 @@ import api from '../api';
 // Standalone IT admin screen: form on one side, live summary on the other.
 // Uses the same backend endpoint and audit logic as the superadmin screen; layout is its own.
 export default function ITAdminStudentEdit({ initialStudentId = '' }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const roster = useRosterStatus();
@@ -72,10 +74,10 @@ export default function ITAdminStudentEdit({ initialStudentId = '' }) {
     <div className="itadmin-split">
       <div className="itadmin-card">
         <h4 style={title}>Edit Student Details</h4>
-        <p style={muted}>{frozen ? 'The roster is frozen: only name typos can be corrected here (max 2 per voter). Phone and registration-number changes are submitted below for approval.' : 'Name, phone numbers and registration number can be changed here. Changes apply immediately and need a reason.'}</p>
+        <p style={muted}>{frozen ? `The roster is frozen: only name typos can be corrected here (max 2 per voter). Phone and ${idText.noun} changes are submitted below for approval.` : `Name, phone numbers and ${idText.noun} can be changed here. Changes apply immediately and need a reason.`}</p>
 
         <form onSubmit={search} className="itadmin-row">
-          <input className="itadmin-input" placeholder="Search by name or registration number" aria-label="Search students"
+          <input className="itadmin-input" placeholder={`Search by name or ${idText.noun}`} aria-label="Search students"
             value={q} onChange={e => setQ(e.target.value)} />
           <button type="submit" className="itadmin-btn ghost" disabled={q.trim().length < 2}>Search</button>
         </form>
@@ -91,10 +93,10 @@ export default function ITAdminStudentEdit({ initialStudentId = '' }) {
           <div style={{ marginTop: 16 }}>
             <label style={lbl}>Name</label>
             <input className="itadmin-input" value={draft.full_name} onChange={e => setDraft({ ...draft, full_name: e.target.value })} />
-            <label style={{ ...lbl, marginTop: 10 }}>Registration Number</label>
+            <label style={{ ...lbl, marginTop: 10 }}>{idText.short}</label>
             <input className="itadmin-input" value={draft.new_student_id} disabled={draft.original.holds_admin_role || frozen}
               onChange={e => setDraft({ ...draft, new_student_id: e.target.value })} />
-            {draft.original.holds_admin_role && <p style={warn}><Icon name="warning" /> This student holds an admin or commission role; the registration number cannot be changed.</p>}
+            {draft.original.holds_admin_role && <p style={warn}><Icon name="warning" /> This student holds an admin or commission role; the {idText.noun} cannot be changed.</p>}
 
             <label style={{ ...lbl, marginTop: 10 }}>Phone Numbers</label>
             {draft.phones.map(p => (
@@ -132,7 +134,7 @@ export default function ITAdminStudentEdit({ initialStudentId = '' }) {
       <aside className="itadmin-card itadmin-summary" aria-label="Live summary">
         <h4 style={title}>Summary</h4>
         <div className="itadmin-kv"><span>Student</span><b>{draft ? draft.original.full_name : '—'}</b></div>
-        <div className="itadmin-kv"><span>Registration Number</span><b>{draft ? regNo(draft.original.student_id) : '—'}</b></div>
+        <div className="itadmin-kv"><span>{idText.short}</span><b>{draft ? regNo(draft.original.student_id) : '—'}</b></div>
         <div className="itadmin-kv"><span>Reason</span><b>{reason.trim() || '—'}</b></div>
         <h5 style={{ margin: '14px 0 6px', fontSize: 12, opacity: 0.65 }}>CURRENT → NEW</h5>
         <div className="itadmin-changes">

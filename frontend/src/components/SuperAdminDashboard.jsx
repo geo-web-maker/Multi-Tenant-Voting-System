@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import api, { SUPERADMIN_ORG_OVERRIDE_KEY } from '../api';
+import api, { SUPERADMIN_ORG_OVERRIDE_KEY, ORG_SLUG } from '../api';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import { toggleElection, electionToggleFeedback } from '../electionControls';
 import {
@@ -25,7 +25,9 @@ import ContactChangesQueue from './ContactChangesQueue';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import { regNo } from '../regNo';
 import AdminHeader from './AdminHeader';
-import VoterImportReview from './VoterImportReview';
+import VoterImportPanel from './VoterImportPanel';
+import { useIdText } from '../idText';
+import { setIdText, getIdText, DEFAULT_ID_LABEL } from '../idText';
 import PaymentInfoPanel from './PaymentInfoPanel';
 import NominationFormPanel from './NominationFormPanel';
 import DemoControlsPanel from './DemoControlsPanel';
@@ -36,6 +38,7 @@ import RevealGroup from './RevealGroup';
 import AnalyticsPanel from './AnalyticsPanel';
 import ExportModeControl from './ExportModeControl';
 import { setItAdminExportMode } from '../registerExport';
+import { setBrand } from '../brandColors';
 
 // Signed, server-side upload via our own backend — replaces the old
 // unsigned Cloudinary preset upload that ran straight from the browser.
@@ -65,6 +68,7 @@ function getErrorMessage(e, fallback = 'Failed.') {
 }
 
 export default function SuperAdminDashboard({ onLogout }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
@@ -74,17 +78,21 @@ export default function SuperAdminDashboard({ onLogout }) {
 
   const [activeTab, setActiveTab] = useState('candidates');
   const [voterSubTab, setVoterSubTab] = useState('register');
+  const [voterListKey, setVoterListKey] = useState(0);   // bumped after an import to reload the register
   const roster = useRosterStatus();
   const rosterFrozen = Boolean(roster?.frozen);
 
   // --- Org switcher: which organization's data this session is scoped to ---
+  // There is no "all organisations" / legacy mode: the server rejects a request with no organisation. So the
+  // switcher always holds a real org: the one picked earlier, else this deployment's own, else the first one
+  // once the list has loaded (see fetchOrganizations).
   const [activeOrgSlug, setActiveOrgSlug] = useState(
-    sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ''
+    sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG || ''
   );
   const [switchingOrg, setSwitchingOrg] = useState(false);
 
   // --- Branding state ---
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', support_phone: '', support_contacts: [], cc_list: [], signatories: [] });
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', support_phone: '', support_contacts: [], cc_list: [], signatories: [], id_label: '', id_examples: [], name_examples: [], id_format_hint: '' });
   const [brandSaving, setBrandSaving] = useState(false);
 
   // --- Positions state ---
@@ -151,7 +159,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [ovCredEmail, setOvCredEmail]     = useState({}); // { student_id: email }
   const [fcSearch, setFcSearch]           = useState('');
   const [ovSearch, setOvSearch]           = useState('');
-  const [orgForm, setOrgForm]             = useState({ name: '', slug: '' });
+  const [orgForm, setOrgForm]             = useState({ name: '', slug: '', frontend_url: '' });
   const [orgCreating, setOrgCreating]     = useState(false);
 
   //--Remove Students--
@@ -278,6 +286,7 @@ const fetchVotersList = async () => {
     try {
       const res = await api.get('/superadmin/orgs');
       setOrganizations(res.data);
+      if (!activeOrgSlug && res.data?.length) handleSwitchOrg(res.data[0].slug);
     } catch { /* non-critical: ignore */ }
   };
 
@@ -310,12 +319,9 @@ const refetchAll = () => {
   };
 
   const handleSwitchOrg = (slug) => {
+    if (!slug) return;   // no unscoped mode (the server refuses requests without an organisation)
     setSwitchingOrg(true);
-    if (slug) {
-      sessionStorage.setItem(SUPERADMIN_ORG_OVERRIDE_KEY, slug);
-    } else {
-      sessionStorage.removeItem(SUPERADMIN_ORG_OVERRIDE_KEY);
-    }
+    sessionStorage.setItem(SUPERADMIN_ORG_OVERRIDE_KEY, slug);
     setActiveOrgSlug(slug);
     setActiveTab('candidates');
     refetchAll();
@@ -352,8 +358,8 @@ const refetchAll = () => {
     try {
       await api.post(`/superadmin/branding`, branding);
       // Apply immediately without reload
-      document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
-      document.documentElement.style.setProperty('--brand-accent',  branding.accent_color);
+      setBrand(branding);
+      setIdText(branding);   // reflect the new wording right away
       toast('Branding saved!', { kind: 'success' });
     } catch (e) { toast(getErrorMessage(e, 'Failed to save branding.'), { kind: 'error' }); }
     finally { setBrandSaving(false); }
@@ -659,14 +665,26 @@ const handleResetOverseerPassword = async (studentId) => {
 
 // ── Organizations ──
 
+// Per-organisation site address used in the links its SMS messages carry (blank = platform fallback).
+const handleSaveOrgFrontendUrl = async (o) => {
+  const current = o.frontend_url || '';
+  const next = await prompt(`Site address for ${o.name}. Enter the full https:// address of this organisation's frontend (e.g. https://vote.example.org), or leave blank to use the platform default.`, { placeholder: 'https://vote.example.org', defaultValue: current });
+  if (next === null || next === undefined) return;
+  try {
+    await api.put(`/superadmin/orgs/${encodeURIComponent(o.slug)}/frontend-url`, { frontend_url: String(next).trim() });
+    toast('Site address saved.', { kind: 'success' });
+    fetchOrganizations();
+  } catch (e) { toast(getErrorMessage(e, 'Could not save the site address.'), { kind: 'error' }); }
+};
+
 const handleCreateOrg = async (e) => {
   e.preventDefault();
   if (!orgForm.name.trim()) { toast('Organisation name is required.'); return; }
   setOrgCreating(true);
   try {
-    const res = await api.post('/superadmin/orgs', { name: orgForm.name.trim(), slug: orgForm.slug.trim() });
+    const res = await api.post('/superadmin/orgs', { name: orgForm.name.trim(), slug: orgForm.slug.trim(), frontend_url: orgForm.frontend_url.trim() });
     toast(`Organisation "${res.data.name}" provisioned with slug "${res.data.slug}". Set VITE_ORG_SLUG=${res.data.slug} in that org's frontend deployment.`, { kind: 'success' });
-    setOrgForm({ name: '', slug: '' });
+    setOrgForm({ name: '', slug: '', frontend_url: '' });
     fetchOrganizations();
   } catch (e) { toast(getErrorMessage(e, 'Failed to create organisation.'), { kind: 'error' }); }
   finally { setOrgCreating(false); }
@@ -960,18 +978,14 @@ const handleSuperAdminRemoveStudent = async () => {
           onChange={e => handleSwitchOrg(e.target.value)}
           disabled={switchingOrg}
         >
-          <option value="">— All / Legacy (unscoped) —</option>
+          {!activeOrgSlug && <option value="" disabled>Select an organisation…</option>}
           {organizations.map(o => (
             <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>
           ))}
         </select>
-        {activeOrgSlug ? (
+        {activeOrgSlug && (
           <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
             <Icon name="check" /> Viewing only this organisation's data
-          </span>
-        ) : (
-          <span style={{ fontSize: '11px', color: 'var(--warning)', fontWeight: '600' }}>
-            <Icon name="warning" /> Unscoped — showing data across all organisations combined
           </span>
         )}
       </div>
@@ -1086,7 +1100,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 Every change and your reason go to the audit log.
               </p>
               {[
-                ['student_id', 'Registration number'],
+                ['student_id', idText.short],
                 ['full_name', 'Full name'],
               ].map(([k, label]) => (
                 <label key={k} style={{ display: 'block', marginBottom: '10px', fontSize: '12px', color: 'var(--text-color)' }}>
@@ -1467,11 +1481,15 @@ const handleSuperAdminRemoveStudent = async () => {
               ))}
             </div>
             {voterSubTab === 'register' && (
+              <>
+              <VoterImportPanel frozen={rosterFrozen} onImported={() => { setVoterListKey(k => k + 1); fetchVotersList(); }} />
               <VoterList
+                key={voterListKey}
                 showStatus
                 onEdit={(sid) => { setSelectedStudentId(sid); setActiveTab('student_changes'); }}
                 onResetOtp={(sid) => { setSelectedStudentId(sid); setActiveTab('reset_otp'); }}
               />
+              </>
             )}
             {voterSubTab === 'stats' && <VoterStats />}
             {voterSubTab === 'sms' && (
@@ -1848,7 +1866,30 @@ const handleSuperAdminRemoveStudent = async () => {
                   + Add reason
                 </button>
 
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '10px' }}>Cc List (one per line)</label>
+                <h5 style={{ margin: '16px 0 4px' }}>Voter login wording</h5>
+                <small style={{ color: 'var(--bp-mu, #64748b)', fontSize: '11px' }}>
+                  How this organisation names and writes its voter IDs on the login, apply and register screens. Leave blank to keep the defaults.
+                </small>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '8px' }}>What the ID is called</label>
+                <input style={inp} placeholder={`e.g. Student Number (default: ${DEFAULT_ID_LABEL})`}
+                  value={branding.id_label || ''} maxLength={60}
+                  onChange={e => setBranding({ ...branding, id_label: e.target.value })} />
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '8px' }}>Example IDs (one per line)</label>
+                <textarea rows={3} style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
+                  placeholder={'e.g.\n2100712345\n2200798765'}
+                  value={(branding.id_examples || []).join('\n')}
+                  onChange={e => setBranding({ ...branding, id_examples: e.target.value.split('\n').slice(0, 8) })} />
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '8px' }}>Example names (one per line)</label>
+                <textarea rows={3} style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
+                  placeholder={'e.g.\nOkello Samuel\nNakato Grace'}
+                  value={(branding.name_examples || []).join('\n')}
+                  onChange={e => setBranding({ ...branding, name_examples: e.target.value.split('\n').slice(0, 8) })} />
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '8px' }}>Format hint shown when an ID is not found (optional)</label>
+                <input style={inp} placeholder="e.g. Use your 10-digit student number exactly as on your student card."
+                  value={branding.id_format_hint || ''} maxLength={200}
+                  onChange={e => setBranding({ ...branding, id_format_hint: e.target.value })} />
+
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Cc List (one per line)</label>
                 <textarea
                   placeholder={`e.g.\n${branding.org_name || 'Organisation'} Patron\n${branding.org_name || 'Organisation'} President\nDean of Students`}
                   value={(branding.cc_list || []).join('\n')}
@@ -2070,7 +2111,7 @@ const handleSuperAdminRemoveStudent = async () => {
               <div style={card}>
                 <h4 style={cardTitle}>Add Student Directly</h4>
                 <form onSubmit={handleSuperAdminAddStudent} style={formCol}>
-                  <input style={inp} placeholder="Student ID" value={saDirectAdd.student_id}
+                  <input style={inp} placeholder={idText.short} value={saDirectAdd.student_id}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, student_id: e.target.value })} required />
                   <input style={inp} placeholder="Full Name" value={saDirectAdd.full_name}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, full_name: e.target.value })} required />
@@ -2092,7 +2133,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   <div style={{ position: 'relative' }}>
                     <input
                       style={inp}
-                      placeholder="Search by name or student ID…"
+                      placeholder={`Search by name or ${idText.noun}…`}
                       value={removeSearch}
                       onChange={e => {
                         setRemoveSearch(e.target.value);
@@ -2409,6 +2450,12 @@ const handleSuperAdminRemoveStudent = async () => {
                   value={orgForm.slug}
                   onChange={e => setOrgForm(prev => ({ ...prev, slug: e.target.value }))}
                 />
+                <input
+                  style={inp}
+                  placeholder="Site address (optional, e.g. https://vote.kyuccu.org)"
+                  value={orgForm.frontend_url}
+                  onChange={e => setOrgForm(prev => ({ ...prev, frontend_url: e.target.value }))}
+                />
                 <button type="submit" style={greenBtn} disabled={orgCreating}>
                   {orgCreating ? 'Provisioning…' : '+ Create Organisation'}
                 </button>
@@ -2430,6 +2477,10 @@ const handleSuperAdminRemoveStudent = async () => {
                     <b style={{ color: 'var(--text-color)' }}>{o.name}</b>
                     <br />
                     <small style={{ opacity: 0.6 }}>slug: <code>{o.slug}</code></small>
+                    <br />
+                    <small style={{ opacity: 0.6 }}>site: {o.frontend_url ? <code>{o.frontend_url}</code> : <i>not set (uses platform default)</i>}</small>{' '}
+                    <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontSize: 12, color: 'inherit' }}
+                      onClick={() => handleSaveOrgFrontendUrl(o)}>edit</button>
                   </div>
                   <small style={{ opacity: 0.45 }}>
                     {new Date(o.created_at).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' })}
@@ -2457,7 +2508,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
 // ── Status badge helper ──
 const APP_FIELD_LABELS = {
-  student_id: 'Reg no', full_name: 'Name', position_id: 'Position', manifesto: 'Manifesto',
+  get student_id() { return getIdText().short; }, full_name: 'Name', position_id: 'Position', manifesto: 'Manifesto',
   image_url: 'Photo', payment_method: 'Payment method', payment_proof_url: 'Receipt link',
 };
 const shortVal = (field, v) => {

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
 import { LoadingBlock } from './components/Spinner';
 import { loginGuidance, UNCONFIRMED_DELIVERY_NOTE } from './loginErrors';
+import { setIdText } from './idText';
+import { setBrand } from './brandColors';
 import OtpInput from './components/OtpInput';
 import PhaseBanner from './components/PhaseBanner';
 import { HelpMenuProvider } from './context/HelpMenuContext';
@@ -9,11 +11,11 @@ import LoginErrorActions from './components/LoginErrorActions';
 import HelpPanel from './components/HelpPanel';
 import { initAnalytics, trackPage, pageName } from './analytics';
 import { getTemplate } from './template';
-import { derivePhase } from './phase';
+import { logoNeedsInvertFromPixels } from './logoInvert';
 
-// Detects whether a logo image is mostly dark (e.g. dark linework on a
+// Detects whether a logo image is dark, colourless line-art (e.g. black linework on a
 // transparent PNG) so it can be inverted to stay visible against the dark
-// theme's dark page background. Falls back to "don't invert" whenever the
+// theme's dark page background. Full-colour logos are left alone (see logoInvert.js). Falls back to "don't invert" whenever the
 // image can't be sampled (not loaded yet, or a CORS-tainted canvas), which
 // is the safe default for arbitrary org-uploaded logos.
 function useLogoNeedsInvert(logoUrl, theme) {
@@ -34,13 +36,7 @@ function useLogoNeedsInvert(logoUrl, theme) {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
         const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        let total = 0, count = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i + 3] < 10) continue; // skip transparent pixels
-          total += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          count++;
-        }
-        done(count > 0 && total / count < 100); // mostly dark ink
+        done(logoNeedsInvertFromPixels(data)); // dark AND colourless only: a full-colour badge must keep its colours
       } catch {
         done(false); // CORS-tainted or unreadable — fail safe
       }
@@ -308,6 +304,7 @@ useEffect(() => {
   fetchBootstrap().then(boot => {
     const res = { data: boot.branding };
     if (!res.data) return;
+    setIdText(res.data);   // this organisation's ID label / example wording (Branding)
     if (res.data.support_phone) setSupportPhone(res.data.support_phone);
     if (Array.isArray(res.data.support_contacts)) setSupportContacts(res.data.support_contacts);
     if (res.data.logo_url) {
@@ -316,10 +313,8 @@ useEffect(() => {
       const favicon = document.querySelector("link[rel='icon']");
       if (favicon) favicon.href = res.data.logo_url;
     }
-    if (res.data.primary_color)
-      document.documentElement.style.setProperty('--brand-primary', res.data.primary_color);
-    if (res.data.accent_color)
-      document.documentElement.style.setProperty('--brand-accent', res.data.accent_color);
+    // raw brand colours + their readable-ink / surface-safe variants, for both templates (brandColors.js)
+    setBrand(res.data);
     // Header name always comes from dynamic branding.
     if (res.data.org_name) setOrgName(res.data.org_name);
 
@@ -756,7 +751,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             orgName={orgName}
             logoUrl={logoUrl}
             logoNeedsInvert={logoNeedsInvert}
-            phase={derivePhase(electionStatus)?.state || null}
+            status={electionStatus}
             view={view}
             step={step}
             theme={theme}
@@ -852,7 +847,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               <h1 style={{ textAlign: 'center', color: 'var(--text-color)' }}>
                 {isAdminPath ? "Admin Login" : "Voter Login"}
               </h1>
-              {!isAdminPath && <PhaseBanner status={electionStatus} onApply={() => setView("apply")} />}
+              {!isAdminPath && !bp && <PhaseBanner status={electionStatus} onApply={() => setView("apply")} />}
               
               {isAdminPath ? (
                 <>
@@ -1241,7 +1236,7 @@ const navBarStyle = { marginBottom: '30px', display: 'flex', flexDirection: 'col
 const navBtnStyle = {
   padding: '10px 24px',
   backgroundColor: 'var(--brand-primary, #003366)',
-  color: '#ffffff',
+  color: 'var(--brand-on-primary, white)',
   border: '2px solid var(--brand-accent, #f1c40f)',
   borderRadius: '30px',
   cursor: 'pointer',
@@ -1256,7 +1251,7 @@ const navBtnStyle = {
 const activeNavBtnStyle = {
   ...navBtnStyle,
   backgroundColor: 'var(--brand-accent, #f1c40f)',
-  color: 'var(--brand-primary, #003366)',
+  color: 'var(--brand-on-accent, #003366)',
   borderColor: 'var(--brand-primary, #003366)'
 };
 

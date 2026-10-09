@@ -2,20 +2,20 @@
 // already clear but ends there; the voter needs to know what to DO. Matching is on the stable `detail`
 // text and `reason` code the backend sends, and anything unrecognised falls through to the server's own text.
 
-const FORMAT_HINT = 'Use the format 23/U/XXX/00000/GV exactly as on your student ID.';
+import { getIdText } from './idText';
 
 /**
  * @param {string|object} detail  err.response.data.detail
  * @param {string} [reason]       err.response.data.reason (when present)
  * @returns {{ title: string, message: string, action?: 'check_register'|'contact_change', support?: boolean }}
  */
-export function loginGuidance(detail, reason) {
+export function loginGuidance(detail, reason, text = getIdText()) {
   const d = typeof detail === 'string' ? detail : '';
   const has = (re) => re.test(d);
 
   if (reason === 'not_on_roll' || has(/student id not found/i)) {
-    return { title: 'Registration number not found',
-      message: `We could not find that registration number. ${FORMAT_HINT} Then check the voter register to confirm you are on it.`,
+    return { title: `${text.nounCap} not found`,
+      message: `We could not find that ${text.noun}. ${text.hint ? text.hint + ' Then check' : 'Check'} the voter register to confirm you are on it.`,
       action: 'check_register', support: true };
   }
   if (reason === 'name_mismatch' || has(/name mismatch/i)) {
@@ -25,7 +25,7 @@ export function loginGuidance(detail, reason) {
   }
   if (reason === 'already_voted' || has(/already voted/i)) {
     return { title: 'Already voted',
-      message: 'Our records show this registration number has already voted. If you did not vote, contact support.', support: true };
+      message: `Our records show this ${text.noun} has already voted. If you did not vote, contact support.`, support: true };
   }
   if (reason === 'no_phone' || has(/no phone found/i)) {
     return { title: 'No phone number on file',

@@ -24,8 +24,8 @@ describe('ExportModeControl', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Full' }));
     expect(onChange).not.toHaveBeenCalled();
   });
-  it('active button text is white (dark-mode contrast)', () => {
+  it('active button text is the brand fill ink (white fallback), so any brand colour stays readable', () => {
     render(<ExportModeControl name="A" mode="full" onChange={() => {}} />);
-    expect(screen.getByRole('button', { name: 'Full' }).style.color).toBe('rgb(255, 255, 255)');
+    expect(screen.getByRole('button', { name: 'Full' }).style.color).toBe('var(--brand-on-primary, white)');
   });
 });

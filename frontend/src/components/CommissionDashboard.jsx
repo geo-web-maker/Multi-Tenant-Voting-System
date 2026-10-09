@@ -13,11 +13,13 @@ import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import { LoadingBlock } from './Spinner.jsx';
 import { getTemplate } from '../template';
+import { useIdText } from '../idText';
 
 // Pre-P4 tab ids that may still be remembered in this tab's session.
 const LEGACY_TABS = ['pending', 'approved', 'denied', 'removed'];
 
 export default function CommissionDashboard({ onLogout }) {
+  const idText = useIdText();
   const toast = useToast();
   const bp = getTemplate(); // render-time: null => the standard UI
 
@@ -197,7 +199,7 @@ export default function CommissionDashboard({ onLogout }) {
           <div style={{ marginBottom: '16px' }}>
             <input
               style={inp}
-              placeholder="Search by name, student ID, or position…"
+              placeholder={`Search by name, ${idText.noun}, or position…`}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
             />

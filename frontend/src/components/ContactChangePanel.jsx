@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { startPolling } from '../hooks/usePolling';
 import { Icon } from './icons.jsx';
@@ -12,6 +13,7 @@ import { regNo } from '../regNo';
 // selected student (if any) and the requester's own requests with live status.
 // `compact` drops the long guidance paragraph (used on the superadmin screen).
 export default function ContactChangePanel({ student = null, compact = false }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const [mine, setMine] = useState([]);
@@ -72,7 +74,7 @@ export default function ContactChangePanel({ student = null, compact = false }) 
                 </select>
               )}
               {needsValue && (
-                <input style={inp} value={form.new_value} placeholder={form.change_type === 'registration_number_change' ? 'New registration number' : 'New number e.g. 0705123456'}
+                <input style={inp} value={form.new_value} placeholder={form.change_type === 'registration_number_change' ? `New ${idText.noun}` : 'New number e.g. 0705123456'}
                   onChange={e => setForm({ ...form, new_value: e.target.value })} />
               )}
               <select style={inp} value={form.evidence_type} onChange={e => setForm({ ...form, evidence_type: e.target.value })} aria-label="Evidence type">

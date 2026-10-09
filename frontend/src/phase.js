@@ -22,7 +22,14 @@ export function derivePhase(status, now = Date.now()) {
   let state;
   if (voting === 'ended' || masterOff) state = 'voting_closed';
   else if (voting === 'not_started') state = appsOpen ? 'apply_open' : 'voting_soon';
-  else if (voting === 'open') state = 'voting_open';
+  else if (voting === 'open') {
+    // Voting has no schedule of its own (so it is "open" only because the master switch is on) while the
+    // Applications window on the Timeline is live: the election is in its application stage. A scheduled
+    // voting window keeps its own say.
+    // `now` flips it back the second the applications deadline passes, without waiting for a refetch.
+    const appsLive = status.applications_active && !(appsCloseMs != null && appsCloseMs <= now);
+    state = appsLive && !status.voting_scheduled ? 'apply_open' : 'voting_open';
+  }
   else return null; // unknown shape (old server): show nothing rather than guess
 
   const votingOpensAt = status.voting_opens_at || null;

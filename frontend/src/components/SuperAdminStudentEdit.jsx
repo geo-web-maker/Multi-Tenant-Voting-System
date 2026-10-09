@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import ContactChangePanel from './ContactChangePanel';
@@ -13,6 +14,7 @@ import api from '../api';
 // Edit-student UI that lives INSIDE the superadmin "Student Changes" tab.
 // Changes apply immediately (no approval, no notifications); the audit history below is the control.
 export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const roster = useRosterStatus();
@@ -92,12 +94,12 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
     <div style={{ ...card, marginBottom: '20px' }}>
       <h4 style={cardTitle}>Edit Student Details</h4>
       <p style={muted}>
-        Change a student's name, phone numbers or registration number. Changes apply immediately, need a reason,
+        Change a student's name, phone numbers or {idText.noun}. Changes apply immediately, need a reason,
         and are recorded in the history below.
       </p>
 
       <form onSubmit={search} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        <input style={{ ...inp, flex: '1 1 220px' }} placeholder="Search by name or registration number"
+        <input style={{ ...inp, flex: '1 1 220px' }} placeholder={`Search by name or ${idText.noun}`}
           aria-label="Search students" value={q} onChange={e => setQ(e.target.value)} />
         <button type="submit" style={ghostBtn} disabled={q.trim().length < 2}>Search</button>
       </form>
@@ -121,14 +123,14 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
               <input style={inp} value={draft.full_name} onChange={e => setDraft({ ...draft, full_name: e.target.value })} />
             </label>
             <label style={field}>
-              <span style={lbl}>Registration Number</span>
+              <span style={lbl}>{idText.short}</span>
               <input style={inp} value={draft.new_student_id} disabled={frozen}
                 onChange={e => setDraft({ ...draft, new_student_id: e.target.value })} />
             </label>
           </div>
           {draft.original.holds_admin_role && (
             <p style={{ ...muted, color: 'var(--warning)' }}>
-              <Icon name="warning" /> This student holds an admin or commission role, so the registration number cannot be changed.
+              <Icon name="warning" /> This student holds an admin or commission role, so the {idText.noun} cannot be changed.
             </p>
           )}
 
@@ -195,7 +197,7 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
       <h4 style={{ ...cardTitle, marginTop: '28px' }}>Change History (Read Only)</h4>
       <form onSubmit={e => { e.preventDefault(); loadHistory(histQ); }} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <input style={{ ...inp, flex: '1 1 220px' }} aria-label="Search history"
-          placeholder="Search by old or new registration number, or name"
+          placeholder={`Search by old or new ${idText.noun}, or name`}
           value={histQ} onChange={e => setHistQ(e.target.value)} />
         <button type="submit" style={ghostBtn} disabled={histLoading}>{histLoading ? 'Searching…' : 'Search'}</button>
       </form>

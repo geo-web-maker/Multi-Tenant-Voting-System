@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { Icon } from './icons.jsx';
 import ClosedNotice, { applicationsNoticeText } from './ClosedNotice';
@@ -48,6 +49,7 @@ const invalidStyle = { border: '1px solid var(--danger)' };
 const MANIFESTO_MAX_CHARS = 3000;
 
 export default function ApplicantPortal() {
+  const idText = useIdText();
   const { openFees } = useHelpMenu();
   const startedRef = useRef(false);
   const paymentInfo = usePaymentInfo(20000);
@@ -68,6 +70,7 @@ export default function ApplicantPortal() {
   const [form, setForm] = useState({
     student_id:  savedDraft?.student_id  ?? '',
     full_name:   savedDraft?.full_name   ?? '',
+    phone:       '',   // only asked for when the org turns on collect_phone; deliberately not saved in the draft
     position_id: savedDraft?.position_id ?? '',
     manifesto:   savedDraft?.manifesto   ?? '',
     image:       null,
@@ -213,7 +216,7 @@ const handleSubmit = async (e) => {
   trackStep('apply', 'submit_clicked');
 
   // One pass over the whole form: list everything that is missing instead of one field per click.
-  const missing = missingFields({ ...form, payment_method: paymentMethod, payment_proof: paymentProof, nomination_form: nominationForm.enabled && nominationFile }, { nominationRequired: Boolean(nominationForm.enabled && nominationForm.required) });
+  const missing = missingFields({ ...form, payment_method: paymentMethod, payment_proof: paymentProof, nomination_form: nominationForm.enabled && nominationFile }, { nominationRequired: Boolean(nominationForm.enabled && nominationForm.required), phoneRequired: Boolean(nominationForm.collect_phone) });
   if (missing.length) {
     setFieldErrors(Object.fromEntries(missing.map(m => [m.field, true])));
     setError(missingMessage(missing));
@@ -233,7 +236,7 @@ const handleSubmit = async (e) => {
   try {
     // Gate: confirm this student_id + name is actually on the voter register
     // BEFORE spending any Cloudinary uploads on photo/payment proof.
-    await api.post('/apply/check-eligibility', { student_id: sid, full_name: form.full_name.trim() }, { signal: controller.signal });
+    await api.post('/apply/check-eligibility', { student_id: sid, full_name: form.full_name.trim(), ...(nominationForm.collect_phone ? { phone: form.phone.trim() } : {}) }, { signal: controller.signal });
 
     // A file that already uploaded on an earlier attempt is not sent again.
     const upload = async (file, stepNo) => {
@@ -279,6 +282,7 @@ const handleSubmit = async (e) => {
       payment_method:    paymentMethod,
       payment_proof_url,
       nomination_upload_id,
+      ...(nominationForm.collect_phone ? { phone: form.phone.trim() } : {}),
     }, { signal: controller.signal });
 
     setSubmittedName(form.full_name.trim());
@@ -315,7 +319,7 @@ const handleSubmit = async (e) => {
           <div style={sx({ ...infoBox, marginBottom: '16px', textAlign: 'left' })} className={k?.accBan} role="note">
             <p style={sx({ margin: 0, fontSize: '13px', opacity: 0.9, lineHeight: '1.6' })}>
               <strong>Follow your application on your candidate portal.</strong> A link to it is being sent by SMS
-              to the phone number on your student record and may take a few minutes to arrive. Open it any time to
+              to the phone number on your student record{nominationForm.collect_phone ? ' (the one you just gave us, if your record had none)' : ''} and may take a few minutes to arrive. Open it any time to
               see where your application stands and its outcome. If the link doesn't arrive, or you have no phone
               number on your student record, please contact the IT administrators.
             </p>
@@ -330,7 +334,7 @@ const handleSubmit = async (e) => {
             className={k?.btn}
             onClick={() => {
               setSubmitted(false);
-              setForm({ student_id: '', full_name: '', position_id: '', manifesto: '', image: null });
+              setForm({ student_id: '', full_name: '', phone: '', position_id: '', manifesto: '', image: null });
               setPreview(null); setNominationFile(null); setNominationUploadId(''); setPaymentProof(null); setPaymentProofPreview(null); setPaymentMethod(''); uploadedRef.current.clear();
             }}
           >
@@ -360,6 +364,7 @@ const handleSubmit = async (e) => {
             Instructions for Applicants:
           </p>
           <ul style={sx({ margin: 0, paddingLeft: '18px', fontSize: '13px', opacity: 0.85, lineHeight: '1.9' })}>
+            {nominationForm.enabled && <li><strong>Nomination Form:</strong> Download the blank form just below, complete and sign it, then upload the completed copy in the Upload Completed Form step further down.</li>}
             <li><strong>Fill and Submit Form:</strong> Complete the form below and submit your application.</li>
             <li><strong>Application Review:</strong> The Vetting Panel will review your submission.</li>
             <li><strong>Access to Portal:</strong> Check your registered phone number for an SMS link to your candidate portal.</li>
@@ -374,21 +379,42 @@ const handleSubmit = async (e) => {
           {/* Everything the applicant can change is inert while a submit is running. */}
           <fieldset disabled={uploading} style={fieldsetReset}>
 
+          {/* ── Nomination Form (configured by superadmin) ──
+              First card, straight under the instructions: the applicant downloads and signs it BEFORE filling in the form. */}
+          {nominationForm.enabled && (
+            <div style={sx(card)} className={k?.card}>
+              <h4 style={sx(sectionTitle)} className={k?.sec}>{nominationForm.title || 'Nomination Form'}{nominationForm.required ? ' *' : ''}</h4>
+              <div style={sx({ fontSize: '13px', lineHeight: 1.7, opacity: 0.8, marginBottom: 12, whiteSpace: 'pre-line' })} className={k?.mu}>
+                {nominationForm.instructions || 'Download the blank form, complete and sign it, then upload the completed copy below.'}
+              </div>
+              {nominationForm.template_file?.url ? (
+                <a href={nominationForm.template_file.url} download={nominationForm.template_file.filename || true} target="_blank" rel="noreferrer" style={sx({ ...greenBtn, display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 14 })} className={k?.btn} data-track="apply-nomination-download">
+                  Download blank form
+                </a>
+              ) : (
+                <p style={sx({ fontSize: 12, opacity: 0.6, marginBottom: 14 })} className={k?.warnBan}>The blank form has not been uploaded yet. Contact the election administrator.</p>
+              )}
+            </div>
+          )}
+
+
           {/* ── Personal details ── */}
           <div style={sx(card)} className={k?.card}>
             <h4 style={sx(sectionTitle)} className={k?.sec}>Personal Details</h4>
 
-            <label style={sx(lbl)} className={k?.lbl} htmlFor={bp ? 'apply-student-id' : undefined}>Student Registration Number *</label>
+            <label style={sx(lbl)} className={k?.lbl} htmlFor={bp ? 'apply-student-id' : undefined}>{idText.label} *</label>
             <input
               id={bp ? 'apply-student-id' : undefined}
               data-field="student_id"
               aria-invalid={fieldErrors.student_id ? 'true' : undefined}
               style={sx({ ...inp, ...(fieldErrors.student_id ? invalidStyle : null) })}
               className={k?.in}
-              placeholder="e.g. 22/U/IED/1086/GV"
+              placeholder={`e.g. ${idText.firstId}`}
+              autoComplete="off"
               value={form.student_id}
               onChange={e => { clearField('student_id'); setForm(prev => ({ ...prev, student_id: e.target.value })); }}
             />
+            {idText.hint && <p style={sx({ fontSize: 12, opacity: 0.65, margin: '6px 0 0' })} className={k?.mu}>{idText.hint}</p>}
 
             <label style={sx({ ...lbl, marginTop: '12px' })} className={k?.lbl} htmlFor={bp ? 'apply-full-name' : undefined}>Full Name (as on your student ID) *</label>
             <input
@@ -397,10 +423,30 @@ const handleSubmit = async (e) => {
               aria-invalid={fieldErrors.full_name ? 'true' : undefined}
               style={sx({ ...inp, ...(fieldErrors.full_name ? invalidStyle : null) })}
               className={k?.in}
-              placeholder="e.g. Ayebale Elizabeth"
+              placeholder={`e.g. ${idText.names[0]}`}
               value={form.full_name}
               onChange={e => { clearField('full_name'); setForm(prev => ({ ...prev, full_name: e.target.value })); }}
             />
+
+            {nominationForm.collect_phone && (
+              <>
+                <label style={sx({ ...lbl, marginTop: '12px' })} className={k?.lbl} htmlFor={bp ? 'apply-phone' : undefined}>Phone number *</label>
+                <input
+                  id={bp ? 'apply-phone' : undefined}
+                  data-field="phone"
+                  type="tel" inputMode="tel" autoComplete="tel"
+                  aria-invalid={fieldErrors.phone ? 'true' : undefined}
+                  style={sx({ ...inp, ...(fieldErrors.phone ? invalidStyle : null) })}
+                  className={k?.in}
+                  placeholder="e.g. 0772 123456"
+                  value={form.phone}
+                  onChange={e => { clearField('phone'); setForm(prev => ({ ...prev, phone: e.target.value })); }}
+                />
+                <p style={sx({ fontSize: 12, opacity: 0.65, margin: '6px 0 0' })} className={k?.mu}>
+                  If your student record has no phone number, we save this one to it. Your application status link is sent to the number on your record.
+                </p>
+              </>
+            )}
           </div>
 
           {/* ── Position ── */}
@@ -485,20 +531,10 @@ const handleSubmit = async (e) => {
             </small>
           </div>
 
-          {/* ── Nomination Form (configured by superadmin) ── */}
+          {/* ── Nomination Form: upload (the download sits at the top, under the instructions) ── */}
           {nominationForm.enabled && (
             <div style={sx(card)} className={k?.card}>
-              <h4 style={sx(sectionTitle)} className={k?.sec}>{nominationForm.title || 'Nomination Form'}{nominationForm.required ? ' *' : ''}</h4>
-              <div style={sx({ fontSize: '13px', lineHeight: 1.7, opacity: 0.8, marginBottom: 12, whiteSpace: 'pre-line' })} className={k?.mu}>
-                {nominationForm.instructions || 'Download the blank form, complete and sign it, then upload the completed copy below.'}
-              </div>
-              {nominationForm.template_file?.url ? (
-                <a href={nominationForm.template_file.url} download={nominationForm.template_file.filename || true} target="_blank" rel="noreferrer" style={sx({ ...greenBtn, display: 'inline-flex', alignItems: 'center', textDecoration: 'none', marginBottom: 14 })} className={k?.btn} data-track="apply-nomination-download">
-                  Download blank form
-                </a>
-              ) : (
-                <p style={sx({ fontSize: 12, opacity: 0.6, marginBottom: 14 })} className={k?.warnBan}>The blank form has not been uploaded yet. Contact the election administrator.</p>
-              )}
+              <h4 style={sx(sectionTitle)} className={k?.sec}>Upload Completed Form{nominationForm.required ? ' *' : ''}</h4>
               <label style={sx(lbl)} className={k?.lbl}>Completed form ({(nominationForm.accepted_types || ['pdf']).join(' / ').toUpperCase()}) {nominationForm.required ? '*' : '(optional)'}</label>
               {draftRestored && !nominationFile && nominationForm.required && <p role="note" className={k?.warnBan} style={sx({ margin: '0 0 8px', fontSize: 12, color: 'var(--warning)', fontWeight: 600 })}>Re-attach your signed nomination form. Files cannot be restored from a saved draft.</p>}
               <label data-track="apply-nomination-upload" data-field="nomination_form" tabIndex={-1} aria-invalid={fieldErrors.nomination_form ? 'true' : undefined}
@@ -533,16 +569,16 @@ const handleSubmit = async (e) => {
               </div>
             ) : requiredFee > 0 ? (
               <div style={sx({ ...infoBox, marginBottom: '16px', borderColor: 'var(--success)' })} className={k?.ban} role="note">
-                <p style={sx({ margin: 0, fontSize: '13px', opacity: 0.85 })}>Nomination fee for <strong>{selectedPosition.title}</strong></p>
-                <p style={sx({ margin: '4px 0 8px', fontSize: '22px', fontWeight: 700, color: 'var(--text-color)' })} className={k?.fee}>
+                <p style={sx({ margin: 0, fontSize: '13px', lineHeight: 1.7, opacity: 0.85 })}>Nomination fee for <strong>{selectedPosition.title}</strong></p>
+                <p style={sx({ margin: '6px 0 12px', display: 'inline-block', padding: '4px 14px', borderRadius: 10, fontSize: '30px', lineHeight: '40px', fontWeight: 800, color: 'var(--text-color)', background: 'var(--bp-tint, var(--surface-2))', border: '1px solid var(--bp-ac-edge, var(--border-color))' })} className={k?.fee}>
                   UGX {requiredFee.toLocaleString('en-UG')}
                 </p>
                 <MobileMoneyNumber info={paymentInfo} style={{ margin: '0 0 10px' }} />
-                <p style={sx({ margin: 0, fontSize: '12px', lineHeight: 1.6, opacity: 0.85 })}>
+                <p style={sx({ margin: 0, fontSize: '13px', lineHeight: 1.7, opacity: 0.85 })}>
                   <strong>Important:</strong> your receipt must show a payment of this full amount. Applications with
                   an incomplete or incorrect payment amount will be rejected.
                 </p>
-                <button type="button" data-track="apply-fee-link" onClick={openFees} style={sx({ ...linkBtn, display: 'block', marginTop: '8px' })} className={k?.inl}>
+                <button type="button" data-track="apply-fee-link" onClick={openFees} style={sx({ ...linkBtn, display: 'block', marginTop: '8px', fontSize: '13px' })} className={k?.inl}>
                   See fees for other positions
                 </button>
               </div>

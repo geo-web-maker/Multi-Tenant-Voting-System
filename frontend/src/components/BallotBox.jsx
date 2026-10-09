@@ -236,7 +236,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
                   style={{ 
                     ...horizontalCardStyle, 
                     border: isSelected ? '2px solid var(--bp-ac, #3b82f6)' : '1px solid var(--border-color)',
-                    backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'var(--card-bg)'
+                    backgroundColor: isSelected ? 'var(--bp-tint, rgba(59, 130, 246, 0.15))' : 'var(--card-bg)'
                   }}
                 >
                   {/* 1. Image and Name (Grouped together on the left) */}

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import AdminHeader, { useLastSynced } from './AdminHeader';
@@ -17,6 +18,7 @@ const RESOLVED = ['approved', 'denied', 'removed'];
 // Vetting Panel view (guide 8.2, P3). The server shapes every payload: this screen only
 // shows what it is given. Progress is "x of y voted"; the split appears only once resolved.
 export default function VettingDashboard({ onLogout }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const [tab, setTab] = usePersistedTab('vetting', 'pending');
@@ -180,7 +182,7 @@ export default function VettingDashboard({ onLogout }) {
       {tab === 'resolved' && (
         <input
           style={{ ...input, marginBottom: '16px' }}
-          placeholder="Search by name, registration number or position…"
+          placeholder={`Search by name, ${idText.noun} or position…`}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
@@ -89,6 +90,7 @@ function TypeaheadSearch({ placeholder, ariaLabel, fetcher, onPick, renderResult
  * canOverrideCaps  — The Chairperson, Deputy Chairperson and superadmin may raise one person's cap.
  */
 export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialStudentId = '' }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -155,7 +157,7 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialSt
           </p>
         ) : (
           <TypeaheadSearch
-            placeholder="Search by name or registration number"
+            placeholder={`Search by name or ${idText.noun}`}
             ariaLabel="Search voters"
             fetcher={searchVoters}
             onPick={(s) => setVoter({ student_id: s.student_id, full_name: s.full_name })}

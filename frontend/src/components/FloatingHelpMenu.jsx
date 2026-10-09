@@ -67,7 +67,7 @@ const fabStyle = () => ({
   position: 'fixed', bottom: '24px', right: '24px', zIndex: 2600,
   display: 'flex', alignItems: 'center', gap: '8px',
   padding: '14px 20px', borderRadius: '30px',
-  backgroundColor: 'var(--brand-primary, #003366)', color: 'white',
+  backgroundColor: 'var(--brand-primary, #003366)', color: 'var(--brand-on-primary, white)',
   border: '2px solid var(--brand-accent, #f1c40f)',
   fontSize: '16px', fontWeight: 'bold', cursor: 'pointer',
   boxShadow: '0 8px 20px rgba(0,0,0,0.35)', transition: 'transform 0.15s',

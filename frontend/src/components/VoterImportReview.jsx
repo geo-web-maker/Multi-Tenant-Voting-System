@@ -3,6 +3,7 @@ import api, { getErrorMessage } from '../api';
 import { regNo } from '../regNo';
 import ColumnMapper from './ColumnMapper';
 import { mappingPayload, missingRequired, toMappingState } from '../columnMapping';
+import { useIdText } from '../idText';
 
 /**
  * Three-step roster update. The chosen file (CSV, TSV or Excel) is first read and its columns are
@@ -13,6 +14,10 @@ import { mappingPayload, missingRequired, toMappingState } from '../columnMappin
  * roles and login credentials no matter what is chosen here.
  */
 export default function VoterImportReview({ file, onClose, onDone }) {
+  const idText = useIdText();
+  // What this organisation calls the voter ID. Starts as the current wording; the admin can change it here
+  // (the column heading in the file is offered as a one-click suggestion). Only sent if it actually changes.
+  const [idLabel, setIdLabel] = useState(idText.label);
   const [stage, setStage] = useState('map');        // 'map' = match columns, 'review' = compare with roster
   const [inspect, setInspect] = useState(null);
   const [mapping, setMapping] = useState({});
@@ -76,6 +81,11 @@ export default function VoterImportReview({ file, onClose, onDone }) {
 
   const backToMap = () => { setStage('map'); setPreview(null); setError(''); };
   const missing = inspect ? missingRequired(inspect, mapping) : [];
+  // Heading of the column matched to the ID, e.g. "Student Number" - a good guide for what to call it.
+  const idColIdx = inspect ? Number((mapping.student_id || []).find(v => v !== '')) : NaN;
+  const idHeading = inspect && Number.isInteger(idColIdx) ? String(inspect.headers?.[idColIdx] || '').trim() : '';
+  const cleanLabel = idLabel.trim();
+  const labelChanged = cleanLabel !== '' && cleanLabel !== idText.label;
 
   const changedValue = sid => changedOverrides[sid] ?? changedDefault;
   const missingValue = sid => missingOverrides[sid] ?? missingDefault;
@@ -93,6 +103,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
         preview_id: preview.preview_id, new_action: newAction,
         changed_default: changedDefault, changed_overrides: changedOverrides, phone_mode: phoneMode,
         missing_default: missingDefault, missing_overrides: missingOverrides,
+        ...(labelChanged ? { id_label: cleanLabel } : {}),
       });
       onDone(res.data);
     } catch (e) {
@@ -138,6 +149,22 @@ export default function VoterImportReview({ file, onClose, onDone }) {
               <ColumnMapper data={inspect} mapping={mapping} onMapping={setMapping} busy={mapBusy}
                 onSheet={sheet => loadInspect({ sheet })}
                 onHeaderRow={header_row => loadInspect({ sheet: inspect.sheet, header_row })} />
+            )}
+            {inspect && (
+              <div style={{ marginTop: 14 }}>
+                <label htmlFor="import-id-label" style={{ display: 'block', fontSize: 12, opacity: 0.7, marginBottom: 4 }}>
+                  What does your organisation call this ID? It becomes the label on the login, apply and register screens.
+                </label>
+                <input id="import-id-label" style={{ width: '100%', boxSizing: 'border-box', padding: 8, borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'inherit' }}
+                  value={idLabel} maxLength={60} placeholder="e.g. Student Number"
+                  onChange={e => setIdLabel(e.target.value)} />
+                {idHeading && idHeading.toLowerCase() !== idLabel.trim().toLowerCase() && (
+                  <button type="button" style={{ ...ghostBtn, marginTop: 6 }} onClick={() => setIdLabel(idHeading)}>
+                    Use the column heading “{idHeading}”
+                  </button>
+                )}
+                {labelChanged && <p style={{ margin: '6px 0 0', fontSize: 12, opacity: 0.7 }}>Saved when you apply this import.</p>}
+              </div>
             )}
             {inspect && (
               <button style={{ ...primaryBtn, marginTop: 14, opacity: missing.length || mapBusy ? 0.5 : 1 }}
@@ -212,7 +239,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
                       </select>
                     </label>
                   </div>
-                  {preview.new.length === 0 && <p style={{ opacity: 0.5 }}>Every registration number in the file already exists.</p>}
+                  {preview.new.length === 0 && <p style={{ opacity: 0.5 }}>Every {idText.noun} in the file already exists.</p>}
                   {preview.new.map(r => (
                     <div key={r.student_id} style={row}>
                       <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>{regNo(r.student_id)}</b> <span style={{ fontSize: 12, opacity: 0.7 }}>{r.full_name}</span></div>

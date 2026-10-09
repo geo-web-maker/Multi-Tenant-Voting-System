@@ -857,6 +857,11 @@ class BrandingUpdate(BaseModel):
     support_contacts:    list[dict] = []   # [{reason, contacts: [{name, link}]}] — WhatsApp number or link per reason
     cc_list:             list[str] = []
     signatories:         list[dict] = []   # [{full_name, role}, ...] — manual override; see get_official_report
+    # Voter-login wording, per organisation (blank = the original defaults on the frontend)
+    id_label:            str = ""          # what this org calls the voter ID, e.g. "Student Number"
+    id_examples:         list[str] = []    # sample IDs for the login placeholders
+    name_examples:       list[str] = []    # sample names for the login placeholders
+    id_format_hint:      str = ""          # sentence shown when an ID is not found
 
 class PositionCreate(BaseModel):
     title: str
@@ -876,7 +881,43 @@ MANIFESTO_MAX_CHARS = 3000  # ~500 words; keep in sync with the frontend constan
 
 # Base URL the candidate status-link SMS points into (frontend/vercel.json's
 # SPA catch-all loads the app shell for any /status/<token> path).
+# Multi-tenant: each organisation has its own frontend deployment (its own VITE_ORG_SLUG build), so the link
+# must point at THAT org's site. The per-org `frontend_url` on the organizations document wins; this env var is
+# only the platform-wide fallback for orgs that have none set yet.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourapp.vercel.app").rstrip("/")
+
+
+def normalize_frontend_url(raw: str) -> str:
+    """Validates a site address and returns it without a trailing slash ('' = not set). Only a bare origin is
+    accepted (https, or http for localhost): no path, query, fragment or credentials, so a typo or a malicious
+    value can't turn an SMS link into something else."""
+    from urllib.parse import urlsplit
+    v = (raw or "").strip().rstrip("/")
+    if not v:
+        return ""
+    u = urlsplit(v)
+    host = (u.hostname or "").lower()
+    local = host in ("localhost", "127.0.0.1")
+    if u.scheme not in ("https", "http") or not host or (u.scheme == "http" and not local):
+        raise HTTPException(400, "Frontend URL must be a full https:// address, e.g. https://vote.example.org")
+    if u.username or u.password or u.path not in ("", "/") or u.query or u.fragment:
+        raise HTTPException(400, "Frontend URL must be just the site address, with no path, query or login details.")
+    return f"{u.scheme}://{u.netloc}"
+
+
+async def frontend_url_for(request: Request) -> str:
+    """The frontend base URL for the tenant making this request (no trailing slash)."""
+    org_id = getattr(request.state, "org_id", None)
+    if org_id:
+        try:
+            doc = await db.organizations.find_one({"_id": ObjectId(org_id)}, {"frontend_url": 1})
+        except Exception:
+            doc = None
+        url = ((doc or {}).get("frontend_url") or "").strip().rstrip("/")
+        if url:
+            return url
+    logger.warning("No frontend_url set for org %s; falling back to FRONTEND_URL.", org_id)
+    return FRONTEND_URL
 
 # Candidate status links expire automatically (default 60 days) and can be revoked
 # by a superadmin. Resending a still-valid link extends it; an expired or revoked
@@ -915,6 +956,7 @@ class ApplicationSubmit(BaseModel):
     payment_method:    str = Field("", max_length=100)
     payment_proof_url: str = Field("", max_length=2000)
     nomination_upload_id: str = Field("", max_length=64)   # id returned by /apply/upload-document (N2); never a URL
+    phone:             str = Field("", max_length=32)      # only read when the org turned on collect_phone; saved to the voter record, not the application
 
 class CommissionerVote(BaseModel):
     commissioner_id: str = Field("", max_length=64)   # optional; if sent it must match the panel account (student_id or PM- id)
@@ -984,10 +1026,15 @@ class ResetPasswordRequest(BaseModel):
 class OrganizationCreate(BaseModel):
     name: str            # display name, e.g. "KYUCCU"
     slug: str = ""        # url/header-safe identifier; auto-generated from name if blank
+    frontend_url: str = ""   # this org's own site, e.g. https://vote.kyuccu.org (used in SMS links); optional
+
+class OrganizationFrontendUrl(BaseModel):
+    frontend_url: str = ""   # blank clears it (falls back to the FRONTEND_URL env var)
 
 class ApplicationEligibilityCheck(BaseModel):
     student_id: str
     full_name: str
+    phone: str = Field("", max_length=32)
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -3466,6 +3513,15 @@ async def get_status(request: Request):
     vwin, awin, vetwin = schedule["phases"]["voting"], schedule["phases"]["applications"], schedule["phases"]["vetting"]
     voting_phase, applications_phase, vetting_phase = _position(vwin), _position(awin), _position(vetwin)
     phase_info = {
+        # Same reading the Timeline cards use (admin /admin/schedule): a window is "scheduled" when it has a
+        # start or an end, and "active" when now sits inside it. Lets the public header say "Applications Open"
+        # while voting has no schedule of its own, instead of falling back on the master switch alone.
+        "voting_scheduled": bool(vwin.get("start") or vwin.get("end")),
+        "applications_active": bool(
+            (awin.get("start") or awin.get("end"))
+            and not (awin.get("start") and now < awin["start"])
+            and not (awin.get("end") and now > awin["end"])
+        ),
         "voting_phase": voting_phase,
         "voting_opens_at": vwin["start"].isoformat() if voting_phase == "not_started" else None,
         "applications_phase": applications_phase,
@@ -4242,6 +4298,27 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     return {"secure_url": result["secure_url"]}
 
 
+async def _applicant_phone_to_save(cfg: dict, raw: str, student: dict, request: Request) -> str | None:
+    """Phone-number step of the application form (org setting `collect_phone`, off by default).
+
+    Returns the normalised number to write onto the voter record, or None when nothing should be written.
+    Safety rules, because this is a PUBLIC endpoint and the voter's phone is where their voting OTP is sent:
+      * a voter who already has a phone on file is never changed or added to here (that goes through the
+        contact-change flow, which has review), so nobody can attach their own number to someone else's record;
+      * a number already registered to a different voter is refused."""
+    if not cfg.get("collect_phone"):
+        return None
+    if student.get("phone_numbers"):
+        return None
+    if not (raw or "").strip():
+        raise HTTPException(400, "Please enter your phone number. Your record has none on file.")
+    num = normalize_phone_number(raw)
+    if await tdb(request).voters.count_documents({"phone_numbers": num, "student_id": {"$ne": student["student_id"]}}):
+        raise HTTPException(400, "That phone number is already registered to another student. "
+                                 "Enter your own number, or contact IT support.")
+    return num
+
+
 @app.post("/apply/check-eligibility")
 async def check_application_eligibility(data: ApplicationEligibilityCheck, request: Request):
     await _check_apply_rate_limit(request)
@@ -4251,14 +4328,16 @@ async def check_application_eligibility(data: ApplicationEligibilityCheck, reque
         analytics.set_reason(request, "not_on_roll")
         raise HTTPException(
             status_code=404,
-            detail="Your Student ID was not found on the voter register. Please contact IT support if you believe this is an error."
+            detail=f"Your {await id_noun(request.state.org_id)} was not found on the voter register. Please contact IT support if you believe this is an error."
         )
     if not names_match(student.get("full_name", ""), data.full_name):
         analytics.set_reason(request, "name_mismatch")
         raise HTTPException(
             status_code=400,
-            detail="The name entered doesn't match our records for this Student ID. Please enter your full registered name."
+            detail=f"The name entered doesn't match our records for this {await id_noun(request.state.org_id)}. Please enter your full registered name."
         )
+    # Fail on a missing / malformed / taken phone number now, before the applicant spends time on uploads.
+    await _applicant_phone_to_save(await get_nomination_form(request.state.org_id), data.phone, student, request)
     return {"status": "eligible"}
 
 @app.post("/apply")
@@ -4277,13 +4356,13 @@ async def submit_application(data: ApplicationSubmit, request: Request):
         analytics.set_reason(request, "not_on_roll")
         raise HTTPException(
             status_code=404,
-            detail="Your Student ID was not found on the voter register. Please contact IT support if you believe this is an error."
+            detail=f"Your {await id_noun(request.state.org_id)} was not found on the voter register. Please contact IT support if you believe this is an error."
         )
     if not names_match(student.get("full_name", ""), data.full_name):
         analytics.set_reason(request, "name_mismatch")
         raise HTTPException(
             status_code=400,
-            detail="The name entered doesn't match our records for this Student ID."
+            detail=f"The name entered doesn't match our records for this {await id_noun(request.state.org_id)}."
         )
     data.full_name = normalize_name(data.full_name)
     if await tdb(request).panel_members.find_one({"student_id": student["student_id"], "active": True}):
@@ -4305,6 +4384,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     # N2: the signed nomination form. Checked before anything is stored so a missing form never leaves a
     # half-created application behind.
     nomination_cfg = await get_nomination_form(org_id)
+    phone_to_save = await _applicant_phone_to_save(nomination_cfg, data.phone, student, request)   # may raise 400, before any upload is claimed
     claimed_upload = None
     if nomination_cfg["enabled"]:
         upload_id = (data.nomination_upload_id or "").strip()
@@ -4328,7 +4408,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
 
     try:
         inserted = await tdb(request).applications.insert_one({
-        **data.dict(exclude={"nomination_upload_id"}),
+        **data.dict(exclude={"nomination_upload_id", "phone"}),
         # Metadata only. The storage key and any link stay in nomination_uploads / behind a presigned URL.
         "nomination_form": ({"upload_id": claimed_upload["upload_id"], "filename": claimed_upload["filename"],
                              "kind": claimed_upload["kind"], "bytes": claimed_upload["bytes"]}
@@ -4362,6 +4442,18 @@ async def submit_application(data: ApplicationSubmit, request: Request):
     if claimed_upload:
         await tdb(request).nomination_uploads.update_one(
             {"upload_id": claimed_upload["upload_id"]}, {"$set": {"application_id": str(inserted.inserted_id)}})
+    if phone_to_save:
+        try:
+            # Guarded write: only if the record STILL has no phone (it may have been filled since we read it).
+            res = await tdb(request).voters.update_one(
+                {"_id": student["_id"], "$or": [{"phone_numbers": {"$exists": False}}, {"phone_numbers": {"$size": 0}}]},
+                {"$set": {"phone_numbers": [phone_to_save], "updated_at": datetime.utcnow()}})
+            if res.modified_count:
+                student["phone_numbers"] = [phone_to_save]          # so the status-link SMS below goes to it
+                await log_action("applicant_phone_registered", data.student_id,
+                                 {"phone": _mask_phone(phone_to_save)}, org_id=org_id)
+        except Exception:
+            logger.exception("Could not save the applicant's phone number (application itself was saved)")
     await log_action("application_submitted", data.student_id, {
     "position_id": data.position_id,
     "full_name":   data.full_name,
@@ -4386,7 +4478,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
             # staring at their phone waiting for it the way an OTP recipient is.
             await send_sms(
                 phones[0],
-                f"Application received. Check status: {FRONTEND_URL}/status/{token_doc['token']}",
+                f"Application received. Check status: {await frontend_url_for(request)}/status/{token_doc['token']}",
                 request, kind="candidate_status_link",
             )
     return {"status": "submitted"}
@@ -4564,7 +4656,7 @@ async def resend_candidate_status_link(student_id: str, request: Request):
         {"$set": {"expires_at": datetime.utcnow() + timedelta(days=STATUS_LINK_TTL_DAYS)}})
     await send_sms(
         phones[0],
-        f"Application received. Check status: {FRONTEND_URL}/status/{token_doc['token']}",
+        f"Application received. Check status: {await frontend_url_for(request)}/status/{token_doc['token']}",
         request, kind="candidate_status_link",
     )
     await log_action("candidate_status_link_resent", current_actor(request),
@@ -5161,7 +5253,26 @@ async def get_voter_fields(request: Request) -> dict:
             "min_group_size": k if isinstance(k, int) and lo <= k <= hi else DEFAULT_MIN_GROUP}
 
 
-def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict] | None = None, roster_ids=()) -> dict:
+DEFAULT_ID_NOUN = "registration number"
+
+
+def _id_noun_from(branding) -> str:
+    """How this org names the voter ID inside a sentence ("student number"); the original wording if unset."""
+    label = ((branding or {}).get("id_label") or "").strip()
+    return label.lower() if label else DEFAULT_ID_NOUN
+
+
+async def id_noun(org_id) -> str:
+    """Same, looked up (cached) for an org. Only called on error / message paths, never per normal request."""
+    return _id_noun_from(await cached_setting(org_id, "branding"))
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict] | None = None, roster_ids=(),
+                       noun: str = DEFAULT_ID_NOUN) -> dict:
     """Shared by preview, the legacy endpoint and the column-mapping flow. Last row wins for a repeated ID
     (warned). mapping: {target: [column index, ...]} from tabular_import — student_id / full_name / phone plus
     any enabled voter field. Several columns for full_name or phone are joined (First + Surname, Phone 1 / 2).
@@ -5176,7 +5287,7 @@ def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict]
     if table.truncated:
         warnings.append(f"File truncated at {MAX_CSV_ROWS} rows.")
     if not (mapping.get("student_id") and mapping.get("full_name")):
-        return {"rows": {}, "warnings": ["No registration number / full name column was found."],
+        return {"rows": {}, "warnings": [f"No {noun} / full name column was found."],
                 "skipped": 0, "attr_fields": []}
     if not mapping.get("phone"):
         warnings.append("No phone column is mapped: voters imported this way have no number to receive an OTP on.")
@@ -5198,7 +5309,7 @@ def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict]
             warnings.append(f"Row {row_num}: Student ID or full name exceeds {IMPORT_FIELD_MAX_LEN} characters — skipped.")
             continue
         if sid in rows:
-            warnings.append(f"Row {row_num} ({sid}): registration number appears more than once in the file — the later row is used.")
+            warnings.append(f"Row {row_num} ({sid}): {noun} appears more than once in the file — the later row is used.")
         raw_phone = "/".join(p for p in (cell(cells, i).strip() for i in mapping.get("phone", [])) if p)
         attrs = {}
         for k in attr_keys:
@@ -5213,7 +5324,7 @@ def _parse_voter_table(table, header_row: int, mapping: dict, fields: list[dict]
         }
         row_nums[sid] = row_num
     # Format check runs on the already-normalized IDs. Warn only: nothing is skipped or blocked.
-    shape = shape_warnings(check_id_shapes(rows.keys(), roster_ids), len(rows), row_nums)
+    shape = shape_warnings(check_id_shapes(rows.keys(), roster_ids), len(rows), row_nums, noun=noun)
     return {"rows": rows, "warnings": shape + warnings, "skipped": skipped, "attr_fields": attr_keys}
 
 
@@ -5326,7 +5437,13 @@ async def import_voters_inspect(request: Request, file: UploadFile = File(...),
     vf = (await get_voter_fields(request))["fields"]
     table = _load_table(await _read_csv_upload(file), file.filename, sheet)
     try:
-        return describe_table(table, header_row, vf)
+        out = describe_table(table, header_row, vf)
+        label = ((await cached_setting(request.state.org_id, "branding")) or {}).get("id_label", "").strip()
+        if label:
+            for t in out["targets"]:
+                if t["key"] == "student_id":
+                    t["label"] = label
+        return out
     except TableError as e:
         raise HTTPException(400, str(e))
 
@@ -5355,9 +5472,10 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
         hr = header_row or guess_header_row(table.rows, vf)
         if not 1 <= hr <= len(table.rows):
             raise HTTPException(400, f"Row {hr} is not in the file.")
-        parsed = _parse_voter_table(table, hr, chosen, vf, await _roster_ids(request))
+        noun = await id_noun(request.state.org_id)
+        parsed = _parse_voter_table(table, hr, chosen, vf, await _roster_ids(request), noun=noun)
     if not parsed["rows"]:
-        raise HTTPException(400, "No valid rows found. Each row needs a registration number and a full name; "
+        raise HTTPException(400, f"No valid rows found. Each row needs a {noun} and a full name; "
                                  "check the columns you matched and the header row.")
     diff = await _diff_roster(request, parsed["rows"], enabled)
     preview_id = secrets.token_urlsafe(16)
@@ -5385,6 +5503,7 @@ class VoterImportApply(BaseModel):
     phone_mode: str = "replace"        # replace | merge (keep old numbers, add the new ones)
     missing_default: str = "keep"      # keep | remove
     missing_overrides: dict[str, str] = {}   # student_id -> keep | remove
+    id_label: str = ""                 # optional: what the org calls the voter ID (saved to branding)
 
 
 @app.post("/admin/import-voters/apply")
@@ -5467,13 +5586,25 @@ async def import_voters_apply(data: VoterImportApply, request: Request,
         removed = res.deleted_count
     await tdb(request).voter_import_previews.delete_one({"preview_id": data.preview_id})
 
+    # The label chosen on the import screen ("Student Number"): only this one branding field is touched.
+    new_label = (data.id_label or "").strip()[:60]
+    label_saved = ""
+    if new_label:
+        await tdb(request).settings.update_one(
+            {"name": "branding"},
+            {"$set": org_stamp(request, {"name": "branding", "id_label": new_label})},
+            upsert=True)
+        invalidate_settings(org_id, "branding")
+        label_saved = new_label
+        await log_action("id_label_set_by_import", current_actor(request), {"id_label": new_label}, org_id=org_id)
+
     summary = {"added": added, "updated": updated, "skipped_changes": skipped_changed, "removed": removed,
                "blocked_removals": len(blocked), "staff_changes_skipped": staff_skipped, "phone_mode": data.phone_mode,
                "attrs_filled": attrs_filled}
     await log_action("voters_import_applied", current_actor(request), summary, org_id=org_id)
     await append_ledger(org_id, "voters_import_applied", "roster", current_actor(request),
                         (admin or {}).get("role", "admin"), summary)
-    return {"status": "success", **summary, "blocked": blocked}
+    return {"status": "success", **summary, "blocked": blocked, "id_label": label_saved}
 
 
 @app.post("/admin/import-voters")
@@ -6474,6 +6605,7 @@ async def create_organization(data: OrganizationCreate, request: Request):
     org_doc = {
         "name":              data.name,
         "slug":              slug,
+        "frontend_url":      normalize_frontend_url(data.frontend_url),
         "created_at":        datetime.utcnow(),
         "branding_defaults": {
             "org_name": data.name
@@ -6488,8 +6620,22 @@ async def create_organization(data: OrganizationCreate, request: Request):
     return {
         "org_id": str(result.inserted_id),
         "name":   data.name,
-        "slug":   slug
+        "slug":   slug,
+        "frontend_url": org_doc["frontend_url"],
     }
+
+
+@app.put("/superadmin/orgs/{slug}/frontend-url")
+async def set_organization_frontend_url(slug: str, data: OrganizationFrontendUrl, request: Request):
+    """Sets (or clears, with a blank value) the site address used in links this org's SMS messages carry."""
+    url = normalize_frontend_url(data.frontend_url)
+    res = await db.organizations.update_one({"slug": slug.strip().lower()}, {"$set": {"frontend_url": url}})
+    if not res.matched_count:
+        raise HTTPException(404, "Organisation not found.")
+    _invalidate_org_cache(slug.strip().lower())
+    await log_action("organization_frontend_url_set", current_actor(request),
+                     {"slug": slug, "frontend_url": url})
+    return {"slug": slug, "frontend_url": url}
 
 
 @app.get("/superadmin/orgs")
@@ -6646,6 +6792,21 @@ async def legacy_data_delete(data: LegacyDelete, request: Request,
 
 # --- Branding ---
 
+_ID_WORDING_DEFAULTS = {"id_label": "", "id_examples": [], "name_examples": [], "id_format_hint": ""}
+
+
+def _clean_id_wording(data) -> dict:
+    """Trims and bounds the voter-login wording so a pasted essay can't end up in a placeholder."""
+    def lst(items):
+        return [str(x).strip()[:80] for x in (items or []) if str(x).strip()][:8]
+    return {
+        "id_label": (data.id_label or "").strip()[:60],
+        "id_examples": lst(data.id_examples),
+        "name_examples": lst(data.name_examples),
+        "id_format_hint": (data.id_format_hint or "").strip()[:200],
+    }
+
+
 @app.get("/superadmin/branding")
 async def get_branding(request: Request):
     doc = await tdb(request).settings.find_one({"name": "branding"})
@@ -6659,7 +6820,8 @@ async def get_branding(request: Request):
             "university_logo_url": "",
             "support_phone":       "",
             "support_contacts":    [],
-            "cc_list":             []
+            "cc_list":             [],
+            **_ID_WORDING_DEFAULTS,
         }
         
     # This endpoint is unauthenticated by design (App.jsx and Results.jsx fetch it for
@@ -6667,10 +6829,12 @@ async def get_branding(request: Request):
     # visitor. cc_list (officials' email addresses) and org_id have no business here.
     PUBLIC_BRANDING_FIELDS = (
         "logo_url", "primary_color", "accent_color", "org_name", "university_name",
-        "university_logo_url", "support_phone",
+        "university_logo_url", "support_phone", "id_label", "id_format_hint",
     )
     out = {k: doc.get(k, "") for k in PUBLIC_BRANDING_FIELDS}
     out["support_contacts"] = doc.get("support_contacts") or []
+    out["id_examples"] = doc.get("id_examples") or []
+    out["name_examples"] = doc.get("name_examples") or []
     return out
 
 
@@ -6684,7 +6848,7 @@ async def get_branding_full(request: Request, admin: dict = Depends(require_role
         "logo_url": "", "primary_color": "#003366", "accent_color": "#f1c40f",
         "org_name": "", "university_name": "", "university_logo_url": "",
         "support_phone": "", "support_contacts": [],
-        "cc_list": [], "signatories": [],
+        "cc_list": [], "signatories": [], **_ID_WORDING_DEFAULTS,
     }
     return {**defaults, **{k: doc.get(k, v) for k, v in defaults.items()}}
 
@@ -6730,6 +6894,7 @@ def _clean_support_contacts(groups: list[dict]) -> list[dict]:
 async def save_branding(data: BrandingUpdate, request: Request):
     doc = data.dict()
     doc["support_contacts"] = _clean_support_contacts(data.support_contacts)
+    doc.update(_clean_id_wording(data))
     await tdb(request).settings.update_one(
         {"name": "branding"},
         {"$set": org_stamp(request, {**doc, "name": "branding"})},
@@ -7154,7 +7319,7 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     if "student_id" in requested:
         sid = normalize_student_id(requested["student_id"])
         if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", sid):
-            raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
+            raise HTTPException(400, f"{_cap(await id_noun(request.state.org_id))} must be 1-64 characters with no spaces.")
         new_vals["student_id"] = sid
     if "full_name" in requested:
         name = normalize_name(requested["full_name"])
@@ -7204,9 +7369,9 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     if "student_id" in changes or "full_name" in changes:
         voter = await tdb(request).voters.find_one({"student_id": final["student_id"]})
         if not voter:
-            raise HTTPException(404, "That registration number is not on the voter register.")
+            raise HTTPException(404, f"That {await id_noun(request.state.org_id)} is not on the voter register.")
         if not names_match(voter.get("full_name", ""), final["full_name"]):
-            raise HTTPException(400, "The name on the voter register for that registration number doesn't match "
+            raise HTTPException(400, f"The name on the voter register for that {await id_noun(request.state.org_id)} doesn't match "
                                      "the name on this application.")
         final["student_id"] = voter["student_id"]
         if "student_id" in changes:
@@ -7890,7 +8055,9 @@ async def export_voter_register(data: VoterExportRequest, request: Request,
     voters = [v async for v in tdb(request).voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)])]
 
     max_phones = max([1] + [len(v.get("phone_numbers") or []) for v in voters])
-    header = ["Registration Number", "Full Name", *[f"Phone {i}" for i in range(1, max_phones + 1)],
+    _b = await cached_setting(org_id, "branding") or {}
+    id_header = (_b.get("id_label") or "").strip() or "Registration Number"   # the org's own name for the ID
+    header = [id_header, "Full Name", *[f"Phone {i}" for i in range(1, max_phones + 1)],
               *[f["label"] for f in enabled]]
     rows = [_export_row(v, mode, enabled, max_phones) for v in voters]
 
@@ -8895,13 +9062,13 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
     if new_student_id is not None:
         candidate_sid = normalize_student_id(new_student_id)
         if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", candidate_sid):
-            raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
+            raise HTTPException(400, f"{_cap(await id_noun(org_id))} must be 1-64 characters with no spaces.")
         if candidate_sid != old_sid:
             if any(voter.get(f) for f in STUDENT_ROLE_FLAGS):
                 raise HTTPException(409, "This student holds an admin/commission role, whose sessions and votes are "
-                                         "keyed to the registration number. Remove the role before changing it.")
+                                         f"keyed to the {await id_noun(org_id)}. Remove the role before changing it.")
             if await tdb_for(org_id).voters.find_one({"org_id": org_id, "student_id": candidate_sid, "_id": {"$ne": voter["_id"]}}):
-                raise HTTPException(409, "Another student in this organization already has that registration number.")
+                raise HTTPException(409, f"Another student in this organization already has that {await id_noun(org_id)}.")
             new_sid = candidate_sid
             events.append({"event": "student_registration_number_changed", "field": "student_id",
                            "old": old_sid, "new": candidate_sid})
@@ -8960,7 +9127,7 @@ async def _apply_student_edit(org_id, voter: dict, full_name: str | None, new_st
             await tdb_for(org_id).voters.update_one(
                 {"_id": voter["_id"]},
                 {"$set": {"full_name": old_name, "student_id": old_sid, "phone_numbers": old_phones}})
-            raise HTTPException(409, "Another student in this organization already has that registration number.")
+            raise HTTPException(409, f"Another student in this organization already has that {await id_noun(org_id)}.")
         # Keep the student's own records attached to the new number.
         _t = tdb_for(org_id)
         for coll in (_t.applications, _t.exception_grants, _t.contact_changes, _t.candidate_tokens):
@@ -9011,7 +9178,7 @@ async def edit_student(data: StudentEditRequest, request: Request,
         touches_contact = bool(data.phone_ops) or (
             data.new_student_id is not None and normalize_student_id(data.new_student_id) != old_sid)
         if touches_contact:
-            raise ApiError(409, "The roster is frozen: phone and registration-number changes must be submitted "
+            raise ApiError(409, f"The roster is frozen: phone and {await id_noun(request.state.org_id)} changes must be submitted "
                                 "as a contact-change request for a commissioner to approve.", "contact_change_required")
         if voter.get("has_voted"):
             role = admin.get("role", "")
@@ -10427,13 +10594,13 @@ async def _validate_contact_change(data: ContactChangeRequest, voter: dict, org_
     if t == "registration_number_change":
         new_sid = normalize_student_id(data.new_value or "")
         if not re.fullmatch(r"[^\s\x00-\x1f]{1,64}", new_sid):
-            raise HTTPException(400, "Registration number must be 1-64 characters with no spaces.")
+            raise HTTPException(400, f"{_cap(await id_noun(org_id))} must be 1-64 characters with no spaces.")
         if new_sid == voter["student_id"]:
-            raise HTTPException(400, "That is already this student's registration number.")
+            raise HTTPException(400, f"That is already this student's {await id_noun(org_id)}.")
         if any(voter.get(f) for f in STUDENT_ROLE_FLAGS):
-            raise HTTPException(409, "This student holds an admin/commission role; the registration number cannot be changed.")
+            raise HTTPException(409, f"This student holds an admin/commission role; the {await id_noun(org_id)} cannot be changed.")
         if await tdb_for(org_id).voters.find_one({"student_id": new_sid}):
-            raise HTTPException(409, "Another student in this organization already has that registration number.")
+            raise HTTPException(409, f"Another student in this organization already has that {await id_noun(org_id)}.")
         ch["new_value"], ch["expected_old"] = new_sid, voter["student_id"]
     return ch
 
@@ -10678,9 +10845,9 @@ async def undo_digest_entry(entry_id: str, data: UndoDigestEntry, request: Reque
 
     if field == "student_id":
         if voter["student_id"] != new_value:
-            raise HTTPException(409, "The registration number has changed again since this edit; review manually.")
+            raise HTTPException(409, f"The {await id_noun(org_id)} has changed again since this edit; review manually.")
         if await tdb(request).voters.find_one({"org_id": org_id, "student_id": old_value, "_id": {"$ne": voter["_id"]}}):
-            raise HTTPException(409, "Another student now holds that registration number; can't restore it automatically.")
+            raise HTTPException(409, f"Another student now holds that {await id_noun(org_id)}; can't restore it automatically.")
         await tdb(request).voters.update_one({"_id": voter["_id"]}, {"$set": {"student_id": old_value}})
         _t = tdb_for(org_id)
         for coll in (_t.applications, _t.exception_grants, _t.contact_changes, _t.candidate_tokens):
@@ -10734,7 +10901,7 @@ async def _notify_old_number(request: Request, c: dict, old_phones: list[str], n
     org = b.get("org_name", "the election")
     when = datetime.utcnow().strftime("%H:%M UTC")
     what = {"phone_change": "The phone number on", "phone_remove": "A phone number on",
-            "phone_add": "A phone number was added to", "registration_number_change": "The registration number on"}[ch["type"]]
+            "phone_add": "A phone number was added to", "registration_number_change": f"The {_id_noun_from(b)} on"}[ch["type"]]
     tail = " was changed" if ch["type"] in ("phone_change", "registration_number_change") else (
         " was removed" if ch["type"] == "phone_remove" else "")
     reach = b.get("support_phone") or next(
@@ -11336,7 +11503,8 @@ _DOC_MIME = {
 
 def _nomination_defaults() -> dict:
     return {"enabled": False, "required": True, "title": "Nomination Form", "instructions": "",
-            "template_file": None, "accepted_types": ["pdf"], "max_mb": 5}
+            "template_file": None, "accepted_types": ["pdf"], "max_mb": 5,
+            "collect_phone": False}   # ask applicants for a phone number (orgs whose register has none); saved on the voter record
 
 
 def _nomination_from_doc(doc: dict | None) -> dict:
@@ -11400,9 +11568,11 @@ def _sniff_document(content: bytes, accepted: list[str] | tuple[str, ...]) -> st
 
 def _nomination_public_view(cfg: dict) -> dict:
     """What an applicant needs and nothing more. Disabled -> a bare flag, no instructions or links leak."""
+    # collect_phone is independent of the nomination-form section, and only sent when on (so the default payload is unchanged).
+    phone = {"collect_phone": True} if cfg.get("collect_phone") else {}
     if not cfg["enabled"]:
-        return {"enabled": False}
-    return {k: cfg[k] for k in ("enabled", "required", "title", "instructions", "template_file", "accepted_types", "max_mb")}
+        return {"enabled": False, **phone}
+    return {**{k: cfg[k] for k in ("enabled", "required", "title", "instructions", "template_file", "accepted_types", "max_mb")}, **phone}
 
 
 @app.get("/nomination-form")
@@ -11424,6 +11594,7 @@ class NominationFormUpdate(BaseModel):
     instructions: str | None = Field(None, max_length=10000)
     accepted_types: list[str] | None = Field(None, max_length=10)
     max_mb: int | None = None
+    collect_phone: bool | None = None
     template_file: NominationTemplateIn | None = None
     clear_template_file: bool = False
     reason: str = Field(..., max_length=300)
@@ -11460,6 +11631,8 @@ async def superadmin_put_nomination_form(data: NominationFormUpdate, request: Re
         new["enabled"] = data.enabled
     if data.required is not None:
         new["required"] = data.required
+    if data.collect_phone is not None:
+        new["collect_phone"] = data.collect_phone
     if data.title is not None:
         title = _clean_plain_text(data.title, multiline=False)
         if not title or len(title) > NOMINATION_TITLE_MAX:
@@ -11548,6 +11721,18 @@ async def superadmin_upload_nomination_template(request: Request, file: UploadFi
 NOMINATION_UPLOAD_TTL_HOURS = 24      # an upload must be attached to an application within this long
 _NOMINATION_MIME = {"pdf": "application/pdf",
                     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
+@app.post("/superadmin/nomination-form/test-storage")
+async def superadmin_test_nomination_storage(request: Request):
+    """One click: prove the private bucket settings work (write, read back, staff download link, delete) without
+    submitting a fake application. Touches only a throwaway file under nomination-forms/<org>/_selftest/."""
+    org_id = require_org(request.state.org_id)
+    key = f"nomination-forms/{org_id}/_selftest/{secrets.token_hex(8)}.pdf"
+    result = await run_in_threadpool(nomination_storage.self_test, key)
+    await log_action("nomination_storage_tested", current_actor(request),
+                     {"ok": result["ok"], "failed": [s["name"] for s in result["steps"] if not s["ok"]]}, org_id=org_id)
+    return result
 
 
 @app.post("/apply/upload-document")

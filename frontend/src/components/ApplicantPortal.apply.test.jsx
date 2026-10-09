@@ -45,7 +45,7 @@ const form = (c) => c.querySelector('form');
 
 async function fillAll(c, { photo = false } = {}) {
   await screen.findByText('Chairperson');
-  fireEvent.change(screen.getByPlaceholderText(/22\/U\/IED/), { target: { value: '  22/u/ied/1086/gv ' } });
+  fireEvent.change(screen.getByPlaceholderText(/23\/U\/BCS/), { target: { value: '  22/u/ied/1086/gv ' } });
   fireEvent.change(screen.getByPlaceholderText(/Ayebale/), { target: { value: 'Ayebale Elizabeth' } });
   fireEvent.click(screen.getByText('Chairperson'));
   fireEvent.change(screen.getByPlaceholderText(/I am running/), { target: { value: 'Vote for me' } });
@@ -108,6 +108,59 @@ describe('B1: apply form validation', () => {
     const elig = mockPost.mock.calls.find(c => c[0] === '/apply/check-eligibility');
     expect(elig[1].student_id).toBe('22/U/IED/1086/GV');
     expect(mockPost.mock.calls.find(c => c[0] === '/apply')[1].student_id).toBe('22/U/IED/1086/GV');
+  });
+});
+
+describe('collect_phone toggle', () => {
+  const withPhone = (on) => mockGet.mockImplementation((url) => Promise.resolve({
+    data: url === '/public/bootstrap' ? { branding: {}, status: { approval_policy: 'majority_total' }, positions: [{ _id: 'p1', title: 'Chairperson', application_fee: 0 }] }
+      : url === '/nomination-form' ? (on ? { enabled: false, collect_phone: true } : { enabled: false })
+      : url === '/positions' ? [{ _id: 'p1', title: 'Chairperson', application_fee: 0 }] : { approval_policy: 'majority_total' },
+  }));
+
+  it('shows no phone field by default', async () => {
+    const { container } = render(<ApplicantPortal />);
+    await screen.findByText('Chairperson');
+    expect(container.querySelector('[data-field="phone"]')).toBeNull();
+  });
+
+  it('shows it when on, blocks submit without it, and sends it with both requests', async () => {
+    withPhone(true);
+    mockPost.mockImplementation((url) => Promise.resolve({ data: url === '/apply/upload-image' ? { secure_url: 'u' } : {} }));
+    const { container } = render(<ApplicantPortal />);
+    await fillAll(container);
+    await vi.waitFor(() => expect(container.querySelector('[data-field="phone"]')).not.toBeNull());
+    fireEvent.submit(form(container));
+    expect((await screen.findByRole('alert')).textContent).toContain('Phone number');
+    expect(mockPost.mock.calls.find(c => c[0] === '/apply/check-eligibility')).toBeUndefined();
+    fireEvent.change(container.querySelector('[data-field="phone"]'), { target: { value: ' 0772 123456 ' } });
+    fireEvent.submit(form(container));
+    await screen.findByText(/Application Submitted/);
+    expect(mockPost.mock.calls.find(c => c[0] === '/apply/check-eligibility')[1].phone).toBe('0772 123456');
+    expect(mockPost.mock.calls.find(c => c[0] === '/apply')[1].phone).toBe('0772 123456');
+  });
+
+  it('never sends a phone when the toggle is off', async () => {
+    mockPost.mockImplementation((url) => Promise.resolve({ data: url === '/apply/upload-image' ? { secure_url: 'u' } : {} }));
+    const { container } = render(<ApplicantPortal />);
+    await fillAll(container);
+    fireEvent.submit(form(container));
+    await screen.findByText(/Application Submitted/);
+    expect('phone' in mockPost.mock.calls.find(c => c[0] === '/apply')[1]).toBe(false);
+  });
+});
+
+describe('registration-number wording follows the org (like the voter login)', () => {
+  it('uses the org example and format hint, not a hard-coded one', async () => {
+    const { setIdText } = await import('../idText');
+    setIdText({ id_label: 'Student Number', id_examples: ['2100712345'], name_examples: ['Nakato Ruth'], id_format_hint: 'Ten digits, no spaces.' });
+    try {
+      render(<ApplicantPortal />);
+      await screen.findByText('Chairperson');
+      expect(screen.getByPlaceholderText('e.g. 2100712345')).toBeTruthy();
+      expect(screen.getByPlaceholderText('e.g. Nakato Ruth')).toBeTruthy();
+      expect(screen.getByText('Ten digits, no spaces.')).toBeTruthy();
+    } finally { setIdText(null); }
   });
 });
 

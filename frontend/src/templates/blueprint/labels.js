@@ -1,4 +1,6 @@
 // Pure helpers for the blueprint primitives (kept out of the .jsx so fast-refresh lint stays happy).
+import { fmtShort } from '../../tz.js';
+
 // Status-cell copy (E10). Derived from derivePhase(...).state; new chrome strings, listed in the deviations register.
 export const STATUS_LABELS = {
   voting_open: 'Voting Open',
@@ -6,6 +8,23 @@ export const STATUS_LABELS = {
   voting_soon: 'Not Started',
   voting_closed: 'Closed',
 };
+
+// Second line of the header status cell (live). `info` = derivePhase(...), `left` = formatted countdown or null.
+// Countdown wins while there is one; an open vote shows when it closes; otherwise nothing.
+const COUNTDOWN_SHORT = { 'Applications close in': 'Apps close in', 'Voting opens in': 'Opens in' };
+export function statusDetail(info, left, status) {
+  if (!info) return '';
+  if (left && info.countdownLabel) {
+    // More than a day away: the seconds are noise and cost header width on phones ("2d 03h 04m 05s" -> "2d 03h 04m").
+    const shown = /^\d+d /.test(left) ? left.replace(/ \d+s$/, '') : left;
+    return `${COUNTDOWN_SHORT[info.countdownLabel] || info.countdownLabel} ${shown}`;
+  }
+  if (info.state === 'voting_open' && status?.voting_closes_at) {
+    const when = fmtShort(status.voting_closes_at, info.tz);
+    return when ? `Closes ${when}` : '';
+  }
+  return '';
+}
 
 /** "Kyambogo Engineering Society" -> "KES" (max 3 letters). Falls back to "EP" (Election Portal). */
 export function initials(name) {

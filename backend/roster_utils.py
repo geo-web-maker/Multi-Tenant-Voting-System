@@ -54,7 +54,8 @@ def check_id_shapes(file_ids, roster_ids=(), min_rows: int = SHAPE_MIN_ROWS, min
             "outliers": [i for i in file_ids if id_shape(i) != shape]}
 
 
-def shape_warnings(result: dict | None, total: int, row_nums: dict, per_row_cap: int = 20) -> list[str]:
+def shape_warnings(result: dict | None, total: int, row_nums: dict, per_row_cap: int = 20,
+                   noun: str = "registration number") -> list[str]:
     """Warning strings for check_id_shapes(). One summary line when many rows mismatch (wrong file /
     new numbering scheme), otherwise one line per outlier. Never blocks a row."""
     if not result or not result["outliers"]:
@@ -62,9 +63,9 @@ def shape_warnings(result: dict | None, total: int, row_nums: dict, per_row_cap:
     out, ref, ex = result["outliers"], result["reference"], result["example"]
     where = "the existing voter register" if result["source"] == "roster" else "most of this file"
     if len(out) > per_row_cap or len(out) > total * 0.5:
-        return [f"{len(out)} of {total} registration numbers don't match the format of {where} "
+        return [f"{len(out)} of {total} {noun}s don't match the format of {where} "
                 f"(e.g. \"{ex}\"). Check you uploaded the right file. They are still included."]
-    return [f"Row {row_nums.get(i, '?')} ({i}): registration number doesn't match the format of {where} "
+    return [f"Row {row_nums.get(i, '?')} ({i}): {noun} doesn't match the format of {where} "
             f"(e.g. \"{ex}\") - check for a typo. It is still included."
             for i in out]
 

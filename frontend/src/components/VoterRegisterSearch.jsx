@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useIdText } from '../idText';
 import api from '../api';
 import { Icon } from './icons.jsx';
 import { regNo } from '../regNo';
 import { LoadingBlock } from './Spinner.jsx';
 
 export default function VoterRegisterSearch() {
+  const idText = useIdText();
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [results, setResults] = useState([]);
@@ -45,9 +47,9 @@ export default function VoterRegisterSearch() {
     <div style={wrapStyle}>
       <div style={colStyle}>
         <h3 style={headingStyle}>Voter Register</h3>
-        <p style={subStyle}>Search by name or registration number to confirm your record.</p>
+        <p style={subStyle}>Search by name or {idText.noun} to confirm your record.</p>
         <input
-          placeholder="e.g. Namusoke or 23/U/BCS/10245/GV"
+          placeholder={`e.g. ${idText.names[0].split(' ')[0]} or ${idText.firstId}`}
           value={q}
           onChange={e => { setQ(e.target.value); setPage(1); }}
           style={registerInputStyle}
@@ -55,7 +57,7 @@ export default function VoterRegisterSearch() {
         <div style={tableWrapStyle}>
           <div style={tableHeaderStyle}>
             <span>Name</span>
-            <span>Registration Number</span>
+            <span>{idText.label}</span>
           </div>
           <div style={tableBodyStyle}>
             {loading && <div style={mutedCenter}><LoadingBlock text="Searching…" inline /></div>}
@@ -80,7 +82,7 @@ export default function VoterRegisterSearch() {
       <div style={colStyle}>
         <h3 style={headingStyle}>Check My Number</h3>
         <p style={subStyle}>Confirm the phone number we have on file is still yours.</p>
-        <input placeholder="Registration Number" value={checkId} onChange={e => setCheckId(e.target.value)} style={registerInputStyle} />
+        <input placeholder={idText.label} value={checkId} onChange={e => setCheckId(e.target.value)} style={registerInputStyle} />
         <input placeholder="Full Name" value={checkName} onChange={e => setCheckName(e.target.value)} style={registerInputStyle} />
         <button onClick={checkNumber} disabled={checking || !checkId || !checkName} style={checkBtnStyle(checking)}>
           {checking ? 'Checking…' : 'Check Number'}
@@ -140,7 +142,7 @@ const pagerBtnStyle = {
 
 const checkBtnStyle = (loading) => ({
   width: '100%', padding: '13px', borderRadius: '30px', border: 'none',
-  backgroundColor: 'var(--brand-primary, #003366)', color: 'white', fontWeight: 'bold',
+  backgroundColor: 'var(--brand-primary, #003366)', color: 'var(--brand-on-primary, white)', fontWeight: 'bold',
   cursor: loading ? 'wait' : 'pointer', opacity: loading ? 0.7 : 1, fontSize: '14px'
 });
 

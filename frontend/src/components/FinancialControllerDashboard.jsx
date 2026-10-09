@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
+import { useIdText } from '../idText';
 import { useToast, useConfirm, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
@@ -28,6 +29,7 @@ const money = (n) => `UGX ${Number(n).toLocaleString('en-UG')}`;
 const shortDate = (d) => (d ? new Date(d).toLocaleDateString('en-UG', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 
 export default function FinancialControllerDashboard({ onLogout }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -205,7 +207,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         {!fcId && (
           <div style={promptBox}>
             <p style={{ margin: '0 0 10px', fontWeight: '600', color: 'var(--text-color)' }}>
-              Enter your Student ID to record your decisions correctly:
+              Enter your {idText.noun} to record your decisions correctly:
             </p>
             <div style={{ display: 'flex', gap: '10px' }}>
               <input

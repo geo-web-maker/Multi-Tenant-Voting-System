@@ -2,7 +2,7 @@ import React from 'react';
 import api from '../api';
 import { getTemplate } from '../template';
 
-const defaults = { enabled: false, required: true, title: 'Nomination Form', instructions: '', template_file: null, accepted_types: ['pdf'], max_mb: 5 };
+const defaults = { enabled: false, required: true, title: 'Nomination Form', instructions: '', template_file: null, accepted_types: ['pdf'], max_mb: 5, collect_phone: false };
 
 export default function NominationFormPanel() {
   const bp = getTemplate();
@@ -13,6 +13,8 @@ export default function NominationFormPanel() {
   const [busy, setBusy] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
   const [msg, setMsg] = React.useState({ kind: '', text: '' });
+  const [testing, setTesting] = React.useState(false);
+  const [test, setTest] = React.useState(null);   // { ok, steps: [{ name, ok, detail }] } or { error }
 
   const apply = (data) => { const next = { ...defaults, ...(data || {}) }; setSaved(next); setForm(next); };
   React.useEffect(() => { api.get('/nomination-form').then(r => apply(r.data)).catch(() => setMsg({ kind: 'error', text: 'Could not load the nomination-form settings.' })); }, []);
@@ -34,6 +36,13 @@ export default function NominationFormPanel() {
     finally { setUploading(false); }
   };
 
+  const testStorage = async () => {
+    setTesting(true); setTest(null);
+    try { setTest((await api.post('/superadmin/nomination-form/test-storage')).data); }
+    catch (e) { setTest({ error: e.response?.data?.detail || 'The test could not be run.' }); }
+    finally { setTesting(false); }
+  };
+
   const save = async () => {
     setBusy(true); setMsg({ kind: '', text: '' });
     try {
@@ -50,7 +59,9 @@ export default function NominationFormPanel() {
       <div style={grid}>
         <label style={lbl}>Enable section <input type="checkbox" checked={Boolean(form.enabled)} onChange={e => setForm({ ...form, enabled: e.target.checked })} /></label>
         <label style={lbl}>Require upload <input type="checkbox" checked={Boolean(form.required)} disabled={!form.enabled} onChange={e => setForm({ ...form, required: e.target.checked })} /></label>
+        <label style={lbl}>Ask applicants for a phone number <input type="checkbox" checked={Boolean(form.collect_phone)} onChange={e => setForm({ ...form, collect_phone: e.target.checked })} /></label>
       </div>
+      {form.collect_phone && <p style={{ margin: '0 0 10px', fontSize: 12, opacity: .65 }}>For registers with no phone numbers. Saved on the voter record, and only when that record has none yet. Works even if the nomination form section above is off.</p>}
       <input style={inp} value={form.title} maxLength={80} placeholder="Nomination Form" onChange={e => setForm({ ...form, title: e.target.value })} aria-label="Nomination form title" />
       <textarea style={{ ...inp, minHeight: 100, marginTop: 8 }} value={form.instructions} maxLength={2000} placeholder="Instructions shown to applicants" onChange={e => setForm({ ...form, instructions: e.target.value })} aria-label="Nomination form instructions" />
       <div style={{ marginTop: 10 }}>
@@ -63,6 +74,23 @@ export default function NominationFormPanel() {
         <b style={{ fontSize: 12 }}>Blank template</b>
         {form.template_file ? <span style={{ fontSize: 12, opacity: .75 }}>{form.template_file.filename}</span> : <span style={{ fontSize: 12, opacity: .55 }}>No template uploaded</span>}
         <label style={uploadBtn}>{uploading ? 'Uploading…' : 'Upload PDF/DOCX'}<input type="file" accept=".pdf,.docx" disabled={uploading} style={{ display: 'none' }} onChange={e => uploadTemplate(e.target.files?.[0])} /></label>
+      </div>
+      <div style={uploadBox}>
+        <b style={{ fontSize: 12 }}>Signed-form storage</b>
+        <span style={{ fontSize: 12, opacity: .6 }}>Checks the private bucket settings without submitting an application.</span>
+        <button type="button" onClick={testStorage} disabled={testing} style={{ ...uploadBtn, background: 'transparent', color: 'inherit' }} data-testid="test-storage">{testing ? 'Testing…' : 'Test storage'}</button>
+        {test && (
+          <div role="status" style={{ flexBasis: '100%', fontSize: 12, lineHeight: 1.7 }}>
+            {test.error ? <span style={{ color: 'var(--danger)' }}>{test.error}</span> : (
+              <>
+                <b style={{ color: test.ok ? 'var(--success)' : 'var(--danger)' }}>{test.ok ? 'Storage works: signed forms can be uploaded, read by staff and deleted.' : 'Storage is not working yet.'}</b>
+                {test.steps.map(st => (
+                  <div key={st.name}><span aria-hidden="true">{st.ok ? '✓' : '✗'}</span> <b>{st.name}</b>: <span style={{ opacity: .8 }}>{st.detail}</span></div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </div>
       <input style={{ ...inp, width: '100%', marginTop: 8, boxSizing: 'border-box' }} value={reason} maxLength={300} placeholder="Reason for change (required)" aria-label="Reason for change" onChange={e => setReason(e.target.value)} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>

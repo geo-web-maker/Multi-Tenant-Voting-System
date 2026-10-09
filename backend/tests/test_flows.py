@@ -627,6 +627,19 @@ async def test_applications_open_window_passes_and_election_status_exposes_close
     assert j["applications_phase"] == "ended" and j["applications_closes_at"].startswith("2026-01-09T12:00")
 
 
+async def test_election_status_reports_timeline_flags_for_the_header(env):
+    """voting_scheduled / applications_active mirror the Timeline cards (start or end set; now inside the window),
+    so the public header can say \"Applications Open\" while voting has no schedule of its own."""
+    await env.db.settings.delete_many({"name": "election_phases"})
+    j = (await env.client.get("/election-status")).json()
+    assert j["voting_scheduled"] is False and j["applications_active"] is False
+    await set_applications(env, START - timedelta(days=1), START + timedelta(days=1))
+    j = (await env.client.get("/election-status")).json()
+    assert j["applications_active"] is True and j["voting_scheduled"] is False
+    await set_applications(env, START - timedelta(days=5), START - timedelta(days=1))
+    assert (await env.client.get("/election-status")).json()["applications_active"] is False
+
+
 # ---- Nomination fee + applicant SMS -------------------------------------------------------------
 
 async def _mk_position(e, title="President", fee=50000):

@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { getIdText, useIdText } from '../idText';
 import api from '../api';
 import { startPolling } from '../hooks/usePolling';
 import FinalReport from './FinalReport';
@@ -88,7 +89,7 @@ const ACTION_TITLES = {
   application_force_approved: 'Application force-approved',
   application_force_denied: 'Application force-denied',
   application_reverted_to_pending: 'Application sent back to pending',
-  application_edited: 'Application registration number corrected',
+  get application_edited() { return `Application ${getIdText().noun} corrected`; },
   application_vote_cast: 'Panel vote cast',
   application_vote_tied: 'Panel vote tied',
   application_tie_broken: 'Tie broken by the Chairperson',
@@ -327,6 +328,7 @@ function describeAction(action) {
 /* ══════════════════════════ TIMELINE ══════════════════════════ */
 
 export function Timeline({ canEdit = false, isChief = false }) {
+  const idText = useIdText();
   const toast = useToast();
   const confirm = useConfirm();
   const prompt = usePrompt();
@@ -590,7 +592,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
             everyone back in and leave no record of who used the window.
           </p>
           <form onSubmit={grantException} style={formCol}>
-            <input style={inputStyle} placeholder="Student ID" required
+            <input style={inputStyle} placeholder={idText.short} required
               value={grantForm.student_id}
               onChange={e => setGrantForm({ ...grantForm, student_id: e.target.value })} />
             <select style={inputStyle} value={grantForm.phase}

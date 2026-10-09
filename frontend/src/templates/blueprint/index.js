@@ -15,7 +15,6 @@ export { default as BottomDock } from './BottomDock.jsx';
 export { PositionHeading, CandidateRow } from './BallotParts.jsx';
 export { default as BootSplash } from './BootSplash.jsx';
 export { initials, STATUS_LABELS, ROLE_LABELS, textOf, cls, statusTone } from './labels.js';
-export { default as PhaseBannerView } from './PhaseBannerView.jsx';
 export { default as OtpScreen } from './OtpScreen.jsx';
 export { default as OtpCells } from './OtpCells.jsx';
 export { default as VoterFields } from './VoterFields.jsx';
