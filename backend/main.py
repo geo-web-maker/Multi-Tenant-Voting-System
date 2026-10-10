@@ -2469,18 +2469,22 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
     return True
 
 
-async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
+async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None, *, live: list | None = None):
     """Called after every panel vote and after panel or policy changes. The denominator is the
-    active panel (guide 7, item 1), and only active panelists' votes count."""
+    active panel (guide 7, item 1), and only active panelists' votes count.
+    `live` is an already-read _live_panelists() list; a caller that has one passes it so the panel is not
+    read again (guide 06). Callers that pass nothing behave exactly as before."""
     # A close-out already handed this application to the Chairperson (or decided it). A later
     # resweep must not reopen it under the normal policy, which would silently change the outcome.
     if app_doc.get("vetting_closed_undecided"):
         return
-    panel_total = await get_panel_count(org_id)
+    if live is None:
+        live = await _live_panelists(org_id)
+    panel_total = len(live)
     if panel_total == 0:
         return
     policy = (await security_settings_for(org_id))["approval_policy"]
-    active = await _active_panel_keys(org_id)
+    active = {_panel_vote_key(p) for p in live}
     votes = {k: v for k, v in _dedupe_votes(app_doc.get("votes", {})).items() if k in active}
     approve_count = sum(1 for v in votes.values() if v == "approve")
     deny_count = sum(1 for v in votes.values() if v == "deny")
@@ -6693,12 +6697,15 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
         "is_member": bool(panelist.get("is_member")), "also_commissioner": is_also_commissioner,
     }, org_id=request.state.org_id)
     updated = await tdb(request).applications.find_one({"_id": oid})
-    await _resolve_application(app_id, updated, request.state.org_id)
+    # One read of the panel serves both the tally and the response (guide 06). Who may vote was already decided
+    # above by _acting_panelist, a fresh lookup that is deliberately not shared with this list (audit S-08).
+    live = await _live_panelists(request.state.org_id)
+    await _resolve_application(app_id, updated, request.state.org_id, live=live)
 
     final = await tdb(request).applications.find_one({"_id": oid})
     shaped = shape_application_for_role(
-        final, "vetting", actor_key=key, active_keys=await _active_panel_keys(request.state.org_id),
-        panel_count=await get_panel_count(request.state.org_id))
+        final, "vetting", actor_key=key, active_keys={_panel_vote_key(p) for p in live},
+        panel_count=len(live))
     return {"status": "vote_recorded", "my_vote": data.vote, "progress": shaped["progress"]}
 
 
@@ -6731,8 +6738,9 @@ async def panel_tie_break(app_id: str, data: TieBreakDecision, request: Request,
     if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("finance_cleared"):
         raise HTTPException(409, "This application is not waiting for a tie-break.")
     policy = (await security_settings_for(org_id))["approval_policy"]
-    active = await _active_panel_keys(org_id)
-    panel_total = await get_panel_count(org_id)
+    live = await _live_panelists(org_id)          # one read serves both the key set and the count (guide 06)
+    active = {_panel_vote_key(p) for p in live}
+    panel_total = len(live)
     votes = {k: v for k, v in _dedupe_votes(app_doc.get("votes", {})).items() if k in active}
     approve_count = sum(1 for v in votes.values() if v == "approve")
     deny_count = sum(1 for v in votes.values() if v == "deny")
@@ -8264,8 +8272,9 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
     total_commissioners = await get_commissioner_count(request.state.org_id)
 
     applications_summary = []
-    overseer_keys = await _active_panel_keys(request.state.org_id)
-    panel_count = await get_panel_count(request.state.org_id)
+    _live = await _live_panelists(request.state.org_id)      # one read serves both (guide 06)
+    overseer_keys = {_panel_vote_key(p) for p in _live}
+    panel_count = len(_live)
     async for a in tdb(request).applications.find({}).sort("submitted_at", -1):
         shaped = shape_application_for_role(a, "overseer", active_keys=overseer_keys, panel_count=panel_count)
         row = {
