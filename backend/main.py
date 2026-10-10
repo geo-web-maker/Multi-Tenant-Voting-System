@@ -1920,6 +1920,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+async def hash_password_async(plain_password: str) -> str:
+    """Same as hash_password (including the 72-byte refusal) but bcrypt runs in a worker thread, so setting or
+    resetting a password no longer stalls every other request for its ~100-250 ms of CPU."""
+    return await run_in_threadpool(hash_password, plain_password)
+
+
 async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
     """bcrypt takes roughly 100-250 ms of pure CPU; run on the event loop it stalls every other request
     (voters included) for that long on each login. Handlers call this instead of verify_password."""
@@ -4928,7 +4934,7 @@ async def apply_upload_image(request: Request, file: UploadFile = File(...)):
     _assert_real_image(content)
 
     try:
-        result = cloudinary.uploader.upload(content, folder="ballotbox/applicants", resource_type="image")
+        result = await run_in_threadpool(cloudinary.uploader.upload, content, folder="ballotbox/applicants", resource_type="image")
     except Exception as e:
         logger.error(f"Cloudinary applicant upload failed: {e}")
         await alert_critical(
@@ -6327,7 +6333,7 @@ async def admin_upload_image(request: Request, file: UploadFile = File(...), adm
     _assert_real_image(content)
 
     try:
-        result = cloudinary.uploader.upload(content, folder="ballotbox/admin", resource_type="image")
+        result = await run_in_threadpool(cloudinary.uploader.upload, content, folder="ballotbox/admin", resource_type="image")
     except Exception as e:
         logger.error(f"Cloudinary admin upload failed: {e}")
         await alert_warning(
@@ -6447,7 +6453,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
         await tdb(request).voters.update_one(
             {"_id": it_admin["_id"]},
             {"$set": {
-                "it_admin_password_hash":        hash_password(data.new_password),
+                "it_admin_password_hash":        await hash_password_async(data.new_password),
                 "it_admin_must_change_password": False,
                 **(await _invalidate_sessions(it_admin["_id"])),
               },
@@ -6469,7 +6475,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
         await tdb(request).voters.update_one(
             {"_id": financial_controller["_id"]},
             {"$set": {
-                "financial_controller_password_hash":        hash_password(data.new_password),
+                "financial_controller_password_hash":        await hash_password_async(data.new_password),
                 "financial_controller_must_change_password": False,
                 **(await _invalidate_sessions(financial_controller["_id"])),
               },
@@ -6491,7 +6497,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
         await tdb(request).voters.update_one(
             {"_id": overseer["_id"]},
             {"$set": {
-                "overseer_password_hash":        hash_password(data.new_password),
+                "overseer_password_hash":        await hash_password_async(data.new_password),
                 "overseer_must_change_password": False,
                 **(await _invalidate_sessions(overseer["_id"])),
               },
@@ -6515,7 +6521,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
         await tdb(request).panel_members.update_one(
             {"_id": panelist["_id"]},
             {"$set": {
-                "password_hash": hash_password(data.new_password),
+                "password_hash": await hash_password_async(data.new_password),
                 "must_change_password": False,
                 **(await _invalidate_sessions(panelist["_id"])),
             },
@@ -6538,7 +6544,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
         await tdb(request).voters.update_one(
             {"_id": commissioner["_id"]},
             {"$set": {
-                "commissioner_password_hash":        hash_password(data.new_password),
+                "commissioner_password_hash":        await hash_password_async(data.new_password),
                 "commissioner_must_change_password": False,
                 **(await _invalidate_sessions(commissioner["_id"])),
               },
@@ -7882,7 +7888,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
         raise HTTPException(400, "This person is not an IT admin.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -8485,7 +8491,7 @@ async def reset_it_admin_password(student_id: str, request: Request):
         raise HTTPException(404, "IT admin not found.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -8510,7 +8516,7 @@ async def reset_commissioner_password(student_id: str, request: Request):
         raise HTTPException(404, "Commissioner not found.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -8888,9 +8894,27 @@ async def export_voter_register(data: VoterExportRequest, request: Request,
     projection = {"_id": 0, "full_name": 1, "student_id": 1, "phone_numbers": 1, "attrs": 1}   # allowlist
     voters = [v async for v in tdb(request).voters.find(query, projection).sort([("full_name", 1), ("student_id", 1)])]
 
-    max_phones = max([1] + [len(v.get("phone_numbers") or []) for v in voters])
     _b = await cached_setting(org_id, "branding") or {}
     id_header = (_b.get("id_label") or "").strip() or "Registration Number"   # the org's own name for the ID
+    # Row building and file rendering are CPU work over up to EXPORT_MAX_ROWS rows: off the event loop.
+    body, media, n_rows = await run_in_threadpool(_render_voter_export, fmt, voters, mode, enabled, id_header)
+
+    # Audit BEFORE releasing data. No names/phones/reg numbers/search text: this log is readable by every admin role.
+    await log_action("voter_register_export", actor, {"mode": mode, "format": fmt, "rows": n_rows}, org_id=org_id)
+
+    slug = re.sub(r"[^a-z0-9-]", "", (getattr(request.state, "org_slug", "") or "org").lower()) or "org"
+    filename = f"voter-register-{slug}-{mode}-{datetime.utcnow().strftime('%Y%m%d-%H%M')}.{fmt}"
+    return Response(content=body, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store", "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+        "X-Export-Mode": mode, "X-Export-Rows": str(n_rows),
+    })
+
+
+def _render_voter_export(fmt: str, voters: list, mode: str, enabled: list, id_header: str):
+    """Sync, pure: voters -> (file bytes, media type, row count). Runs in a worker thread."""
+    max_phones = max([1] + [len(v.get("phone_numbers") or []) for v in voters])
     header = [id_header, "Full Name", *[f"Phone {i}" for i in range(1, max_phones + 1)],
               *[f["label"] for f in enabled]]
     rows = [_export_row(v, mode, enabled, max_phones) for v in voters]
@@ -8923,18 +8947,7 @@ async def export_voter_register(data: VoterExportRequest, request: Request,
         wb.save(bio)
         body = bio.getvalue()
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-    # Audit BEFORE releasing data. No names/phones/reg numbers/search text: this log is readable by every admin role.
-    await log_action("voter_register_export", actor, {"mode": mode, "format": fmt, "rows": len(rows)}, org_id=org_id)
-
-    slug = re.sub(r"[^a-z0-9-]", "", (getattr(request.state, "org_slug", "") or "org").lower()) or "org"
-    filename = f"voter-register-{slug}-{mode}-{datetime.utcnow().strftime('%Y%m%d-%H%M')}.{fmt}"
-    return Response(content=body, media_type=media, headers={
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Cache-Control": "no-store", "Pragma": "no-cache",
-        "X-Content-Type-Options": "nosniff",
-        "X-Export-Mode": mode, "X-Export-Rows": str(len(rows)),
-    })
+    return body, media, len(rows)
 
 
 @app.post("/superadmin/commissioners/{student_id:path}/set-credentials")
@@ -8946,7 +8959,7 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
         raise HTTPException(400, "This person is not a commissioner.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -9107,7 +9120,7 @@ async def superadmin_add_panelist(data: PanelMemberCreate, request: Request, bac
         "confidentiality_accepted_at": None,
         "confidentiality_version": None,
         "active":            True,
-        "password_hash":     hash_password(temp_password),
+        "password_hash":     await hash_password_async(temp_password),
         "must_change_password": True,
         "temp_password_expires": now + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
         "added_by":          current_actor(request),
@@ -9252,7 +9265,7 @@ async def superadmin_panel_set_credentials(panel_member_id: str, data: PanelMemb
         raise HTTPException(409, conflict)
     await tdb(request).panel_members.update_one({"_id": p["_id"]}, {"$set": {
         "email": email,
-        "password_hash": hash_password(temp_password),
+        "password_hash": await hash_password_async(temp_password),
         "must_change_password": True,
         "temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
         **(await _invalidate_sessions(p["_id"])),
@@ -9452,7 +9465,7 @@ async def set_financial_controller_credentials(student_id: str, data: SetEmailOn
         raise HTTPException(400, "This person is not a Financial Controller.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -9478,7 +9491,7 @@ async def reset_financial_controller_password(student_id: str, request: Request)
         raise HTTPException(404, "Financial Controller not found.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -9544,7 +9557,7 @@ async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request:
         raise HTTPException(400, "This person is not an Overseer.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -9570,7 +9583,7 @@ async def reset_overseer_password(student_id: str, request: Request):
         raise HTTPException(404, "Overseer not found.")
 
     temp_password = generate_temp_password()
-    hashed = hash_password(temp_password)
+    hashed = await hash_password_async(temp_password)
 
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
@@ -10444,7 +10457,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
         cred = credentials.get(role_label.lower()) or {}
         password = cred.get("password") or generate_temp_password()
         await dbs.voters.update_one({"_id": voter["_id"]}, {"$set": {
-            email_field: email, hash_field: hash_password(password), must_field: False, exp_field: expires, flag_field: True, "is_demo": True}})
+            email_field: email, hash_field: await hash_password_async(password), must_field: False, exp_field: expires, flag_field: True, "is_demo": True}})
         credentials[role_label.lower()] = {"email": email, "password": password, "student_id": sid}
         created["roles"] += 1
 
@@ -10456,7 +10469,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
         password = generate_temp_password()
         email = f"demo.panel{i}@example.invalid"
         await dbs.panel_members.insert_one({"panel_member_id": pid, "email": email, "full_name": f"Demo Panelist {i}",
-                                            "password_hash": hash_password(password), "active": True,
+                                            "password_hash": await hash_password_async(password), "active": True,
                                             "is_member": False, "access_expires_at": expires,
                                             "must_change_password": False, "temp_password_expires": expires,
                                             "confidentiality_required": False, "confidentiality_accepted": True,
@@ -12646,7 +12659,8 @@ async def superadmin_upload_nomination_template(request: Request, file: UploadFi
     filename = f"{stem[:NOMINATION_FILENAME_MAX - 6]}.{kind}"
     try:
         # Raw resources keep their extension inside the public id, which is what makes the download open correctly.
-        result = cloudinary.uploader.upload(
+        result = await run_in_threadpool(
+            cloudinary.uploader.upload,
             content, folder=f"ballotbox/nomination-templates/{org_id}", resource_type="raw",
             public_id=f"{secrets.token_hex(8)}.{kind}", use_filename=False, unique_filename=False)
         url = _require_https_url(result["secure_url"])
