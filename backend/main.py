@@ -3469,10 +3469,27 @@ def _invalidate_results(org_id=None) -> None:
         _RESULTS_CACHE.pop(k, None)
 
 
+# Public positions list, per organisation (guide 04). `positions` is a collection, not a settings document, so
+# cached_setting does not fit. Same shape as the results cache: key = org id, value = (expiry, shaped list),
+# deep-copied on the way out. Every route that writes positions calls _invalidate_positions(org_id).
+# POSITIONS_CACHE_TTL_S=0 turns it off (tests do, unless they test the cache).
+_POSITIONS_TTL = float(os.getenv("POSITIONS_CACHE_TTL_S", "5"))
+_POSITIONS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _invalidate_positions(org_id=None) -> None:
+    for k in [k for k in _POSITIONS_CACHE if org_id is None or k == str(org_id)]:
+        _POSITIONS_CACHE.pop(k, None)
+
+
 def invalidate_settings(org_id=None, name: str | None = None) -> None:
     """Drop cached settings for one org (optionally one name). org_id=None drops everything.
-    Also drops that org's cached results, since opening, closing or certifying changes what they show."""
+    Also drops that org's cached results, since opening, closing or certifying changes what they show.
+    A call with no name is a broad reset (org deleted, demo reset, legacy data moved), so it drops the
+    cached positions list too."""
     _invalidate_results(org_id)
+    if name is None:
+        _invalidate_positions(org_id)
     if org_id is None and name is None:
         _SETTINGS_CACHE.clear()
         return
@@ -4624,10 +4641,23 @@ async def get_positions(request: Request, response: Response):
     else:
         response.headers["Cache-Control"] = "public, max-age=15, stale-while-revalidate=30"
     response.headers["Vary"] = "Origin, X-Org-Slug, Authorization"
+    # Server-side cache (guide 04): browsers honour Cache-Control but a flood does not, and nothing else caches.
+    # Deliberately NOT bypassed when an Authorization header is present: the header is not checked on this public
+    # route, so a bypass would let any client skip the cache by sending a fake one. Admin edits still show at
+    # once because every positions write calls _invalidate_positions.
+    org_id = str(request.state.org_id)
+    if _POSITIONS_TTL > 0:
+        hit = _POSITIONS_CACHE.get(org_id)
+        if hit and hit[0] > time.monotonic():
+            perf_metrics.note_cache("positions", True)
+            return copy.deepcopy(hit[1])
+        perf_metrics.note_cache("positions", False)
     positions = []
     async for p in tdb(request).positions.find({}).sort("order", 1):
         p["_id"] = str(p["_id"])
         positions.append(p)
+    if _POSITIONS_TTL > 0:
+        _POSITIONS_CACHE[org_id] = (time.monotonic() + _POSITIONS_TTL, copy.deepcopy(positions))
     return positions
 
 # Simple in-memory per-IP rate limit for the one unauthenticated upload
@@ -7413,7 +7443,10 @@ def _clean_id_wording(data) -> dict:
 
 @app.get("/superadmin/branding")
 async def get_branding(request: Request):
-    doc = await tdb(request).settings.find_one({"name": "branding"})
+    # Public and read on every page load by every visitor, so it goes through the short settings cache (guide 04).
+    # Both branding write sites call invalidate_settings(org_id, "branding"). The authenticated twin below
+    # keeps reading the database so the superadmin edit form never saves from a stale copy.
+    doc = await cached_setting(request.state.org_id, "branding")
     if not doc:
         return {
             "logo_url":            "",
@@ -7523,6 +7556,7 @@ async def add_position(data: PositionCreate, request: Request, admin: dict = Dep
     # Was reachable by ANY admin token (the path doesn't start with
     # /superadmin) — an Overseer could create or delete ballot positions.
     result = await tdb(request).positions.insert_one(data.dict())
+    _invalidate_positions(request.state.org_id)
     await log_action("position_added", current_actor(request), {"title": data.title}, org_id=request.state.org_id)
     return {"id": str(result.inserted_id)}
 
@@ -7539,6 +7573,7 @@ async def update_position(position_id: str, data: PositionUpdate, request: Reque
     if not changes:
         raise HTTPException(400, "Nothing to update.")
     res = await tdb(request).positions.update_one({"_id": oid}, {"$set": changes})
+    _invalidate_positions(request.state.org_id)
     if res.matched_count == 0:
         raise HTTPException(404, "Position not found.")
     await log_action("position_updated", current_actor(request), {"position_id": position_id, **changes},
@@ -7553,6 +7588,7 @@ async def delete_position(position_id: str, request: Request, admin: dict = Depe
     except Exception:
         raise HTTPException(400, "Invalid position id.")
     await tdb(request).positions.delete_one({"_id": oid})
+    _invalidate_positions(request.state.org_id)
     await log_action("position_deleted", current_actor(request), {"position_id": position_id}, org_id=request.state.org_id)
     return {"status": "deleted"}
 
@@ -10286,6 +10322,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
                                                 "application_fee": 0, "is_demo": True})
             positions.append(await dbs.positions.find_one({"_id": r.inserted_id}))
             created["positions"] += 1
+        _invalidate_positions(org_id)
     if not positions:
         raise HTTPException(409, "No election positions are available for the demo.")
 
@@ -10598,6 +10635,7 @@ async def set_roadmap(data: RoadmapUpdate, request: Request,
         })},
         upsert=True,
     )
+    invalidate_settings(request.state.org_id, "election_roadmap")
     await log_action("roadmap_updated", current_actor(request), {
         "milestone_count": len(stored),
         "week_start_day": data.week_start_day,
@@ -10628,7 +10666,7 @@ async def get_public_election_roadmap(request: Request):
     "today" in that zone. The 4 enforced phases are deliberately NOT exposed
     here — they're an admin-facing view of when the system switches state,
     not voter information."""
-    doc = await tdb(request).settings.find_one({"name": "election_roadmap"})
+    doc = await cached_setting(request.state.org_id, "election_roadmap")     # guide 04; set_roadmap invalidates
     schedule = await get_phase_schedule(request)
     return {
         "milestones": (doc or {}).get("milestones", []),
@@ -12216,8 +12254,13 @@ def _clean_momo_number(raw: str) -> str:
     return n
 
 
-async def get_payment_info(request: Request) -> dict:
-    doc = await tdb(request).settings.find_one({"name": "payment_info"}) or {}
+async def get_payment_info(request: Request, *, fresh: bool = False) -> dict:
+    """Public read goes through the short settings cache (guide 04). The superadmin PUT passes fresh=True so its
+    "Nothing to change" comparison and the audit row's old value always come from the database (audit S-04)."""
+    if fresh:
+        doc = await tdb(request).settings.find_one({"name": "payment_info"}) or {}
+    else:
+        doc = await cached_setting(request.state.org_id, "payment_info") or {}
     return {"mobile_money_number": doc.get("mobile_money_number") or "",
             "mobile_money_name": doc.get("mobile_money_name") or ""}
 
@@ -12249,7 +12292,7 @@ async def superadmin_put_payment_info(data: PaymentInfoUpdate, request: Request)
         if len(name) > PAYMENT_NAME_MAX_LEN or any(ord(c) < 32 for c in name):
             raise HTTPException(400, f"The name must be at most {PAYMENT_NAME_MAX_LEN} characters.")
         number = _clean_momo_number(raw_number)
-    old = await get_payment_info(request)
+    old = await get_payment_info(request, fresh=True)
     new = {"mobile_money_number": number, "mobile_money_name": name}
     if new == old:
         raise HTTPException(400, "Nothing to change.")
@@ -12257,6 +12300,7 @@ async def superadmin_put_payment_info(data: PaymentInfoUpdate, request: Request)
         {"name": "payment_info"},
         {"$set": org_stamp(request, {"name": "payment_info", **new, "updated_at": datetime.utcnow()})},
         upsert=True)
+    invalidate_settings(request.state.org_id, "payment_info")
     await log_action("payment_info_changed", current_actor(request),
                      {"reason": reason, "old": old, "new": new}, org_id=request.state.org_id)
     return new

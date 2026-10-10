@@ -38,6 +38,7 @@ def _settings_cache_off_by_default(monkeypatch):
     import main
     monkeypatch.setattr(main, "_SETTINGS_TTL", 0.0)
     monkeypatch.setattr(main, "_RESULTS_TTL", 0.0)     # same for the public results cache
+    monkeypatch.setattr(main, "_POSITIONS_TTL", 0.0)   # and the public positions list
     main.invalidate_settings()
     yield
     main.invalidate_settings()
