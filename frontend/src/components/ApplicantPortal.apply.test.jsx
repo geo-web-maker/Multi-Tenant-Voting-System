@@ -9,7 +9,7 @@ vi.mock('../api', () => ({
 const mockTrack = vi.fn();
 vi.mock('../analytics', () => ({ trackStep: (...a) => mockTrack(...a) }));
 vi.mock('../paymentInfo', () => ({ usePaymentInfo: () => null }));
-vi.mock('../hooks/usePolling', () => ({ default: () => {} }));
+vi.mock('../hooks/usePolling', () => ({ default: () => {}, startPolling: () => () => {} }));
 vi.mock('../context/HelpMenuContext', () => ({ useHelpMenu: () => ({ openFees: () => {} }) }));
 vi.mock('./MobileMoneyNumber', () => ({ default: () => null }));
 

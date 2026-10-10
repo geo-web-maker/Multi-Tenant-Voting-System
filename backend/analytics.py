@@ -514,24 +514,34 @@ async def _send_alerts() -> None:
                 log.debug("analytics alert send failed", exc_info=True)
 
 
-async def _flush_once() -> None:
-    global _deltas, _heat, _last_flush_at
+# How often the counters are written to the database. The loop still ticks every 30 s so the alert evaluator
+# and the per-minute trim keep their cadence; only the database write waits. Hits on the same key coalesce in
+# memory, so a longer interval means fewer writes. A stop always flushes. Default 30 = unchanged behaviour.
+_FLUSH_S = float(os.getenv("ANALYTICS_FLUSH_S", "30"))
+_last_db_flush = 0.0
+
+
+async def _flush_once(force: bool = False) -> None:
+    global _deltas, _heat, _last_flush_at, _last_db_flush
     if _db is None:
         return
     now = datetime.now(timezone.utc)
     _conc_delta(now)
-    deltas, _deltas = _deltas, {}
-    heat, _heat = _heat, defaultdict(int)
-    ops, hops = _build_ops(deltas, heat)
-    try:
-        if ops:
-            await _db.analytics_counters.bulk_write(ops, ordered=False)
-        if hops:
-            await _db.analytics_heat.bulk_write(hops, ordered=False)
-        _last_flush_at = now.isoformat()
-    except Exception:
-        _restore(deltas, heat)
-        log.debug("analytics flush failed; buffers restored", exc_info=True)
+    # The 1 s of slack keeps the default (flush every tick) from skipping a tick on timer jitter.
+    if force or time.monotonic() - _last_db_flush >= _FLUSH_S - 1:
+        _last_db_flush = time.monotonic()
+        deltas, _deltas = _deltas, {}
+        heat, _heat = _heat, defaultdict(int)
+        ops, hops = _build_ops(deltas, heat)
+        try:
+            if ops:
+                await _db.analytics_counters.bulk_write(ops, ordered=False)
+            if hops:
+                await _db.analytics_heat.bulk_write(hops, ordered=False)
+            _last_flush_at = now.isoformat()
+        except Exception:
+            _restore(deltas, heat)
+            log.debug("analytics flush failed; buffers restored", exc_info=True)
     try:
         await _send_alerts()
     except Exception:
@@ -1086,15 +1096,16 @@ async def _warm_caps(db) -> None:
             _seen_channels[i["o"]].add(i["a"])
 
 
-async def start(db) -> None:
+async def start(db, create_indexes: bool = True) -> None:
     global _db, _task
     _db = db
     try:
-        await db.analytics_counters.create_index(
-            [("org_id", 1), ("day", 1), ("kind", 1), ("k1", 1), ("k2", 1), ("device", 1), ("seg", 1)], unique=True)
-        await db.analytics_counters.create_index("day_dt", expireAfterSeconds=400 * 86400)
-        await db.analytics_heat.create_index(
-            [("org_id", 1), ("page", 1), ("device", 1), ("seg", 1), ("kind", 1), ("gx", 1), ("gy", 1)], unique=True)
+        if create_indexes:      # main passes False when its index marker is current (guide 11, step 3)
+            await db.analytics_counters.create_index(
+                [("org_id", 1), ("day", 1), ("kind", 1), ("k1", 1), ("k2", 1), ("device", 1), ("seg", 1)], unique=True)
+            await db.analytics_counters.create_index("day_dt", expireAfterSeconds=400 * 86400)
+            await db.analytics_heat.create_index(
+                [("org_id", 1), ("page", 1), ("device", 1), ("seg", 1), ("kind", 1), ("gx", 1), ("gy", 1)], unique=True)
         await _warm_caps(db)
     except Exception:
         log.warning("analytics index/cache setup failed", exc_info=True)
@@ -1105,7 +1116,7 @@ async def start(db) -> None:
 async def stop() -> None:
     global _task
     try:
-        await _flush_once()
+        await _flush_once(force=True)
     finally:
         if _task:
             _task.cancel()

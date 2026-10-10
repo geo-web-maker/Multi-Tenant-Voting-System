@@ -42,3 +42,12 @@ def _settings_cache_off_by_default(monkeypatch):
     main.invalidate_settings()
     yield
     main.invalidate_settings()
+
+
+@pytest.fixture(autouse=True)
+def _revocation_cache_reset():
+    """The revoked-token cache is process-wide (guide 10); without this one test's jti answers leak into the next."""
+    import main
+    main._clear_revocation_cache()
+    yield
+    main._clear_revocation_cache()

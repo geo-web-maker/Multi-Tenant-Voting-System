@@ -3,6 +3,7 @@ import api from '../api';
 import { regNo } from '../regNo';
 import { LoadingBlock } from './Spinner.jsx';
 import { ScrollList } from './UIFeedback';
+import { startPolling } from '../hooks/usePolling';
 
 // Applicant list with stages, for the people who answer applicants' questions (IT admins).
 // Stage only: the server sends no votes, reasons or payment details to this role.
@@ -28,8 +29,8 @@ export default function ApplicationStages() {
       } catch { if (live) setError('Could not load applications. Try again shortly.'); }
     };
     load();
-    const t = setInterval(load, 30000);
-    return () => { live = false; clearInterval(t); };
+    const stop = startPolling(load, 30000);
+    return () => { live = false; stop(); };
   }, []);
 
   const counts = useMemo(() => {

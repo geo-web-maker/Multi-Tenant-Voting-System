@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import api from './api';
+import { startPolling } from './hooks/usePolling';
 
 // The nomination-form card used to pop in only after the whole page had rendered, because the
 // config was first requested when the (lazy-loaded) Apply page mounted. Now:
@@ -48,8 +49,7 @@ export function useNominationForm(pollMs = 20000) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     if (!pollMs) return undefined;
-    const id = setInterval(load, pollMs);
-    return () => clearInterval(id);
+    return startPolling(load, pollMs);
   }, [pollMs, load]);
   return { ...(data || { enabled: false }), loading, refresh: load };
 }

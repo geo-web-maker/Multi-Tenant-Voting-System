@@ -1,6 +1,7 @@
 import React from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
+import { startPolling } from '../hooks/usePolling';
 
 export default function DemoInbox() {
   const [active, setActive] = React.useState(false);
@@ -20,7 +21,7 @@ export default function DemoInbox() {
 
   React.useEffect(() => { let alive = true; load().then(on => { if (!alive || !on) return; }); return () => { alive = false; }; }, [load]);
   // Poll fast while demo is on; keep checking slowly while off so enabling demo shows the inbox without a reload.
-  React.useEffect(() => { const id = setInterval(load, active ? 5000 : 30000); return () => clearInterval(id); }, [active, load]);
+  React.useEffect(() => startPolling(load, active ? 5000 : 30000), [active, load]);
 
   if (!active) return null;
   const unread = messages.filter(m => !lastSeen || String(m.created_at) > lastSeen).length;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchRosterStatus } from '../studentEdit';
+import { startPolling } from './usePolling';
 
 /** { phase: 'pre_freeze' | 'voting_frozen' | 'closed', frozen, contact_change_required, freeze_at } or null while loading. */
 export default function useRosterStatus(pollMs = 60000) {
@@ -8,8 +9,8 @@ export default function useRosterStatus(pollMs = 60000) {
     let live = true;
     const load = () => fetchRosterStatus().then((s) => live && setStatus(s)).catch(() => {});
     load();
-    const id = setInterval(load, pollMs);
-    return () => { live = false; clearInterval(id); };
+    const stop = startPolling(load, pollMs);
+    return () => { live = false; stop(); };
   }, [pollMs]);
   return status;
 }

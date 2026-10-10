@@ -123,10 +123,62 @@ cloudinary.config(
 # --- MONGODB ---
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 
+# Revoked-token lookups (guide 10, audit S-11). Every authenticated admin request checks its token, and every
+# dashboard tab polls, so the lookup was one op per request just to learn "this token is fine".
+# Write-through: a token revoked by THIS process is remembered at once (_REVOKED_LOCAL) and a logout or hat
+# switch is effective immediately; the database stays the source of truth for everything else.
+# "Checked and fine" answers are kept for REVOKED_CACHE_TTL_S (default 30; 0 turns that part off). With one
+# process that is exact; during a deploy overlap another process can accept a token revoked here for up to the TTL.
+_REVOKED_TTL = float(os.getenv("REVOKED_CACHE_TTL_S", "30"))
+_REVOKED_MAX_TRACKED = 5000
+_REVOKED_LOCAL: dict[str, float] = {}         # jti -> monotonic time after which the entry can be dropped
+_NOT_REVOKED_UNTIL: dict[str, float] = {}     # jti -> monotonic expiry of a "checked, not revoked" answer
+
+
+def _clear_revocation_cache() -> None:
+    _REVOKED_LOCAL.clear()
+    _NOT_REVOKED_UNTIL.clear()
+
+
+def _trim_revocation_cache(now: float) -> None:
+    for d in (_REVOKED_LOCAL, _NOT_REVOKED_UNTIL):
+        if len(d) >= _REVOKED_MAX_TRACKED:
+            for k in [k for k, exp in d.items() if exp <= now]:
+                d.pop(k, None)
+            while len(d) >= _REVOKED_MAX_TRACKED:
+                d.pop(next(iter(d)), None)
+
+
 async def _is_token_revoked(jti: str | None) -> bool:
     if not jti:
         return False
-    return await db.revoked_tokens.find_one({"jti": jti}) is not None
+    now = time.monotonic()
+    local = _REVOKED_LOCAL.get(jti)
+    if local is not None and local > now:
+        return True
+    if _REVOKED_TTL > 0:
+        ok_until = _NOT_REVOKED_UNTIL.get(jti)
+        if ok_until is not None and ok_until > now:
+            return False
+    revoked = await db.revoked_tokens.find_one({"jti": jti}) is not None      # a failed lookup raises: never cached
+    if revoked:
+        _trim_revocation_cache(now)
+        _REVOKED_LOCAL[jti] = now + JWT_EXPIRE_MINUTES * 60
+    elif _REVOKED_TTL > 0:
+        _trim_revocation_cache(now)
+        _NOT_REVOKED_UNTIL[jti] = now + _REVOKED_TTL
+    return revoked
+
+
+async def _revoke_jti(jti: str | None) -> None:
+    """The one place a token is revoked: database record plus the local cache, so a new call site cannot
+    forget the cache. The insert happens first; if it fails nothing is remembered as revoked."""
+    await db.revoked_tokens.insert_one({"jti": jti, "revoked_at": datetime.utcnow()})
+    if jti:
+        now = time.monotonic()
+        _trim_revocation_cache(now)
+        _REVOKED_LOCAL[jti] = now + JWT_EXPIRE_MINUTES * 60
+        _NOT_REVOKED_UNTIL.pop(jti, None)
 
 
 # Lookups that run on every voter request or every admin request and had no index (performance audit P1-3).
@@ -157,8 +209,37 @@ async def _ensure_perf_indexes() -> None:
             logger.warning("Could not create index %s on %s (continuing without it)", keys, coll, exc_info=True)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+# Every start used to send about 55 index commands, a burst at the worst moment. create_index is idempotent, so
+# a marker (collection app_meta, one document, no org_id so it is not tenant data) records which index set was
+# last created. Bump INDEX_SCHEMA_VERSION when you add or change an index in _create_startup_indexes (a change
+# to PERF_INDEXES is picked up automatically), or set FORCE_INDEX_SYNC=1 for one boot to re-create everything,
+# for example after dropping an index by hand in Atlas.
+INDEX_SCHEMA_VERSION = 1
+
+
+def _index_signature() -> str:
+    return f"v{INDEX_SCHEMA_VERSION}-{hashlib.sha1(repr(PERF_INDEXES).encode()).hexdigest()[:8]}"
+
+
+async def _indexes_up_to_date() -> bool:
+    if os.getenv("FORCE_INDEX_SYNC", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    try:
+        doc = await db.app_meta.find_one({"_id": "index_schema"})
+    except Exception:
+        return False
+    return bool(doc) and doc.get("signature") == _index_signature()
+
+
+async def _mark_indexes_current() -> None:
+    try:
+        await db.app_meta.update_one({"_id": "index_schema"},
+                                     {"$set": {"signature": _index_signature(), "at": datetime.utcnow()}}, upsert=True)
+    except Exception:
+        logger.warning("Could not record the index marker (indexes will be re-checked at the next boot)", exc_info=True)
+
+
+async def _create_startup_indexes() -> None:
     # OTP_EXPIRY_MINUTES is enforced explicitly in verify_otp too — this index
     # is cleanup, not the actual security boundary, since Mongo's TTL monitor
     # only sweeps roughly once a minute rather than at the exact expiry instant.
@@ -246,6 +327,17 @@ async def lifespan(app: FastAPI):
     # Turnout-velocity aggregation scans cast_at.
     await db.vote_events.create_index([("org_id", 1), ("cast_at", 1)])
     await _ensure_perf_indexes()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Index creation is skipped when the marker says this exact set was already created (guide 11, step 3).
+    indexes_current = await _indexes_up_to_date()
+    if indexes_current:
+        logger.info("Database indexes already at %s; skipping index creation at boot.", _index_signature())
+    else:
+        await _create_startup_indexes()
+        await _mark_indexes_current()
     set_revocation_check(_is_token_revoked)
     if DEBUG_MODE:
         # DEBUG_MODE sends no real SMS and writes every OTP and temporary password into the logs.
@@ -254,7 +346,7 @@ async def lifespan(app: FastAPI):
     await _check_config_on_boot()
     analytics.set_org_slug_resolver(_org_slug_for_id)
     analytics.set_org_resolver(_resolve_org_id)
-    await analytics.start(db)
+    await analytics.start(db, create_indexes=not indexes_current)
     await perf_metrics.start(db, b2_client=b2_client)
     closeout_task = None
     if VETTING_CLOSEOUT_SWEEP_SECONDS > 0:
@@ -5465,7 +5557,7 @@ async def admin_logout(request: Request):
     yet — see the superadmin org-reset / password-reset flows for dealing
     with a compromised non-superadmin account in the meantime."""
     admin = request.state.admin  # set by auth_guard_middleware
-    await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
+    await _revoke_jti(admin.get("jti"))
     await log_action("admin_logout", admin.get("sub", "unknown"), {}, org_id=admin.get("org_id"))
     return {"status": "success"}
 
@@ -9247,7 +9339,7 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role(*HAT_R
             full_name=panelist.get("full_name", ""), scope="full",
             extra_claims={"via_hat": True, "hat_role": origin})
         # The origin token's jti is what gets revoked; the old token then stops working.
-        await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
+        await _revoke_jti(admin.get("jti"))
         await log_action("hat_switched", student_id, {
             "from": origin, "to": "vetting", "panel_member_id": panelist["panel_member_id"]}, org_id=org_id)
         return {"status": "switched", "role": "vetting", "access_token": new_token,
@@ -9275,7 +9367,7 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role(*HAT_R
     new_token = create_access_token(
         subject=voter["student_id"], role=origin, org_id=org_id,
         full_name=voter.get("full_name", ""), scope="full")
-    await db.revoked_tokens.insert_one({"jti": admin.get("jti"), "revoked_at": datetime.utcnow()})
+    await _revoke_jti(admin.get("jti"))
     await log_action("hat_switched", voter["student_id"], {
         "from": "vetting", "to": origin}, org_id=org_id)
     return {"status": "switched", "role": origin, "access_token": new_token}

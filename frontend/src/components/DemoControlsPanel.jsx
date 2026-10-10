@@ -1,6 +1,7 @@
 import React from 'react';
 import api from '../api';
 import { getTemplate } from '../template';
+import { startPolling } from '../hooks/usePolling';
 
 const PHASES = ['applications','vetting','campaign','voting','results'];
 export default function DemoControlsPanel() {
@@ -13,7 +14,7 @@ export default function DemoControlsPanel() {
   const [now, setNow] = React.useState(Date.now());
   const load = React.useCallback(async () => { try { setStatus((await api.get('/superadmin/demo/status')).data); } catch { setStatus({ enabled: false, counts: {}, credentials: {} }); } }, []);
   React.useEffect(() => { load(); }, [load]);
-  React.useEffect(() => { const id = setInterval(load, 10000); return () => clearInterval(id); }, [load]);
+  React.useEffect(() => startPolling(load, 10000), [load]);
   React.useEffect(() => { if (!status.enabled) return undefined; const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, [status.enabled]);
   const remainingMs = status.enabled && status.expires_at ? Math.max(0, new Date(status.expires_at).getTime() - now) : 0;
   const remainingSeconds = Math.floor(remainingMs / 1000);

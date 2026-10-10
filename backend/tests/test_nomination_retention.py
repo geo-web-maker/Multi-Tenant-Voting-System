@@ -22,7 +22,7 @@ def deleted(monkeypatch):
 
 async def test_no_ttl_index_on_nomination_uploads_is_created_by_code():
     import inspect
-    src = inspect.getsource(main.lifespan)
+    src = inspect.getsource(main.lifespan) + inspect.getsource(main._create_startup_indexes)
     assert 'nomination_uploads.create_index("created_at", expireAfterSeconds' not in src
 
 

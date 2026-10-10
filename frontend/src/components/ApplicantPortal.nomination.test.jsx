@@ -5,7 +5,7 @@ import ApplicantPortal from './ApplicantPortal';
 const mockGet = vi.fn(); const mockPost = vi.fn();
 vi.mock('../api', () => ({ default: { get:(...a)=>mockGet(...a), post:(...a)=>mockPost(...a) } }));
 vi.mock('../paymentInfo', () => ({ usePaymentInfo:()=>null }));
-vi.mock('../hooks/usePolling', () => ({ default:()=>{} }));
+vi.mock('../hooks/usePolling', () => ({ default: () => {}, startPolling: () => () => {} }));
 vi.mock('../analytics', () => ({ trackStep:()=>{} }));
 vi.mock('../context/HelpMenuContext', () => ({ useHelpMenu:()=>({ openFees:()=>{} }) }));
 vi.mock('./MobileMoneyNumber', () => ({ default:()=>null }));

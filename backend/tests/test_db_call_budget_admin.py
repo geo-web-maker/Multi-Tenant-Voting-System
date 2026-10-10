@@ -86,9 +86,13 @@ async def test_admin_request_checks_revocation_once_and_a_revoked_token_is_still
         s = counted.snapshot()
         assert (await env.client.get("/admin/voters/stats", headers=env.sa)).status_code == 200
         assert counted.since(s).get(("revoked_tokens", "find_one"), 0) == 1      # was 2 (guard + route dependency)
+        s = counted.snapshot()
+        assert (await env.client.get("/admin/voters/stats", headers=env.sa)).status_code == 200
+        assert counted.since(s).get(("revoked_tokens", "find_one"), 0) == 0      # guide 10: "fine" answer is cached
         import jwt
         jti = jwt.decode(env.sa["Authorization"].split()[1], options={"verify_signature": False})["jti"]
-        await env.db.revoked_tokens.insert_one({"jti": jti})
+        await env.db.revoked_tokens.insert_one({"jti": jti})                     # revoked behind this process's back
+        main._clear_revocation_cache()                                           # (what the TTL does after 30 s)
         assert (await env.client.get("/admin/voters/stats", headers=env.sa)).status_code == 401
     finally:
         auth.set_revocation_check(None)
