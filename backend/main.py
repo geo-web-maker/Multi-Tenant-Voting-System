@@ -752,6 +752,110 @@ ALLOWED_ORIGINS = (
 #   ALLOWED_ORIGIN_REGEX=https://.*\.vercel\.app
 ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX") or None
 
+# =============================================================================
+# IN-MEMORY PER-IP LIMITER (audit S-02, OPT-14, guide 03)
+# =============================================================================
+# One Render instance means one process sees all traffic, so a token bucket per client IP held in memory
+# is accurate and costs ZERO Atlas ops, unlike _check_rate_limit (a Mongo write per call). Registered
+# after auth_guard_middleware and before GZip/CORS, so it runs BEFORE the org lookup and the auth check
+# (a rejected request touches no database) while CORS, security headers and analytics still wrap it
+# (the browser gets a readable 429 and the 429 alert still counts it).
+#   IP_LIMIT_MODE   off | shadow (default: only log what would be blocked) | enforce
+#   IP_LIMIT_RATE   sustained requests per second per IP (default 25)
+#   IP_LIMIT_BURST  bucket size per IP (default 100)
+# Many voters share one campus or mobile IP: run in shadow mode through a busy period, read the
+# ip_limit_summary log lines, and only then enforce with a limit well above the observed peak.
+IP_LIMIT_MODE = os.getenv("IP_LIMIT_MODE", "shadow").strip().lower()
+IP_LIMIT_RATE = float(os.getenv("IP_LIMIT_RATE", "25"))
+IP_LIMIT_BURST = float(os.getenv("IP_LIMIT_BURST", "100"))
+IP_LIMIT_MAX_TRACKED = int(os.getenv("IP_LIMIT_MAX_TRACKED", "5000"))
+IP_LIMIT_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json", _KEEPWARM_PATH)
+_IP_LIMIT_SUMMARY_S = 60.0
+
+
+class _IpBucket:
+    __slots__ = ("tokens", "last", "win", "win_n", "peak", "total", "blocked")
+
+    def __init__(self, now: float):
+        self.tokens, self.last = IP_LIMIT_BURST, now
+        self.win, self.win_n, self.peak, self.total, self.blocked = int(now), 0, 0, 0, 0
+
+
+_IP_LIMIT: dict[str, _IpBucket] = {}
+_IP_LIMIT_STATS = {"allowed": 0, "limited": 0, "unknown_ip": 0, "next_summary": 0.0}
+
+
+def _ip_limit_evict(now: float) -> None:
+    """Keep the table bounded: drop idle buckets first, then the least recently seen tenth."""
+    refill = IP_LIMIT_BURST / max(IP_LIMIT_RATE, 1e-9)
+    for k in [k for k, b in _IP_LIMIT.items() if now - b.last >= refill]:
+        _IP_LIMIT.pop(k, None)
+    if len(_IP_LIMIT) >= IP_LIMIT_MAX_TRACKED:
+        for k in sorted(_IP_LIMIT, key=lambda k: _IP_LIMIT[k].last)[: max(1, IP_LIMIT_MAX_TRACKED // 10)]:
+            _IP_LIMIT.pop(k, None)
+
+
+def _ip_limit_take(ip: str, now: float):
+    """Spend one token. Returns (allowed, retry_after_seconds). Also tracks the per-second peak."""
+    b = _IP_LIMIT.get(ip)
+    if b is None:
+        if len(_IP_LIMIT) >= IP_LIMIT_MAX_TRACKED:
+            _ip_limit_evict(now)
+        b = _IP_LIMIT[ip] = _IpBucket(now)
+    b.tokens = min(IP_LIMIT_BURST, b.tokens + (now - b.last) * IP_LIMIT_RATE)
+    b.last = now
+    sec = int(now)
+    if sec != b.win:
+        b.win, b.win_n = sec, 0
+    b.win_n += 1
+    b.peak = max(b.peak, b.win_n)
+    b.total += 1
+    if b.tokens >= 1.0:
+        b.tokens -= 1.0
+        return True, 0
+    b.blocked += 1
+    return False, max(1, math.ceil((1.0 - b.tokens) / max(IP_LIMIT_RATE, 1e-9)))
+
+
+def _ip_limit_summary(now: float) -> None:
+    """One log line a minute: the busiest IPs by peak requests per second (this is the shadow-mode evidence)."""
+    if now < _IP_LIMIT_STATS["next_summary"]:
+        return
+    _IP_LIMIT_STATS["next_summary"] = now + _IP_LIMIT_SUMMARY_S
+    top = sorted(_IP_LIMIT.items(), key=lambda kv: kv[1].peak, reverse=True)[:5]
+    logger.warning(
+        "ip_limit_summary mode=%s tracked=%d allowed=%d would_block_or_blocked=%d unknown_ip=%d limit=%s/s burst=%s top_peak_rps=%s",
+        IP_LIMIT_MODE, len(_IP_LIMIT), _IP_LIMIT_STATS["allowed"], _IP_LIMIT_STATS["limited"],
+        _IP_LIMIT_STATS["unknown_ip"], IP_LIMIT_RATE, IP_LIMIT_BURST,
+        [(ip, b.peak, b.total, b.blocked) for ip, b in top],
+    )
+
+
+@app.middleware("http")
+async def ip_limit_middleware(request: Request, call_next):
+    if IP_LIMIT_MODE not in ("shadow", "enforce") or request.method == "OPTIONS" \
+            or request.url.path.startswith(IP_LIMIT_EXEMPT_PREFIXES):
+        return await call_next(request)
+    ip = real_client_ip(request)
+    if ip == "unknown":  # no client address at all: never throttle everyone as one bucket
+        _IP_LIMIT_STATS["unknown_ip"] += 1
+        return await call_next(request)
+    now = time.monotonic()
+    ok, retry = _ip_limit_take(ip, now)
+    _ip_limit_summary(now)
+    if ok:
+        _IP_LIMIT_STATS["allowed"] += 1
+        return await call_next(request)
+    _IP_LIMIT_STATS["limited"] += 1
+    if IP_LIMIT_MODE == "enforce":
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please slow down and try again shortly."},
+            headers={"Retry-After": str(retry)},
+        )
+    return await call_next(request)  # shadow: counted and summarised, never blocked
+
+
 # Compress JSON/text responses (big rosters, results, exports) — a real saving on 3G. Registered BEFORE
 # CORS so CORS stays the outermost layer and still stamps headers on every response.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
