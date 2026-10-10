@@ -26,9 +26,9 @@ def _reset_org_cache():
     """The 60 s slug->org_id cache would otherwise leak one test's org id into the next
     (every test builds a fresh in-memory DB with a fresh ObjectId under the same slug)."""
     import main
-    main._ORG_CACHE.clear()
+    main._invalidate_org_cache()
     yield
-    main._ORG_CACHE.clear()
+    main._invalidate_org_cache()
 
 
 @pytest.fixture(autouse=True)

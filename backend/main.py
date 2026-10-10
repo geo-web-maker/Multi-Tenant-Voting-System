@@ -401,6 +401,36 @@ except Exception as e:
 ORG_CACHE_TTL_S = float(os.getenv("ORG_CACHE_TTL_S", "60"))
 _ORG_CACHE: dict[str, tuple[str, float]] = {}
 
+# Full slug -> org_id map (audit S-10, guide 02). A request with an unknown X-Org-Slug used to cost one
+# Atlas op each time, on every path, before authentication, and random slugs defeat a per-slug negative
+# cache. The organizations collection is small, so one query per ORG_CACHE_TTL_S loads all of it and an
+# unknown slug is then answered from memory. Newly created orgs are picked up at once because
+# _invalidate_org_cache() expires the map.
+_ORG_SLUG_MAP: dict[str, str] = {}
+_ORG_SLUG_MAP_EXP = 0.0
+_ORG_SLUG_MAP_COMPLETE = False
+_ORG_SLUG_MAP_GEN = 0
+_ORG_SLUG_MAP_LIMIT = 2000
+_ORG_SLUG_MAP_LOCK = asyncio.Lock()
+
+async def _org_slug_map():
+    """(map, complete). One `find` per TTL, single-flight. complete=False if the collection exceeded the limit."""
+    global _ORG_SLUG_MAP, _ORG_SLUG_MAP_EXP, _ORG_SLUG_MAP_COMPLETE
+    if _ORG_SLUG_MAP_EXP > time.monotonic():
+        return _ORG_SLUG_MAP, _ORG_SLUG_MAP_COMPLETE
+    async with _ORG_SLUG_MAP_LOCK:
+        if _ORG_SLUG_MAP_EXP > time.monotonic():
+            return _ORG_SLUG_MAP, _ORG_SLUG_MAP_COMPLETE
+        gen = _ORG_SLUG_MAP_GEN
+        docs = await db.organizations.find({}, {"slug": 1}).to_list(length=_ORG_SLUG_MAP_LIMIT)
+        fresh = {d["slug"]: str(d["_id"]) for d in docs if d.get("slug")}
+        complete = len(docs) < _ORG_SLUG_MAP_LIMIT
+        if gen == _ORG_SLUG_MAP_GEN:  # not invalidated while the query was in flight
+            _ORG_SLUG_MAP, _ORG_SLUG_MAP_COMPLETE = fresh, complete
+            _ORG_SLUG_MAP_EXP = time.monotonic() + ORG_CACHE_TTL_S
+            return _ORG_SLUG_MAP, _ORG_SLUG_MAP_COMPLETE
+        return fresh, complete
+
 async def _resolve_org_id(slug):
     if not slug:
         return None
@@ -412,13 +442,19 @@ async def _resolve_org_id(slug):
     perf_metrics.note_cache("org", False)
     if hit:
         _ORG_CACHE.pop(slug, None)
-    doc = await db.organizations.find_one({"slug": slug}, {"_id": 1})
-    if not doc:
-        return None
+    slug_map, complete = await _org_slug_map()
+    org_id = slug_map.get(slug)
+    if org_id is None:
+        if complete:
+            return None  # unknown slug, answered from memory: zero database ops
+        doc = await db.organizations.find_one({"slug": slug}, {"_id": 1})  # map was truncated: ask the DB
+        if not doc:
+            return None
+        org_id = str(doc["_id"])
     if len(_ORG_CACHE) >= 200:
         oldest = min(_ORG_CACHE, key=lambda k: _ORG_CACHE[k][1])
         _ORG_CACHE.pop(oldest, None)
-    _ORG_CACHE[slug] = (str(doc["_id"]), now + ORG_CACHE_TTL_S)
+    _ORG_CACHE[slug] = (org_id, now + ORG_CACHE_TTL_S)
     return _ORG_CACHE[slug][0]
 
 def _org_slug_for_id(org_id):
@@ -428,6 +464,9 @@ def _org_slug_for_id(org_id):
     return None
 
 def _invalidate_org_cache(slug=None):
+    global _ORG_SLUG_MAP_EXP, _ORG_SLUG_MAP_GEN
+    _ORG_SLUG_MAP_EXP = 0.0   # the slug map always reloads after any org change
+    _ORG_SLUG_MAP_GEN += 1
     if slug is None:
         _ORG_CACHE.clear()
     else:

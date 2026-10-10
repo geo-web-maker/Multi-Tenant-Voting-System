@@ -13,6 +13,15 @@ class FakeOrgs:
         oid = self.docs.get(query["slug"])
         return {"_id": oid} if oid else None
 
+    def find(self, query, projection=None):
+        self.calls += 1
+        docs = [{"_id": v, "slug": k} for k, v in self.docs.items()]
+
+        class _Cur:
+            async def to_list(self_, length=None):
+                return docs[:length] if length else docs
+        return _Cur()
+
 
 class FakeDb:
     def __init__(self, docs):
@@ -23,8 +32,10 @@ class FakeDb:
 def fake(monkeypatch):
     db = FakeDb({"alpha": "id-a", "beta": "id-b"})
     monkeypatch.setattr(main, "db", db)
+    main._invalidate_org_cache()
     main._ORG_CACHE.clear()
     yield db
+    main._invalidate_org_cache()
     main._ORG_CACHE.clear()
 
 
@@ -34,10 +45,10 @@ async def test_repeat_lookup_hits_cache(fake):
     assert fake.organizations.calls == 1
 
 
-async def test_unknown_slug_is_never_cached(fake):
+async def test_unknown_slug_is_not_cached_per_slug_but_costs_no_further_ops(fake):
     assert await main._resolve_org_id("nope") is None
     assert await main._resolve_org_id("nope") is None
-    assert fake.organizations.calls == 2
+    assert fake.organizations.calls == 1  # one map load; the repeat is answered from memory
     assert "nope" not in main._ORG_CACHE
 
 
