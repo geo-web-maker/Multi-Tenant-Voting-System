@@ -752,7 +752,6 @@ app.add_middleware(
 # front of the app). Verify N for your host (Render / Cloudflare) by logging the header once.
 TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "1"))
 
-
 def real_client_ip(request: Request) -> str:
     xff = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
     if TRUSTED_PROXY_HOPS > 0 and len(xff) >= TRUSTED_PROXY_HOPS:
@@ -12496,3 +12495,25 @@ async def _claim_nomination_upload(request: Request, upload_id: str, student_id:
     if not doc:
         raise HTTPException(400, "The uploaded nomination form could not be used. Please upload it again.")
     return doc
+
+# IP-DEBUG-BEGIN (temporary, guide 01; remove with remove_ip_debug.py)
+PUBLIC_PATHS.add("/health/ipdebug")
+
+
+@app.get("/health/ipdebug", include_in_schema=False)
+async def _ip_debug_tmp(request: Request, t: str = ""):
+    import hmac as _hmac
+    _tok = os.getenv("IP_DEBUG_TOKEN", "")
+    if len(_tok) < 16 or not _hmac.compare_digest(t.encode(), _tok.encode()):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    _xff = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    _body = {
+        "real_client_ip": real_client_ip(request),
+        "TRUSTED_PROXY_HOPS": TRUSTED_PROXY_HOPS,
+        "request.client.host": request.client.host if request.client else None,
+        "x_forwarded_for_from_right": {str(i + 1): p for i, p in enumerate(reversed(_xff))},
+        "headers": {h: request.headers.get(h) for h in ("x-forwarded-for", "x-real-ip", "forwarded", "via", "host")},
+    }
+    logger.warning("ip_debug real=%s xff=%s", _body["real_client_ip"], _xff)
+    return JSONResponse(content=_body, headers={"Cache-Control": "no-store"})
+# IP-DEBUG-END
