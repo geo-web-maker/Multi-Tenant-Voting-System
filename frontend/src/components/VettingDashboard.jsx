@@ -242,9 +242,7 @@ export default function VettingDashboard({ onLogout }) {
 
             {closed && !app.closeout_decision_available && (
               <p style={note}>
-                {app.closeout_decider === 'chair'
-                  ? 'Waiting for the Chairperson to decide.'
-                  : 'Waiting for the superadmin to decide.'}
+                Waiting for the Chairperson or the superadmin to decide.
               </p>
             )}
 

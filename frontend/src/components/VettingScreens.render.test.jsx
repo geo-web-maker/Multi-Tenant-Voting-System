@@ -173,7 +173,7 @@ describe('VettingDashboard', () => {
     };
     routeGet({ '/admin/vetting-me': me, '/admin/applications': [closed] });
     render(<VettingDashboard onLogout={() => {}} />);
-    expect(await screen.findByText(/Waiting for the superadmin/)).toBeTruthy();
+    expect(await screen.findByText(/Waiting for the Chairperson or the superadmin/)).toBeTruthy();
     expect(screen.queryByText('Approve')).toBeNull();
   });
 

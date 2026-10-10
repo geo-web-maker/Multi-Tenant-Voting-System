@@ -48,17 +48,3 @@
   opacity: 1 !important;
 }
 
-/* Performance tab (superadmin). Plain class names, additive only: no existing screen uses them. */
-.perf-card { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); min-width: 0; }
-.perf-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; cursor: pointer; }
-.perf-btn[aria-selected="true"] { border-color: var(--brand-primary, currentColor); font-weight: 600; }
-.perf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.perf-check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-@media (min-width: 769px) { .perf-grid { grid-template-columns: 1fr 1fr; } .perf-grid > :first-child, .perf-grid > :last-child { grid-column: 1 / -1; } }
-@media (max-width: 768px) {
-  .perf-table thead { display: none; }
-  .perf-table tr { display: block; border-bottom: 1px solid var(--border-color); padding: 6px 0; }
-  .perf-table td { display: flex; justify-content: space-between; gap: 12px; border: 0 !important; padding: 2px 8px !important; }
-  .perf-table td::before { content: attr(data-l); color: var(--text-muted); font-size: 12px; }
-}
-@media (prefers-reduced-motion: reduce) { .perf-card * { transition: none !important; animation: none !important; } }

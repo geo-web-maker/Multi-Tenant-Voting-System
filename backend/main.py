@@ -2185,7 +2185,7 @@ def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = 
             out["closeout_counts"] = app.get("closeout_counts") or {"approve": 0, "deny": 0}
             out["closeout_decider"] = closeout_decider or "superadmin"
             out["closeout_decision_available"] = bool(
-                is_chair_panelist and out["closeout_decider"] == "chair" and not own_application)
+                is_chair_panelist and not own_application)
         if resolved:
             out["final_split"] = closeout_split or {"approve": approve, "deny": deny}
             out["decided_by_tie_break"] = bool(app.get("decided_by_tie_break"))
@@ -6542,7 +6542,7 @@ async def panel_tie_break(app_id: str, data: TieBreakDecision, request: Request,
 async def panel_closeout_decision(app_id: str, data: TieBreakDecision, request: Request,
                                   admin: dict = Depends(require_role("vetting"))):
     """After vetting closes on a tie or on no votes, the Chairperson (still able to open the panel)
-    records the decision. It is not written into the vote map."""
+    can record the decision; the superadmin can too. Whoever acts first decides. It is not written into the vote map."""
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
     org_id = require_org(request.state.org_id)
@@ -6553,9 +6553,6 @@ async def panel_closeout_decision(app_id: str, data: TieBreakDecision, request: 
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("vetting_closed_undecided"):
         raise HTTPException(409, "This application is not waiting for a decision after vetting closed.")
-    chairs = await _eligible_closeout_chairs(org_id)
-    if _decider_for_app(chairs, app_doc) != "chair":
-        raise HTTPException(403, "The Chairperson cannot decide this application. The superadmin decides it.")
     panelist = await _acting_panelist(request, admin)
     chair = None
     if panelist.get("student_id"):
@@ -6573,7 +6570,7 @@ async def panel_closeout_decision(app_id: str, data: TieBreakDecision, request: 
 @app.post("/superadmin/applications/{app_id}/closeout-decision")
 async def superadmin_closeout_decision(app_id: str, data: TieBreakDecision, request: Request,
                                        admin: dict = Depends(require_role("superadmin"))):
-    """The superadmin decides a close-out leftover only when no Chairperson on the panel can."""
+    """The superadmin can decide a close-out leftover at any time, whether or not a Chairperson is on the panel."""
     if data.decision not in ("approve", "deny"):
         raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
     org_id = require_org(request.state.org_id)
@@ -6584,9 +6581,6 @@ async def superadmin_closeout_decision(app_id: str, data: TieBreakDecision, requ
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("vetting_closed_undecided"):
         raise HTTPException(409, "This application is not waiting for a decision after vetting closed.")
-    chairs = await _eligible_closeout_chairs(org_id)
-    if _decider_for_app(chairs, app_doc) == "chair":
-        raise HTTPException(409, "The Chairperson is on the panel and decides this application.")
     await _apply_closeout_decision(app_id, app_doc, org_id, data.decision, current_actor(request),
                                    "superadmin", data.reason or "")
     return {"status": "closeout_decided", "decision": data.decision}

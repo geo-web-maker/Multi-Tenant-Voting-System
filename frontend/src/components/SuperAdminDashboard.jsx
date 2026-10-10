@@ -1289,14 +1289,10 @@ const handleSuperAdminRemoveStudent = async () => {
                           Vetting closed without a decision
                           {app.closeout_counts ? ` (${app.closeout_counts.approve} approve, ${app.closeout_counts.deny} deny)` : ''}.
                         </p>
-                        {app.closeout_awaiting === 'superadmin' ? (
-                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <div className="vp-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                             <button style={greenBtn} onClick={() => handleCloseoutDecision(app._id, 'approve')}>Decide: approve</button>
                             <button style={redBtn} onClick={() => handleCloseoutDecision(app._id, 'deny')}>Decide: deny</button>
                           </div>
-                        ) : (
-                          <p style={{ margin: 0, fontSize: '12px', opacity: 0.75 }}>Waiting for the Chairperson on the Vetting Panel.</p>
-                        )}
                       </div>
                     )}
                     {app.decided_by_closeout && (

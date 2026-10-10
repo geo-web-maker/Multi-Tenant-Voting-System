@@ -950,3 +950,31 @@ td, th {
 @keyframes skel-sweep { to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
 .sr-only-skel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Performance tab (superadmin). Plain class names, additive only: no existing screen uses them. Lives in index.css because App.css is not imported anywhere. */
+.perf-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+.perf-card { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); min-width: 0; }
+.perf-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; cursor: pointer; }
+.perf-btn[aria-selected="true"] { border-color: var(--brand-primary, currentColor); font-weight: 600; }
+.perf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.perf-check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+@media (min-width: 769px) { .perf-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .perf-grid > :first-child, .perf-grid > :last-child { grid-column: 1 / -1; } }
+@media (max-width: 768px) {
+  .table-scroll > .perf-table { min-width: 0; }
+  .perf-table thead { display: none; }
+  .perf-table tr { display: block; border-bottom: 1px solid var(--border-color); padding: 6px 0; }
+  .perf-table td { display: flex; justify-content: space-between; gap: 12px; border: 0 !important; padding: 2px 8px !important; }
+  .perf-table td::before { content: attr(data-l); color: var(--text-muted); font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .perf-card * { transition: none !important; animation: none !important; } }
+
+/* Tap targets for the Vetting Panel / close-out buttons and the Performance tab, default template.
+   Mirrors the Blueprint rules (44 px buttons, 48 px fields, stacked on phones). */
+.vp-actions button, button.vp-switch { min-height: 44px; padding-left: 16px; padding-right: 16px; }
+.perf-btn, .perf-actions button { min-height: 44px; }
+.perf-field { min-height: 48px; font-size: 16px; }
+.perf-check { min-height: 44px; }
+@media (max-width: 768px) {
+  .vp-actions, .perf-actions { flex-direction: column; }
+  .vp-actions button, .perf-actions button { width: 100%; }
+}

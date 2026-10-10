@@ -111,8 +111,13 @@ async def test_a_tie_or_no_votes_waits_for_the_chair_and_is_logged(env):
                                   json={"decision": "approve"})).status_code == 403
     assert (await env.client.post(f"/admin/applications/{tied}/closeout-decision", headers=env.com1,
                                   json={"decision": "approve"})).status_code == 403
-    assert (await env.client.post(f"/superadmin/applications/{tied}/closeout-decision", headers=env.sa,
-                                  json={"decision": "approve"})).status_code == 409
+    # The superadmin may decide even though a Chairperson is on the panel.
+    sa_row = [r for r in (await env.client.get("/admin/applications", headers=env.sa)).json() if r["_id"] == tied][0]
+    assert sa_row["vetting_closed_undecided"] is True
+    r = await env.client.post(f"/superadmin/applications/{tied}/closeout-decision", headers=env.sa,
+                              json={"decision": "approve"})
+    assert r.status_code == 200, r.text
+    assert (await env.db.applications.find_one({"_id": ObjectId(tied)}))["closeout_decider"] == "superadmin"
 
     r = await env.client.post(f"/admin/applications/{empty}/closeout-decision", headers=tokens[0],
                               json={"decision": "deny", "reason": "  Nobody voted  "})
