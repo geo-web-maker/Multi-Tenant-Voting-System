@@ -3249,7 +3249,11 @@ async def assert_voting_allowed(request: Request, student_id: str):
     ended, since /vote only ever checked has_voted + last_status. Re-check
     both gates here, at the point of casting, not just at OTP-send time.
     """
-    config = await cached_setting(request.state.org_id, "election_config")
+    # Read straight from the database, never the settings cache (audit S-01, guide 05): another instance, or the
+    # old instance during a deploy overlap, may still hold a cached copy for up to the TTL, and a ballot must
+    # not be accepted after the election was closed or certified. Costs one read per ballot. The phase schedule
+    # below stays cached: it changes on a timetable, so a short lag there is harmless.
+    config = await tdb(request).settings.find_one({"name": "election_config"})
     if config and not config.get("is_open", True):
         raise HTTPException(status_code=403, detail="Election is closed.")
     if config and config.get("is_certified"):
@@ -3434,9 +3438,9 @@ VALID_APPROVAL_POLICIES = {"unanimous", "majority_total", "majority_cast"}
 #
 # Every handler that WRITES election_config / election_phases / security_settings calls
 # invalidate_settings(org_id) after the write, so an admin's change is visible at once on that
-# instance; other instances catch up within the TTL. Casting a ballot deliberately does NOT use this
-# cache (assert_voting_open reads the DB directly), so closing/certifying takes effect immediately
-# for votes. SETTINGS_CACHE_TTL_S=0 disables the cache (tests do this unless they test the cache).
+# instance; other instances catch up within the TTL. Casting a ballot deliberately does NOT use the
+# election_config cache (assert_voting_allowed reads that document from the DB), so closing/certifying
+# takes effect immediately for votes. The phase schedule it also checks IS cached (changes on a timetable). SETTINGS_CACHE_TTL_S=0 disables the cache (tests do this unless they test the cache).
 # -----------------------------------------------------------------------------------------------
 _SETTINGS_TTL = float(os.getenv("SETTINGS_CACHE_TTL_S", "5"))
 _SETTINGS_CACHE: dict = {}

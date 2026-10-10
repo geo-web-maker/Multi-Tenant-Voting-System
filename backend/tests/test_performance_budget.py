@@ -95,8 +95,8 @@ async def test_voter_path_call_budget(env, counted, prod_caches):
                               json={"student_id": "v1", "candidate_ids": [cand]})
     assert r.status_code == 200, r.text
     d = counted.since(s)
-    assert _reads(d, "settings") == 0, d                    # the cast-time election_config re-check is cached
-    assert sum(d.values()) <= 5, d                          # was 6
+    assert _reads(d, "settings") == 1, d                    # the cast-time election_config re-check is read fresh (guide 05)
+    assert sum(d.values()) <= 6, d                          # was 5 before the fresh read, 6 before that
 
 
 # ---- Cached election state must still react at once -------------------------------------------
