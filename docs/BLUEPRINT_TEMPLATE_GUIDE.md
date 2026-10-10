@@ -345,6 +345,8 @@ Inherits through S1–S3: headings/labels/inputs/selects/buttons/tables inside `
 | E11 | Tablet band rules. | D7. |
 | E12 | Org brand colours are ignored in this template. | D1. |
 | E13 | Sidebar and header use `position: sticky` against **document scroll** (no 800 px frame, no nested scroll). | F14. |
+| E15 | Vetting Panel action buttons are lifted to the 44 px floor in Blueprint only (`.vp-actions`, `.vp-switch`). | R10; default stays pixel-identical (R1). |
+| E16 | New copy for the any-admin panel link and the vetting close-out (listed in `DEVIATIONS.md`). | R4 exception for new chrome. |
 
 ---
 

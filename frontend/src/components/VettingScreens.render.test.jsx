@@ -26,6 +26,7 @@ vi.mock('./ResetOtpLimitsPanel', () => ({ default: () => null }));
 import CommissionDashboard from './CommissionDashboard';
 import VettingDashboard from './VettingDashboard';
 import VettingPanelManager from './VettingPanelManager';
+import ApplicationStages from './ApplicationStages';
 
 // Backend-shaped payloads (see shape_application_for_role / list endpoints in main.py).
 const PENDING_APP = {
@@ -88,6 +89,12 @@ describe('CommissionDashboard', () => {
     expect(await screen.findByText(/2 applications are tied/)).toBeTruthy();
   });
 
+  it('tells the Chairperson when vetting closed without a decision', async () => {
+    routeGet({ ...base, '/admin/panel-link': { panel_linked: true, closeout_waiting: 1 } });
+    render(<CommissionDashboard onLogout={() => {}} />);
+    expect(await screen.findByText(/Vetting closed on an application without a decision/)).toBeTruthy();
+  });
+
   it('says so when decisions fail to load instead of claiming there are none', async () => {
     const { ['/admin/vetting-outcomes']: _omit, ...rest } = base;
     routeGet({ ...rest, '/admin/panel-link': { panel_linked: false } });
@@ -135,6 +142,64 @@ describe('VettingDashboard', () => {
     expect(await screen.findByText('Retry')).toBeTruthy();
     fireEvent.click(screen.getByText('Log out'));
     expect(onLogout).toHaveBeenCalled();
+  });
+
+  it('asks the Chairperson to decide an application left open when vetting closed', async () => {
+    const closed = {
+      ...PENDING_APP,
+      vetting_closed_undecided: true,
+      closeout_counts: { approve: 1, deny: 1 },
+      closeout_decider: 'chair',
+      closeout_decision_available: true,
+    };
+    routeGet({ '/admin/vetting-me': me, '/admin/applications': [closed] });
+    mockConfirm.mockResolvedValue(true);
+    mockPost.mockResolvedValue({ data: {} });
+    render(<VettingDashboard onLogout={() => {}} />);
+    expect(await screen.findByText(/Votes cast: 1 approve, 1 deny/)).toBeTruthy();
+    expect(screen.queryByText(/of 3 voted/)).toBeNull();
+    fireEvent.click(screen.getByText('Deny'));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      '/admin/applications/a1/closeout-decision', { decision: 'deny', reason: '' }));
+  });
+
+  it('hides voting when the decision belongs to someone else', async () => {
+    const closed = {
+      ...PENDING_APP,
+      vetting_closed_undecided: true,
+      closeout_counts: { approve: 0, deny: 0 },
+      closeout_decider: 'superadmin',
+      closeout_decision_available: false,
+    };
+    routeGet({ '/admin/vetting-me': me, '/admin/applications': [closed] });
+    render(<VettingDashboard onLogout={() => {}} />);
+    expect(await screen.findByText(/Waiting for the superadmin/)).toBeTruthy();
+    expect(screen.queryByText('Approve')).toBeNull();
+  });
+
+  it('says when a resolved application was decided because vetting closed', async () => {
+    const done = {
+      ...PENDING_APP, status: 'approved', decided_by_closeout: true,
+      final_split: { approve: 3, deny: 1 },
+    };
+    routeGet({ '/admin/vetting-me': me, '/admin/applications': [done] });
+    render(<VettingDashboard onLogout={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Resolved/ }));
+    expect(await screen.findByText(/Decided when the vetting window closed/)).toBeTruthy();
+    expect(screen.getByText(/3 approve, 1 deny/)).toBeTruthy();
+  });
+});
+
+describe('ApplicationStages', () => {
+  it('can filter applications left undecided when vetting closed', async () => {
+    routeGet({
+      '/it-admin/applications': [{
+        _id: 'a1', full_name: 'Amina Okello', student_id: 'u123/001', position_title: 'President',
+        stage: 'needs_decision', stage_label: 'Vetting closed without a decision',
+      }],
+    });
+    render(<ApplicationStages />);
+    expect(await screen.findAllByText(/Vetting closed without a decision/)).toHaveLength(2);
   });
 });
 

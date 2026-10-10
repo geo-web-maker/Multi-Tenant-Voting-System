@@ -57,7 +57,7 @@ async def test_capture_reserved_number_skips_provider_and_budget(env, monkeypatc
     assert await env.db.sms_usage.count_documents({"org_key": env.org_id}) == 0
     messages = await env.db.demo_inbox.find({}).to_list(length=10)
     assert len(messages) == 1 and messages[0]["to"].startswith(main.DEMO_PHONE_PREFIX)
-    otp = await env.db.otps.find_one({"student_id": "DEMO-005"})
+    otp = await env.db.otps.find_one({"student_id": "demo-005"})
     assert otp and otp.get("is_demo") is True
     code = otp["code"]
     assert (await env.client.post("/verify-otp", json={"student_id": "DEMO-005", "code": code})).status_code == 200
@@ -65,7 +65,7 @@ async def test_capture_reserved_number_skips_provider_and_budget(env, monkeypatc
 
 async def test_real_number_is_refused_and_never_stored(env):
     await enable(env)
-    assert await main.send_sms_status(env.org_id, "256712345678", "Code is 123456.", kind="otp") == "failed"
+    assert await main.send_sms_status("256712345678", "Code is 123456.", kind="otp", org_id=env.org_id) == "failed"
     assert await env.db.demo_inbox.count_documents({}) == 0
     assert await env.db.audit_log.find_one({"action": "demo_sms_refused"})
 
@@ -181,7 +181,7 @@ async def test_demo_seeded_voter_can_submit_nomination_and_panel_can_read_it(env
         "nomination_upload_id": upload_id,
     })
     assert submit.status_code == 200, submit.text
-    app = await env.db.applications.find_one({"student_id": "DEMO-020", "is_demo": True})
+    app = await env.db.applications.find_one({"student_id": "demo-020", "is_demo": True})
     assert app and app["nomination_form_required"] is True and app["nomination_form"]
 
     token = create_access_token(subject="DEMO-PANEL-1", role="vetting", org_id=env.org_id)
@@ -189,7 +189,7 @@ async def test_demo_seeded_voter_can_submit_nomination_and_panel_can_read_it(env
         headers={"Authorization": "Bearer " + token, "X-Org-Slug": "t1"})
     assert view.status_code == 200, view.text
     assert view.json()["url"] == "https://files.example.test/signed"
-    audit = await env.db.audit_log.find_one({"action": "nomination_form_viewed", "application_id": str(app["_id"])})
+    audit = await env.db.audit_log.find_one({"action": "nomination_form_viewed", "details.application_id": str(app["_id"])})
     assert audit
 
 

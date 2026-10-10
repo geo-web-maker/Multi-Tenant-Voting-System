@@ -8,9 +8,10 @@ import { ScrollList } from './UIFeedback';
 // Stage only: the server sends no votes, reasons or payment details to this role.
 const STAGE_TONE = {
   finance_pending: 'var(--warning)', finance_rejected: 'var(--danger)', with_panel: 'var(--info)',
+  needs_decision: 'var(--warning)',
   approved: 'var(--success)', denied: 'var(--danger)', removed: 'var(--danger)',
 };
-const STAGE_ORDER = ['finance_pending', 'finance_rejected', 'with_panel', 'approved', 'denied', 'removed'];
+const STAGE_ORDER = ['finance_pending', 'finance_rejected', 'with_panel', 'needs_decision', 'approved', 'denied', 'removed'];
 
 export default function ApplicationStages() {
   const [rows, setRows] = useState(null);

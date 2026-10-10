@@ -29,6 +29,7 @@ export default function CommissionDashboard({ onLogout }) {
   const [outcomesFailed, setOutcomesFailed] = useState(false);
   const [panelLinked, setPanelLinked] = useState(false);
   const [tieWaiting, setTieWaiting] = useState(0);
+  const [closeoutWaiting, setCloseoutWaiting] = useState(0);
   const [lastSynced, markSynced]        = useLastSynced();
   const [commissionerId, setCommissionerId] = useState('');
   const [studentChanges, setStudentChanges] = useState([]);
@@ -73,6 +74,7 @@ export default function CommissionDashboard({ onLogout }) {
         const deputyChief = Boolean(me?.is_deputy_chief_commissioner);
         setPanelLinked(Boolean(linkRes.data?.panel_linked));
         setTieWaiting(Number(linkRes.data?.tie_waiting) || 0);
+        setCloseoutWaiting(Number(linkRes.data?.closeout_waiting) || 0);
         setIsChief(chief);
         setIsDeputyChief(deputyChief);
         // A regular commissioner may still have 'reset_otp' as their persisted
@@ -159,7 +161,7 @@ export default function CommissionDashboard({ onLogout }) {
           refreshing={loading}
           onLogout={onLogout}
           actions={panelLinked ? (
-            <button onClick={goToPanel} disabled={switchingHat} style={{ ...hatBtn, opacity: switchingHat ? 0.6 : 1 }}>
+            <button className="vp-switch" onClick={goToPanel} disabled={switchingHat} style={{ ...hatBtn, opacity: switchingHat ? 0.6 : 1 }}>
               {switchingHat ? 'Switching…' : 'Switch to Vetting Panel'}
             </button>
           ) : null}
@@ -190,6 +192,14 @@ export default function CommissionDashboard({ onLogout }) {
         {panelLinked && tieWaiting > 0 && (
           <div style={tieHint}>
             {tieWaiting === 1 ? 'An application is tied and needs your casting decision.' : `${tieWaiting} applications are tied and need your casting decision.`}
+            {' '}Switch to the Vetting Panel to decide.
+          </div>
+        )}
+        {panelLinked && closeoutWaiting > 0 && (
+          <div style={tieHint}>
+            {closeoutWaiting === 1
+              ? 'Vetting closed on an application without a decision.'
+              : `Vetting closed on ${closeoutWaiting} applications without a decision.`}
             {' '}Switch to the Vetting Panel to decide.
           </div>
         )}

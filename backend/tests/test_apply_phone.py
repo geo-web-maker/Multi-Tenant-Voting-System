@@ -75,7 +75,7 @@ async def test_toggle_needs_superadmin_and_a_reason(env):
 
 async def test_apply_errors_use_the_orgs_own_name_for_the_id(env):
     """One branding change (id_label) must reach the apply errors too, exactly like the voter login."""
-    await env.db.settings.insert_one({"name": "branding", "org_id": env.org_id, "id_label": "Student Number"})
+    await env.db.settings.update_one({"name": "branding", "org_id": env.org_id}, {"$set": {"id_label": "Student Number"}})   # the fixture already seeds a branding doc
     main.invalidate_settings(env.org_id, "branding")
     pos = await position(env)
     r = await apply(env, pos, sid="nobody", name="Nobody")

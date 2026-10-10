@@ -67,6 +67,22 @@ class TenantScopeError(RuntimeError):
     """A caller tried to read or write outside its own tenant (programming error, not user error)."""
 
 
+
+_note_op = None
+
+
+def _note(collection: str, method: str, n: int = 1) -> None:
+    """Report one operation to the performance collector (event-loop side). Never raises."""
+    global _note_op
+    try:
+        if _note_op is None:
+            from perf_metrics import note_op
+            _note_op = note_op
+        _note_op(collection, method, n)
+    except Exception:
+        pass
+
+
 class TenantCollection:
     """Wraps one Motor collection; every operation is confined to ``org_id``."""
 
@@ -120,53 +136,69 @@ class TenantCollection:
 
     # ---- reads --------------------------------------------------------------------------------
     def find(self, flt=None, *args, **kwargs):
+        _note(self.name, "find")
         return self._coll.find(self._scope(flt), *args, **kwargs)
 
     async def find_one(self, flt=None, *args, **kwargs):
+        _note(self.name, "find_one")
         return await self._coll.find_one(self._scope(flt), *args, **kwargs)
 
     async def count_documents(self, flt=None, *args, **kwargs):
+        _note(self.name, "count_documents")
         return await self._coll.count_documents(self._scope(flt), *args, **kwargs)
 
     async def distinct(self, key, flt=None, *args, **kwargs):
+        _note(self.name, "distinct")
         return await self._coll.distinct(key, self._scope(flt), *args, **kwargs)
 
     def aggregate(self, pipeline, *args, **kwargs):
+        _note(self.name, "aggregate")
         return self._coll.aggregate(self._scope_pipeline(pipeline), *args, **kwargs)
 
     # ---- writes -------------------------------------------------------------------------------
     async def insert_one(self, doc, *args, **kwargs):
+        _note(self.name, "insert_one")
         return await self._coll.insert_one(self._stamp(doc), *args, **kwargs)
 
     async def insert_many(self, docs, *args, **kwargs):
+        _note(self.name, "insert_many", len(docs))
         return await self._coll.insert_many([self._stamp(d) for d in docs], *args, **kwargs)
 
     async def update_one(self, flt, update, *args, **kwargs):
+        _note(self.name, "update_one")
         return await self._coll.update_one(self._scope(flt), self._check_update(update), *args, **kwargs)
 
     async def update_many(self, flt, update, *args, **kwargs):
+        _note(self.name, "update_many")
         return await self._coll.update_many(self._scope(flt), self._check_update(update), *args, **kwargs)
 
     async def replace_one(self, flt, replacement, *args, **kwargs):
+        _note(self.name, "replace_one")
         return await self._coll.replace_one(self._scope(flt), self._stamp(replacement), *args, **kwargs)
 
     async def delete_one(self, flt, *args, **kwargs):
+        _note(self.name, "delete_one")
         return await self._coll.delete_one(self._scope(flt), *args, **kwargs)
 
     async def delete_many(self, flt, *args, **kwargs):
+        _note(self.name, "delete_many")
         # An empty filter is fine here: it means "everything in THIS tenant", which _scope() enforces.
         return await self._coll.delete_many(self._scope(flt), *args, **kwargs)
 
     async def find_one_and_update(self, flt, update, *args, **kwargs):
+        _note(self.name, "find_one_and_update")
         return await self._coll.find_one_and_update(self._scope(flt), self._check_update(update), *args, **kwargs)
 
     async def find_one_and_delete(self, flt, *args, **kwargs):
+        _note(self.name, "find_one_and_delete")
         return await self._coll.find_one_and_delete(self._scope(flt), *args, **kwargs)
 
     async def find_one_and_replace(self, flt, replacement, *args, **kwargs):
+        _note(self.name, "find_one_and_replace")
         return await self._coll.find_one_and_replace(self._scope(flt), self._stamp(replacement), *args, **kwargs)
 
     async def bulk_write(self, requests, *args, **kwargs):
+        _note(self.name, "bulk_write", len(requests))
         """Accepts pymongo Insert/Update/Replace/Delete ops and rewrites each so it is tenant-confined."""
         import copy
         from pymongo import DeleteMany, DeleteOne, InsertOne, ReplaceOne, UpdateMany, UpdateOne

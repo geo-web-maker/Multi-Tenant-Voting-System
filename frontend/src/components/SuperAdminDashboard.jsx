@@ -37,6 +37,7 @@ import { LoadingBlock } from './Spinner.jsx';
 import LoginStatusBadge from './LoginStatusBadge.jsx';
 import RevealGroup from './RevealGroup';
 import AnalyticsPanel from './AnalyticsPanel';
+import PerformancePanel from './PerformancePanel';
 import ExportModeControl from './ExportModeControl';
 import { setItAdminExportMode } from '../registerExport';
 import { setBrand } from '../brandColors';
@@ -484,6 +485,20 @@ const refetchAll = () => {
     } catch (e) { toast(getErrorMessage(e), { kind: 'error' }); }
   };
 
+  const handleCloseoutDecision = async (appId, decision) => {
+    const ok = await confirm(
+      `Vetting closed without a decision. Record ${decision} for this application? This is final.`,
+      { danger: decision === 'deny', confirmText: decision === 'approve' ? 'Approve' : 'Deny' },
+    );
+    if (!ok) return;
+    try {
+      await api.post(`/superadmin/applications/${appId}/closeout-decision`, { decision, reason: '' });
+      toast(`Close-out recorded: ${decision}.`);
+      fetchApplications();
+      if (decision === 'approve') fetchCandidates();
+    } catch (e) { toast(getErrorMessage(e, 'Could not record the decision.'), { kind: 'error' }); }
+  };
+
   // Undo a force-approve / force-deny. Reason is mandatory and lands in the audit log.
   const handleRevertToPending = async (app) => {
     const warn = app.status === 'approved'
@@ -911,6 +926,7 @@ const handleSuperAdminRemoveStudent = async () => {
         ROADMAP_TAB_DEF,
         { id: 'official_doc', label: <>Official Document</>, icon: 'file' },
         { id: 'usage_analytics', label: <>Site Usage</>, icon: 'chart' },
+        { id: 'performance', label: <>Performance</>, icon: 'chart' },
       ],
     },
   ];
@@ -1266,6 +1282,25 @@ const handleSuperAdminRemoveStudent = async () => {
                       <p style={{ margin: '6px 0 0', fontSize: '11px', opacity: 0.5 }}>
                         Panel votes: {Object.entries(app.votes).map(([k,v]) => `${voterNames[String(k).toUpperCase()] || k}: ${v}`).join(' · ')}
                       </p>
+                    )}
+                    {app.vetting_closed_undecided && (
+                      <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--warning)' }}>
+                        <p style={{ margin: '0 0 6px', fontWeight: 600, fontSize: '13px', color: 'var(--text-color)' }}>
+                          Vetting closed without a decision
+                          {app.closeout_counts ? ` (${app.closeout_counts.approve} approve, ${app.closeout_counts.deny} deny)` : ''}.
+                        </p>
+                        {app.closeout_awaiting === 'superadmin' ? (
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <button style={greenBtn} onClick={() => handleCloseoutDecision(app._id, 'approve')}>Decide: approve</button>
+                            <button style={redBtn} onClick={() => handleCloseoutDecision(app._id, 'deny')}>Decide: deny</button>
+                          </div>
+                        ) : (
+                          <p style={{ margin: 0, fontSize: '12px', opacity: 0.75 }}>Waiting for the Chairperson on the Vetting Panel.</p>
+                        )}
+                      </div>
+                    )}
+                    {app.decided_by_closeout && (
+                      <p style={{ margin: '6px 0 0', fontSize: '12px', opacity: 0.7 }}>Decided when vetting closed.</p>
                     )}
                   </div>
                 </div>
@@ -2510,6 +2545,7 @@ const handleSuperAdminRemoveStudent = async () => {
         <SharedTabPanels activeTab={activeTab} canEditSchedule isChief />
         {activeTab === 'official_doc' && <OfficialCertificationBlock />}
         {activeTab === 'usage_analytics' && <AnalyticsPanel organizations={organizations} />}
+        {activeTab === 'performance' && <PerformancePanel />}
 
         </div>
       </div>

@@ -332,3 +332,7 @@ From `DEVIATIONS.md` → HUMAN steps: check git history for `backend.env`, `fron
 | Recover from a stalled session | commit what is green, then use the resume prompt (§7.7) |
 
 *Caveat: this runbook was built from `DEVIATIONS.md` and the playbook text. The code inside the zip and `CHANGES_SINCE_UPLOAD.diff` were not re-inspected, which is why every card starts with a Pre-check that must pass before any edit.*
+
+## Performance tab: during voting (H6 to fill in)
+
+Open Superadmin, Platform, Performance. Decide beforehand who watches it and what they do at each alert. Suggested starting point, to be confirmed by the team: **Busy** (warn) keep watching; **Critical** pause results polling and SMS bursts; **Throttling** ask voters to retry in a minute. Keep the host warm during the election window so the in-memory window is not lost on a cold start (H7). Settings (tier, caps, thresholds) are edited in the tab and need no redeploy.

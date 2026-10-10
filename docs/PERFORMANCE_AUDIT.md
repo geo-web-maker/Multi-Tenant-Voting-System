@@ -131,3 +131,7 @@ Only after 1 to 3, if the load test still shows queueing, consider a paid Atlas 
 2. Run `explain()` on the voter lookups, `otps` lookups and the vote-event aggregation before and after the indexes.
 3. Confirm in Atlas which indexes already exist.
 4. Measure SMS provider latency from the Render region.
+
+## Measured in production (Performance tab)
+
+Not yet filled in. The superadmin **Performance** tab (see `PERFORMANCE_TAB_GUIDE.md`) now reports exact database operations per second, command latency, pool use, event-loop lag and per-route ops per request. After the load test (H3, H4) record here: peak ops/s shown, Atlas's own figure, p95 latency, pool in use and waiting, loop lag, unattributed share, and the measured ops per voter (replaces the audit's 26).

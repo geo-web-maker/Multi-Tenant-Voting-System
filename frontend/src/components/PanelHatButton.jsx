@@ -34,7 +34,7 @@ export default function PanelHatButton({ onStatus }) {
     }
   };
   return (
-    <button onClick={go} disabled={busy} style={{ ...btn, opacity: busy ? 0.6 : 1 }}>
+    <button className="vp-switch" onClick={go} disabled={busy} style={{ ...btn, opacity: busy ? 0.6 : 1 }}>
       {busy ? 'Switching…' : 'Switch to Vetting Panel'}
     </button>
   );

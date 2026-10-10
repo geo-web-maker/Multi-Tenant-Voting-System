@@ -3,7 +3,7 @@
 Every direct ``db.<tenant_collection>.<op>(...)`` / ``db["<tenant_collection>"]`` in the modules below is a
 violation unless it is
 
-  * index/DDL work at startup (create_index / create_indexes), or
+  * index/DDL work at startup (create_index / create_indexes / drop_index), or
   * wrapped in ``cross_tenant(db)`` (the greppable, deliberate "can see all clients" door), or
   * listed in ALLOWED with a written reason.
 
@@ -19,7 +19,7 @@ from tenant_db import TENANT_COLLECTIONS
 BACKEND = os.path.dirname(os.path.dirname(__file__))
 MODULES = ["main.py", "analytics.py", "backup_routes.py", "backup.py", "regno_audit.py", "roster_utils.py",
            "tabular_import.py", "otp_limits.py", "alerts.py", "name_utils.py", "auth.py"]
-INDEX_METHODS = {"create_index", "create_indexes", "ensure_index"}
+INDEX_METHODS = {"create_index", "create_indexes", "ensure_index", "drop_index"}
 DB_NAMES = {"db", "_db"}
 
 # (module, enclosing function, collection, method) -> why this raw access is acceptable

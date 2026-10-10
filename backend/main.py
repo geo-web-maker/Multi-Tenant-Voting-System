@@ -255,7 +255,18 @@ async def lifespan(app: FastAPI):
     analytics.set_org_slug_resolver(_org_slug_for_id)
     analytics.set_org_resolver(_resolve_org_id)
     await analytics.start(db)
+    await perf_metrics.start(db, b2_client=b2_client)
+    closeout_task = None
+    if VETTING_CLOSEOUT_SWEEP_SECONDS > 0:
+        closeout_task = asyncio.create_task(_vetting_closeout_loop(VETTING_CLOSEOUT_SWEEP_SECONDS))
     yield
+    if closeout_task:
+        closeout_task.cancel()
+        try:
+            await closeout_task
+        except asyncio.CancelledError:
+            pass
+    await perf_metrics.stop()
     await analytics.stop()
     await _close_sms_http()
     client.close()
@@ -347,12 +358,10 @@ if DOCS_ENABLED:
                 )
         return await call_next(request)
 
-client = motor.motor_asyncio.AsyncIOMotorClient(
-    MONGO_URL,
-    maxPoolSize=20,
-    minPoolSize=1,
-    waitQueueTimeoutMS=2500
-)
+import perf_metrics
+import perf_routes
+# motor_kwargs() is exactly the historical pool settings, plus the command/pool listeners when PERF_ENABLED.
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL, **perf_metrics.motor_kwargs())
 db = client[os.getenv("MONGO_DB_NAME", "electiondbaccounting")]
 
 B2_ENDPOINT = os.getenv("B2_ENDPOINT")
@@ -398,7 +407,9 @@ async def _resolve_org_id(slug):
     now = time.monotonic()
     hit = _ORG_CACHE.get(slug)
     if hit and hit[1] > now:
+        perf_metrics.note_cache("org", True)
         return hit[0]
+    perf_metrics.note_cache("org", False)
     if hit:
         _ORG_CACHE.pop(slug, None)
     doc = await db.organizations.find_one({"slug": slug}, {"_id": 1})
@@ -775,6 +786,9 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 app.middleware("http")(analytics.outcome_middleware)
+# Registered after security_headers_middleware, so it is outermost and times requests the guards reject.
+app.middleware("http")(perf_metrics.perf_middleware)
+app.include_router(perf_routes.build_router(lambda: db, require_role, lambda action, actor, details, org_id=None: log_action(action, actor, details, org_id=org_id)))
 app.include_router(analytics.build_router(lambda: db, require_role, lambda action, actor, details, org_id=None: log_action(action, actor, details, org_id=org_id)))
 app.include_router(build_backup_router(lambda: db))
 
@@ -1273,7 +1287,9 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) ->
 
     last = "failed"
     for i, provider in enumerate(order):
+        _t_sms = time.perf_counter()
         last = await _sms_try_provider(provider, to_number, message_text)
+        perf_metrics.note_sms(kind, last, (time.perf_counter() - _t_sms) * 1000.0)
         if last in ("ok", "ambiguous"):
             await _safe_count_sms(org, kind)    # ambiguous may have been billed
         if last == "ok":
@@ -1833,6 +1849,20 @@ def _tally_outcome(policy: str, total: int, approve: int, deny: int) -> str | No
     return None
 
 
+def _cast_majority(approve: int, deny: int) -> str:
+    """Close-out rule, used only once the vetting window has ended.
+
+    A clear majority of the votes that were actually cast decides the application
+    (3 approve and 1 deny, with someone not voting, is an approval). A tie, or
+    nobody voting, is not guessed: the caller must ask the Chairperson.
+    """
+    if approve > deny:
+        return "approve"
+    if deny > approve:
+        return "deny"
+    return "needs_decision"
+
+
 async def _flag_tie_for_chief(app_id: str, org_id: str):
     """Flag a tie (name kept for data compatibility, guide 7.2). Logged once per tie, not on every re-check."""
     result = await tdb_for(org_id).applications.update_one(
@@ -1924,7 +1954,7 @@ _HIDDEN_APPLICATION_FIELDS = ("votes", "removal_votes", "revert_history", "tied_
 # dashboards use them to show whether voting can open.
 _FINANCE_ONLY_APPLICATION_FIELDS = ("payment_method", "payment_proof_url", "finance_clear_note",
                                     "finance_rejection_reason", "finance_history")
-PANEL_HIDDEN_AUDIT_ACTIONS = ("application_vote_tied", "application_tie_broken")
+PANEL_HIDDEN_AUDIT_ACTIONS = ("application_vote_tied", "application_tie_broken", "application_closeout_decided")
 
 
 async def _live_panelists(org_id: str = None) -> list:
@@ -2066,6 +2096,7 @@ STAGE_LABELS = {
     "finance_pending":  "Pending financial approval",
     "finance_rejected": "Payment rejected",
     "with_panel":       "With the Vetting Panel",
+    "needs_decision":   "Vetting closed without a decision",
     "approved":         "Approved",
     "denied":           "Denied",
     "removed":          "Removed",
@@ -2074,10 +2105,13 @@ STAGE_LABELS = {
 
 def application_stage(app: dict) -> str:
     """One stage code per application, derived from existing fields (nothing is stored). Deliberately coarse:
-    'with_panel' also covers 'all votes in' and 'tied, waiting for the chair', so it never hints at voting."""
+    'with_panel' also covers 'all votes in' and 'tied, waiting for the chair', so it never hints at voting.
+    'needs_decision' is the one exception: the vetting window has closed and someone must still decide."""
     status = app.get("status", "pending")
     if status in RESOLVED_STATUSES:
         return status
+    if app.get("vetting_closed_undecided"):
+        return "needs_decision"
     if (app.get("fee_required") or 0) > 0 and not app.get("finance_cleared"):
         return "finance_rejected" if app.get("finance_rejected") else "finance_pending"
     return "with_panel"
@@ -2089,7 +2123,8 @@ _IT_ADMIN_APPLICATION_FIELDS = ("_id", "student_id", "full_name", "position_id",
 
 def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = None,
                                active_keys=frozenset(), panel_count: int = 0,
-                               is_chair_panelist: bool = False) -> dict:
+                               is_chair_panelist: bool = False,
+                               closeout_decider: str | None = None) -> dict:
     """Guide 7.1: the one place that decides what each role may see of an application.
     Returns a copy. Only the superadmin receives the raw vote maps."""
     out = dict(app)
@@ -2108,32 +2143,59 @@ def shape_application_for_role(app: dict, role: str, *, actor_key: str | None = 
     resolved = app.get("status", "pending") in RESOLVED_STATUSES
     awaiting = (not resolved) and panel_count > 0 and cast == panel_count
     tied = (not resolved) and bool(app.get("tied_pending_chief"))
+    undecided = (not resolved) and bool(app.get("vetting_closed_undecided"))
+    own_application = bool(actor_key) and actor_key == _vote_key(app.get("student_id") or "")
+    stored_counts = app.get("closeout_counts") if isinstance(app.get("closeout_counts"), dict) else None
+    closeout_split = None
+    if app.get("decided_by_closeout") and stored_counts:
+        # The live panel shrinks when access ends with the phase. The split that actually
+        # decided a close-out is the one recorded then, not a recount of whoever is left.
+        closeout_split = {"approve": int(stored_counts.get("approve") or 0),
+                          "deny": int(stored_counts.get("deny") or 0)}
 
     out["stage"], out["stage_label"] = stage, STAGE_LABELS[stage]
     if role == "superadmin":
         out["progress"] = {"cast": cast, "panel_count": panel_count}
         out["awaiting_final_decision"] = awaiting
+        if undecided:
+            out["closeout_awaiting"] = closeout_decider or "superadmin"
         if resolved:
-            out["final_split"] = {"approve": approve, "deny": deny}
+            out["final_split"] = closeout_split or {"approve": approve, "deny": deny}
+        if app.get("decided_by_closeout"):
+            out["decided_by_closeout"] = True
         return out
 
     for field in _HIDDEN_APPLICATION_FIELDS:
+        out.pop(field, None)
+    for field in ("closeout_counts", "closeout_handled", "closeout_at", "closeout_decider",
+                  "vetting_closed_undecided"):
         out.pop(field, None)
     if role != "financial_controller":
         for field in _FINANCE_ONLY_APPLICATION_FIELDS:
             out.pop(field, None)
     out.pop("decided_by_tie_break", None)
+    out.pop("decided_by_closeout", None)
     out.pop("final_reason", None)
 
     if role == "vetting":   # vote counts: Vetting Panel only (everyone else is tier 1)
         out["progress"] = {"cast": cast, "panel_count": panel_count}
         out["awaiting_final_decision"] = awaiting
+        if undecided:
+            out["vetting_closed_undecided"] = True
+            out["closeout_counts"] = app.get("closeout_counts") or {"approve": 0, "deny": 0}
+            out["closeout_decider"] = closeout_decider or "superadmin"
+            out["closeout_decision_available"] = bool(
+                is_chair_panelist and out["closeout_decider"] == "chair" and not own_application)
         if resolved:
-            out["final_split"] = {"approve": approve, "deny": deny}
+            out["final_split"] = closeout_split or {"approve": approve, "deny": deny}
             out["decided_by_tie_break"] = bool(app.get("decided_by_tie_break"))
+            if app.get("decided_by_closeout"):
+                out["decided_by_closeout"] = True
+                if app.get("closeout_decider"):
+                    out["closeout_decider"] = app["closeout_decider"]
     if role == "vetting":
         out["my_vote"] = votes.get(actor_key) if actor_key else None
-        out["tie_break_available"] = bool(is_chair_panelist and tied and awaiting)
+        out["tie_break_available"] = bool(is_chair_panelist and tied and awaiting and not undecided)
     if role in ("vetting", "overseer", "commission") and resolved:
         out["final_reason"] = app.get("final_reason")
     return out
@@ -2189,7 +2251,20 @@ def _redact_panel_audit(entry: dict, role: str | None = None):
             entry["actor"] = "vetting"
             if role != "overseer":
                 details.pop("tie_break", None)
+        # A close-out is the same kind of fact: the overseer may learn that the window ending
+        # decided it, never the split (those counts were already removed above).
+        if details.get("closeout"):
+            entry["actor"] = "vetting"
+            if role != "overseer":
+                details.pop("closeout", None)
+                details.pop("closeout_decision", None)
+                details.pop("decider", None)
         entry["details"] = details
+    elif action == "application_closeout_undecided":
+        entry["actor"] = "system"
+        for k in ("approve_count", "deny_count", "panel_count"):
+            details.pop(k, None)
+        entry["details"] = {"app_id": details.get("app_id")} if role != "superadmin" else details
 
 
 async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, outcome: str, *,
@@ -2199,7 +2274,8 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
     new_status = "approved" if outcome == "approve" else "denied"
     result = await tdb_for(org_id).applications.update_one(
         {"_id": ObjectId(app_id), "status": {"$nin": list(RESOLVED_STATUSES)}},
-        {"$set": {"status": new_status, **(extra_set or {})}, "$unset": {"tied_pending_chief": ""}}
+        {"$set": {"status": new_status, **(extra_set or {})},
+         "$unset": {"tied_pending_chief": "", "vetting_closed_undecided": ""}}
     )
     if result.matched_count == 0:
         return False
@@ -2236,6 +2312,10 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
 async def _resolve_application(app_id: str, app_doc: dict, org_id: str = None):
     """Called after every panel vote and after panel or policy changes. The denominator is the
     active panel (guide 7, item 1), and only active panelists' votes count."""
+    # A close-out already handed this application to the Chairperson (or decided it). A later
+    # resweep must not reopen it under the normal policy, which would silently change the outcome.
+    if app_doc.get("vetting_closed_undecided"):
+        return
     panel_total = await get_panel_count(org_id)
     if panel_total == 0:
         return
@@ -2350,6 +2430,190 @@ async def _resweep_pending_after_policy_change(org_id: str, include_removals: bo
         "status": "approved", "removal_votes": {"$exists": True, "$ne": {}},
     }):
         await _resolve_removal(str(app_doc["_id"]), app_doc, org_id)
+
+
+def _panelist_access_ended_at(p: dict, phases: dict, now: datetime) -> bool:
+    """Same clock as _live_panelists, without a request. True once the earlier access end has passed."""
+    ends = []
+    if p.get("access_expires_at"):
+        ends.append(naive_utc(p["access_expires_at"]))
+    phase_name = p.get("expires_with_phase")
+    phase_end = (phases.get(phase_name) or {}).get("end") if phase_name else None
+    if phase_end:
+        ends.append(naive_utc(phase_end))
+    return bool(ends) and now >= min(ends)
+
+
+async def _vetting_window_ended(org_id: str) -> bool:
+    """Vetting window whose end date is already in the past, enforced or not.
+
+    `enforced` only decides whether the phase blocks actions; it does not change when vetting ends.
+    Panelist access already ends at the phase end date whether or not the phase is enforced
+    (_panelist_access_ended_at), so the close-out uses the same clock. A phase with no end date is
+    not ended: there is no moment to close at, so those applications stay pending as before.
+    """
+    doc = await cached_setting(org_id, "election_phases")
+    window = ((doc or {}).get("phases") or {}).get("vetting") or {}
+    end = naive_utc(window.get("end"))
+    return end is not None and datetime.utcnow() > end
+
+
+async def _closeout_vote_keys(org_id: str) -> set:
+    """Vote keys that still count when the window closes.
+
+    Active panelists whose access just ended (typically because it ended with the vetting phase)
+    keep the votes they cast. Dropping them here would turn a finished panel into zero votes the
+    moment the phase ends. Someone who was deactivated does not count.
+    """
+    keys = set()
+    async for p in tdb_for(org_id).panel_members.find({"active": True}):
+        keys.add(_panel_vote_key(p))
+    return keys
+
+
+async def _eligible_closeout_chairs(org_id: str) -> list[str]:
+    """Normalised student ids of Chairpersons who can still open the Vetting Panel."""
+    doc = await cached_setting(org_id, "election_phases")
+    phases = (doc or {}).get("phases") or {}
+    now = datetime.utcnow()
+    chairs = []
+    async for p in tdb_for(org_id).panel_members.find({"active": True, "is_member": True}):
+        if not p.get("student_id") or _panelist_access_ended_at(p, phases, now):
+            continue
+        voter = await tdb_for(org_id).voters.find_one({
+            **get_forgiving_filter(p["student_id"]), "is_chief_commissioner": True}, {"student_id": 1})
+        if voter:
+            chairs.append(normalize_student_id(voter["student_id"]))
+    return chairs
+
+
+def _decider_for_app(chairs: list[str], app_doc: dict) -> str:
+    """The Chairperson decides, unless none can (or the only one is the applicant)."""
+    applicant = normalize_student_id(app_doc.get("student_id") or "")
+    if any(c and c != applicant for c in chairs):
+        return "chair"
+    return "superadmin"
+
+
+async def _closeout_decider(org_id: str) -> str:
+    """'chair' when a Chairperson can still open the panel, otherwise 'superadmin'."""
+    return "chair" if await _eligible_closeout_chairs(org_id) else "superadmin"
+
+
+async def _maybe_close_vetting(org_id: str) -> None:
+    """One-time close-out of finance-cleared applications once the vetting window has ended.
+
+    Clear majority of cast votes: decide it, and record that it was a close-out. Tie, or no votes
+    at all: do not guess. Mark it for the Chairperson (or the superadmin, if the Chairperson is
+    not on the panel). Safe to call often: already-handled applications are skipped, and the
+    status flip is atomic.
+    """
+    if not org_id or not await _vetting_window_ended(org_id):
+        return
+    pending = [a async for a in tdb_for(org_id).applications.find({
+        "status": "pending",
+        "finance_cleared": True,
+        "vetting_closed_undecided": {"$ne": True},
+        "closeout_handled": {"$ne": True},
+    })]
+    if not pending:
+        return
+    keys = await _closeout_vote_keys(org_id)
+    policy = (await security_settings_for(org_id))["approval_policy"]
+    now = datetime.utcnow()
+    panel_count = len(keys)
+    for app_doc in pending:
+        try:
+            await _close_out_one(app_doc, org_id, keys, policy, now, panel_count)
+        except Exception:
+            # One bad application must not stop the rest, and must not break the screen or the
+            # sweep that called us. It is retried on the next call.
+            logger.exception("Vetting close-out failed for application %s; will retry.", app_doc.get("_id"))
+
+
+async def _close_out_one(app_doc: dict, org_id: str, keys: set, policy: str, now, panel_count: int) -> None:
+    app_id = str(app_doc["_id"])
+    votes = {k: v for k, v in _dedupe_votes(app_doc.get("votes") or {}).items() if k in keys}
+    approve = sum(1 for v in votes.values() if v == "approve")
+    deny = sum(1 for v in votes.values() if v == "deny")
+    decision = _cast_majority(approve, deny)
+    counts = {"approve": approve, "deny": deny}
+    if decision in ("approve", "deny"):
+        applied = await _apply_application_outcome(
+            app_id, app_doc, org_id, decision, actor="vetting",
+            details={"closeout": True, "approve_count": approve, "deny_count": deny,
+                     "panel_count": panel_count, "policy": policy},
+            extra_set={"decided_by_closeout": True, "closeout_counts": counts,
+                       "closeout_handled": True, "closeout_at": now, "decided_at": now})
+        if applied:
+            word = "approved" if decision == "approve" else "denied"
+            logger.info(f"Application {app_id} {word} at vetting close-out ({approve} approve, {deny} deny).")
+        return
+    result = await tdb_for(org_id).applications.update_one(
+        {"_id": app_doc["_id"], "status": "pending", "vetting_closed_undecided": {"$ne": True}},
+        {"$set": {"vetting_closed_undecided": True, "closeout_handled": True,
+                  "closeout_counts": counts, "closeout_at": now},
+         "$unset": {"tied_pending_chief": ""}})
+    if result.matched_count:
+        await log_action("application_closeout_undecided", "system", {
+            "app_id": app_id, "approve_count": approve, "deny_count": deny, "panel_count": panel_count,
+        }, org_id=org_id)
+
+
+# Background sweep: close-out must not wait for someone to open a screen. Safe to run on several
+# instances at once: every write is guarded by an atomic status/flag check, so a loser changes nothing.
+# Set VETTING_CLOSEOUT_SWEEP_SECONDS=0 to turn it off (the on-demand call still works).
+VETTING_CLOSEOUT_SWEEP_SECONDS = int(os.getenv("VETTING_CLOSEOUT_SWEEP_SECONDS", "60") or 0)
+
+
+async def _sweep_vetting_closeouts() -> int:
+    """Run the close-out for every organisation. Returns how many organisations were checked."""
+    checked = 0
+    async for org in db.organizations.find({}, {"_id": 1}):
+        try:
+            await _maybe_close_vetting(str(org["_id"]))
+        except Exception:
+            logger.exception("Vetting close-out sweep failed for org %s.", org.get("_id"))
+        checked += 1
+    return checked
+
+
+async def _vetting_closeout_loop(interval_s: int) -> None:
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await _sweep_vetting_closeouts()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Vetting close-out sweep crashed; trying again next interval.")
+
+
+async def _apply_closeout_decision(app_id: str, app_doc: dict, org_id: str, decision: str,
+                                   actor: str, decider: str, reason: str) -> None:
+    """Chairperson or superadmin records the decision a close-out refused to guess."""
+    now = datetime.utcnow()
+    counts = app_doc.get("closeout_counts") or {}
+    extra = {
+        "decided_by_closeout": True,
+        "closeout_decider": decider,
+        "closeout_handled": True,
+        "decided_at": now,
+    }
+    cleaned = (reason or "").strip()
+    if decision == "deny" and cleaned:
+        extra["final_reason"] = cleaned
+    applied = await _apply_application_outcome(
+        app_id, app_doc, org_id, decision, actor=actor,
+        details={"closeout": True, "closeout_decision": True, "decider": decider,
+                 "approve_count": int(counts.get("approve") or 0),
+                 "deny_count": int(counts.get("deny") or 0)},
+        extra_set=extra)
+    if not applied:
+        raise HTTPException(409, "This application was just resolved by someone else. Please refresh.")
+    await log_action("application_closeout_decided", actor, {
+        "app_id": app_id, "decision": decision, "decider": decider,
+    }, org_id=org_id)
 
 #--IT Administration Helpers---
 
@@ -3023,7 +3287,9 @@ async def cached_setting(org_id, name: str):
     if _SETTINGS_TTL > 0:
         hit = _SETTINGS_CACHE.get(key)
         if hit and hit[0] > time.monotonic():
+            perf_metrics.note_cache("settings", True)
             return copy.deepcopy(hit[1])
+        perf_metrics.note_cache("settings", False)
     doc = await tdb_for(org_id).settings.find_one({"name": name})
     if _SETTINGS_TTL > 0:
         _SETTINGS_CACHE[key] = (time.monotonic() + _SETTINGS_TTL, copy.deepcopy(doc))
@@ -3572,6 +3838,7 @@ async def get_status(request: Request):
     status_doc = await cached_setting(request.state.org_id, "election_config")
     schedule = await get_phase_schedule(request)
     voting_phase_open = _phase_is_open(schedule["phases"]["voting"], datetime.utcnow())
+    perf_metrics.note_phase_open(voting_phase_open)
     sec = await get_security_settings(request)
     turnstile_mode = sec["turnstile_mode"]   # off | adaptive | on
     approval_policy = sec["approval_policy"]  # unanimous | majority_total | majority_cast — public copy only, no vote counts here
@@ -3894,8 +4161,10 @@ async def verify_otp(data: OTPCheck, request: Request):
         await count_verified(request.state.org_id)
         await ip_record(request, "verifies")
         await log_action("otp_verified", sid, {}, org_id=request.state.org_id)
+        perf_metrics.note_election("otp_verify")
         return {"status": "success", "voter_token": voter_token}
 
+    perf_metrics.note_election("otp_fail")
     await ip_record(request, "fails")
     remaining = int(tokens_after + 1e-9)
     if remaining <= 0:
@@ -3981,6 +4250,7 @@ async def cast_vote(data: VoteRequest, request: Request):
         # has_voted (on the voter doc) and this event are deliberately
         # decoupled so nothing in the DB links a voter to their choice.
         _ev_id, _ev_at = _new_vote_event_stamp()
+        perf_metrics.note_election("vote")
         await tdb(request).vote_events.insert_one(
             {
                 "_id": _ev_id,
@@ -4104,6 +4374,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         # transaction (still all-or-nothing with the has_voted update above).
         cast_at = _vote_bucket_start()
         demo_flag = bool(await _demo_active(request.state.org_id))
+        perf_metrics.note_election("vote")
         await tdb(request).vote_events.insert_many(
             [org_stamp(request, {"_id": _new_vote_event_stamp()[0], "candidate_id": c_oid, "cast_at": cast_at,
                                  "is_demo": demo_flag}) for c_oid in candidate_oids],
@@ -5545,6 +5816,7 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
     vf = (await get_voter_fields(request))["fields"]
     enabled = {f["key"] for f in vf if f["enabled"]}
     content = await _read_csv_upload(file)
+    noun = await id_noun(request.state.org_id)
     if mapping is None or not mapping.strip():
         parsed = _parse_voter_csv(content, vf, await _roster_ids(request), file.filename or "")
     else:
@@ -5556,7 +5828,6 @@ async def import_voters_preview(request: Request, file: UploadFile = File(...),
         hr = header_row or guess_header_row(table.rows, vf)
         if not 1 <= hr <= len(table.rows):
             raise HTTPException(400, f"Row {hr} is not in the file.")
-        noun = await id_noun(request.state.org_id)
         parsed = _parse_voter_table(table, hr, chosen, vf, await _roster_ids(request), noun=noun)
     if not parsed["rows"]:
         raise HTTPException(400, f"No valid rows found. Each row needs a {noun} and a full name; "
@@ -6022,6 +6293,9 @@ async def list_applications(request: Request, status: str = None):
             return []
         if not status:
             query["status"] = {"$in": list(RESOLVED_STATUSES)}
+    await _maybe_close_vetting(org_id)
+    ended = await _vetting_window_ended(org_id)
+    chairs = await _eligible_closeout_chairs(org_id) if ended else None
     actor_key, is_chair = await _panel_actor_context(request)
     active_keys = await _active_panel_keys(org_id)
     panel_count = await get_panel_count(org_id)
@@ -6038,7 +6312,8 @@ async def list_applications(request: Request, status: str = None):
             a["position_order"] = 0
         apps.append(shape_application_for_role(
             a, role, actor_key=actor_key, active_keys=active_keys,
-            panel_count=panel_count, is_chair_panelist=is_chair))
+            panel_count=panel_count, is_chair_panelist=is_chair,
+            closeout_decider=_decider_for_app(chairs, a) if chairs is not None else None))
     apps.sort(key=lambda x: (x.get("position_order", 0), -x["submitted_at"].timestamp() if x.get("submitted_at") else 0))
     return apps
 
@@ -6158,6 +6433,8 @@ async def commissioner_vote(app_id: str, data: CommissionerVote, request: Reques
         raise HTTPException(404, "Application not found.")
     if app_doc.get("status") in RESOLVED_STATUSES:
         raise HTTPException(400, "This application is already resolved.")
+    if app_doc.get("vetting_closed_undecided"):
+        raise HTTPException(409, "Vetting has closed. This application is waiting for the Chairperson or the superadmin.")
     if not app_doc.get("finance_cleared"):
         raise HTTPException(400, "Awaiting Financial Controller clearance before voting can open.")
     await assert_phase_open(request, "vetting")
@@ -6216,6 +6493,8 @@ async def panel_tie_break(app_id: str, data: TieBreakDecision, request: Request,
     app_doc = await tdb(request).applications.find_one({"_id": oid})
     if not app_doc:
         raise HTTPException(404, "Application not found.")
+    if app_doc.get("vetting_closed_undecided"):
+        raise HTTPException(409, "Vetting closed without a decision. The Chairperson uses the close-out decision, not a tie-break.")
 
     panelist = await _acting_panelist(request, admin)
     chair = None
@@ -6257,6 +6536,60 @@ async def panel_tie_break(app_id: str, data: TieBreakDecision, request: Request,
     await log_action("application_tie_broken", admin.get("sub", "unknown"),
                      {"app_id": app_id, "decision": data.decision}, org_id=org_id)
     return {"status": "tie_broken", "decision": data.decision}
+
+
+@app.post("/admin/applications/{app_id}/closeout-decision")
+async def panel_closeout_decision(app_id: str, data: TieBreakDecision, request: Request,
+                                  admin: dict = Depends(require_role("vetting"))):
+    """After vetting closes on a tie or on no votes, the Chairperson (still able to open the panel)
+    records the decision. It is not written into the vote map."""
+    if data.decision not in ("approve", "deny"):
+        raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
+    org_id = require_org(request.state.org_id)
+    await _maybe_close_vetting(org_id)
+    oid = parse_oid(app_id, "application id")
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("vetting_closed_undecided"):
+        raise HTTPException(409, "This application is not waiting for a decision after vetting closed.")
+    chairs = await _eligible_closeout_chairs(org_id)
+    if _decider_for_app(chairs, app_doc) != "chair":
+        raise HTTPException(403, "The Chairperson cannot decide this application. The superadmin decides it.")
+    panelist = await _acting_panelist(request, admin)
+    chair = None
+    if panelist.get("student_id"):
+        chair = await tdb(request).voters.find_one({
+            **get_forgiving_filter(panelist["student_id"]), "is_chief_commissioner": True})
+    if not chair:
+        raise HTTPException(403, "Only the Chairperson can decide an application left open when vetting closed.")
+    if panelist.get("student_id") and normalize_student_id(panelist["student_id"]) == normalize_student_id(app_doc.get("student_id") or ""):
+        raise HTTPException(403, "The Chairperson cannot decide their own application.")
+    await _apply_closeout_decision(app_id, app_doc, org_id, data.decision, admin.get("sub", "unknown"),
+                                   "chair", data.reason or "")
+    return {"status": "closeout_decided", "decision": data.decision}
+
+
+@app.post("/superadmin/applications/{app_id}/closeout-decision")
+async def superadmin_closeout_decision(app_id: str, data: TieBreakDecision, request: Request,
+                                       admin: dict = Depends(require_role("superadmin"))):
+    """The superadmin decides a close-out leftover only when no Chairperson on the panel can."""
+    if data.decision not in ("approve", "deny"):
+        raise HTTPException(400, "Decision must be 'approve' or 'deny'.")
+    org_id = require_org(request.state.org_id)
+    await _maybe_close_vetting(org_id)
+    oid = parse_oid(app_id, "application id")
+    app_doc = await tdb(request).applications.find_one({"_id": oid})
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+    if app_doc.get("status") in RESOLVED_STATUSES or not app_doc.get("vetting_closed_undecided"):
+        raise HTTPException(409, "This application is not waiting for a decision after vetting closed.")
+    chairs = await _eligible_closeout_chairs(org_id)
+    if _decider_for_app(chairs, app_doc) == "chair":
+        raise HTTPException(409, "The Chairperson is on the panel and decides this application.")
+    await _apply_closeout_decision(app_id, app_doc, org_id, data.decision, current_actor(request),
+                                   "superadmin", data.reason or "")
+    return {"status": "closeout_decided", "decision": data.decision}
 
 
 @app.post("/superadmin/applications/{app_id}/final-reason")
@@ -6367,6 +6700,7 @@ async def _finance_clear_application_core(app_id: str, data: FinanceClear, reque
         f"{org}: Your payment has been confirmed. You are invited for nomination/vetting for {pos}"
         + (f" on {when}." if when else " — the date will be communicated once the timeline is set.")))
     logger.info(f"Application {app_id} finance-cleared by {fc_id}.")
+    await _maybe_close_vetting(request.state.org_id)
     return {"status": "finance_cleared"}
 
 
@@ -6471,7 +6805,9 @@ async def finance_reverse_clearance(app_id: str, data: FinanceReverse, request: 
                             "status": {"$nin": list(RESOLVED_STATUSES)}},
         {"$set": {"finance_cleared": False, "votes": {}},
          "$unset": {"finance_cleared_by": "", "finance_cleared_at": "", "finance_clear_note": "",
-                    "tied_pending_chief": ""},
+                    "tied_pending_chief": "", "vetting_closed_undecided": "", "closeout_handled": "",
+                    "closeout_counts": "", "closeout_at": "", "closeout_decider": "",
+                    "decided_by_closeout": ""},
          "$push": {
              "finance_history": {"at": now, "by": fc_id, "action": "clearance_reversed", "reason": reason},
              **({"revert_history": {"at": now, "by": fc_id, "from_status": "pending",
@@ -6549,6 +6885,10 @@ async def finance_reinstate_application(app_id: str, data: FinanceReinstate, req
             f"{org}: Your nomination for {pos} has been reopened and is awaiting payment confirmation "
             f"from Finance."))
     logger.info(f"Application {app_id} reinstated to {data.target} by {fc_id}.")
+    if cleared:
+        # Same rule as a normal clearance: if the vetting window has already ended, close it out now
+        # rather than leaving a freshly cleared application pending until someone next opens a screen.
+        await _maybe_close_vetting(request.state.org_id)
     return {"status": "pending", "finance_cleared": cleared}
 
 
@@ -7587,6 +7927,7 @@ async def superadmin_force_finance_clear(app_id: str, request: Request):
         raise HTTPException(409, "This application was just finance-cleared by someone else. Please refresh.")
     await log_action("application_force_finance_cleared", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f"Superadmin force-cleared finance gate for application {app_id}.")
+    await _maybe_close_vetting(request.state.org_id)
     return {"status": "force_finance_cleared"}
 
 
@@ -7658,7 +7999,9 @@ async def get_election_results(request: Request):
     if _RESULTS_TTL > 0:
         hit = _RESULTS_CACHE.get(cache_key)
         if hit and hit[0] > time.monotonic():
+            perf_metrics.note_cache("results", True)
             return copy.deepcopy(hit[1])
+        perf_metrics.note_cache("results", False)
     voter_turnout = await tdb(request).voters.count_documents({"has_voted": True})
     results = []
     if results_released:
@@ -7687,6 +8030,7 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
     per-commissioner votes map from every application — the Overseer can see
     aggregate counts and outcomes, but never which commissioner voted which way.
     """
+    await _maybe_close_vetting(request.state.org_id)
     status_doc = await tdb(request).settings.find_one({"name": "election_config"})
     election_status = {
         "is_open":      (status_doc or {}).get("is_open", True),
@@ -7927,6 +8271,7 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
 async def it_admin_applications(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     """Applicant list with stages for the people who answer applicants' questions. Stage only (tier 1)."""
     org_id = require_org(request.state.org_id)
+    await _maybe_close_vetting(org_id)
     rows = []
     async for a in tdb(request).applications.find(org_query(request)).sort("submitted_at", -1):
         a["_id"] = str(a["_id"])
@@ -8709,18 +9054,26 @@ async def switch_hat(request: Request, admin: dict = Depends(require_role(*HAT_R
 async def panel_link(request: Request, admin: dict = Depends(require_role(*HAT_ROLES))):
     """Whether the signed-in admin can switch to the Vetting Panel. Answers only for the
     caller (never lists who is on the panel), so the dashboard can hide the switch button."""
+    await _maybe_close_vetting(request.state.org_id)
     panelist = await _active_panel_record(request, admin.get("sub"))
     linked = bool(panelist)
     # Guide 7.2: tell the Chairperson (and only them) when a tie is waiting for their decision,
     # so they know to switch to the panel view. Only a count; no votes or names.
+    # The same hint covers applications the close-out could not decide.
     tie_waiting = 0
+    closeout_waiting = 0
     if linked and admin["role"] == "commission":
         chair = await tdb(request).voters.find_one({
             **get_forgiving_filter(admin.get("sub")), "is_chief_commissioner": True}, {"_id": 1})
         if chair:
             tie_waiting = await tdb(request).applications.count_documents({
-                "tied_pending_chief": True, "status": {"$nin": list(RESOLVED_STATUSES)}})
-    return {"panel_linked": linked, "tie_waiting": tie_waiting,
+                "tied_pending_chief": True, "vetting_closed_undecided": {"$ne": True},
+                "status": {"$nin": list(RESOLVED_STATUSES)}})
+            closeout_waiting = await tdb(request).applications.count_documents({
+                "vetting_closed_undecided": True,
+                "student_id": {"$ne": normalize_student_id(admin.get("sub") or "")},
+                "status": {"$nin": list(RESOLVED_STATUSES)}})
+    return {"panel_linked": linked, "tie_waiting": tie_waiting, "closeout_waiting": closeout_waiting,
             "overseer_paused": linked and admin["role"] == "overseer"}
 
 
@@ -9604,7 +9957,7 @@ async def _demo_fenced_reset(org_id: str, snapshot: dict) -> dict:
     # voter may have had before demo mode was enabled.
     otp_res = await dbs.otps.delete_many({"is_demo": True})
     deleted["otps"] = otp_res.deleted_count
-    otp_key_rx = {"key": {"$regex": f"^{re.escape(org_id)}:otp:DEMO-"}}
+    otp_key_rx = {"key": {"$regex": f"^{re.escape(org_id)}:otp:demo-"}}
     for name in ("otp_send_state", "otp_guess_state", "otp_attempts"):
         if hasattr(db, name):
             result = await getattr(db, name).delete_many(otp_key_rx)
@@ -9720,7 +10073,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
 
     # Reserved fake voters. Refuse collisions with any untagged roster entry:
     # otherwise seeding a role onto a real voter would make reset destructive.
-    reserved_ids = [f"DEMO-{i:03d}" for i in range(1, 41)]
+    reserved_ids = [normalize_student_id(f"DEMO-{i:03d}") for i in range(1, 41)]   # stored lowercase like every roster ID
     collisions = await dbs.voters.find(
         {"student_id": {"$in": reserved_ids}, "is_demo": {"$ne": True}},
         {"student_id": 1},
@@ -9731,7 +10084,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
         raise HTTPException(409, f"Reserved demo voter IDs are already in use: {ids}{extra}")
     voter_docs = []
     for i in range(1, 41):
-        sid = f"DEMO-{i:03d}"
+        sid = normalize_student_id(f"DEMO-{i:03d}")
         if await dbs.voters.find_one({"student_id": sid}):
             continue
         voter_docs.append({"student_id": sid, "full_name": f"Demo Voter {i:03d}",
@@ -9761,7 +10114,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
         ("Overseer", "DEMO-004", "overseer_email", "overseer_password_hash", "overseer_must_change_password", "overseer_temp_password_expires", "is_overseer", "demo.overseer@example.invalid"),
     ]
     for role_label, sid, email_field, hash_field, must_field, exp_field, flag_field, email in role_specs:
-        voter = await dbs.voters.find_one({"student_id": sid})
+        voter = await dbs.voters.find_one({"student_id": normalize_student_id(sid)})
         if not voter:
             continue
         cred = credentials.get(role_label.lower()) or {}
@@ -9797,7 +10150,7 @@ async def demo_seed(request: Request, admin: dict = Depends(require_role("supera
         nom_cfg = await get_nomination_form(org_id)
         pos = positions[0]
         for i in range(1, 5):
-            sid = f"DEMO-{i+10:03d}"
+            sid = normalize_student_id(f"DEMO-{i+10:03d}")
             voter = await dbs.voters.find_one({"student_id": sid}) or await dbs.voters.find_one({"is_demo": True})
             if not voter:
                 continue
@@ -9843,6 +10196,7 @@ async def demo_phase(data: DemoPhaseRequest, request: Request, admin: dict = Dep
     # Voting is a real gate in the application. Open it only for the voting demo window; results closes it.
     await tdb(request).settings.update_one({"name": "election_config"}, {"$set": org_stamp(request, {"name": "election_config", "is_open": phase == "voting"})}, upsert=True)
     invalidate_settings(org_id, "election_config")
+    await _maybe_close_vetting(org_id)
     return {"status": "phase_set", "phase": phase, "schedule": await get_phase_schedule(request)}
 
 
@@ -9859,7 +10213,7 @@ async def _demo_prepare_for_voting(request: Request) -> None:
     for idx, app in enumerate(apps):
         if app.get("status") in RESOLVED_STATUSES:
             continue
-        fc = await tdb(request).voters.find_one({"student_id": "DEMO-003", "is_financial_controller": True, "is_demo": True})
+        fc = await tdb(request).voters.find_one({"student_id": normalize_student_id("DEMO-003"), "is_financial_controller": True, "is_demo": True})
         if not fc:
             raise HTTPException(409, "Demo financial controller account is missing; reseed demo data.")
         await _finance_clear_application_core(str(app["_id"]),
@@ -10025,6 +10379,7 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
             await _save_security(request, {"freeze_lifted_at": datetime.utcnow(), "epoch_at": datetime.utcnow()})
         await tdb(request).settings.update_one({"name": "otp_derived"},
                                      {"$set": {"round_id": data.round_id or DEFAULT_ROUND_ID}})
+    await _maybe_close_vetting(request.state.org_id)
     return {"status": "saved", "round_id": data.round_id or DEFAULT_ROUND_ID}
 
 

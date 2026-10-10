@@ -420,16 +420,16 @@ html[data-template="blueprint"] {
     .bp-top { height: auto; flex-wrap: wrap; margin: var(--bp-s2) var(--bp-gut) var(--bp-s3); }
     .bp-tl, .bp-cell { min-height: var(--bp-hh); }
     /* Compact mobile header. Row 1: logo + org name + theme button. Row 2: status on one line. Row 3: nav.
-       Root cause of the squeezed logo: index.css forces `.no-print img { height: 90px !important }` (<=600px) and the header
-       carries .no-print, so the logo image was stretched to 90px inside a 40px box. Overridden below with matching !important. */
-    .bp-top.no-print { padding: 0 !important; gap: 0 !important; }
+       Root cause of the squeezed logo: index.css forces a 90px image height on `.no-print img` (<=600px) and the header
+       carries .no-print, so the logo image was stretched to 90px inside a 40px box. The overrides live in the NEUTRALISERS
+       fence (N16-N18), the only place this file may out-rank those rules. */
     .bp-tl { flex: 1 1 0; min-height: 52px; padding: var(--bp-s2) var(--bp-s3); gap: var(--bp-s3); }
     .bp-logo { width: 36px; height: 36px; }
     .bp-tl .bp-logo {
       width: 40px; height: 40px; min-width: 40px; min-height: 40px; flex: 0 0 40px;
       align-self: center; aspect-ratio: 1 / 1; overflow: hidden;
     }
-    .bp-top.no-print .bp-logo img { width: 100% !important; height: 100% !important; max-height: 100% !important; object-fit: contain; }
+    .bp-top.no-print .bp-logo img { object-fit: contain; }
     /* org name: readable, wraps to at most two lines instead of truncating to "K..." */
     .bp-bt b {
       font-size: 13px; line-height: 17px; letter-spacing: .03em;
@@ -438,7 +438,7 @@ html[data-template="blueprint"] {
     .bp-bt small { font-size: 10px; line-height: 14px; }
     /* theme toggle sits at the right of row 1 */
     .bp-cell.bp-theme { min-height: 0; border-left: 0; padding: 0 var(--bp-s3) 0 0; flex: 0 0 auto; }
-    .bp-top.no-print .bp-theme button { padding: 6px 12px !important; min-height: 34px; }
+    .bp-top.no-print .bp-theme button { min-height: 34px; }
     /* status: one slim full-width line (label + countdown side by side) */
     .bp-cell.bp-status {
       flex: 1 0 100%; min-height: 0; flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center;
@@ -466,12 +466,14 @@ html[data-template="blueprint"] {
        content; the bar is opaque so nothing shows through. The right padding keeps the last tab clear of the help FAB. */
     .dash-body > .bp-side {
       position: fixed; top: auto; left: var(--bp-gut); right: var(--bp-gut); bottom: calc(var(--bp-s3) + env(safe-area-inset-bottom, 0px));
-      z-index: 30; margin: 0 auto; max-width: 720px; box-sizing: border-box; padding-right: 64px;
+      z-index: 30; margin: 0 auto; max-width: 720px; box-sizing: border-box; padding-right: calc(var(--bp-s7) + var(--bp-s4));
       background: var(--bp-sf3); border: 1px solid var(--bp-line); box-shadow: var(--bp-sh);
     }
     .dash-body > .bp-side.bp-flat { margin: 0 auto; background: var(--bp-sf3); box-shadow: var(--bp-sh); }
     /* the bar is out of flow now, so reserve its height under the content */
-    .dash-body > .bp-side ~ .dash-main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+    .dash-body > .bp-side ~ .dash-main { padding-bottom: calc(var(--bp-s7) + var(--bp-s6) + var(--bp-s2) + env(safe-area-inset-bottom, 0px)); }
+    /* the voting screen's Clear / Review dock is fixed too (fallback 80px = s7 + s6) */
+    html[data-template="blueprint"] .bp-wrap:has(.bp-dock) { padding-bottom: calc(var(--bottom-bar-height, calc(var(--bp-s7) + var(--bp-s6))) + var(--bp-s6) + env(safe-area-inset-bottom, 0px)); }
     .bp-side.bp-flat { flex-wrap: nowrap; overflow-x: auto; margin: 0 0 var(--bp-s3); }
     .bp-grp { display: contents; }
     .bp-grp-l, .bp-sess { display: none; }
@@ -521,6 +523,27 @@ html[data-template="blueprint"] {
     html[data-template="blueprint"] .ui-dialog-actions button { width: 100%; }
   }
 
+  /* Vetting actions (post-T10): the Vetting Panel's Approve/Deny rows and the "Switch to Vetting Panel" button
+     are inline-styled 30 px controls. Blueprint lifts them to the 44 px floor (R10) from here, so the default
+     template's pixels stay exactly as they were (R1). Plain classes, not bp-, so default JS carries no bp- strings. */
+  html[data-template="blueprint"] .vp-actions button,
+  html[data-template="blueprint"] button.vp-switch { min-height: 44px; padding-left: var(--bp-s4); padding-right: var(--bp-s4); }
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .vp-actions { flex-direction: column; }
+    html[data-template="blueprint"] .vp-actions button { width: 100%; }
+  }
+
+  /* Performance tab (E17): buttons and tap targets reach the 44 px floor, form fields are 48 px tall (R10).
+     Plain classes (no bp- prefix) so default JS carries no bp- strings; scoped to the template, with no priority overrides. */
+  html[data-template="blueprint"] .perf-btn,
+  html[data-template="blueprint"] .perf-actions button { min-height: 44px; padding-left: var(--bp-s4); padding-right: var(--bp-s4); }
+  html[data-template="blueprint"] .perf-field { min-height: 48px; font-size: 16px; }
+  html[data-template="blueprint"] .perf-check { min-height: 44px; }
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .perf-actions { flex-direction: column; }
+    html[data-template="blueprint"] .perf-actions button { width: 100%; }
+  }
+
   /* ===== NEUTRALISERS ===== */
   /* N1 App.jsx:321 - org branding is written inline on <html> (brandColors.js sets --bp-ac to the org accent, nudged to read on the template's surfaces, plus --bp-ai ink). The template is single-accent, so every screen that still asks for --brand-* gets that same colour and its ink (D1). N2/N3 (App shell) and N5/N6 (dashboard shell, BP-T7a) are below. */
   html[data-template="blueprint"] { --brand-primary: var(--bp-ac) !important; --brand-accent: var(--bp-ac) !important; --brand-on-primary: var(--bp-ai) !important; --brand-on-accent: var(--bp-ai) !important; }
@@ -538,17 +561,15 @@ html[data-template="blueprint"] {
     background: var(--bp-sf) !important; border: 1px solid var(--bp-line) !important; border-top: 3px solid var(--bp-ac) !important;
     border-radius: var(--bp-r) !important; box-shadow: var(--bp-sh) !important; padding: var(--bp-pad) !important; width: 100% !important;
   }
-  /* Mobile/tablet bottom bar: the rail is position: fixed (out of flow), so whatever follows it needs room under
-     the content to scroll clear of it. The old `.dash-main` reserve above lost to N6 (`.dashboard-shell { padding:
-     ... !important }`) on every dashboard whose content pane is also the shell, and never applied to the flat
+  /* N7 SuperAdminDashboard.jsx:2486 container - the .dashboard-shell padding of N6 wins on every dashboard whose content pane is also the shell. Mobile/tablet bottom bar: the rail is position: fixed (out of flow), so whatever follows it needs room under
+     the content to scroll clear of it. The old `.dash-main` reserve above lost to the padding declared by N6 on
+     `.dashboard-shell` on every dashboard whose content pane is also the shell, and never applied to the flat
      dashboards' `.bp-frame-main`, so the last rows stayed hidden behind the bar. Cover any sibling after the rail. */
   @media (max-width: 768px) {
     html[data-template="blueprint"] .dash-body > .bp-side ~ * {
-      padding-bottom: calc(var(--bp-pad) + 96px + env(safe-area-inset-bottom, 0px)) !important;
+      padding-bottom: calc(var(--bp-pad) + var(--bp-s7) * 2 + env(safe-area-inset-bottom, 0px)) !important;
       box-sizing: border-box;
     }
-    /* the voting screen's Clear / Review dock is fixed too */
-    html[data-template="blueprint"] .bp-wrap:has(.bp-dock) { padding-bottom: calc(var(--bottom-bar-height, 80px) + var(--bp-s6) + env(safe-area-inset-bottom, 0px)); }
   }
   /* N8 VoterList.jsx:91 table const - inline minWidth 760px would keep the card-row table wider than a phone; desktop keeps it so the table scrolls instead of squeezing */
   @media (max-width: 768px) {
@@ -578,6 +599,18 @@ html[data-template="blueprint"] {
   /* N14 UIFeedback.jsx:280 dialogInputStyle - inline 6px radius, page-colour fill and --border-color boundary on the prompt / type-to-confirm field */
   html[data-template="blueprint"] .ui-dialog input {
     background: var(--bp-sf2) !important; border: 1px solid var(--bp-line-ui) !important; border-radius: var(--bp-rs) !important; min-height: var(--bp-tap) !important;
+  }
+  /* N16 TitleBlockHeader.jsx:38 - the header carries .no-print, and index.css:244 gives .no-print a 10px padding and gap on phones; the compact header row owns its own spacing */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .bp-top.no-print { padding: 0 !important; gap: 0 !important; }
+  }
+  /* N17 TitleBlockHeader.jsx:38 - index.css:249 sets .no-print img to 90px tall on phones; the logo fills its 40px box instead */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .bp-top.no-print .bp-logo img { width: 100% !important; height: 100% !important; max-height: 100% !important; }
+  }
+  /* N18 TitleBlockHeader.jsx:38 - index.css:253 gives every .no-print button 8px 12px padding on phones; the theme toggle is a compact 6px 12px (s1 * 1.5) */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .bp-top.no-print .bp-theme button { padding: calc(var(--bp-s1) * 1.5) var(--bp-s3) !important; }
   }
   /* ===== /NEUTRALISERS ===== */
 }

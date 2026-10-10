@@ -131,6 +131,7 @@ async def test_https_template_url_accepted_and_filename_sanitised(env):
                                                     "filename": "..\\..\\etc/pass<wd>.pdf"})
     assert r.status_code == 200, r.text
     tf = (await env.client.get("/nomination-form")).json()["template_file"]
+    assert tf.pop("download_url") == tf["url"]                         # not a Cloudinary raw URL: falls back to the plain URL
     assert tf == {"url": "https://files.example.com/a.pdf", "filename": "passwd.pdf"}
     r = await put(env, clear_template_file=True)
     assert r.status_code == 200 and r.json()["template_file"] is None
@@ -168,7 +169,9 @@ async def test_template_upload_pdf(env, cloud):
     assert cloud[0]["resource_type"] == "raw" and cloud[0]["public_id"].endswith(".pdf")
     assert env.org_id in cloud[0]["folder"]
     await put(env, enabled=True)
-    assert (await env.client.get("/nomination-form")).json()["template_file"] == tf
+    got = (await env.client.get("/nomination-form")).json()["template_file"]
+    assert got.pop("download_url") == main._nomination_download_url(tf["url"], "T1")
+    assert got == tf
     log = await env.db.audit_log.find_one({"action": "nomination_form_template_uploaded"})
     assert log["details"]["reason"] == "new blank form" and log["details"]["type"] == "pdf"
     assert "url" not in log["details"]

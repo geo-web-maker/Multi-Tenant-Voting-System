@@ -117,13 +117,26 @@ export default function VettingDashboard({ onLogout }) {
       `Tie broken: ${decision}.`);
   };
 
+  const closeOut = async (app, decision) => {
+    const id = app.id || app._id;
+    const name = app.full_name || 'this applicant';
+    const ok = await confirm(
+      `Vetting has closed. ${decision === 'approve' ? 'Approve' : 'Deny'} ${name}? This is final.`,
+      { danger: decision === 'deny', confirmText: decision === 'approve' ? 'Approve' : 'Deny' },
+    );
+    if (!ok) return;
+    const reason = decision === 'deny' ? (reasons[id] || '').trim() : '';
+    act(`close-${id}`, () => api.post(`/admin/applications/${id}/closeout-decision`, { decision, reason }),
+      `Decision recorded: ${decision}.`);
+  };
+
   if (!me && meError) {
     return (
       <Shell>
         <h2 style={{ marginTop: 0 }}>Vetting Panel</h2>
         <div style={card}>
           <p style={{ margin: '0 0 12px' }}>We could not load your panel details. Check your connection and try again.</p>
-          <div style={row}>
+          <div className="vp-actions" style={row}>
             <button style={btnApprove} onClick={loadMe}>Retry</button>
             {onLogout && <button style={hatBtn} onClick={onLogout}>Log out</button>}
           </div>
@@ -164,7 +177,7 @@ export default function VettingDashboard({ onLogout }) {
         refreshing={loading}
         onLogout={onLogout}
         actions={canSwitchBack ? (
-          <button style={hatBtn} onClick={() => switchHat().catch((e) => toast(e.response?.data?.detail || 'Could not switch back.', { kind: 'error' }))}>
+          <button className="vp-switch" style={hatBtn} onClick={() => switchHat().catch((e) => toast(e.response?.data?.detail || 'Could not switch back.', { kind: 'error' }))}>
             {`Switch back to ${backLabel}`}
           </button>
         ) : null}
@@ -200,26 +213,56 @@ export default function VettingDashboard({ onLogout }) {
         const id = app.id || app._id;
         const p = app.progress || { cast: 0, panel_count: 0 };
         const cleared = Boolean(app.finance_cleared);
-        const canVote = cleared && !app.my_vote && !app.awaiting_final_decision;
+        const closed = Boolean(app.vetting_closed_undecided);
+        const counts = app.closeout_counts;
+        const canVote = cleared && !app.my_vote && !app.awaiting_final_decision && !closed;
         return (
           <div key={id} style={card}>
             <div style={cardHead}>
               <ApplicantBlock app={app} showReg />
-              <span style={pill}>{p.cast} of {p.panel_count} voted</span>
+              {!closed && <span style={pill}>{p.cast} of {p.panel_count} voted</span>}
             </div>
             <ManifestoText text={app.manifesto} />
             <NominationRow app={app} onView={openNomination} busy={busy[`nomination-${id}`]} />
 
             {!cleared && <p style={note}>Waiting for finance clearance before voting opens.</p>}
-            {app.my_vote && <p style={note}>You voted to {app.my_vote}.</p>}
+            {app.my_vote && !closed && <p style={note}>You voted to {app.my_vote}.</p>}
+            {closed && counts && (
+              <p style={note}>Vetting closed. Votes cast: {counts.approve} approve, {counts.deny} deny.</p>
+            )}
             {canVote && (
-              <div style={row}>
+              <div className="vp-actions" style={row}>
                 <button style={btnApprove} disabled={busy[`vote-${id}`]} onClick={() => vote(app, 'approve')}>Approve</button>
                 <button style={btnDeny} disabled={busy[`vote-${id}`]} onClick={() => vote(app, 'deny')}>Deny</button>
               </div>
             )}
-            {app.awaiting_final_decision && !app.tie_break_available && (
+            {app.awaiting_final_decision && !app.tie_break_available && !closed && (
               <p style={note}>All votes in, awaiting final decision.</p>
+            )}
+
+            {closed && !app.closeout_decision_available && (
+              <p style={note}>
+                {app.closeout_decider === 'chair'
+                  ? 'Waiting for the Chairperson to decide.'
+                  : 'Waiting for the superadmin to decide.'}
+              </p>
+            )}
+
+            {app.closeout_decision_available && (
+              <div style={tieBox}>
+                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Vetting closed without a decision. Yours is needed.</p>
+                <input
+                  style={input}
+                  placeholder="Reason (optional, stored only if you deny)"
+                  maxLength={500}
+                  value={reasons[id] || ''}
+                  onChange={(e) => setReasons((r) => ({ ...r, [id]: e.target.value }))}
+                />
+                <div className="vp-actions" style={row}>
+                  <button style={btnApprove} disabled={busy[`close-${id}`]} onClick={() => closeOut(app, 'approve')}>Approve</button>
+                  <button style={btnDeny} disabled={busy[`close-${id}`]} onClick={() => closeOut(app, 'deny')}>Deny</button>
+                </div>
+              </div>
             )}
 
             {app.tie_break_available && (
@@ -232,7 +275,7 @@ export default function VettingDashboard({ onLogout }) {
                   value={reasons[id] || ''}
                   onChange={(e) => setReasons((r) => ({ ...r, [id]: e.target.value }))}
                 />
-                <div style={row}>
+                <div className="vp-actions" style={row}>
                   <button style={btnApprove} disabled={busy[`tie-${id}`]} onClick={() => tieBreak(app, 'approve')}>Approve</button>
                   <button style={btnDeny} disabled={busy[`tie-${id}`]} onClick={() => tieBreak(app, 'deny')}>Deny</button>
                 </div>
@@ -254,6 +297,15 @@ export default function VettingDashboard({ onLogout }) {
             {app.decided_at && <p style={note}>Decided {new Date(app.decided_at).toLocaleDateString()}.</p>}
             {split && <p style={note}>Panel split: {split.approve} approve, {split.deny} deny.</p>}
             {app.decided_by_tie_break && <p style={note}>Decided by the Chairperson's tie-break.</p>}
+            {app.decided_by_closeout && (
+              <p style={note}>
+                {app.closeout_decider === 'chair'
+                  ? "Decided by the Chairperson after vetting closed."
+                  : app.closeout_decider === 'superadmin'
+                    ? "Decided by the superadmin after vetting closed."
+                    : "Decided when the vetting window closed."}
+              </p>
+            )}
             <NominationRow app={app} onView={openNomination} busy={busy[`nomination-${id}`]} />
             <p style={note}>Reason: {app.final_reason || 'No reason recorded'}</p>
           </div>

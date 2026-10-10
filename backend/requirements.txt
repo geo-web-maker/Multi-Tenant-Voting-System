@@ -12,3 +12,5 @@ pyotp
 boto3
 tzdata
 openpyxl
+
+asyncpg==0.30.0
