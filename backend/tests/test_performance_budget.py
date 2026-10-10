@@ -82,7 +82,7 @@ async def test_voter_path_call_budget(env, counted, prod_caches):
     assert (await ident(env)).status_code == 200
     d = counted.since(s)
     assert _reads(d, "settings") == 0, d                    # election_config / branding come from the cache
-    assert sum(d.values()) <= 11, d                         # was 13
+    assert sum(d.values()) <= 10, d                         # was 13, then 11
 
     s = counted.snapshot()
     r = await env.client.post("/verify-otp", json={"student_id": "v1", "code": code_from(env)})

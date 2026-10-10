@@ -1757,6 +1757,24 @@ async def _resolve_position_title(position_id: str, org_id: str) -> tuple[str, i
         pass
     return position_id, 0
 
+async def _resolve_position_titles(position_ids, org_id: str) -> dict:
+    """Batch form of _resolve_position_title: ONE query for any number of ids, same fallbacks.
+    Returns {position_id: (title, order)}; unknown / malformed ids map to (position_id, 0)."""
+    org_id = require_org(org_id)
+    wanted = {p for p in position_ids if p}
+    oids = {}
+    for pid in wanted:
+        try:
+            oids[ObjectId(pid)] = pid
+        except Exception:
+            pass
+    found = {}
+    if oids:
+        async for pos in tdb_for(org_id).positions.find({"_id": {"$in": list(oids)}}):
+            found[oids[pos["_id"]]] = (pos.get("title", oids[pos["_id"]]), pos.get("order", 0))
+    return {pid: found.get(pid, (pid, 0)) for pid in wanted}
+
+
 async def _create_candidate_from_application(app_doc: dict, org_id: str):
     org_id = require_org(org_id)
     title, order = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
@@ -2476,15 +2494,16 @@ async def _eligible_closeout_chairs(org_id: str) -> list[str]:
     doc = await cached_setting(org_id, "election_phases")
     phases = (doc or {}).get("phases") or {}
     now = datetime.utcnow()
-    chairs = []
+    sids = []
     async for p in tdb_for(org_id).panel_members.find({"active": True, "is_member": True}):
         if not p.get("student_id") or _panelist_access_ended_at(p, phases, now):
             continue
-        voter = await tdb_for(org_id).voters.find_one({
-            **get_forgiving_filter(p["student_id"]), "is_chief_commissioner": True}, {"student_id": 1})
-        if voter:
-            chairs.append(normalize_student_id(voter["student_id"]))
-    return chairs
+        sids.append(normalize_student_id(p["student_id"]))
+    if not sids:
+        return []
+    chiefs = {normalize_student_id(v["student_id"]) async for v in tdb_for(org_id).voters.find(
+        {"student_id": {"$in": sids}, "is_chief_commissioner": True}, {"student_id": 1})}
+    return [s for s in sids if s in chiefs]
 
 
 def _decider_for_app(chairs: list[str], app_doc: dict) -> str:
@@ -3556,8 +3575,9 @@ async def _budget_alerts(org_id, usage: dict):
     total = sec["sms_budget_total"]
     if total:
         left_frac = (total - usage.get("sent_total", 0)) / total
+        fired = set(usage.get("alerts_fired") or [])      # already on the doc count_sms just wrote
         for threshold in (0.5, 0.25, 0.10):
-            if left_frac <= threshold:
+            if left_frac <= threshold and threshold not in fired:
                 r = await db.sms_usage.update_one(
                     {"org_key": org_id or "default", "alerts_fired": {"$ne": threshold}},
                     {"$addToSet": {"alerts_fired": threshold}})
@@ -3969,7 +3989,9 @@ async def verify_identity(data: IdentityCheck, request: Request):
         sec = await get_security_settings(request)
         usage = await sms_usage_doc(request.state.org_id)
         mode = current_sms_mode(sec, usage)
-        await enforce_turnstile(request, data.turnstile_token, sec, mode, await ip_flagged(request))
+        # `flagged` is only read when turnstile_mode == "adaptive" (see enforce_turnstile), so skip the lookup otherwise.
+        flagged = await ip_flagged(request) if sec["turnstile_mode"] == "adaptive" else False
+        await enforce_turnstile(request, data.turnstile_token, sec, mode, flagged)
         await sms_budget_gate(request, sec, usage, student)
         tokens, retry = await peek_guess(request, sid, await guess_params(request, sec))
         if tokens < 1:      # a fresh code is useless while no guess is allowed
@@ -4836,6 +4858,23 @@ async def submit_application(data: ApplicationSubmit, request: Request):
 # CANDIDATE STATUS PORTAL  (public, token-linked, read-only — candidate-portal-spec)
 # =============================================================================
 
+async def get_vote_counts_cached(request: Request) -> dict[str, int]:
+    """get_vote_counts with the public-results TTL (RESULTS_CACHE_TTL_S, default 5 s). ONLY for screens that show a
+    rank/trend band: exact tallies (official report, results) keep calling get_vote_counts directly. Shares
+    _RESULTS_CACHE, so invalidate_settings() (open / close / certify) drops it too."""
+    if _RESULTS_TTL <= 0:
+        return await get_vote_counts(request)
+    key = (str(request.state.org_id), "vote_counts")
+    hit = _RESULTS_CACHE.get(key)
+    if hit and hit[0] > time.monotonic():
+        perf_metrics.note_cache("results", True)
+        return dict(hit[1])
+    perf_metrics.note_cache("results", False)
+    counts = await get_vote_counts(request)
+    _RESULTS_CACHE[key] = (time.monotonic() + _RESULTS_TTL, dict(counts))
+    return counts
+
+
 async def _candidacy_results_band(position_title: str, candidate_id: str, org_id: str, request: Request) -> dict | None:
     """
     §3.3: rank/of/trend for one candidate, reusing the same aggregation the
@@ -4843,14 +4882,14 @@ async def _candidacy_results_band(position_title: str, candidate_id: str, org_id
     (get_vote_counts), gated the same way /election-results gates the public
     breakdown — never raw vote counts or opponent names, only the band.
     """
-    cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
+    cfg = await cached_setting(org_id, "election_config") or {}
     schedule = await get_phase_schedule(request)
     voting_open = _phase_is_open(schedule["phases"].get("voting", {}), datetime.utcnow())
     voting_closed_certified = cfg.get("is_certified", False)
     if not (voting_open or voting_closed_certified):
         return None
 
-    vote_counts = await get_vote_counts(request)
+    vote_counts = await get_vote_counts_cached(request)
     peers = [c async for c in tdb(request).candidates.find({"position": position_title})]
     if not peers:
         return None
@@ -4891,10 +4930,11 @@ async def get_candidate_status(token: str, request: Request):
     # display for everyone, so the candidate-specific results band is redundant.
     public_results_live = (await get_security_settings(request))["public_results_mode"] == "live"
 
-    apps = tdb_for(org_id).applications.find({
+    apps = await tdb_for(org_id).applications.find({
         "student_id": token_doc["student_id"],
         "round_id": token_doc["round_id"],
-    })
+    }).to_list(length=None)
+    titles = await _resolve_position_titles([a.get("position_id") for a in apps], org_id)
 
     # Branding is scoped by the token's org here, so the portal never depends on
     # a tenant header that a bare status link doesn't carry.
@@ -4903,8 +4943,9 @@ async def get_candidate_status(token: str, request: Request):
                 ("logo_url", "org_name", "university_name", "university_logo_url")}
 
     candidacies = []
-    async for app_doc in apps:
-        title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
+    for app_doc in apps:
+        pid = app_doc.get("position_id", "")
+        title = titles[pid][0] if pid else pid
         entry = {
             "position_title": title,
             "status": app_doc.get("status", "pending"),
@@ -6297,15 +6338,18 @@ async def list_applications(request: Request, status: str = None):
     ended = await _vetting_window_ended(org_id)
     chairs = await _eligible_closeout_chairs(org_id) if ended else None
     actor_key, is_chair = await _panel_actor_context(request)
-    active_keys = await _active_panel_keys(org_id)
-    panel_count = await get_panel_count(org_id)
+    live = await _live_panelists(org_id)          # one read serves both the key set and the count
+    active_keys = {_panel_vote_key(p) for p in live}
+    panel_count = len(live)
     apps = []
-    async for a in tdb(request).applications.find(query).sort("submitted_at", -1):
+    rows = await tdb(request).applications.find(query).sort("submitted_at", -1).to_list(length=None)
+    titles = await _resolve_position_titles([a.get("position_id") for a in rows], org_id)
+    for a in rows:
         a["_id"] = str(a["_id"])
         a["edit_history"] = _application_edit_history(a)   # one shape for old and new corrections
         a.pop("reg_no_history", None)
         if a.get("position_id"):
-            title, order = await _resolve_position_title(a["position_id"], org_id)
+            title, order = titles[a["position_id"]]
             a["position_title"] = title
             a["position_order"] = order
         else:
@@ -8267,10 +8311,12 @@ async def it_admin_applications(request: Request, admin: dict = Depends(require_
     org_id = require_org(request.state.org_id)
     await _maybe_close_vetting(org_id)
     rows = []
-    async for a in tdb(request).applications.find(org_query(request)).sort("submitted_at", -1):
+    docs = await tdb(request).applications.find(org_query(request)).sort("submitted_at", -1).to_list(length=None)
+    titles = await _resolve_position_titles([a.get("position_id") for a in docs], org_id)
+    for a in docs:
         a["_id"] = str(a["_id"])
         if a.get("position_id"):
-            a["position_title"], a["position_order"] = await _resolve_position_title(a["position_id"], org_id)
+            a["position_title"], a["position_order"] = titles[a["position_id"]]
         rows.append(shape_application_for_role(a, "it_admin"))
     return rows
 
@@ -8696,13 +8742,13 @@ async def superadmin_list_panel(request: Request):
     panel_count = len(active_rows)
     # Guide 7.2 tie_risk: ties only happen on an even panel; the Chair (live check) can break them.
     chair_active = False
+    sids = {normalize_student_id(r["student_id"]) for r in rows if r.get("student_id")}
+    chiefs = ({normalize_student_id(v["student_id"]) async for v in tdb(request).voters.find(
+        {"student_id": {"$in": list(sids)}, "is_chief_commissioner": True}, {"student_id": 1})} if sids else set())
     for r in rows:
-        r["is_chair"] = False
-        if r.get("student_id") and await tdb(request).voters.find_one({
-                **get_forgiving_filter(r["student_id"]), "is_chief_commissioner": True}):
-            r["is_chair"] = True
-            if r["active"]:
-                chair_active = True
+        r["is_chair"] = bool(r.get("student_id")) and normalize_student_id(r["student_id"]) in chiefs
+        if r["is_chair"] and r["active"]:
+            chair_active = True
     if panel_count % 2 == 1:
         tie_risk = "none"
     elif chair_active:
@@ -10776,16 +10822,12 @@ async def analytics_overview(request: Request):
     }
 
 
-async def _turnout_groups(request: Request, key: str) -> list[dict]:
-    """Registered/voted counts per value of one voter attribute. `key` is always taken from the org's
-    own field config, never from the request. Counts only - no voter is identified."""
-    pipeline = [
-        {"$match": org_query(request)},
-        {"$group": {"_id": f"$attrs.{key}", "registered": {"$sum": 1},
-                    "voted": {"$sum": {"$cond": [{"$eq": ["$has_voted", True]}, 1, 0]}}}},
-    ]
+_VOTED_SUM = {"$sum": {"$cond": [{"$eq": ["$has_voted", True]}, 1, 0]}}
+
+
+def _merge_turnout_rows(rows) -> list[dict]:
     merged: dict[str, dict] = {}
-    async for g in tdb(request).voters.aggregate(pipeline):
+    for g in rows:
         label = g["_id"] if isinstance(g["_id"], str) and g["_id"].strip() else UNRECORDED_LABEL
         m = merged.setdefault(label, {"label": label, "registered": 0, "voted": 0})
         m["registered"] += g["registered"]
@@ -10793,18 +10835,43 @@ async def _turnout_groups(request: Request, key: str) -> list[dict]:
     return list(merged.values())
 
 
+async def _voter_rollup(request: Request, keys: list[str], with_phone: bool = False) -> dict:
+    """ONE pass over this org's voters (a $facet) for the headline totals AND every requested attribute.
+    Replaces count_documents x3 plus one full aggregation per enabled field. `keys` always come from the org's
+    own field config, never from the request. Counts only - no voter is identified.
+    -> {"total": int, "voted": int, "with_phone": int, "groups": {key: [{label, registered, voted}]}}"""
+    facets = {"totals": [{"$group": {"_id": None, "total": {"$sum": 1}, "voted": _VOTED_SUM}}]}
+    if with_phone:
+        facets["with_phone"] = [{"$match": {"phone_numbers": {"$exists": True, "$ne": []}}}, {"$count": "n"}]
+    for i, key in enumerate(keys):
+        facets[f"f{i}"] = [{"$group": {"_id": f"$attrs.{key}", "registered": {"$sum": 1}, "voted": _VOTED_SUM}}]
+    rows = [r async for r in tdb(request).voters.aggregate([{"$facet": facets}])]
+    doc = rows[0] if rows else {}
+    totals = (doc.get("totals") or [{}])[0]
+    return {
+        "total": totals.get("total", 0), "voted": totals.get("voted", 0),
+        "with_phone": ((doc.get("with_phone") or [{}])[0]).get("n", 0),
+        "groups": {key: _merge_turnout_rows(doc.get(f"f{i}") or []) for i, key in enumerate(keys)},
+    }
+
+
+async def _turnout_groups(request: Request, key: str) -> list[dict]:
+    """Registered/voted counts per value of one voter attribute (single-field form of _voter_rollup)."""
+    return (await _voter_rollup(request, [key]))["groups"][key]
+
+
 @app.get("/admin/analytics/turnout-breakdown")
 async def analytics_turnout_breakdown(request: Request):
     """Turnout per enabled voter field (gender, programme, ...). Admin-only, live, unsuppressed counts.
     Never includes how anyone voted."""
     vf = await get_voter_fields(request)
-    total = await tdb(request).voters.count_documents({})
-    voted = await tdb(request).voters.count_documents({"has_voted": True})
+    enabled = [f for f in vf["fields"] if f["enabled"]]
+    roll = await _voter_rollup(request, [f["key"] for f in enabled])
     return {
-        "total": {"registered": total, "voted": voted},
+        "total": {"registered": roll["total"], "voted": roll["voted"]},
         "fields": [{"key": f["key"], "label": f["label"], "public": f["public"],
-                    "groups": finish_groups(await _turnout_groups(request, f["key"]))}
-                   for f in vf["fields"] if f["enabled"]],
+                    "groups": finish_groups(roll["groups"][f["key"]])}
+                   for f in enabled],
     }
 
 
@@ -10813,19 +10880,17 @@ async def admin_voter_stats(request: Request, admin: dict = Depends(require_role
     """CUSTOM-1 (restored): headline voter numbers for the superadmin Voters tab.
     Counts only - no voter is identified and nothing says how anyone voted. `sections` is registered/voted
     per enabled voter field (faculty, hostel, ...); field keys come from the org's own config, never the request."""
-    total = await tdb(request).voters.count_documents({})
-    voted = await tdb(request).voters.count_documents({"has_voted": True})
-    with_phone = await tdb(request).voters.count_documents({"phone_numbers": {"$exists": True, "$ne": []}})
     vf = await get_voter_fields(request)
+    enabled = [f for f in vf["fields"] if f.get("enabled")]
+    roll = await _voter_rollup(request, [f["key"] for f in enabled], with_phone=True)
+    total, voted, with_phone = roll["total"], roll["voted"], roll["with_phone"]
     sections = []
-    for f in vf["fields"]:
-        if not f.get("enabled"):
-            continue
-        groups = sorted(await _turnout_groups(request, f["key"]), key=lambda g: (-g["registered"], g["label"]))
+    for f in enabled:
+        groups = sorted(roll["groups"][f["key"]], key=lambda g: (-g["registered"], g["label"]))
         for g in groups:
             g["pct"] = round(100 * g["voted"] / g["registered"], 1) if g["registered"] else 0
         sections.append({"key": f["key"], "label": f["label"], "groups": groups})
-    sms = await get_sms_usage(request, {})
+    sms = await _sms_usage_payload(request, voters=total)       # same count, not a fourth pass
     return {
         "total": total, "voted": voted, "not_voted": total - voted,
         "turnout_pct": round(100 * voted / total, 1) if total else 0,
@@ -11022,8 +11087,9 @@ async def get_public_turnout_breakdown(request: Request):
     if not public or not await _election_closed(request):
         return {"available": False, "fields": []}
     out = []
+    roll = await _voter_rollup(request, [f["key"] for f in public])
     for f in public:
-        res = suppress_small_groups(await _turnout_groups(request, f["key"]), vf["min_group_size"])
+        res = suppress_small_groups(roll["groups"][f["key"]], vf["min_group_size"])
         out.append({"key": f["key"], "label": f["label"], **res})
     return {"available": True, "min_group_size": vf["min_group_size"], "fields": out}
 
@@ -11717,6 +11783,11 @@ async def get_roster_ledger_verify(request: Request, admin: dict = Depends(requi
 
 @app.get("/admin/sms-usage")
 async def get_sms_usage(request: Request, admin: dict = Depends(require_role("superadmin", "overseer", "commission"))):
+    return await _sms_usage_payload(request)
+
+
+async def _sms_usage_payload(request: Request, voters: int | None = None) -> dict:
+    """`voters` lets a caller that already counted this org's voters pass the number in."""
     sec, usage = await get_security_settings(request), await sms_usage_doc(request.state.org_id)
     now = datetime.utcnow()
     cut = now - timedelta(seconds=ol.GUARD_WINDOW_S)
@@ -11724,7 +11795,8 @@ async def get_sms_usage(request: Request, admin: dict = Depends(require_role("su
     v30 = sum(1 for t in usage.get("recent_verifies", []) if t > cut)
     sent_otp, verified = usage.get("sent_otp", 0), usage.get("verified_total", 0)
     total = sec["sms_budget_total"]
-    voters = await tdb(request).voters.count_documents({})
+    if voters is None:
+        voters = await tdb(request).voters.count_documents({})
     return {
         "sent_total": usage.get("sent_total", 0), "sent_otp": sent_otp, "sent_notice": usage.get("sent_notice", 0),
         "verified_total": verified, "send_to_verify_ratio": round(verified / sent_otp, 3) if sent_otp else None,

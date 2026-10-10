@@ -189,8 +189,14 @@ async def require_admin(request: Request) -> dict:
     Use this directly, or wrap with require_role(...) below for
     role-specific endpoints.
     """
-    token = get_bearer_token(request)
-    payload = await decode_access_token(token)
+    # auth_guard_middleware has already verified this very token (signature, expiry, revocation) and published
+    # the payload on request.state. Decoding again repeated the revoked_tokens lookup on every admin request.
+    # Paths the guard skips (public routes that optionally accept an admin) never get state.admin set, so they
+    # still take the full decode below.
+    payload = getattr(request.state, "admin", None)
+    if payload is None:
+        token = get_bearer_token(request)
+        payload = await decode_access_token(token)
     if payload.get("role") not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Not authorized.")
     return payload
