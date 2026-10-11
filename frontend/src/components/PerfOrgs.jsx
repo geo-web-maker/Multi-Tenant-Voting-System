@@ -40,7 +40,7 @@ export default function PerfOrgs({ range = '15m', live = true, refreshKey = 0, s
   const start = matched ? data.start : null;
 
   return (
-    <section className="perf-card card-pad" style={{ gridColumn: '1 / -1' }}>
+    <section className="perf-card card-pad">
       <h3 style={{ margin: '0 0 10px', fontSize: 15 }}>Organisations, all combined</h3>
       <p style={muted}>Every organisation shares the same database cap, so this is where to spot a busy one.</p>
       {error ? <p style={{ ...muted, color: 'var(--danger)', marginTop: 8 }}>{error}</p> : null}

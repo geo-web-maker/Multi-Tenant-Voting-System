@@ -7,6 +7,9 @@ import PerformanceSettings from './PerformanceSettings';
 import PerfStorage from './PerfStorage';
 import RevealGroup, { useRevealReady } from './RevealGroup';
 import PerfOrgs from './PerfOrgs';
+import AlertPanel from './AlertPanel';
+import { BarRows } from './UsageCharts';
+import { getTemplate } from '../template';
 import { PerfChart, PerfLine } from './PerfCharts';
 import {
   STATUS_LABEL, barPct, fmtMb, fmtMs, fmtOps, fmtUptime, headerLine, headroomText, sinkIsUnhealthy, sinkLine,
@@ -21,12 +24,12 @@ const POLL_MS = 5000;        // summary
 const SLOW_POLL_MS = 15000;  // series, breakdown, slow list
 const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
 const h3 = { margin: '0 0 10px', fontSize: 15 };
-const th = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', whiteSpace: 'nowrap' };
-const td = { padding: '6px 8px', borderBottom: '1px solid var(--border-color)' };
+const STATUS_TONE = { ok: 'ok', busy: 'warn', critical: 'neg', throttling: 'neg', nodata: 'mute', paused: 'mute', off: 'mute' };
 
-function Card({ title, children, wide = false }) {
+// Same panel as Site Usage: 16 px padding, 12 px radius, `card-pad` for the phone reset. The look itself lives in .perf-card (index.css).
+function Card({ title, children }) {
   return (
-    <section className="perf-card card-pad" style={wide ? { gridColumn: '1 / -1' } : undefined}>
+    <section className="perf-card card-pad">
       {title ? <h3 style={h3}>{title}</h3> : null}
       {children}
     </section>
@@ -34,6 +37,8 @@ function Card({ title, children, wide = false }) {
 }
 
 function Pill({ state }) {
+  const bp = getTemplate();   // render-time: null => the standard UI
+  if (bp) return <bp.Pill tone={STATUS_TONE[state] || 'mute'}>{STATUS_LABEL[state] || state}</bp.Pill>;
   const color = `var(${statusColorVar(state)})`;
   return (
     <span className="perf-pill" style={{ border: `1px solid ${color}`, color, borderRadius: 999, padding: '2px 10px', fontSize: 13, fontWeight: 600 }}>
@@ -42,28 +47,13 @@ function Pill({ state }) {
   );
 }
 
-function Table({ rows, cols }) {
-  if (!rows.length) return <p style={muted}>No activity in the last 15 minutes.</p>;
-  return (
-    <div className="table-scroll table-scroll-y perf-scroll">
-      <table className="perf-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-        <thead><tr>{cols.map((c) => <th key={c.key} style={th}>{c.label}</th>)}</tr></thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.name}>{cols.map((c) => <td key={c.key} data-l={c.label} style={td}>{c.render ? c.render(r) : r[c.key]}</td>)}</tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 const pctText = (share) => `${Math.round((share || 0) * 100)}%`;
-const BREAK_COLS = {
-  collection: [{ key: 'name', label: 'Collection' }, { key: 'ops', label: 'Ops' }, { key: 'share', label: 'Share', render: (r) => pctText(r.share) }, { key: 'p95_ms', label: 'p95', render: (r) => fmtMs(r.p95_ms) }],
-  route: [{ key: 'name', label: 'Route' }, { key: 'requests', label: 'Requests' }, { key: 'ops_per_request', label: 'Ops/request', render: (r) => fmtOps(r.ops_per_request) }, { key: 'p95_ms', label: 'p95', render: (r) => fmtMs(r.p95_ms) }],
-};
 const TAB_LABEL = { collection: 'Collections', route: 'Routes' };
+// One bar row per collection or route, like the Site Usage lists: the number is the bar, the detail sits underneath.
+const BREAK_ITEMS = {
+  collection: (r) => ({ label: r.name, value: r.ops, sub: `${pctText(r.share)} of operations · p95 ${fmtMs(r.p95_ms)}` }),
+  route: (r) => ({ label: r.name, value: r.requests, sub: `${fmtOps(r.ops_per_request)} operations per request · p95 ${fmtMs(r.p95_ms)}` }),
+};
 
 function PerformanceInner() {
   const [summary, setSummary] = useState(null);
@@ -151,7 +141,7 @@ function PerformanceInner() {
   ];
 
   if (error && !summary) {
-    return <Card><p style={muted}>{error}</p><button type="button" className="perf-btn" onClick={retry}>Retry</button></Card>;
+    return <Card><p style={muted}>{error}</p><div className="perf-controls" style={{ marginTop: 12 }}><button type="button" className="perf-btn" onClick={retry}>Retry</button></div></Card>;
   }
   if (!summary) return <LoadingBlock />;
   if (state === 'off') {
@@ -159,14 +149,17 @@ function PerformanceInner() {
   }
 
   const shown = state === 'collecting' ? 'nodata' : state;
+  const showHeadroom = capped && !!headroomText(summary.election);
+  const breakItems = (rows?.rows || []).map(BREAK_ITEMS[by]);
+  const slowItems = slow.map((s) => ({ label: [s.command, s.collection].filter(Boolean).join(' · '), value: s.duration_ms, sub: (s.t || '').slice(11, 19) }));
   return (
-    <div className="perf-grid" style={{ display: 'grid', gap: 12 }}>
-      <section className="perf-card card-pad" style={{ gridColumn: '1 / -1' }}>
+    <div className="perf-grid">
+      <section className="perf-card card-pad">
         <strong>{headerLine(config || { tier: summary.tier, ops_cap: db.cap, conn_cap: summary.conn_cap })}</strong>
-        <p style={muted}>All organisations combined, one shared database cap. Figures cover this server process.</p>
+        <p style={{ ...muted, marginTop: 4 }}>All organisations combined, one shared database cap. Figures cover this server process.</p>
         <p style={muted}>Uptime {fmtUptime(summary.uptime_s)}{summary.collecting_since ? ` · collecting since ${summary.collecting_since.slice(11, 16)} UTC` : ''}</p>
         {error ? <p style={{ ...muted, color: 'var(--danger)' }}>{error}</p> : null}
-        <div className="perf-controls">
+        <div className="perf-controls" style={{ marginTop: 12 }}>
           <div role="group" aria-label="Range" className="perf-seg">
             {RANGES.map(([v, l]) => (
               <button key={v} type="button" className="perf-btn" aria-pressed={range === v} onClick={() => setRange(v)}>{l}</button>
@@ -177,44 +170,7 @@ function PerformanceInner() {
         </div>
       </section>
 
-      <Card title="Database load">
-        {state === 'collecting' ? <p style={muted}>Collecting data, give it a minute.</p> : null}
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 32, fontWeight: 700 }} data-testid="ops-now">{state === 'collecting' ? 'No data yet' : `${fmtOps(db.ops_s)}${capped ? ` / ${db.cap}` : ''}`}</span>
-          {state !== 'collecting' ? <span style={muted}>ops/s</span> : null}
-          <Pill state={shown} />
-        </div>
-        {capped && state !== 'collecting' ? (
-          <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={barPct(db.ops_s, db.cap)}
-            style={{ height: 10, borderRadius: 6, background: 'var(--border-color)', margin: '10px 0', overflow: 'hidden' }}>
-            <div style={{ width: `${barPct(db.ops_s, db.cap)}%`, height: '100%', background: `var(${statusColorVar(shown)})` }} />
-          </div>
-        ) : null}
-        <p style={muted}>10 s avg {fmtOps(db.ops_s_10s)} · 60 s avg {fmtOps(db.ops_s_60s)} · 15 min peak {fmtOps(db.peak_15m)}</p>
-      </Card>
-
-      {capped && headroomText(summary.election) ? (
-        <Card title="Voter headroom">
-          <p style={{ margin: 0 }}>{headroomText(summary.election)}</p>
-          <p style={muted}>{summary.election.ops_per_voter} database operations per voter ({summary.election.ops_per_voter_source === 'measured' ? 'measured' : 'from the performance audit'}).</p>
-        </Card>
-      ) : null}
-
-      <Card title={`Database operations, ${RANGE_TITLE[range].toLowerCase()}`} wide>
-        <div style={{ opacity: chartReady ? 1 : 0.5, transition: 'opacity 0.15s' }}>
-          <PerfChart lines={[{ name: 'Database operations', points: chartPoints }]} cap={chartCap} range={range}
-            startTs={chartStart} stepS={chartStep} label="Database operations per second" fill fitData />
-        </div>
-        <p style={{ ...muted, marginTop: 8 }}>
-          {wide7
-            ? 'Operations per second, averaged per 2 hours, counting organisation traffic only. Dashed line is the database cap.'
-            : `Operations per second${capped ? ', dashed line is the database cap' : ''}. Times are shown in ${DEFAULT_TZ}.`}
-        </p>
-      </Card>
-
-      <PerfOrgs range={range} live={live} refreshKey={refreshKey} cap={db.cap || null} sinkType={sink?.type} onData={setOrgData} />
-
-      <section style={{ gridColumn: '1 / -1' }} aria-label="Server health">
+      <section aria-label="Server health">
         <div className="perf-tiles">
           {healthTiles.map(([k, v, tone]) => (
             <div key={k} className="perf-card card-pad perf-tile" style={tone ? { borderColor: `var(--${tone})` } : undefined}>
@@ -225,35 +181,72 @@ function PerformanceInner() {
         </div>
       </section>
 
-      <Card title="Where the load comes from">
-        <div role="tablist" style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-          {Object.keys(TAB_LABEL).map((k) => (
-            <button key={k} type="button" role="tab" aria-selected={by === k} className="perf-btn" onClick={() => setBy(k)}>{TAB_LABEL[k]}</button>
-          ))}
+      <div className="perf-pair">
+        <Card title="Database load">
+          {state === 'collecting' ? <p style={muted}>Collecting data, give it a minute.</p> : null}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span className="perf-stat" data-testid="ops-now">{state === 'collecting' ? 'No data yet' : `${fmtOps(db.ops_s)}${capped ? ` / ${db.cap}` : ''}`}</span>
+            {state !== 'collecting' ? <span style={muted}>ops/s</span> : null}
+            <Pill state={shown} />
+          </div>
+          {capped && state !== 'collecting' ? (
+            <div className="perf-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={barPct(db.ops_s, db.cap)}>
+              <div style={{ width: `${barPct(db.ops_s, db.cap)}%`, height: '100%', background: `var(${statusColorVar(shown)})` }} />
+            </div>
+          ) : <div style={{ height: 10 }} />}
+          <p style={muted}>10 s avg {fmtOps(db.ops_s_10s)} · 60 s avg {fmtOps(db.ops_s_60s)} · 15 min peak {fmtOps(db.peak_15m)}</p>
+        </Card>
+
+        {showHeadroom ? (
+          <Card title="Voter headroom">
+            <p className="perf-stat" style={{ fontSize: 20 }}>{headroomText(summary.election)}</p>
+            <p style={{ ...muted, marginTop: 8 }}>{summary.election.ops_per_voter} database operations per voter ({summary.election.ops_per_voter_source === 'measured' ? 'measured' : 'from the performance audit'}).</p>
+          </Card>
+        ) : null}
+      </div>
+
+      <Card title={`Database operations, ${RANGE_TITLE[range].toLowerCase()}`}>
+        <div style={{ opacity: chartReady ? 1 : 0.5, transition: 'opacity 0.15s' }}>
+          <PerfChart lines={[{ name: 'Database operations', points: chartPoints }]} cap={chartCap} range={range}
+            startTs={chartStart} stepS={chartStep} label="Database operations per second" fill fitData />
         </div>
-        <Table rows={rows?.rows || []} cols={BREAK_COLS[by]} />
-        <p style={muted}>Unattributed: {rows?.unattributed_pct === null || rows?.unattributed_pct === undefined ? 'n/a' : `${rows.unattributed_pct}%`} of operations come from collections that are not tied to a route.</p>
+        <div className="perf-legend">
+          <span><i style={{ background: 'var(--brand-primary)' }} />Operations per second</span>
+          {chartCap ? <span><i style={{ background: 'var(--danger)' }} />Database cap, {chartCap} ops/s</span> : null}
+        </div>
+        <p style={muted}>
+          {wide7
+            ? 'Averaged per 2 hours, counting organisation traffic only. Dashed line is the database cap.'
+            : `Dashed line is the database cap. Times are shown in ${DEFAULT_TZ}.`}
+        </p>
       </Card>
 
-      <Card title="Slow commands">
-        {slow.length ? (
-          <Table rows={slow.map((s, i) => ({ ...s, name: `${s.t}-${i}` }))} cols={[
-            { key: 't', label: 'Time', render: (r) => (r.t || '').slice(11, 19) },
-            { key: 'command', label: 'Command' }, { key: 'collection', label: 'Collection' },
-            { key: 'duration_ms', label: 'Duration', render: (r) => fmtMs(r.duration_ms) }]} />
-        ) : <p style={muted}>None above the threshold.</p>}
-      </Card>
+      <AlertPanel alerts={summary.alerts || []}
+        footer={(summary.recent_alerts || []).length ? `Last fired: ${summary.recent_alerts.slice(-3).map((a) => a.kind).join(', ')}` : null} />
 
-      <Card title="Alerts">
-        {(summary.alerts || []).length ? summary.alerts.map((a) => (
-          <p key={a.kind} role="alert" style={{ margin: '0 0 6px', color: a.level === 'critical' ? 'var(--danger)' : 'var(--warning)' }}>{a.message}</p>
-        )) : <p style={muted}>No active alerts.</p>}
-        {(summary.recent_alerts || []).length ? <p style={muted}>Last fired: {summary.recent_alerts.slice(-3).map((a) => a.kind).join(', ')}</p> : null}
-      </Card>
+      <PerfOrgs range={range} live={live} refreshKey={refreshKey} cap={db.cap || null} sinkType={sink?.type} onData={setOrgData} />
+
+      <div className="perf-pair">
+        <Card title="Where the load comes from">
+          <div role="tablist" className="perf-seg" style={{ marginBottom: 8 }}>
+            {Object.keys(TAB_LABEL).map((k) => (
+              <button key={k} type="button" role="tab" aria-selected={by === k} className="perf-btn" onClick={() => setBy(k)}>{TAB_LABEL[k]}</button>
+            ))}
+          </div>
+          <BarRows items={breakItems} empty="No activity in the last 15 minutes." />
+          <p style={{ ...muted, marginTop: 10 }}>Unattributed: {rows?.unattributed_pct === null || rows?.unattributed_pct === undefined ? 'n/a' : `${rows.unattributed_pct}%`} of operations come from collections that are not tied to a route.</p>
+        </Card>
+
+        <Card title="Slow commands">
+          <BarRows items={slowItems} format={fmtMs} empty="None above the threshold." />
+        </Card>
+      </div>
 
       <Card title="History">
         <p style={muted}>24 hours are kept in memory; older history comes from the sink{sink?.type === 'mongo' ? ' and uses main-cluster operations on this sink' : ''}.</p>
-        <button type="button" className="perf-btn" onClick={loadHistory}>Load 7 days</button>
+        <div className="perf-controls" style={{ margin: '12px 0 8px' }}>
+          <button type="button" className="perf-btn" onClick={loadHistory}>Load 7 days</button>
+        </div>
         {history ? <p style={muted}>{history.minutes} minutes recorded, peak {fmtOps(history.peak)} ops/s.</p> : null}
         <p className="perf-sink" style={{ ...muted, marginTop: 8, color: sinkIsUnhealthy(sink) ? 'var(--danger)' : 'var(--text-muted)' }}>{sinkLine(sink)}{sink?.last_error ? ` · ${sink.last_error}` : ''}</p>
       </Card>

@@ -6,7 +6,7 @@ const PILL_TONE = { healthy: 'ok', warning: 'warn', critical: 'neg' }; // Bluepr
 const COLORS = { healthy: 'var(--success, #2e9e5b)', warning: 'var(--warning, #d98e04)', critical: 'var(--danger)' };
 
 // Read-only view of the live alert state. `alerts` is undefined on an older backend: render nothing then.
-export default function AlertPanel({ alerts }) {
+export default function AlertPanel({ alerts, footer = null }) {
   if (!Array.isArray(alerts)) return null;
   const state = overallAlertState(alerts);
   const bp = getTemplate(); // render-time: null => the standard UI
@@ -27,11 +27,12 @@ export default function AlertPanel({ alerts }) {
         <ul style={bp ? { margin: '8px 0 0', padding: 0, listStyle: 'none' } : { margin: '8px 0 0', paddingLeft: 18 }}>
           {alerts.map((a) => (
             <li key={a.kind} style={{ fontSize: 13 }} className={bp ? (alertLevel(a.level) === 'critical' ? bp.cls.alt : bp.cls.warnBan) : undefined}>
-              <strong>{alertLabel(alertLevel(a.level))}</strong>: {a.metric} is {a.value} (threshold {a.threshold})
+              <strong>{alertLabel(alertLevel(a.level))}</strong>: {a.message || `${a.metric} is ${a.value} (threshold ${a.threshold})`}
             </li>
           ))}
         </ul>
       )}
+      {footer ? <p style={muted}>{footer}</p> : null}
     </div>
   );
 }

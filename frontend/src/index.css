@@ -955,29 +955,27 @@ td, th {
 @media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
 .sr-only-skel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* Performance tab (superadmin). Plain class names, additive only: no existing screen uses them. Lives in index.css because App.css is not imported anywhere. */
-.perf-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
-.perf-card { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); min-width: 0; }
-.perf-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; cursor: pointer; }
-.perf-btn[aria-selected="true"] { border-color: var(--brand-primary, currentColor); font-weight: 600; }
-.perf-btn[aria-pressed="true"] { border-color: var(--brand-primary, currentColor); background: var(--brand-primary); color: var(--brand-on-primary, white); font-weight: 700; }
-.perf-btn-primary { background: var(--brand-primary); color: var(--brand-on-primary, white); border-color: var(--brand-primary); font-weight: 700; }
-.perf-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
-.perf-seg { display: flex; flex: 1 1 260px; gap: 4px; }
-.perf-seg .perf-btn { flex: 1; }
+/* Performance tab (superadmin). Plain class names, additive only: no existing screen uses them. Lives in index.css because App.css is not imported anywhere.
+   Mirrors the Site Usage page: one column, 16 px gaps, 16 px panels, 44 px 13 px/700 controls, bar rows instead of tables. */
+.perf-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.perf-card { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); padding: 16px; min-width: 0; }
+.perf-pair { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.perf-btn { padding: 0 16px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.perf-btn[aria-selected="true"], .perf-btn[aria-pressed="true"] { border-color: var(--brand-primary, currentColor); background: var(--brand-primary); color: var(--brand-on-primary, white); }
+.perf-btn-primary { background: var(--brand-primary); color: var(--brand-on-primary, white); border-color: var(--brand-primary); }
+.perf-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.perf-seg { display: flex; flex: 1 1 200px; gap: 4px; }
+.perf-seg .perf-btn { flex: 1; padding: 0 12px; }
+@media (max-width: 480px) { .perf-seg { flex-basis: 100%; } .perf-seg .perf-btn { padding: 0 6px; white-space: nowrap; } }
 .perf-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .perf-tile { min-width: 0; overflow-wrap: anywhere; }
 .perf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.perf-check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-@media (min-width: 769px) { .perf-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .perf-grid > :first-child, .perf-grid > :last-child { grid-column: 1 / -1; } }
-@media (max-width: 768px) {
-  .perf-scroll { max-height: max(280px, 55dvh); }
-  .table-scroll > .perf-table { min-width: 0; }
-  .perf-table thead { display: none; }
-  .perf-table tr { display: block; border-bottom: 1px solid var(--border-color); padding: 6px 0; }
-  .perf-table td { display: flex; justify-content: space-between; gap: 12px; border: 0 !important; padding: 2px 8px !important; }
-  .perf-table td::before { content: attr(data-l); color: var(--text-muted); font-size: 12px; }
-}
+.perf-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.perf-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); column-gap: 16px; }
+.perf-stat { font-size: 32px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.perf-bar { height: 10px; border-radius: 6px; background: var(--surface-2); margin: 10px 0; overflow: hidden; }
+.perf-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; margin: 8px 0; }
+.perf-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
 @media (prefers-reduced-motion: reduce) { .perf-card * { transition: none !important; animation: none !important; } }
 
 /* Tap targets for the Vetting Panel / close-out buttons and the Performance tab, default template.

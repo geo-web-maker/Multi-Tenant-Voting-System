@@ -64,9 +64,13 @@ export default function PerformanceSettings({ config, onSaved }) {
 
   return (
     <section className="perf-card card-pad" aria-label="Performance settings">
-      <button type="button" className="perf-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        {open ? 'Hide settings' : 'Settings'}
-      </button>
+      <h3 style={{ margin: '0 0 10px', fontSize: 15 }}>Performance settings</h3>
+      <p style={hint}>Tier, caps and alert thresholds. Saved values apply immediately.</p>
+      <div className="perf-controls" style={{ marginTop: 12 }}>
+        <button type="button" className="perf-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? 'Hide settings' : 'Settings'}
+        </button>
+      </div>
       {open && (
         <div style={{ marginTop: 12 }}>
           <Field id="perf-tier" label="Tier" source={src.ops_cap} error={errors.tier}>
@@ -77,6 +81,7 @@ export default function PerformanceSettings({ config, onSaved }) {
           </Field>
           <p style={hint}>{config.note} <a href="https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/" target="_blank" rel="noreferrer">Check these against your Atlas plan</a> (presets last verified {config.presets_verified_on}).</p>
 
+          <div className="perf-fields" style={{ marginTop: 12 }}>
           <Field id="perf-ops" label="Ops cap (operations per second)" source={src.ops_cap} error={errors.ops_cap}>
             <input id="perf-ops" className="perf-field" style={input} inputMode="numeric" disabled={form.ops_nocap}
               value={form.ops_nocap ? '' : form.ops_cap} onChange={(e) => setForm(editCap(form, { ops_cap: e.target.value }, presets))} />
@@ -103,6 +108,7 @@ export default function PerformanceSettings({ config, onSaved }) {
               {PERSIST_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </Field>
+          </div>
           <label className="perf-check" style={{ marginBottom: 12 }}>
             <input type="checkbox" checked={form.paused} onChange={(e) => set({ paused: e.target.checked })} /> Pause collection
           </label>

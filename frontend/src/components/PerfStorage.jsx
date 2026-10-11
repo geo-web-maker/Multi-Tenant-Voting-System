@@ -59,8 +59,8 @@ export default function PerfStorage() {
   const running = mig.status === 'running';
   const pgBlocked = active !== 'postgres' && !data.postgres_configured;
   return (
-    <section className="perf-card card-pad" style={{ gridColumn: '1 / -1' }} aria-label="Site Usage storage">
-      <h3 style={{ margin: '0 0 6px', fontSize: 15 }}>Site Usage storage</h3>
+    <section className="perf-card card-pad" aria-label="Site Usage storage">
+      <h3 style={{ margin: '0 0 10px', fontSize: 15 }}>Site Usage storage</h3>
       <p style={muted}>Where Site Usage analytics are written. Voting data is not affected.</p>
       <div role="group" aria-label="Storage" className="perf-seg" style={{ margin: '12px 0 8px' }}>
         {STORES.map(([v, l]) => (

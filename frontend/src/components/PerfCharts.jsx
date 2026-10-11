@@ -31,7 +31,7 @@ const niceNumber = (v) => (v >= 10 ? Math.round(v) : Number(v.toFixed(v >= 1 ? 1
 export function PerfChart({ lines = [], cap = null, label, unit = '/s', range = '15m', startTs = null, stepS = null, fill = false, tz, fitData = false }) {
   const narrow = useIsNarrowViewport();
   const w = narrow ? 360 : 1000;
-  const h = narrow ? 230 : 260;
+  const h = narrow ? 300 : 260;   // same heights as the Site Usage timeline
   const pad = { l: narrow ? 34 : 40, r: 8, t: 12, b: 26 };
   const iw = w - pad.l - pad.r;
   const ih = h - pad.t - pad.b;
