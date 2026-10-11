@@ -13,9 +13,13 @@ const LINE_STYLES = [
   { color: '--brand-accent', dash: '7 4' }, { color: '--text-muted', dash: '' },
 ];
 
-// Fixed, clearly different hues for per-organisation lines (theme tokens can collapse to one colour in dark mode).
-export const ORG_COLORS = ['#f1c40f', '#3498db', '#2ecc71', '#e74c3c', '#9b59b6', '#e67e22'];
-const lineColor = (l, st) => l.color || `var(${st.color})`;
+// Per-organisation lines: four different hues from the theme's status tokens, then dashes so a fifth and sixth still differ.
+export const ORG_LINE_STYLES = [
+  { color: '--warning', dash: '' }, { color: '--info', dash: '' }, { color: '--success', dash: '' },
+  { color: '--danger', dash: '' }, { color: '--text-color', dash: '7 4' }, { color: '--info', dash: '2 4' },
+];
+const lineColor = (l, st) => `var(${l.color || st.color})`;
+const lineDash = (l, st) => (l.dash !== undefined ? l.dash : st.dash) || undefined;
 
 const niceNumber = (v) => (v >= 10 ? Math.round(v) : Number(v.toFixed(v >= 1 ? 1 : 2)));
 
@@ -76,7 +80,7 @@ export function PerfChart({ lines = [], cap = null, label, unit = '/s', range = 
               {fill && k === 0 && r.length > 1 ? (
                 <polygon points={`${r[0][0]},${pad.t + ih} ${pts} ${r[r.length - 1][0]},${pad.t + ih}`} fill={lineColor(l, st)} fillOpacity="0.12" />
               ) : null}
-              <polyline fill="none" stroke={lineColor(l, st)} strokeWidth={fill ? 3 : 2.5} strokeDasharray={st.dash || undefined}
+              <polyline fill="none" stroke={lineColor(l, st)} strokeWidth={fill ? 3 : 2.5} strokeDasharray={lineDash(l, st)}
                 strokeLinejoin="round" strokeLinecap="round" points={pts} />
               {r.length === 1 ? <circle cx={r[0][0]} cy={r[0][1]} r="3.5" fill={lineColor(l, st)} /> : null}
             </g>
@@ -103,7 +107,7 @@ export function ChartLegend({ items = [] }) {
         const st = LINE_STYLES[k % LINE_STYLES.length];
         return (
           <span key={it.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, overflowWrap: 'anywhere' }}>
-            <svg width="22" height="8" aria-hidden="true"><line x1="0" y1="4" x2="22" y2="4" stroke={lineColor(it, st)} strokeWidth="2.5" strokeDasharray={st.dash || undefined} /></svg>
+            <svg width="22" height="8" aria-hidden="true"><line x1="0" y1="4" x2="22" y2="4" stroke={lineColor(it, st)} strokeWidth="2.5" strokeDasharray={lineDash(it, st)} /></svg>
             {it.name}
           </span>
         );

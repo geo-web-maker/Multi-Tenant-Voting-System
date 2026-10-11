@@ -11,7 +11,8 @@ import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
 import { getTemplate } from '../template';
-import { PrintStyles, ApplicationSnapshotDoc } from './CandidateStatusPortal';
+import { PrintStyles, ApplicationSnapshotDoc, SampleCertificateDoc } from './CandidateStatusPortal';
+import { DOCUMENT_TEMPLATES, resolveDocTemplate } from '../documentTemplates';
 import VoterStats from './VoterStats';
 import { SmsUsageTile } from './SecurityPanel';
 import SecurityPanel from './SecurityPanel';
@@ -94,8 +95,10 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [switchingOrg, setSwitchingOrg] = useState(false);
 
   // --- Branding state ---
-  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', support_phone: '', support_contacts: [], cc_list: [], signatories: [], id_label: '', id_examples: [], name_examples: [], id_format_hint: '' });
+  const [branding, setBranding] = useState({ logo_url: '', primary_color: '#003366', accent_color: '#f1c40f', org_name: '', university_name: '', university_logo_url: '', support_phone: '', support_contacts: [], cc_list: [], signatories: [], id_label: '', id_examples: [], name_examples: [], id_format_hint: '', document_template: 'classic' });
   const [brandSaving, setBrandSaving] = useState(false);
+  const [sampleCert, setSampleCert] = useState(null);   // {longNames} while the sample certificate is open
+  const [sampleLong, setSampleLong] = useState(false);
 
   // --- Positions state ---
   const [positions, setPositions]   = useState([]);
@@ -930,6 +933,15 @@ const handleSuperAdminRemoveStudent = async () => {
       ],
     },
   ];
+
+  if (sampleCert) {
+    return (
+      <>
+        <PrintStyles />
+        <SampleCertificateDoc template={branding.document_template} branding={branding} longNames={sampleCert.longNames} onClose={() => setSampleCert(null)} />
+      </>
+    );
+  }
 
   if (printingApp) {
     return (
@@ -1964,6 +1976,33 @@ const handleSuperAdminRemoveStudent = async () => {
                   (e.g. "— Dean of Students") — they don't need an account in this system. Leave the whole list
                   empty to fall back to every commissioner on record, listed automatically.
                 </small>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Certificate style</label>
+                <div role="radiogroup" aria-label="Certificate style" style={{ display: 'grid', gap: '8px' }}>
+                  {DOCUMENT_TEMPLATES.map(t => {
+                    const on = resolveDocTemplate(branding.document_template) === t.id;
+                    return (
+                      <label key={t.id} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '10px 12px', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${on ? 'var(--info)' : 'var(--border-color)'}` }}>
+                        <input type="radio" name="document_template" value={t.id} checked={on}
+                          onChange={() => setBranding({ ...branding, document_template: t.id })} />
+                        <span>
+                          <strong style={{ fontSize: '13px' }}>{t.label}</strong><br />
+                          <small style={{ color: 'var(--text-muted)', fontSize: '11px' }}>{t.hint}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button type="button" style={ghostBtn} onClick={() => setSampleCert({ longNames: sampleLong })}>Print sample</button>
+                  <label style={{ fontSize: '12px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <input type="checkbox" checked={sampleLong} onChange={e => setSampleLong(e.target.checked)} /> Use long names
+                  </label>
+                </div>
+                <small style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+                  The sample uses the style selected above, even before you save, with your current logo and colours. It is marked SAMPLE and is not recorded anywhere.
+                  Certificates already issued keep the style they were issued with.
+                </small>
+
                 <div style={{
                   marginTop: '14px', padding: '12px 16px', borderRadius: '8px',
                   backgroundColor: branding.primary_color, display: 'flex', gap: '10px', alignItems: 'center'

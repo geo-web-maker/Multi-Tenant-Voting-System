@@ -1120,6 +1120,8 @@ class BrandingUpdate(BaseModel):
     id_examples:         list[str] = []    # sample IDs for the login placeholders
     name_examples:       list[str] = []    # sample names for the login placeholders
     id_format_hint:      str = ""          # sentence shown when an ID is not found
+    # Look of printed certificates. None = leave the saved choice alone (an older client that does not know the field).
+    document_template:   str | None = None
 
 class PositionCreate(BaseModel):
     title: str
@@ -2152,6 +2154,7 @@ async def _issue_certificate(app_doc: dict, org_id: str = None):
                           or (app_doc.get("application_snapshot") or {}).get("full_name", ""),
         "position_title": title,
         "org_name": b.get("org_name", ""),
+        "document_template": _doc_template(b.get("document_template")),   # frozen: a later change never restyles this certificate
         "issued_at": issued_at,
         "revoked": False,
         "is_demo": bool(app_doc.get("is_demo")),
@@ -5258,7 +5261,7 @@ async def get_candidate_status(token: str, request: Request):
     # a tenant header that a bare status link doesn't carry.
     b = await tdb_for(org_id).settings.find_one({"name": "branding"}) or {}
     branding = {k: b.get(k, "") for k in
-                ("logo_url", "org_name", "university_name", "university_logo_url")}
+                ("logo_url", "org_name", "university_name", "university_logo_url", "primary_color", "accent_color")}
 
     candidacies = []
     for app_doc in apps:
@@ -5284,6 +5287,9 @@ async def get_candidate_status(token: str, request: Request):
                         or (app_doc.get("application_snapshot") or {}).get("full_name")
                         or app_doc.get("full_name", ""),
                     "org_name": cert.get("org_name") or branding["org_name"],
+                    # Certificates issued before the choice existed have no field and were printed classic.
+                    "document_template": _doc_template(cert.get("document_template")),
+                    "issued_at": cert.get("issued_at"),
                 }
         if not public_results_live and app_doc.get("status") in ("approved", "removed"):
             cand = await tdb_for(org_id).candidates.find_one({"application_id": str(app_doc["_id"])})
@@ -7578,6 +7584,14 @@ async def legacy_data_delete(data: LegacyDelete, request: Request,
 
 _ID_WORDING_DEFAULTS = {"id_label": "", "id_examples": [], "name_examples": [], "id_format_hint": ""}
 
+# Printed certificate looks an organisation can choose. The ids must match frontend/src/documentTemplates.js.
+DOCUMENT_TEMPLATES = ("classic", "formal")
+
+
+def _doc_template(value) -> str:
+    """A stored or requested template id, or "classic" when it is missing or not one we know."""
+    return value if value in DOCUMENT_TEMPLATES else "classic"
+
 
 def _clean_id_wording(data) -> dict:
     """Trims and bounds the voter-login wording so a pasted essay can't end up in a placeholder."""
@@ -7622,6 +7636,7 @@ async def get_branding(request: Request):
     out["support_contacts"] = doc.get("support_contacts") or []
     out["id_examples"] = doc.get("id_examples") or []
     out["name_examples"] = doc.get("name_examples") or []
+    out["document_template"] = _doc_template(doc.get("document_template"))
     return out
 
 
@@ -7635,9 +7650,11 @@ async def get_branding_full(request: Request, admin: dict = Depends(require_role
         "logo_url": "", "primary_color": "#003366", "accent_color": "#f1c40f",
         "org_name": "", "university_name": "", "university_logo_url": "",
         "support_phone": "", "support_contacts": [],
-        "cc_list": [], "signatories": [], **_ID_WORDING_DEFAULTS,
+        "cc_list": [], "signatories": [], "document_template": "classic", **_ID_WORDING_DEFAULTS,
     }
-    return {**defaults, **{k: doc.get(k, v) for k, v in defaults.items()}}
+    out = {**defaults, **{k: doc.get(k, v) for k, v in defaults.items()}}
+    out["document_template"] = _doc_template(out["document_template"])
+    return out
 
 
 _WHATSAPP_HOSTS = {"wa.me", "api.whatsapp.com", "chat.whatsapp.com", "whatsapp.com", "www.whatsapp.com"}
@@ -7682,6 +7699,11 @@ async def save_branding(data: BrandingUpdate, request: Request):
     doc = data.dict()
     doc["support_contacts"] = _clean_support_contacts(data.support_contacts)
     doc.update(_clean_id_wording(data))
+    # None means the client did not send it: keep what is saved. Anything else must be a known template.
+    if doc.pop("document_template", None) is not None:
+        if data.document_template not in DOCUMENT_TEMPLATES:
+            raise HTTPException(400, "Unknown document template.")
+        doc["document_template"] = data.document_template
     await tdb(request).settings.update_one(
         {"name": "branding"},
         {"$set": org_stamp(request, {**doc, "name": "branding"})},
@@ -7695,6 +7717,7 @@ async def save_branding(data: BrandingUpdate, request: Request):
         "org_name": data.org_name,
         "cc_count": len(data.cc_list),
         "signatory_count": len(data.signatories),
+        "document_template": data.document_template,
     }, org_id=request.state.org_id)
     return {"status": "saved"}
 

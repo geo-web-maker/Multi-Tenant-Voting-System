@@ -12,6 +12,8 @@ import { properName, properTitle } from '../displayText';
 import { faceCropUrl } from '../cloudinaryImage';
 import { LoadingBlock } from './Spinner.jsx';
 import { applicationVersions } from '../applicationVersions';
+import { FormalCertificateSheet, FitSheet, FORMAL_W, FORMAL_H } from './FormalCertificate';
+import { docFileName, resolveDocTemplate, isLandscape } from '../documentTemplates';
 
 export const PrintStyles = () => (
   <style>{`
@@ -29,6 +31,14 @@ export const PrintStyles = () => (
       .csp-outer, .csp-doc-card { display: block !important; min-height: 0 !important; height: auto !important; overflow: visible !important; }
       .csp-print-sheet { display: block !important; background: #fff !important; }
       @page { margin: 12mm; }
+      /* Fixed-size certificate sheets print at full size, not at the on-screen scale. */
+      .csp-fit { width: auto !important; height: var(--fit-h) !important; overflow: visible !important; }
+      .csp-fit-in { transform: none !important; }
+    }
+    /* If someone switches a landscape sheet to portrait in the print dialog, shrink it to the page width. */
+    @media print and (orientation: portrait) {
+      .csp-fit-in { zoom: 0.72; }
+      .csp-fit { height: calc(var(--fit-h) * 0.72) !important; }
     }
     @media screen and (max-width: 560px) {
       .csp-outer { padding: 10px !important; }
@@ -404,12 +414,7 @@ function DocHeader({ branding, title, variant = 'form', marginBottom = 30 }) {
 // Chrome (and most browsers) use document.title as the default file name for
 // "Save as PDF", so it is set while a document is open, for both the button and
 // Ctrl+P, and restored when the document is closed.
-function docFileName(kind, name, position) {
-  const clean = (t) => String(t || '').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return [kind, properName(clean(name)), properTitle(clean(position))].filter(Boolean).join(' - ');
-}
-
-function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = '', fileName = '' }) {
+function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = '', fileName = '', landscape = false }) {
   useEffect(() => {
     if (!fileName) return undefined;
     const prev = document.title;
@@ -418,6 +423,8 @@ function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = ''
   }, [fileName]);
   return (
     <div style={outerWrap} className="csp-outer">
+      {/* Top-level @page so the print dialog opens on A4 landscape; it exists only while this document is open. */}
+      {landscape ? <style>{'@page { size: A4 landscape; margin: 10mm; }'}</style> : null}
       <div style={{ ...container, maxWidth: maxWidth + 62 }} className="csp-doc-card csp-card">
         <div style={header} className="no-print">
           <div style={{ minWidth: 0 }}>
@@ -431,7 +438,7 @@ function DocShell({ children, maxWidth = 760, onClose, branding = {}, label = ''
         </div>
         {label && (
           <div className="no-print" style={{ fontSize: 12, opacity: 0.6, marginBottom: 12, color: 'var(--text-color)' }}>
-            {label} · this is how it will print
+            {label} · this is how it will print{landscape ? ' (A4 landscape)' : ''}
           </div>
         )}
         <div className="csp-print-sheet" style={{ background: '#fff', border: '1px solid var(--border-color)', borderRadius: 8, padding: 'clamp(16px, 5vw, 40px)', color: '#1e293b', fontFamily: '-apple-system, "Segoe UI", Arial, sans-serif' }}>
@@ -509,7 +516,7 @@ export function ApplicationSnapshotDoc({ candidacy, branding, onClose }) {
   const hasEdits = versions.length > 1;
   const current = versions[0] || snap;
   return (
-    <DocShell onClose={onClose} branding={branding} label={hasEdits ? `Candidate Application Record · ${versions.length} pages (edited + original)` : 'Candidate Application Record'} fileName={docFileName('Application', current.full_name, current.position_title || candidacy.position_title)}>
+    <DocShell onClose={onClose} branding={branding} label={hasEdits ? `Candidate Application Record · ${versions.length} pages (edited + original)` : 'Candidate Application Record'} fileName={docFileName('Candidate Application Record', current.full_name, branding.org_name)}>
       {versions.map((v, i) => (
         <ApplicationPage key={i} version={v} position={candidacy.position_title} branding={branding} hasEdits={hasEdits} />
       ))}
@@ -521,62 +528,110 @@ function CertificateDoc({ candidacy, branding: liveBranding, onClose }) {
   // Prefer the frozen values stored on the certificate row over live branding.
   const cert = candidacy.certificate || {};
   const branding = { ...liveBranding, org_name: cert.org_name || liveBranding.org_name };
-  const nomineeName = cert.candidate_name || candidacy.application_snapshot?.full_name || '';
+  return (
+    <CertificateView
+      template={cert.document_template}
+      name={cert.candidate_name || candidacy.application_snapshot?.full_name || ''}
+      position={candidacy.position_title}
+      branding={branding}
+      certificateId={candidacy.certificate_id}
+      issuedAt={cert.issued_at}
+      onClose={onClose} />
+  );
+}
+
+// One certificate, in whichever template it was issued with. Also used for the superadmin's sample print.
+function CertificateView({ template, name, position, branding, certificateId, issuedAt, sample = false, onClose }) {
+  const tpl = resolveDocTemplate(template);
   const [qrDataUrl, setQrDataUrl] = useState('');
   // Opens the public /verify page in this app, which reads the backend endpoint.
-  const verifyUrl = `${window.location.origin}/verify/${candidacy.certificate_id}`;
+  const verifyUrl = `${window.location.origin}/verify/${certificateId}`;
 
   useEffect(() => {
     // Client-side only — no network call to render this, unlike the
     // third-party QR image service FinalReport.jsx deliberately dropped.
     // This one points at a real backend endpoint that checks a database row.
-    QRCode.toDataURL(verifyUrl, { width: 84, margin: 0 })
+    QRCode.toDataURL(verifyUrl, { width: tpl === 'formal' ? 168 : 84, margin: 0 })
       .then(setQrDataUrl)
       .catch(() => setQrDataUrl(''));
-  }, [verifyUrl]);
+  }, [verifyUrl, tpl]);
 
+  const landscape = isLandscape(tpl);
+  const docName = sample ? 'Certificate of Nomination (Sample)' : 'Certificate of Nomination';
   return (
-    <DocShell maxWidth={800} onClose={onClose} branding={branding} label="Certificate of Nomination" fileName={docFileName('Certificate of Nomination', nomineeName, candidacy.position_title)}>
-      <div style={{ border: '3px double #b8860b', padding: '44px 48px', position: 'relative' }} className="csp-cert-box">
-        <DocHeader branding={branding} title="" variant="certificate" marginBottom={6} />
-
-        <div style={{ textAlign: 'center', fontFamily: 'Times New Roman, Times, serif', fontSize: 30, fontWeight: 700, letterSpacing: 3, color: '#b8860b', margin: '22px 0 4px' }}>
-          Certificate of Nomination
-        </div>
-        <div style={{ textAlign: 'center', fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: '#94a3b8', marginBottom: 30 }}>
-          Duly vetted and cleared to contest
-        </div>
-
-        <div style={{ fontFamily: 'Times New Roman, Times, serif', fontSize: 16, lineHeight: 2, textAlign: 'center', margin: '0 10px 30px' }}>
-          This is to certify that<br />
-          <span style={{ fontSize: 22, fontWeight: 700, borderBottom: '1px solid #1e293b', paddingBottom: 2 }}>
-            {properName(nomineeName)}
-          </span><br />
-          has been reviewed and duly nominated as a candidate for the position of<br />
-          <span style={{ fontWeight: 700 }}>{properTitle(candidacy.position_title)}</span><br />
-          in the {branding.org_name} election.
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 44 }}>
-          <div style={{ textAlign: 'center' }}>
-            {qrDataUrl && <img src={qrDataUrl} alt="Verification QR code" style={{ width: 84, height: 84 }} />}
-            <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 4, letterSpacing: 1 }}>ID: {candidacy.certificate_id}</div>
-            <div style={{ fontSize: 9, color: '#94a3b8', overflowWrap: 'anywhere' }}>Verify at {verifyUrl}</div>
+    <DocShell maxWidth={landscape ? FORMAL_W : 800} onClose={onClose} branding={branding} label={sample ? 'Sample certificate' : 'Certificate of Nomination'} landscape={landscape}
+      fileName={docFileName(docName, name, branding.org_name)}>
+      <div style={{ position: 'relative' }}>
+        {tpl === 'formal' ? (
+          <FitSheet width={FORMAL_W} height={FORMAL_H}>
+            <FormalCertificateSheet name={name} position={position} branding={branding} certificateId={certificateId}
+              issuedAt={issuedAt} issuedLabel={formatDate(issuedAt)} verifyUrl={verifyUrl} qrDataUrl={qrDataUrl} />
+          </FitSheet>
+        ) : (
+          <ClassicCertificateSheet name={name} position={position} branding={branding} certificateId={certificateId} verifyUrl={verifyUrl} qrDataUrl={qrDataUrl} />
+        )}
+        {sample ? (
+          <div aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', overflow: 'hidden' }}>
+            <div style={{ fontSize: 'clamp(48px, 16vw, 150px)', fontWeight: 900, letterSpacing: 8, color: 'rgba(120,120,120,0.16)', transform: 'rotate(-24deg)', whiteSpace: 'nowrap' }}>SAMPLE</div>
           </div>
-        </div>
-
-        <div style={{ marginTop: 40, paddingTop: 12, borderTop: '1px dashed #d6c58a', textAlign: 'center', fontSize: 10, color: '#a8a29e' }}>
-          Generated by {branding.org_name} · Scan the code or visit the link above to confirm this certificate against our records
-        </div>
+        ) : null}
       </div>
     </DocShell>
   );
 }
 
+function ClassicCertificateSheet({ name, position, branding, certificateId, verifyUrl, qrDataUrl }) {
+  return (
+    <div style={{ border: '3px double #b8860b', padding: '44px 48px', position: 'relative' }} className="csp-cert-box">
+      <DocHeader branding={branding} title="" variant="certificate" marginBottom={6} />
+
+      <div style={{ textAlign: 'center', fontFamily: 'Times New Roman, Times, serif', fontSize: 30, fontWeight: 700, letterSpacing: 3, color: '#b8860b', margin: '22px 0 4px' }}>
+        Certificate of Nomination
+      </div>
+      <div style={{ textAlign: 'center', fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: '#94a3b8', marginBottom: 30 }}>
+        Duly vetted and cleared to contest
+      </div>
+
+      <div style={{ fontFamily: 'Times New Roman, Times, serif', fontSize: 16, lineHeight: 2, textAlign: 'center', margin: '0 10px 30px' }}>
+        This is to certify that<br />
+        <span style={{ fontSize: 22, fontWeight: 700, borderBottom: '1px solid #1e293b', paddingBottom: 2 }}>
+          {properName(name)}
+        </span><br />
+        has been reviewed and duly nominated as a candidate for the position of<br />
+        <span style={{ fontWeight: 700 }}>{properTitle(position)}</span><br />
+        in the {branding.org_name} election.
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'center', marginTop: 44 }}>
+        <div style={{ textAlign: 'center' }}>
+          {qrDataUrl && <img src={qrDataUrl} alt="Verification QR code" style={{ width: 84, height: 84 }} />}
+          <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 4, letterSpacing: 1 }}>ID: {certificateId}</div>
+          <div style={{ fontSize: 9, color: '#94a3b8', overflowWrap: 'anywhere' }}>Verify at {verifyUrl}</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 40, paddingTop: 12, borderTop: '1px dashed #d6c58a', textAlign: 'center', fontSize: 10, color: '#a8a29e' }}>
+        Generated by {branding.org_name} · Scan the code or visit the link above to confirm this certificate against our records
+      </div>
+    </div>
+  );
+}
+
+// Superadmin "Print sample": the chosen template with made-up names, the organisation's current branding, a SAMPLE
+// watermark and a certificate id that does not exist. Nothing is read from or written to the server.
+export function SampleCertificateDoc({ template, branding, longNames = false, onClose }) {
+  const sample = longNames
+    ? { name: 'Namukasa Nakiyingi Jane-Francesca Atuhaire Mukasa', position: 'Deputy General Secretary, Welfare and Student Affairs' }
+    : { name: 'Jane Namukasa', position: 'General Secretary' };
+  const shown = { ...branding, org_name: branding.org_name || 'Your Organisation Name' };
+  return <CertificateView sample template={template} name={sample.name} position={sample.position} branding={shown}
+    certificateId="CERT-SAMPLE000000" issuedAt={new Date()} onClose={onClose} />;
+}
+
 function DenialNoticeDoc({ candidacy, branding, onClose }) {
   const d = candidacy.denial_snapshot || {};
   return (
-    <DocShell maxWidth={600} onClose={onClose} branding={branding} label="Application Decision Notice" fileName={docFileName('Decision Notice', d.full_name, candidacy.position_title)}>
+    <DocShell maxWidth={600} onClose={onClose} branding={branding} label="Application Decision Notice" fileName={docFileName('Application Decision Notice', d.full_name, branding.org_name)}>
       <DocHeader branding={branding} title="Application Decision Notice" marginBottom={24} />
       <dl style={{ margin: 0 }}>
         <Row label="Applicant" value={properName(d.full_name)} />
