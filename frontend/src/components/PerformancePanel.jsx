@@ -211,7 +211,7 @@ function PerformanceInner() {
             startTs={chartStart} stepS={chartStep} label="Database operations per second" fill fitData />
         </div>
         <div className="perf-legend">
-          <span><i style={{ background: 'var(--brand-primary)' }} />Operations per second</span>
+          <span><i style={{ background: 'var(--perf-line)' }} />Operations per second</span>
           {chartCap ? <span><i style={{ background: 'var(--danger)' }} />Database cap, {chartCap} ops/s</span> : null}
         </div>
         <p style={muted}>

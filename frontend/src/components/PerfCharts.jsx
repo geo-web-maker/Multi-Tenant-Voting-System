@@ -8,8 +8,8 @@ import { clockLabel, tickIndexes } from '../perfFormat';
 
 // Distinct without relying on colour alone: colour plus dash pattern.
 const LINE_STYLES = [
-  { color: '--brand-primary', dash: '' }, { color: '--brand-accent', dash: '' },
-  { color: '--text-color', dash: '7 4' }, { color: '--brand-primary', dash: '2 4' },
+  { color: '--perf-line', dash: '' }, { color: '--brand-accent', dash: '' },
+  { color: '--text-color', dash: '7 4' }, { color: '--perf-line', dash: '2 4' },
   { color: '--brand-accent', dash: '7 4' }, { color: '--text-muted', dash: '' },
 ];
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { bucketLabel } from '../chartTime';
 import useIsNarrowViewport from '../hooks/useIsNarrowViewport';
 
@@ -72,12 +72,16 @@ export function HourBars({ values = [], zoneLabel = 'UTC' }) {
   );
 }
 
-export function BarRows({ items = [], empty = 'No data is available for this period.', format = (v) => v, sub }) {
+// `limit` keeps long lists short so no card grows into a page of its own; the toggle shows the rest in place.
+export function BarRows({ items = [], empty = 'No data is available for this period.', format = (v) => v, sub, limit = 8 }) {
+  const [all, setAll] = useState(false);
   if (!items.length) return <p style={muted}>{empty}</p>;
   const max = Math.max(1, ...items.map((x) => Number(x.value) || 0));
+  const capped = !all && items.length > limit;
+  const shown = capped ? items.slice(0, limit) : items;
   return (
     <div>
-      {items.map((x, i) => (
+      {shown.map((x, i) => (
         <div key={`${x.label}-${i}`} style={row}>
           <span style={{ minWidth: 0, overflowWrap: 'anywhere', flex: '1 1 40%' }}>
             {x.label}
@@ -89,9 +93,15 @@ export function BarRows({ items = [], empty = 'No data is available for this per
           </span>
         </div>
       ))}
+      {items.length > limit ? (
+        <button type="button" style={more} onClick={() => setAll((v) => !v)} aria-expanded={all}>
+          {all ? 'Show fewer' : `Show all ${items.length}`}
+        </button>
+      ) : null}
     </div>
   );
 }
 
 const row = { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border-color)', fontSize: 13 };
 const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
+const more = { minHeight: 44, marginTop: 4, padding: '0 4px', background: 'none', border: 0, color: 'var(--brand-primary)', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left' };

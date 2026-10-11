@@ -959,7 +959,11 @@ td, th {
    Mirrors the Site Usage page: one column, 16 px gaps, 16 px panels, 44 px 13 px/700 controls, bar rows instead of tables. */
 .perf-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
 .perf-card { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); padding: 16px; min-width: 0; }
-.perf-pair { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.perf-card { --perf-line: var(--brand-primary-ui, var(--brand-primary)); }
+/* Dark cards: the raw org primary is often a dark navy that vanishes on them. Without a derived readable tint, fall back to the info blue. */
+[data-theme="dark"] .perf-card { --perf-line: var(--brand-primary-ui, var(--info)); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .perf-card { --perf-line: var(--brand-primary-ui, var(--info)); } }
+.perf-pair { display: grid; align-items: start; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
 .perf-btn { padding: 0 16px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
 .perf-btn[aria-selected="true"], .perf-btn[aria-pressed="true"] { border-color: var(--brand-primary, currentColor); background: var(--brand-primary); color: var(--brand-on-primary, white); }
 .perf-btn-primary { background: var(--brand-primary); color: var(--brand-on-primary, white); border-color: var(--brand-primary); }

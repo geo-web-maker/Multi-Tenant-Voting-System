@@ -46,6 +46,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
   const [seg, setSeg] = useState('public');
   const [device, setDevice] = useState('all');
   const [apiAud, setApiAud] = useState('voter'); // API table: voter-facing | staff | all
+  const [apiAll, setApiAll] = useState(false);  // API table shows 10 rows until expanded, so it never scrolls inside itself
   const [auto, setAuto] = useState(false);
   const [compare, setCompare] = useState(false);
   const [selected, setSelected] = useState([]);
@@ -205,13 +206,13 @@ export default function AnalyticsPanel({ organizations = [] }) {
             </div>
 
             <div style={grid}>
-              <Card title="Top pages"><BarRows items={data?.top_pages} sub={(x) => `Sessions ${x.sessions_reached} · entries ${x.entries} · exits ${x.exits}`} /></Card>
+              <Card title="Top pages" wide><BarRows items={data?.top_pages} sub={(x) => `Sessions ${x.sessions_reached} · entries ${x.entries} · exits ${x.exits}`} /></Card>
               <Card title="Devices"><BarRows items={data?.devices} /></Card>
               <Card title="Browsers"><BarRows items={data?.browsers} /></Card>
               <Card title="Operating systems"><BarRows items={data?.os} /></Card>
               <Card title="Entry sources"><BarRows items={data?.entry_sources} sub={(x) => `Bounce rate ${pct(x.bounce)}`} /></Card>
-              <Card title="Entry page and source"><BarRows items={data?.entries} sub={(x) => `Bounce rate ${pct(x.bounce)}`} /></Card>
-              <Card title="Movement between pages"><BarRows items={data?.transitions} /></Card>
+              <Card title="Entry page and source" wide><BarRows items={data?.entries} sub={(x) => `Bounce rate ${pct(x.bounce)}`} /></Card>
+              <Card title="Movement between pages" wide><BarRows items={data?.transitions} /></Card>
             </div>
 
             <div style={panel} className="card-pad">
@@ -263,16 +264,21 @@ export default function AnalyticsPanel({ organizations = [] }) {
                 ))}
               </div>
               {apiRows.length ? (
-                <div className="table-scroll table-scroll-y">
+                <div className="table-scroll">
                   <table style={table}>
                     <thead><tr>{['Route', 'Requests', '401', '429', 'Other 4xx', '5xx', 'p50', 'p95'].map((c) => <th key={c} style={th}>{c}</th>)}</tr></thead>
-                    <tbody>{apiRows.map((a) => (
+                    <tbody>{(apiAll ? apiRows : apiRows.slice(0, 10)).map((a) => (
                       <tr key={a.route}>
                         <td style={{ ...td, overflowWrap: 'anywhere' }}>{a.route}</td><td style={td}>{a.requests}</td><td style={td}>{a.e401}</td>
                         <td style={td}>{a.e429}</td><td style={td}>{a.e4}</td><td style={td}>{a.e5}</td><td style={td}>{ms(a.p50)}</td><td style={td}>{ms(a.p95)}</td>
                       </tr>))}
                     </tbody>
                   </table>
+                  {apiRows.length > 10 ? (
+                    <button type="button" style={{ ...btn, background: 'transparent', color: 'var(--brand-primary)', border: 0, padding: '0 4px', marginTop: 4 }} aria-expanded={apiAll} onClick={() => setApiAll((v) => !v)}>
+                      {apiAll ? 'Show fewer' : `Show all ${apiRows.length}`}
+                    </button>
+                  ) : null}
                 </div>
               ) : <p style={muted}>No API outcomes have been recorded for this period.</p>}
               <h4 style={h4}>Page load and first response, by entry page and device</h4>
@@ -328,8 +334,8 @@ export default function AnalyticsPanel({ organizations = [] }) {
   );
 }
 
-function Card({ title, children }) {
-  return <div style={panel} className="card-pad"><h3 style={h3}>{title}</h3>{children}</div>;
+function Card({ title, children, wide = false }) {
+  return <div style={wide ? { ...panel, gridColumn: '1 / -1' } : panel} className="card-pad"><h3 style={h3}>{title}</h3>{children}</div>;
 }
 
 const panel = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 16, background: 'var(--card-bg)', minWidth: 0 };
