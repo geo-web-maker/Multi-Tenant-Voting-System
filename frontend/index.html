@@ -8,6 +8,25 @@
   </head>
   <body>
     <div id="root"></div>
+    <noscript>This site needs JavaScript. Please enable it or try another browser.</noscript>
+    <script>
+      // If the app never starts (blocked or stale script, extension, bad network) the page stays blank forever.
+      // After 20 s with an empty #root, show plain-HTML help that needs none of the app's code.
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (!root || root.childNodes.length) return;
+        var box = document.createElement('div');
+        box.setAttribute('style', 'font-family:system-ui,sans-serif;max-width:420px;margin:15vh auto;padding:16px;line-height:1.5;color-scheme:light dark;color:CanvasText;background:Canvas;border-radius:12px');
+        box.innerHTML = '<h2 style="margin:0 0 8px">The page could not start</h2>' +
+          '<ol style="padding-left:18px"><li>Reload the page.</li>' +
+          '<li>Open this link in a <b>private / incognito window</b>.</li>' +
+          '<li>Turn off ad blockers or privacy extensions for this site.</li>' +
+          '<li>Switch between Wi-Fi and mobile data.</li></ol>' +
+          '<button id="bb-reload" style="padding:8px 14px;font-size:14px">Reload</button>';
+        root.appendChild(box);
+        document.getElementById('bb-reload').onclick = function () { location.reload(); };
+      }, 20000);
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

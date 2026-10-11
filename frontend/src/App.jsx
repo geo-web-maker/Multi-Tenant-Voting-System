@@ -69,6 +69,7 @@ import {
 // Start fetching the nomination-form config now so the Apply page has it the moment it renders.
 prefetchNominationForm();
 
+import StuckHelp from './components/StuckHelp.jsx';
 const BallotBoxLazy = lazy(() => import('./components/BallotBox'));
 // Wrapper so both call sites (real ballot, sample-ballot preview) get a Suspense boundary without JSX changes.
 function BallotBox(props) {
@@ -207,6 +208,8 @@ function App() {
   const [bootExiting, setBootExiting] = useState(false);
   // The splash is only worth showing if the server is NOT answering straight away (see the boot effect).
   const [bootSplashDue, setBootSplashDue] = useState(false);
+  // True once the splash has outlasted even a cold start (see STUCK_MS in the boot effect): show the help panel.
+  const [bootStuck, setBootStuck] = useState(false);
   // Where the splash is in its one-way story:
   //   connecting -> (starting, only if the server is actually cold) -> initializing -> connected
   // It only ever moves forward. A warm server skips "starting" entirely; a cold one shows it
@@ -261,6 +264,7 @@ useEffect(() => {
   // here on purpose: putting it in the bundle would publish it.
   const BOOT_PROBE_PATH = '/';
   const WARM_MS = 500;           // /health answered inside this = warm server: skip the splash entirely
+  const STUCK_MS = 25000;        // a cold Render start can take about 50 s, so this only adds help; it never stops the polling
 
   let cancelled = false;
   let pollTimer = null;
@@ -275,6 +279,8 @@ useEffect(() => {
     setBootSplashDue(true);
   }, WARM_MS);
 
+  const stuckTimer = setTimeout(() => { if (!cancelled) setBootStuck(true) }, STUCK_MS);
+
   // Only claim "starting server" once the wait has outlasted a warm response.
   const coldHintTimer = setTimeout(() => {
     if (!cancelled) setBootStage(st => (st === 'connecting' ? 'starting' : st));
@@ -286,6 +292,8 @@ useEffect(() => {
     clearTimeout(coldHintTimer);
     clearTimeout(pollTimer);
     clearTimeout(splashTimer);
+    clearTimeout(stuckTimer);
+    setBootStuck(false);
     if (!splashShown) { setBootReady(true); return; }   // warm: nothing was ever shown, nothing to animate out
     // /health answered: the server is up. Walk forward through the last two steps.
     setBootStage('initializing');
@@ -329,7 +337,7 @@ useEffect(() => {
     // showing) is enough if this fails. Silent by design.
   });
 
-  return () => { cancelled = true; clearTimeout(coldHintTimer); clearTimeout(pollTimer); clearTimeout(splashTimer); stageTimers.forEach(clearTimeout); };
+  return () => { cancelled = true; clearTimeout(stuckTimer); clearTimeout(coldHintTimer); clearTimeout(pollTimer); clearTimeout(splashTimer); stageTimers.forEach(clearTimeout); };
 }, []);
   
   useEffect(() => {
@@ -690,7 +698,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
 
   if (!bootReady) {
     if (!bootSplashDue) return null;   // still inside the warm-server grace period
-    return <BootSplash orgName={bootName} logoUrl={bootLogoUrl} exiting={bootExiting} stage={bootStage} />;
+    return <>
+      <BootSplash orgName={bootName} logoUrl={bootLogoUrl} exiting={bootExiting} stage={bootStage} />
+      {bootStuck && <StuckHelp />}
+    </>;
   }
 
   // candidate-portal-spec §4.1: a public, token-linked status page, reachable
