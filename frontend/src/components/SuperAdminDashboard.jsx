@@ -1002,7 +1002,11 @@ const handleSuperAdminRemoveStudent = async () => {
             <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>
           ))}
         </select>
-        {activeOrgSlug && (
+        {activeTab === 'performance' ? (
+          <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
+            <Icon name="check" /> Performance covers all organisations
+          </span>
+        ) : activeOrgSlug && (
           <span style={{ fontSize: '11px', color: 'var(--success)', fontWeight: '600' }}>
             <Icon name="check" /> Viewing only this organisation's data
           </span>

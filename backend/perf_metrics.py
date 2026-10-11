@@ -207,7 +207,7 @@ class _MinuteRing:
                 "ops": 0, "cmds": 0, "reqs": 0, "s2": 0, "s4": 0, "s5": 0, "s429": 0,
                 "http_hist": _empty_hist(API_EDGES),
                 "cmd_hist": _empty_hist(CMD_LAT_EDGES),
-                "routes": {}, "colls": {}, "orgs": {}, "ops_types": {},
+                "routes": {}, "colls": {}, "orgs": {}, "org_stats": {}, "ops_types": {},
                 "failures": {},
             }
         return self.slots[i]
@@ -644,6 +644,14 @@ def end_request(holder, *, route, status, ms, org) -> None:
             _bump_route_counts(minute["routes"], route_name, 0 if holder is None else holder.ops)
             if org:
                 _bump(minute["orgs"], str(org), 0 if holder is None else holder.ops)
+                # Per-org request, 5xx and 429 counts so the Performance tab can show which organisation is busy or failing.
+                okey = _cap_key(minute["org_stats"], str(org))
+                ost = minute["org_stats"].setdefault(okey, [0, 0, 0])
+                ost[0] += 1
+                if status >= 500:
+                    ost[1] += 1
+                elif status == 429:
+                    ost[2] += 1
             if holder is not None:
                 detail = DETAIL.route(_minute(now), route_name)
                 detail["n"] += 1
@@ -1151,6 +1159,29 @@ def breakdown(by: str = "collection") -> dict:
         slot = MINUTES.value(now_min - age * 60)
         if slot:
             minute_tables.append(slot)
+    if by == "org":
+        ops_acc: dict[str, int] = {}
+        stat_acc: dict[str, list] = {}
+        covered = 0
+        for slot in minute_tables:
+            covered += 1
+            for name, n in slot["orgs"].items():
+                ops_acc[name] = ops_acc.get(name, 0) + n
+            for name, st in slot.get("org_stats", {}).items():
+                tot = stat_acc.setdefault(name, [0, 0, 0])
+                for i in range(3):
+                    tot[i] += st[i]
+        total = sum(ops_acc.values()) or 1
+        seconds = max(60, covered * 60)
+        names = set(ops_acc) | set(stat_acc)
+        rows = [{
+            "name": name, "ops": ops_acc.get(name, 0), "share": round(ops_acc.get(name, 0) / total, 3),
+            "ops_s": round(ops_acc.get(name, 0) / seconds, 2),
+            "requests": stat_acc.get(name, [0, 0, 0])[0], "errors_5xx": stat_acc.get(name, [0, 0, 0])[1],
+            "throttled_429": stat_acc.get(name, [0, 0, 0])[2],
+        } for name in names]
+        rows.sort(key=lambda r: (-r["ops"], -r["requests"], r["name"]))
+        return {"by": "org", "rows": rows, "window_s": seconds, "unattributed_pct": summary()["db"]["unattributed_pct"]}
     key = {"collection": "colls", "org": "orgs", "op": "ops_types"}.get(by, "colls")
     acc: dict[str, int] = {}
     for slot in minute_tables:
@@ -1278,6 +1309,70 @@ async def dispatch_alerts(alerts) -> None:
         _swallow_once("dispatch")
 
 
+def _org_minute(slot: dict) -> dict:
+    """One minute's per-organisation counters as {org: [ops, requests, 5xx, 429]}."""
+    stats = slot.get("org_stats", {})
+    out = {}
+    for name in set(slot["orgs"]) | set(stats):
+        st = stats.get(name, [0, 0, 0])
+        out[name] = [slot["orgs"].get(name, 0), st[0], st[1], st[2]]
+    return out
+
+
+_ORG_RANGES = {"15m": (15, 60), "24h": (1440, 900), "7d": (10080, 7200)}   # minutes, bucket seconds
+_ORG_SERIES_TOP = 6
+
+
+async def org_series(window: str = "15m") -> dict:
+    """Per-organisation load over 15 minutes, 24 hours (memory) or 7 days (memory plus the history sink)."""
+    n_min, step = _ORG_RANGES.get(window, _ORG_RANGES["15m"])
+    now_min = _minute()
+    start = now_min - (n_min - 1) * 60
+    per_min: dict[int, dict] = {}
+    for age in range(min(n_min, 1440)):
+        t = now_min - age * 60
+        slot = MINUTES.value(t)
+        if slot is not None:
+            per_min[t] = _org_minute(slot)
+    note = None
+    if n_min > 1440:
+        try:
+            if _manager is None:
+                ensure_sink()
+            for batch in await _manager.sink.read(start, now_min - 1440 * 60):
+                for row in (batch.get("rows") if isinstance(batch, dict) else None) or []:
+                    t = row.get("t") if isinstance(row, dict) else None
+                    if t is None or t < start or t in per_min or not row.get("orgs"):
+                        continue
+                    per_min[int(t)] = {k: list(v) for k, v in row["orgs"].items()}
+        except Exception:
+            _swallow_once("org_series_history")
+            note = "Older history could not be read from the sink."
+    buckets = max(1, n_min * 60 // step)
+    totals: dict[str, list] = {}
+    series: dict[str, list] = {}
+    for t, per_org in per_min.items():
+        if t < start:
+            continue
+        bi = min(buckets - 1, (t - start) // step)
+        for name, v in per_org.items():
+            tot = totals.setdefault(name, [0, 0, 0, 0])
+            for i in range(4):
+                tot[i] += v[i]
+            series.setdefault(name, [0] * buckets)[bi] += v[0]
+    all_ops = sum(t[0] for t in totals.values()) or 1
+    seconds = max(60, len(per_min) * 60)
+    rows = [{
+        "name": name, "ops": t[0], "share": round(t[0] / all_ops, 3), "ops_s": round(t[0] / seconds, 3),
+        "requests": t[1], "errors_5xx": t[2], "throttled_429": t[3],
+    } for name, t in totals.items()]
+    rows.sort(key=lambda r: (-r["ops"], -r["requests"], r["name"]))
+    for row in rows[:_ORG_SERIES_TOP]:
+        row["points"] = [round(v / step, 3) for v in series[row["name"]]]
+    return {"window": window if window in _ORG_RANGES else "15m", "step_s": step, "buckets": buckets, "start": start,
+            "covered_minutes": len(per_min), "rows": rows, "note": note}
+
+
 def build_batch(now: float | None = None) -> dict | None:
     """Finished minutes since the previous flush. The current minute stays in memory."""
     global _last_flushed_minute
@@ -1295,13 +1390,17 @@ def build_batch(now: float | None = None) -> dict | None:
         if slot is None:
             rows.append({"t": t, "ops": None})
         else:
-            rows.append({
+            row = {
                 "t": t,
                 "ops": slot["ops"],
                 "cmds": slot["cmds"],
                 "reqs": slot["reqs"],
                 "http_p95": _pct(slot["http_hist"], API_EDGES, 0.95),
-            })
+            }
+            orgs = _org_minute(slot)
+            if orgs:
+                row["orgs"] = orgs   # per-organisation [ops, requests, 5xx, 429]; lets the Performance tab chart 7 days
+            rows.append(row)
         t += 60
     _last_flushed_minute = end
     return {"_id": rows[0]["t"], "minute_dt": datetime_iso(rows[0]["t"]), "rows": rows}

@@ -43,6 +43,7 @@ function serve({ sum = summary(), cfg = config() } = {}) {
       '/superadmin/performance/breakdown': { rows: [], unattributed_pct: 12 },
       '/superadmin/performance/slow': { commands: [] },
       '/superadmin/performance/sink': { type: 'none', detail: 'memory only' },
+      '/superadmin/performance/orgs': { window: '15m', buckets: 15, rows: [] },
     }[url];
     return Promise.resolve({ data });
   });
@@ -80,7 +81,7 @@ describe('PerformancePanel states (guide 7.2)', () => {
     render(<PerformancePanel />);
     await screen.findByText(label);
     expect(screen.getByTestId('ops-now').textContent).toBe('37 / 100');
-    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('37');
+    expect((await screen.findByRole('progressbar')).getAttribute('aria-valuenow')).toBe('37');
     expect(screen.getByText(/About 140 voters per minute before the cap/)).toBeTruthy();
   });
 
@@ -211,5 +212,42 @@ describe('PerformanceSettings card (guide 2.5)', () => {
     await open();
     fireEvent.click(screen.getByText('Reset to defaults'));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/superadmin/performance/config/reset'));
+  });
+});
+
+describe('PerformancePanel organisations card', () => {
+  beforeEach(() => { mockGet.mockReset(); setHidden(false); });
+  afterEach(() => cleanup());
+
+  it('shows every organisation together, busiest first, without switching tabs', async () => {
+    serve();
+    const base = mockGet.getMockImplementation();
+    mockGet.mockImplementation((url, opts) => {
+      if (url === '/superadmin/performance/orgs') {
+        return Promise.resolve({ data: { window: opts?.params?.window, step_s: 60, buckets: 3, covered_minutes: 3, rows: [
+          { name: 'kyues', ops: 90, share: 0.9, ops_s: 0.1, requests: 40, errors_5xx: 2, throttled_429: 0, points: [0.1, 0.5, 0.2] },
+          { name: 'other', ops: 10, share: 0.1, ops_s: 0.01, requests: 5, errors_5xx: 0, throttled_429: 1, points: [0, 0.1, 0] },
+        ] } });
+      }
+      return base(url, opts);
+    });
+    render(<PerformancePanel />);
+    await screen.findByText('Organisations, all combined');
+    expect((await screen.findAllByText('kyues')).length).toBe(2);   // chart legend and bar list
+    expect(screen.getAllByText('other').length).toBe(2);
+    expect(screen.getByText(/kyues is using 90% of the load/)).toBeTruthy();
+    expect(screen.getByText(/5xx 2 · 429 0/)).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Operations per second by organisation' })).toBeTruthy();   // chart is present
+  });
+
+  it('switches range without leaving the page and asks the API for that window', async () => {
+    serve();
+    const base = mockGet.getMockImplementation();
+    mockGet.mockImplementation((url, opts) => (url === '/superadmin/performance/orgs'
+      ? Promise.resolve({ data: { window: opts?.params?.window, step_s: 900, buckets: 2, covered_minutes: 1440, rows: [] } })
+      : base(url, opts)));
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Last 24 hours' }));
+    await waitFor(() => expect(mockGet.mock.calls.some((c) => c[0] === '/superadmin/performance/orgs' && c[1]?.params?.window === '24h')).toBe(true));
   });
 });

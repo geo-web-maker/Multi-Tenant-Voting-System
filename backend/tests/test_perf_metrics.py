@@ -225,3 +225,30 @@ def test_gauge_status_follows_the_cap(pct, expect):
 def test_throttling_status_and_uncapped_status():
     assert pm.gauge_status({"cap_pct": 96, "throttle_suspect": True}, {"ops_cap": 100}) == "throttling"
     assert pm.gauge_status({"latency_ms": {"p95": 900}}, {"ops_cap": None}) == "critical"
+
+
+def test_org_breakdown_has_requests_errors_and_rate():
+    for org, status in [("a", 200), ("a", 200), ("a", 500), ("b", 429), ("b", 200)]:
+        h = pm.begin_request()
+        h.ops = 4 if org == "a" else 1
+        pm.end_request(h, route="/x", status=status, ms=3, org=org)
+    out = pm.breakdown("org")
+    rows = {r["name"]: r for r in out["rows"]}
+    assert out["rows"][0]["name"] == "a"                      # busiest first
+    assert (rows["a"]["requests"], rows["a"]["errors_5xx"], rows["a"]["throttled_429"]) == (3, 1, 0)
+    assert (rows["b"]["requests"], rows["b"]["errors_5xx"], rows["b"]["throttled_429"]) == (2, 0, 1)
+    assert rows["a"]["ops"] == 12 and rows["a"]["ops_s"] > 0 and out["window_s"] >= 60
+
+
+async def test_org_series_buckets_totals_and_persisted_orgs():
+    for org, status in [("a", 200), ("a", 500), ("b", 200)]:
+        h = pm.begin_request()
+        h.ops = 3
+        pm.end_request(h, route="/x", status=status, ms=2, org=org)
+    out = await pm.org_series("15m")
+    rows = {r["name"]: r for r in out["rows"]}
+    assert (rows["a"]["ops"], rows["a"]["requests"], rows["a"]["errors_5xx"]) == (6, 2, 1)
+    assert len(rows["a"]["points"]) == out["buckets"] == 15 and sum(rows["a"]["points"]) > 0
+    pm.set_clock(lambda: 1_000_000.0 + 60)           # next minute: the earlier one is finished
+    batch = pm.build_batch()
+    assert any("orgs" in r and r["orgs"]["a"] == [6, 2, 1, 0] for r in batch["rows"] if r.get("orgs"))

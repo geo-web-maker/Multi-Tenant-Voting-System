@@ -3,6 +3,8 @@ import api, { getErrorMessage } from '../api';
 import usePolling from '../hooks/usePolling';
 import { LoadingBlock } from './Spinner.jsx';
 import PerformanceSettings from './PerformanceSettings';
+import RevealGroup, { useRevealReady } from './RevealGroup';
+import PerfOrgs from './PerfOrgs';
 import {
   STATUS_LABEL, barPct, fmtMb, fmtMs, fmtOps, fmtUptime, headerLine, headroomText, sinkIsUnhealthy, sinkLine,
   statusColorVar, viewState,
@@ -15,9 +17,9 @@ const h3 = { margin: '0 0 10px', fontSize: 15 };
 const th = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', whiteSpace: 'nowrap' };
 const td = { padding: '6px 8px', borderBottom: '1px solid var(--border-color)' };
 
-function Card({ title, children }) {
+function Card({ title, children, wide = false }) {
   return (
-    <section className="perf-card card-pad">
+    <section className="perf-card card-pad" style={wide ? { gridColumn: '1 / -1' } : undefined}>
       {title ? <h3 style={h3}>{title}</h3> : null}
       {children}
     </section>
@@ -35,7 +37,7 @@ function Pill({ state }) {
 
 /** Small responsive SVG line chart. Dashed reference line for the cap. Colours are tokens only. */
 export function PerfLine({ points = [], cap = null, label, unit = '' }) {
-  const w = 600; const h = 140; const pad = { l: 34, r: 6, t: 8, b: 18 };
+  const w = 600; const h = 170; const pad = { l: 42, r: 6, t: 10, b: 18 };
   const vals = points.map((p) => (p === null || p === undefined ? null : p));
   const max = Math.max(1, cap || 0, ...vals.filter((v) => v !== null));
   const iw = w - pad.l - pad.r; const ih = h - pad.t - pad.b;
@@ -47,8 +49,8 @@ export function PerfLine({ points = [], cap = null, label, unit = '' }) {
   return (
     <svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label} style={{ width: '100%', height: 'auto', display: 'block' }}>
       <line x1={pad.l} y1={pad.t + ih} x2={w - pad.r} y2={pad.t + ih} stroke="var(--border-color)" />
-      <text x={2} y={pad.t + 8} fontSize="10" fill="var(--text-muted)">{Math.round(max)}{unit}</text>
-      <text x={2} y={pad.t + ih} fontSize="10" fill="var(--text-muted)">0</text>
+      <text x={2} y={pad.t + 12} fontSize="15" fill="var(--text-muted)">{Math.round(max)}{unit}</text>
+      <text x={2} y={pad.t + ih} fontSize="15" fill="var(--text-muted)">0</text>
       {cap ? <line x1={pad.l} x2={w - pad.r} y1={y(cap)} y2={y(cap)} stroke="var(--danger)" strokeDasharray="5 4" /> : null}
       {runs.map((r, i) => <polyline key={i} fill="none" stroke="var(--brand-primary, currentColor)" strokeWidth="2" points={r.join(' ')} />)}
     </svg>
@@ -75,11 +77,10 @@ const pctText = (share) => `${Math.round((share || 0) * 100)}%`;
 const BREAK_COLS = {
   collection: [{ key: 'name', label: 'Collection' }, { key: 'ops', label: 'Ops' }, { key: 'share', label: 'Share', render: (r) => pctText(r.share) }, { key: 'p95_ms', label: 'p95', render: (r) => fmtMs(r.p95_ms) }],
   route: [{ key: 'name', label: 'Route' }, { key: 'requests', label: 'Requests' }, { key: 'ops_per_request', label: 'Ops/request', render: (r) => fmtOps(r.ops_per_request) }, { key: 'p95_ms', label: 'p95', render: (r) => fmtMs(r.p95_ms) }],
-  org: [{ key: 'name', label: 'Organisation' }, { key: 'ops', label: 'Ops' }, { key: 'share', label: 'Share', render: (r) => pctText(r.share) }],
 };
-const TAB_LABEL = { collection: 'Collections', route: 'Routes', org: 'Organisations' };
+const TAB_LABEL = { collection: 'Collections', route: 'Routes' };
 
-export default function PerformancePanel() {
+function PerformanceInner() {
   const [summary, setSummary] = useState(null);
   const [config, setConfig] = useState(null);
   const [series, setSeries] = useState(null);
@@ -133,7 +134,17 @@ export default function PerformancePanel() {
   const state = viewState(summary);
   const db = summary?.db || {};
   const capped = !!db.cap;
+  // Hold the whole page behind one spinner until every part has data, so sections appear together (RevealGroup).
+  useRevealReady(!!summary && !!series);
   const opsSeries = useMemo(() => (series?.points || []).map((p) => (p.ops === undefined ? null : p.ops)), [series]);
+
+  const healthTiles = [
+    ['Requests / s', fmtOps(summary?.http?.rps)], ['Request p95', fmtMs(summary?.http?.p95_ms)],
+    ['5xx errors (1 min)', summary?.http?.s5xx_1m ?? 0], ['429 throttled (1 min)', summary?.http?.s429_1m ?? 0],
+    ['DB connections', `${db.pool?.in_use ?? 0} / ${db.pool?.max ?? 'n/a'}`], ['Waiting for a connection', db.pool?.waiting ?? 0],
+    ['DB command p95', fmtMs(db.latency_ms?.p95)], ['Event-loop lag p95', fmtMs(summary?.runtime?.loop_lag_ms?.p95)],
+    ['Memory', fmtMb(summary?.runtime?.rss_mb)], ['CPU', `${summary?.runtime?.cpu_pct ?? 'n/a'}%`],
+  ];
 
   if (error && !summary) {
     return <Card><p style={muted}>{error}</p><button type="button" className="perf-btn" onClick={retry}>Retry</button></Card>;
@@ -148,6 +159,7 @@ export default function PerformancePanel() {
     <div className="perf-grid" style={{ display: 'grid', gap: 12 }}>
       <Card>
         <strong>{headerLine(config || { tier: summary.tier, ops_cap: db.cap, conn_cap: summary.conn_cap })}</strong>
+        <p style={muted}>All organisations combined, one shared database cap. Figures cover this server process.</p>
         <p style={muted}>Uptime {fmtUptime(summary.uptime_s)}{summary.collecting_since ? ` · collecting since ${summary.collecting_since.slice(11, 16)} UTC` : ''}</p>
         {error ? <p style={{ ...muted, color: 'var(--danger)' }}>{error}</p> : null}
       </Card>
@@ -177,17 +189,16 @@ export default function PerformancePanel() {
 
       <Card title="Last 15 minutes">
         <PerfLine points={opsSeries} cap={series?.cap || null} label="Database operations per second" unit="/s" />
-        <p style={muted}>Request latency p95: {fmtMs(summary.http?.p95_ms)} · {fmtOps(summary.http?.rps)} requests/s · {summary.http?.in_flight ?? 0} in flight · 5xx {summary.http?.s5xx_1m ?? 0} · 429 {summary.http?.s429_1m ?? 0}</p>
       </Card>
 
-      <Card title="Connections and latency">
-        <p style={muted}>In use {db.pool?.in_use ?? 0} of {db.pool?.max ?? 'n/a'} · waiting {db.pool?.waiting ?? 0} · pool timeouts (1 h) {db.pool?.timeouts_1h ?? 0}</p>
-        <p style={muted}>Command latency p50 {fmtMs(db.latency_ms?.p50)} · p95 {fmtMs(db.latency_ms?.p95)} · p99 {fmtMs(db.latency_ms?.p99)}</p>
-      </Card>
+      <PerfOrgs cap={db.cap || null} sinkType={sink?.type} />
 
-      <Card title="Runtime">
-        <p style={muted}>Event-loop lag now {fmtMs(summary.runtime?.loop_lag_ms?.now)} · p95 {fmtMs(summary.runtime?.loop_lag_ms?.p95)} · max {fmtMs(summary.runtime?.loop_lag_ms?.max)}</p>
-        <p style={muted}>Memory {fmtMb(summary.runtime?.rss_mb)} · CPU {summary.runtime?.cpu_pct ?? 'n/a'}%</p>
+      <Card title="Server health" wide>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+          {healthTiles.map(([k, v]) => (
+            <div key={k}><div style={muted}>{k}</div><strong style={{ fontSize: 18 }}>{v}</strong></div>
+          ))}
+        </div>
       </Card>
 
       <Card title="Where the load comes from">
@@ -228,4 +239,8 @@ export default function PerformancePanel() {
       <p style={muted}>Figures cover this process only and reset on restart. Atlas's own console remains the source of truth for the cap.</p>
     </div>
   );
+}
+
+export default function PerformancePanel() {
+  return <RevealGroup text="Loading performance…"><PerformanceInner /></RevealGroup>;
 }

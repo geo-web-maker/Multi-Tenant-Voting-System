@@ -98,6 +98,13 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
             raise HTTPException(400, "by must be collection, route, org or op.")
         return perf_metrics.breakdown(by)
 
+    @router.get("/superadmin/performance/orgs")
+    async def orgs(response: Response, window: str = "15m", admin: dict = guard):
+        no_store(response)
+        if window not in ("15m", "24h", "7d"):
+            raise HTTPException(400, "window must be 15m, 24h or 7d.")
+        return await perf_metrics.org_series(window)
+
     @router.get("/superadmin/performance/slow")
     async def slow(response: Response, admin: dict = guard):
         no_store(response)
