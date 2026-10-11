@@ -45,7 +45,7 @@ function Pill({ state }) {
 function Table({ rows, cols }) {
   if (!rows.length) return <p style={muted}>No activity in the last 15 minutes.</p>;
   return (
-    <div className="table-scroll">
+    <div className="table-scroll table-scroll-y perf-scroll">
       <table className="perf-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
         <thead><tr>{cols.map((c) => <th key={c.key} style={th}>{c.label}</th>)}</tr></thead>
         <tbody>
