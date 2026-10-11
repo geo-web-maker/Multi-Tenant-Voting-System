@@ -1,5 +1,7 @@
--- Run once in the Neon SQL editor as the project owner/admin, before assigning the
--- CRUD-only role used by the Render application. Do not use the owner URL in Render.
+-- The app creates these tables itself the first time you switch Site Usage to PostgreSQL,
+-- provided the login in ANALYTICS_POSTGRES_URL is allowed to create tables.
+-- With a CRUD-only login, run this once in the database's SQL editor as the project owner/admin
+-- before assigning the CRUD-only role to the app.
 CREATE TABLE IF NOT EXISTS analytics_counter (
   org_id text NOT NULL,
   day text NOT NULL,

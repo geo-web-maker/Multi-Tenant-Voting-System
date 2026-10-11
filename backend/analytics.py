@@ -20,6 +20,7 @@ from pymongo import UpdateOne
 from starlette.routing import Match
 
 from alerts import alert_critical, alert_warning
+from analytics_store import MongoAnalyticsStore, PartialFlushError, make_postgres_store_from_env
 
 log = logging.getLogger("analytics")
 
@@ -68,8 +69,29 @@ _last_flush_at: str | None = None
 _dropped_over_capacity = 0
 _task: asyncio.Task | None = None
 _db = None
+# ---- storage layer: where flushed counters are written and read (Mongo by default, Postgres optional) ----
+_mode_override: str | None = None          # the choice made in the Performance tab (saved in platform_settings)
+_switch_info: dict[str, Any] = {}          # who switched, when, and the UTC day the new store started
+_store = None                              # cached PostgresAnalyticsStore (Mongo stores are cheap and built per call)
+_STORAGE_DOC = "analytics_storage"
+_STORAGE_MODES = ("mongo", "postgres")
+_PG_WRITE_TIMEOUT_S = 5.0                  # only Postgres (one transaction) gets a timeout; a cancelled Mongo bulk can half-apply
+# ---- flush cadence and buffer bound ----
+_FLUSH_S = max(1.0, float(os.getenv("ANALYTICS_FLUSH_S", "30") or 30))   # how often counters reach the store
+_TICK_SLACK_S = 1.0                        # a tick this much early still counts as due (timers drift)
+_last_db_flush = 0.0                       # time.monotonic() of the last attempt
+_flush_pending_keys: set = set()           # keys of the snapshot being written; they count toward the buffer cap
+_last_flush_error: str | None = None
+_dropped_buffer_keys = 0
 _org_slug_resolver: Callable[[str], str | None] = lambda org_id: None
 _org_id_resolver: Callable[[str], Any] | None = None
+
+
+def _max_buffer_keys() -> int:
+    try:
+        return max(1, int(os.getenv("ANALYTICS_MAX_BUFFER_KEYS", "20000")))
+    except ValueError:
+        return 20000
 
 
 def _enabled() -> bool:
@@ -308,10 +330,30 @@ def current_alerts(org: str, now_min: int | None = None) -> list[dict[str, Any]]
 
 
 # ============================== in-memory aggregation ==============================
-def _inc(key: tuple, fields: dict[str, int]) -> None:
+def _buffer_add(key: tuple, fields: dict[str, int]) -> None:
     d = _deltas.setdefault(key, {})
     for k, v in fields.items():
         d[k] = d.get(k, 0) + v
+
+
+def _inc(key: tuple, fields: dict[str, int]) -> None:
+    """Add to the in-memory buffer. A NEW key is refused once the buffer (plus the snapshot being written) is full,
+    so a store outage cannot grow memory without bound. Existing keys always accumulate."""
+    global _dropped_buffer_keys
+    if key not in _deltas:
+        pending = len(_flush_pending_keys - _deltas.keys()) if _flush_pending_keys else 0
+        if len(_deltas) + pending >= _max_buffer_keys():
+            _dropped_buffer_keys += 1
+            return
+    _buffer_add(key, fields)
+
+
+def _heat_add(key: tuple, n: int = 1) -> None:
+    global _dropped_buffer_keys
+    if key not in _heat and len(_heat) >= _max_buffer_keys():
+        _dropped_buffer_keys += 1
+        return
+    _heat[key] += n
 
 
 def _bump(org: str, field: str, n: int = 1, route: str | None = None) -> None:
@@ -376,7 +418,7 @@ def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
             _inc((org, day, "pv", page, ua_key, device, seg), {"dur_sum": e["dur"], "dur_n": 1})
     elif t == "click":
         label = e["label"]
-        _heat[(org, page, device, seg, "click", e["gx"], e["gy"])] += 1
+        _heat_add((org, page, device, seg, "click", e["gx"], e["gy"]))
         lk = (org, page)
         if label not in _seen_labels[lk]:
             if len(_seen_labels[lk]) >= CAPS["labels"]:
@@ -388,7 +430,7 @@ def _accept_event(org, device, seg, browser, os_name, source, e, now) -> None:
         if e["rage"]:
             _inc((org, day, "rage", page, label, device, seg), {"n": 1})
     elif t == "scroll":
-        _heat[(org, page, device, seg, "scroll", 0, min(10, e["pct"] // 10))] += 1
+        _heat_add((org, page, device, seg, "scroll", 0, min(10, e["pct"] // 10)))
     elif t == "err":
         name = e["name"]
         if name not in _seen_errors[org]:
@@ -488,7 +530,7 @@ def _restore(deltas: dict, heat: dict) -> None:
             for k, v in fields.items():
                 d[k] = max(d.get(k, 0), v)
         else:
-            _inc(key, fields)
+            _buffer_add(key, fields)   # not _inc: these keys were already counted, the cap must never drop them
     for k, n in heat.items():
         _heat[k] += n
 
@@ -531,45 +573,65 @@ def _pace_s() -> float:
     return max(0.0, float(os.getenv("ANALYTICS_FLUSH_PACE_S", "0.5")))
 
 
-async def _flush_once(include_heat: bool = True) -> None:
-    global _deltas, _heat, _last_flush_at
+async def _flush_once(include_heat: bool = True, force: bool = False) -> bool:
+    """One flusher tick. Returns True when a store write was attempted.
+
+    Alerts, the per-minute trim and the concurrency sample run on every tick. Counters are written to the store only
+    when `_FLUSH_S` has passed (or `force`, used at shutdown and before a storage switch). Whatever fails to write is
+    put back in the buffers, nothing is counted twice."""
+    global _deltas, _heat, _last_flush_at, _last_db_flush, _flush_pending_keys, _last_flush_error
     if _db is None:
-        return
+        return False
     now = datetime.now(timezone.utc)
     _conc_delta(now)
-    deltas, _deltas = _deltas, {}
-    if include_heat:
-        heat, _heat = _heat, defaultdict(int)
-    else:
-        heat = {}
-    d_items, h_items = list(deltas.items()), list(heat.items())
-    size, pace = _chunk_size(), _pace_s()
-    chunks = ([("c", d_items[i:i + size]) for i in range(0, len(d_items), size)]
-              + [("h", h_items[i:i + size]) for i in range(0, len(h_items), size)])
-    done = 0
-    try:
-        for kind, part in chunks:
-            if done and pace:
-                await asyncio.sleep(pace)
-            if kind == "c":
-                ops, _ = _build_ops(dict(part), {})
-                await _db.analytics_counters.bulk_write(ops, ordered=False)
-            else:
-                _, hops = _build_ops({}, dict(part))
-                await _db.analytics_heat.bulk_write(hops, ordered=False)
-            done += 1
-        _last_flush_at = now.isoformat()
-    except Exception:
-        # Put back only what was not written (the failed chunk and everything after it).
-        rest_c = {k: v for kind, part in chunks[done:] if kind == "c" for k, v in part}
-        rest_h = {k: v for kind, part in chunks[done:] if kind == "h" for k, v in part}
-        _restore(rest_c, rest_h)
-        log.debug("analytics flush failed; unwritten buffers restored", exc_info=True)
+    mono = time.monotonic()
+    due = force or _last_db_flush <= 0 or (mono - _last_db_flush + _TICK_SLACK_S) >= _FLUSH_S
+    attempted = False
+    if due:
+        _last_db_flush = mono
+        deltas, _deltas = _deltas, {}
+        if include_heat:
+            heat, _heat = _heat, defaultdict(int)
+        else:
+            heat = {}
+        if deltas or heat:
+            attempted = True
+            _flush_pending_keys = set(deltas)
+            store = _analytics_store(_db)
+            try:
+                if getattr(store, "name", "") == "postgres":
+                    await asyncio.wait_for(store.write(deltas, heat), timeout=_PG_WRITE_TIMEOUT_S)
+                else:
+                    await store.write(deltas, heat)   # no timeout: cancelling a Mongo bulk can leave it half-applied
+                _last_flush_at = now.isoformat()
+                _last_flush_error = None
+            except asyncio.CancelledError:
+                rest = getattr(store, "unwritten", None)
+                _restore(*(rest if rest else (deltas, heat)))
+                raise
+            except PartialFlushError as exc:
+                _restore(*exc.remaining)
+                _last_flush_error = _safe_store_error(store, exc.__cause__ or exc)
+                log.debug("analytics flush failed part-way; unwritten buffers restored", exc_info=True)
+            except Exception as exc:
+                _restore(deltas, heat)
+                _last_flush_error = _safe_store_error(store, exc)
+                log.debug("analytics flush failed; buffers restored", exc_info=True)
+            finally:
+                _flush_pending_keys = set()
     try:
         await _send_alerts()
     except Exception:
         log.debug("analytics alerts failed", exc_info=True)
     _trim_minutes(int(time.time() // 60))
+    return attempted
+
+
+def _safe_store_error(store, exc: BaseException) -> str:
+    try:
+        return store.safe_error(exc)
+    except Exception:
+        return type(exc).__name__
 
 
 async def _flusher() -> None:
@@ -578,13 +640,129 @@ async def _flusher() -> None:
         await asyncio.sleep(30)
         try:
             heat_due = time.monotonic() - last_heat >= _heat_flush_s()
-            if heat_due:
-                last_heat = time.monotonic()
-            await _flush_once(include_heat=heat_due)
+            flushed = await _flush_once(include_heat=heat_due)
+            if flushed and heat_due:
+                last_heat = time.monotonic()   # only restart the heat clock when heat was actually written
         except asyncio.CancelledError:
             raise
         except Exception:
             log.debug("analytics flusher error", exc_info=True)
+
+
+# ============================== storage: which database holds Site Usage ==============================
+def storage_mode() -> str:
+    if _mode_override in _STORAGE_MODES:
+        return _mode_override
+    env = (os.getenv("ANALYTICS_STORE") or "mongo").strip().lower()
+    return env if env in _STORAGE_MODES else "mongo"
+
+
+def _analytics_store(db=None):
+    """The store for the active mode. Mongo is rebuilt per call (it only wraps the db); Postgres is cached (it owns a pool)."""
+    global _store
+    if storage_mode() == "postgres":
+        if _store is None:
+            _store = make_postgres_store_from_env()
+        return _store
+    # Production default keeps the existing chunking (25 writes, then a 0.5 s pause) that protects the Atlas ops cap.
+    return MongoAnalyticsStore(db if db is not None else _db, _build_ops, chunk_default=25, pace_default=0.5)
+
+
+def storage_status() -> dict[str, Any]:
+    """What the Performance tab shows. Never contains a connection string or password."""
+    env = (os.getenv("ANALYTICS_STORE") or "mongo").strip().lower()
+    return {
+        "mode": storage_mode(),
+        "env_mode": env if env in _STORAGE_MODES else "mongo",
+        "chosen_in_app": _mode_override in _STORAGE_MODES,
+        "postgres_configured": bool((os.getenv("ANALYTICS_POSTGRES_URL") or "").strip()),
+        "switched_at": _switch_info.get("switched_at"),
+        "switched_by": _switch_info.get("switched_by"),
+        "switch_day": _switch_info.get("switch_day"),
+        "last_flush_at": _last_flush_at,
+        "last_error": _last_flush_error,
+        "buffered_keys": len(_deltas),
+        "dropped_buffer_keys": _dropped_buffer_keys,
+    }
+
+
+async def load_storage_choice(db) -> None:
+    """Restore the choice saved in the app, so it survives a restart and wins over the ANALYTICS_STORE default."""
+    global _mode_override, _switch_info
+    try:
+        doc = await db.platform_settings.find_one({"name": _STORAGE_DOC})
+    except Exception:
+        log.debug("analytics storage choice could not be loaded", exc_info=True)
+        return
+    if doc and doc.get("mode") in _STORAGE_MODES:
+        _mode_override = doc["mode"]
+        _switch_info = {k: doc.get(k) for k in ("switched_by", "switched_at", "switch_day")}
+
+
+async def _close_store(store) -> None:
+    close = getattr(store, "close", None)
+    if close is not None:
+        try:
+            await close()
+        except Exception:
+            log.debug("analytics store close failed", exc_info=True)
+
+
+async def _ensure_postgres_schema(store) -> None:
+    """Verify the tables; if they are missing, create them (CREATE ... IF NOT EXISTS, safe to repeat).
+
+    Creating needs a database login that is allowed to create tables. With a CRUD-only login that step fails,
+    and the error says so, so the tables can be created once from the database's own SQL editor instead."""
+    try:
+        await store.ensure_schema(create=False)
+        return
+    except Exception:
+        log.debug("analytics postgres tables not found; trying to create them", exc_info=True)
+    await store.ensure_schema(create=True)
+    log.info("analytics postgres tables created")
+
+
+async def switch_storage(db, mode: str, actor: str = "unknown") -> dict[str, Any]:
+    """Point Site Usage at MongoDB or PostgreSQL. Raises ValueError (shown to the admin) and changes nothing on failure."""
+    global _mode_override, _switch_info, _store
+    mode = (mode or "").strip().lower()
+    if mode not in _STORAGE_MODES:
+        raise ValueError("Choose MongoDB or PostgreSQL.")
+    if mode == storage_mode():
+        return storage_status()
+    candidate = None
+    if mode == "postgres":
+        if not (os.getenv("ANALYTICS_POSTGRES_URL") or "").strip():
+            raise ValueError("ANALYTICS_POSTGRES_URL is not set on the server.")
+        candidate = make_postgres_store_from_env()
+        try:
+            await asyncio.wait_for(_ensure_postgres_schema(candidate), timeout=15)
+        except Exception as exc:
+            reason = _safe_store_error(candidate, exc)
+            await _close_store(candidate)
+            raise ValueError(
+                f"PostgreSQL is not ready: {reason}. Check the connection URL. If the tables are missing, this database "
+                "login is not allowed to create them: use a login that can create tables, or run "
+                "backend/sql/analytics_postgres_schema.sql once in the database's SQL editor.") from None
+    now = datetime.now(timezone.utc)
+    info = {"switched_by": actor, "switched_at": now.isoformat(), "switch_day": now.strftime("%Y-%m-%d")}
+    try:
+        await db.platform_settings.update_one({"name": _STORAGE_DOC}, {"$set": {"name": _STORAGE_DOC, "mode": mode, **info}},
+                                              upsert=True)
+    except Exception:
+        if candidate is not None:
+            await _close_store(candidate)
+        log.warning("analytics storage choice could not be saved", exc_info=True)
+        raise ValueError("Could not save the storage choice. Nothing was changed.") from None
+    try:
+        await _flush_once(force=True)    # what is buffered goes to the store that was active when it was counted
+    except Exception:
+        log.debug("analytics flush before storage switch failed", exc_info=True)
+    old, _store = _store, candidate
+    _mode_override, _switch_info = mode, info
+    if old is not None:
+        await _close_store(old)
+    return storage_status()
 
 
 # ============================== summary (pure over documents) ==============================
@@ -885,8 +1063,13 @@ def _purge_memory(org_id: str) -> None:
 
 async def purge_org_analytics(db, org_id: str) -> None:
     _purge_memory(org_id)
-    await db.analytics_counters.delete_many({"org_id": org_id})
-    await db.analytics_heat.delete_many({"org_id": org_id})
+    await _analytics_store(db).purge(org_id)
+    if storage_mode() == "postgres":
+        # Older history may still be in MongoDB (until migrated). Clear it too, or a later migration would bring it back.
+        try:
+            await MongoAnalyticsStore(db, _build_ops).purge(org_id)
+        except Exception:
+            log.debug("analytics mongo purge failed", exc_info=True)
 
 
 # ============================== router ==============================
@@ -897,8 +1080,7 @@ async def tracking_since(db, org_id: str) -> str | None:
     """Earliest counter `day` (YYYY-MM-DD) recorded for this org, or None. Per-org, ignores the summary window.
     Best-effort: a failed lookup must never break the dashboard, so it degrades to None."""
     try:
-        async for d in db.analytics_counters.find({"org_id": org_id}, {"day": 1, "_id": 0}).sort("day", 1).limit(1):
-            return d.get("day")
+        return await _analytics_store(db).first_day(org_id)
     except Exception:
         log.debug("tracking_since lookup failed", exc_info=True)
     return None
@@ -917,6 +1099,18 @@ def _counter_query(orgs, days, seg, device, now):
     if device != "all":
         q["device"] = {"$in": [device, "all"]}
     return q
+
+
+async def _read(db, method: str, *args):
+    """Read through the active store. A Postgres failure is a 503, never an empty dashboard that looks like 'no traffic'."""
+    store = _analytics_store(db)
+    try:
+        return await getattr(store, method)(*args)
+    except Exception as exc:
+        if getattr(store, "name", "") != "postgres":
+            raise
+        log.warning("analytics read failed: %s", _safe_store_error(store, exc))
+        raise HTTPException(503, "Site Usage data is temporarily unavailable. Please try again in a moment.") from None
 
 
 def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
@@ -954,8 +1148,7 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
                       admin: dict = Depends(require_role("superadmin"))):
         _check_filters(days, seg, device)
         org, now = active_org(request), datetime.now(timezone.utc)
-        cursor = get_db().analytics_counters.find(_counter_query(org, days, seg, device, now))
-        docs = [d async for d in cursor]
+        docs = await _read(get_db(), "fetch_counters", org, days, seg, device, now)
         out = build_summary(docs, days, now, live=live_now(org))
         out["tracking_since"] = await tracking_since(get_db(), org)
         out["alerts"] = current_alerts(org)
@@ -966,13 +1159,9 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
                       admin: dict = Depends(require_role("superadmin"))):
         if not page_ok(page) or kind not in {"click", "scroll"} or seg not in VALID_SEG or device not in VALID_DEVICE:
             raise HTTPException(400, "Invalid heatmap filters.")
-        q: dict[str, Any] = {"org_id": active_org(request), "page": page, "kind": kind}
-        if device != "all":
-            q["device"] = device
-        if seg != "all":
-            q["seg"] = seg
+        rows = await _read(get_db(), "fetch_heat", active_org(request), page, device, kind, seg)
         cells: dict[tuple, int] = defaultdict(int)
-        async for d in get_db().analytics_heat.find(q).limit(5000):
+        for d in rows:
             cells[(d["gx"], d["gy"])] += d.get("n", 0)
         return [{"gx": gx, "gy": gy, "n": n} for (gx, gy), n in cells.items()]
 
@@ -1001,7 +1190,7 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         by_slug = {o["slug"]: str(o["_id"]) for o in found}
         by_org: dict[str, list] = defaultdict(list)
         if by_slug:
-            async for d in db.analytics_counters.find(_counter_query(list(by_slug.values()), days, seg, device, now)):
+            for d in await _read(db, "fetch_counters", list(by_slug.values()), days, seg, device, now):
                 by_org[d["org_id"]].append(d)
         out = []
         for slug in slugs:
@@ -1103,48 +1292,51 @@ async def outcome_middleware(request: Request, call_next):
 
 
 # ============================== lifecycle ==============================
+def _warm_row(r: dict) -> None:
+    o, k, a, b = r.get("org_id"), r.get("kind"), r.get("k1"), r.get("k2")
+    if k == "pv":
+        _seen_pages[o].add(a)
+    elif k == "click":
+        _seen_labels[(o, a)].add(b)
+    elif k == "err":
+        _seen_errors[o].add(b)
+    elif k == "api":
+        _seen_routes.add(a)
+    elif k == "chan":
+        _seen_channels[o].add(a)
+
+
 async def _warm_caps(db) -> None:
     """Fill the cardinality sets from existing data so caps survive restarts."""
-    cur = db.analytics_counters.aggregate([
-        {"$match": {"kind": {"$in": ["pv", "click", "err", "api", "chan"]}}},
-        {"$group": {"_id": {"o": "$org_id", "k": "$kind", "a": "$k1", "b": "$k2"}}},
-        {"$limit": 20000}])
-    async for r in cur:
-        i = r["_id"]
-        if i["k"] == "pv":
-            _seen_pages[i["o"]].add(i["a"])
-        elif i["k"] == "click":
-            _seen_labels[(i["o"], i["a"])].add(i["b"])
-        elif i["k"] == "err":
-            _seen_errors[i["o"]].add(i["b"])
-        elif i["k"] == "api":
-            _seen_routes.add(i["a"])
-        elif i["k"] == "chan":
-            _seen_channels[i["o"]].add(i["a"])
+    for r in await _analytics_store(db).warm_keys():
+        _warm_row(r)
 
 
 async def start(db, create_indexes: bool = True) -> None:
     global _db, _task
     _db = db
+    await load_storage_choice(db)
+    store = _analytics_store(db)
     try:
-        if create_indexes:
-            await db.analytics_counters.create_index(
-                [("org_id", 1), ("day", 1), ("kind", 1), ("k1", 1), ("k2", 1), ("device", 1), ("seg", 1)], unique=True)
-            await db.analytics_counters.create_index("day_dt", expireAfterSeconds=400 * 86400)
-            await db.analytics_heat.create_index(
-                [("org_id", 1), ("page", 1), ("device", 1), ("seg", 1), ("kind", 1), ("gx", 1), ("gy", 1)], unique=True)
+        if store.name == "mongo":
+            await store.ensure_schema(create=create_indexes)
+        else:
+            await _ensure_postgres_schema(store)      # verify; create the tables only if they are missing
         await _warm_caps(db)
-    except Exception:
-        log.warning("analytics index/cache setup failed", exc_info=True)
+    except Exception as exc:
+        log.warning("analytics index/cache setup failed: %s", _safe_store_error(store, exc))
     if _task is None:
         _task = asyncio.create_task(_flusher())
 
 
 async def stop() -> None:
-    global _task
+    global _task, _store
     try:
-        await _flush_once()
+        await _flush_once(force=True)
     finally:
         if _task:
             _task.cancel()
             _task = None
+        if _store is not None:
+            await _close_store(_store)
+            _store = None

@@ -31,3 +31,15 @@ The failed pytest collection is an environment/dependency blocker, not evidence 
 3. Outside voting hours, configure `ANALYTICS_STORE=postgres`, `ANALYTICS_POSTGRES_URL` with Neon's pooled TLS URL, `ANALYTICS_POSTGRES_POOLED=true`, and `ANALYTICS_FLUSH_S=600` or `900` in Render. Changing environment variables restarts the service; do not do this during voting or around closing/certification.
 4. Run the one-off importer with a UTC cutoff that matches the switch day. Verify migration totals and compare dashboard summaries for representative organisations/date ranges. Keep the Mongo collections for at least a week.
 5. Roll back by setting `ANALYTICS_STORE=mongo` if needed. The actual live cutover is still pending.
+
+## Restored after a rebase (11 Oct 2026)
+
+A rebase had dropped the storage layer from `backend/analytics.py`, so `GET /superadmin/performance/storage` failed and the Performance tab showed "Could not load storage settings". Restored in `analytics.py`:
+
+- `storage_mode()`, `storage_status()`, `switch_storage()`, `load_storage_choice()`, `_analytics_store()`. The choice made in the tab is saved in `platform_settings` (`name: analytics_storage`) and wins over `ANALYTICS_STORE` after a restart.
+- `_flush_once(include_heat, force)` writes through the active store. Counters reach the store every `ANALYTICS_FLUSH_S` (default 30); alerts and the per-minute trim still tick every 30 s. `force` is used at shutdown and just before a storage switch.
+- A failed write puts back only what was not written. New buffer keys are refused once `ANALYTICS_MAX_BUFFER_KEYS` is reached (the snapshot being written counts toward the cap), so an outage cannot grow memory without bound.
+- Mongo writes have no timeout (a cancelled bulk can half-apply); Postgres writes get 5 s (one transaction).
+- Reads (summary, heatmap, compare) go through the store. A Postgres read failure returns 503 "temporarily unavailable" instead of an empty dashboard.
+- Purging an organisation clears Postgres and, when Postgres is active, MongoDB too, so a later migration cannot bring the data back.
+- Switching to Postgres checks the tables and creates them if they are missing (`CREATE ... IF NOT EXISTS`, same definitions as `backend/sql/analytics_postgres_schema.sql`). Creating needs a login that may create tables; with a CRUD-only login the switch fails with a message saying so, and nothing changes. The Mongo production default stays chunked (25 writes, 0.5 s pause), set through `MongoAnalyticsStore(chunk_default, pace_default)`.

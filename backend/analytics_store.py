@@ -184,9 +184,11 @@ def _env_float(name: str, default: float) -> float:
 class MongoAnalyticsStore:
     name = "mongo"
 
-    def __init__(self, db, build_ops: Callable):
+    def __init__(self, db, build_ops: Callable, chunk_default: int = 0, pace_default: float = 1.0):
         self.db = db
         self._build_ops = build_ops
+        self._chunk_default = chunk_default   # used when ANALYTICS_FLUSH_CHUNK is unset; 0 = one bulk per collection
+        self._pace_default = pace_default
 
     async def ensure_schema(self, create: bool = True) -> None:
         if not create:
@@ -215,7 +217,7 @@ class MongoAnalyticsStore:
     async def write(self, deltas: dict, heat: dict, paced: bool = True) -> None:
         # ANALYTICS_FLUSH_CHUNK = max Mongo ops per bulk_write (0 = one bulk per collection, the old behaviour).
         # ANALYTICS_FLUSH_PACE_S = pause between chunks. Chunk 5 + pace 1.0 caps the flusher near 5 ops/s.
-        chunk = _env_int("ANALYTICS_FLUSH_CHUNK", 0)
+        chunk = _env_int("ANALYTICS_FLUSH_CHUNK", self._chunk_default)
         if chunk <= 0:
             ops, hops = self._build_ops(deltas, heat)
             if ops:
@@ -223,7 +225,7 @@ class MongoAnalyticsStore:
             if hops:
                 await self.db.analytics_heat.bulk_write(hops, ordered=False)
             return
-        pace = max(0.0, _env_float("ANALYTICS_FLUSH_PACE_S", 1.0)) if paced else 0.0
+        pace = max(0.0, _env_float("ANALYTICS_FLUSH_PACE_S", self._pace_default)) if paced else 0.0
         items = [("c", k, v) for k, v in deltas.items()] + [("h", k, v) for k, v in heat.items()]
         self.unwritten = None
         for i in range(0, len(items), chunk):

@@ -39,6 +39,50 @@ def _pg(monkeypatch, fail=False):
     monkeypatch.setattr(a, "make_postgres_store_from_env", lambda: ast.PostgresAnalyticsStore(URL, pool_factory=factory))
 
 
+class _NoTablesCon(FakeCon):
+    """Tables are missing until a CREATE TABLE runs; `can_create=False` models a CRUD-only login."""
+    def __init__(self, can_create=True):
+        super().__init__()
+        self.created, self.can_create = False, can_create
+
+    async def execute(self, sql, *args):
+        if sql.startswith("CREATE TABLE"):
+            if not self.can_create:
+                raise RuntimeError("permission denied for schema public")
+            self.created = True
+        if sql.startswith("SELECT 1 FROM analytics") and not self.created:
+            raise RuntimeError('relation "analytics_counter" does not exist')
+        return await super().execute(sql, *args)
+
+
+def _pg_without_tables(monkeypatch, can_create=True):
+    monkeypatch.setenv("ANALYTICS_POSTGRES_URL", URL)
+    con = _NoTablesCon(can_create)
+
+    async def factory(url, **kw):
+        return FakePool(con)
+
+    monkeypatch.setattr(a, "make_postgres_store_from_env", lambda: ast.PostgresAnalyticsStore(URL, pool_factory=factory))
+    return con
+
+
+async def test_switch_creates_the_tables_when_they_are_missing(monkeypatch):
+    con = _pg_without_tables(monkeypatch)
+    db = mongomock_motor.AsyncMongoMockClient()["t"]
+    status = await a.switch_storage(db, "postgres", "root")
+    assert status["mode"] == "postgres" and con.created
+
+
+async def test_switch_says_what_to_do_when_the_login_cannot_create_tables(monkeypatch):
+    con = _pg_without_tables(monkeypatch, can_create=False)
+    db = mongomock_motor.AsyncMongoMockClient()["t"]
+    with pytest.raises(ValueError) as e:
+        await a.switch_storage(db, "postgres", "root")
+    msg = str(e.value)
+    assert "not ready" in msg and "analytics_postgres_schema.sql" in msg and "s3cret" not in msg
+    assert a.storage_mode() == "mongo" and a._store is None and not con.created
+
+
 async def test_cannot_switch_to_postgres_without_a_url():
     db = mongomock_motor.AsyncMongoMockClient()["t"]
     with pytest.raises(ValueError, match="ANALYTICS_POSTGRES_URL is not set"):
