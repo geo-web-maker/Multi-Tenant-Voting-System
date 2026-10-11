@@ -1,17 +1,8 @@
 import React from 'react';
 import { bucketLabel } from '../chartTime';
+import useIsNarrowViewport from '../hooks/useIsNarrowViewport';
 
 // Hand-built responsive SVG charts (same approach as TurnoutSparkline). CSS variables only.
-function useIsNarrowViewport() {
-  const [narrow, setNarrow] = React.useState(() => typeof window !== 'undefined' && window.innerWidth < 480);
-  React.useEffect(() => {
-    const f = () => setNarrow(window.innerWidth < 480);
-    window.addEventListener('resize', f);
-    return () => window.removeEventListener('resize', f);
-  }, []);
-  return narrow;
-}
-
 const pointMs = (t) => new Date(t.length === 10 ? `${t}T00:00:00Z` : t).getTime();
 
 // Range covered by a timeline (markers outside it are not drawn).

@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 
+import analytics
+import analytics_migration
 import perf_metrics
 import perf_tiers
 
@@ -97,6 +99,45 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         if by not in _BREAKDOWNS:
             raise HTTPException(400, "by must be collection, route, org or op.")
         return perf_metrics.breakdown(by)
+
+    def storage_body() -> dict:
+        return {**analytics.storage_status(), "migration": analytics_migration.migration_state()}
+
+    @router.get("/superadmin/performance/storage")
+    async def get_storage(response: Response, admin: dict = guard):
+        no_store(response)
+        if analytics_migration.migration_state().get("status") == "idle":
+            await analytics_migration.load_last_result(get_db())
+        return storage_body()
+
+    @router.put("/superadmin/performance/storage")
+    async def put_storage(response: Response, body: dict = Body(...), admin: dict = guard):
+        no_store(response)
+        before = analytics.storage_mode()
+        try:
+            await analytics.switch_storage(get_db(), str(body.get("mode") or ""), admin.get("sub", "unknown"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if log_action_fn:
+            try:
+                await log_action_fn("analytics_storage_switched", admin.get("sub", "unknown"), {"from": before, "to": analytics.storage_mode()})
+            except Exception:
+                log.debug("analytics storage audit failed", exc_info=True)
+        return storage_body()
+
+    @router.post("/superadmin/performance/storage/migrate")
+    async def migrate_storage(response: Response, admin: dict = guard):
+        no_store(response)
+        try:
+            analytics_migration.start_migration(get_db())
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        if log_action_fn:
+            try:
+                await log_action_fn("analytics_migration_started", admin.get("sub", "unknown"), {"cutoff": analytics_migration.migration_state().get("cutoff")})
+            except Exception:
+                log.debug("analytics migration audit failed", exc_info=True)
+        return storage_body()
 
     @router.get("/superadmin/performance/orgs")
     async def orgs(response: Response, window: str = "15m", admin: dict = guard):

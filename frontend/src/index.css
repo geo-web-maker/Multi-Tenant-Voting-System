@@ -956,6 +956,13 @@ td, th {
 .perf-card { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); min-width: 0; }
 .perf-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; cursor: pointer; }
 .perf-btn[aria-selected="true"] { border-color: var(--brand-primary, currentColor); font-weight: 600; }
+.perf-btn[aria-pressed="true"] { border-color: var(--brand-primary, currentColor); background: var(--brand-primary); color: var(--brand-on-primary, white); font-weight: 700; }
+.perf-btn-primary { background: var(--brand-primary); color: var(--brand-on-primary, white); border-color: var(--brand-primary); font-weight: 700; }
+.perf-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.perf-seg { display: flex; flex: 1 1 260px; gap: 4px; }
+.perf-seg .perf-btn { flex: 1; }
+.perf-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.perf-tile { min-width: 0; overflow-wrap: anywhere; }
 .perf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .perf-check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 @media (min-width: 769px) { .perf-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .perf-grid > :first-child, .perf-grid > :last-child { grid-column: 1 / -1; } }

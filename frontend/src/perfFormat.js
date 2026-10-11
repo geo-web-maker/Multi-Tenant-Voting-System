@@ -133,3 +133,19 @@ export function editCap(form, patch, presets) {
 }
 
 export const formChanged = (a, b) => JSON.stringify(a) !== JSON.stringify(b);
+
+/** Axis label for an epoch-seconds instant: HH:MM for the short ranges, D/M for the 7-day range. */
+export function clockLabel(tsSec, range = '15m', tz = 'Africa/Kampala') {
+  const n = Number(tsSec);
+  if (!Number.isFinite(n)) return '';
+  const opts = range === '7d'
+    ? { timeZone: tz, day: 'numeric', month: 'numeric' }
+    : { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+  return new Intl.DateTimeFormat('en-GB', opts).format(new Date(n * 1000));
+}
+
+/** Evenly spaced tick indexes (first, last and the ones between), without duplicates. */
+export function tickIndexes(count, wanted = 4) {
+  if (count <= 0) return [];
+  return [...new Set(Array.from({ length: wanted + 1 }, (_, k) => Math.round((k / wanted) * (count - 1))))];
+}

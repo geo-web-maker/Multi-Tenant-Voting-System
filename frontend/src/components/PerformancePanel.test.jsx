@@ -44,6 +44,7 @@ function serve({ sum = summary(), cfg = config() } = {}) {
       '/superadmin/performance/slow': { commands: [] },
       '/superadmin/performance/sink': { type: 'none', detail: 'memory only' },
       '/superadmin/performance/orgs': { window: '15m', buckets: 15, rows: [] },
+      '/superadmin/performance/storage': { mode: 'mongo', env_mode: 'mongo', postgres_configured: true, chosen_in_app: false, migration: { status: 'idle' } },
     }[url];
     return Promise.resolve({ data });
   });
@@ -237,7 +238,7 @@ describe('PerformancePanel organisations card', () => {
     expect(screen.getAllByText('other').length).toBe(2);
     expect(screen.getByText(/kyues is using 90% of the load/)).toBeTruthy();
     expect(screen.getByText(/5xx 2 · 429 0/)).toBeTruthy();
-    expect(screen.getByRole('img', { name: 'Operations per second by organisation' })).toBeTruthy();   // chart is present
+    expect(await screen.findByRole('img', { name: 'Operations per second by organisation' })).toBeTruthy();   // chart is present
   });
 
   it('switches range without leaving the page and asks the API for that window', async () => {
@@ -251,3 +252,114 @@ describe('PerformancePanel organisations card', () => {
     await waitFor(() => expect(mockGet.mock.calls.some((c) => c[0] === '/superadmin/performance/orgs' && c[1]?.params?.window === '24h')).toBe(true));
   });
 });
+
+describe('PerformancePanel shared range bar', () => {
+  beforeEach(() => { mockGet.mockReset(); setHidden(false); });
+  afterEach(() => cleanup());
+
+  const withOrgs = (extra = {}) => {
+    serve();
+    const base = mockGet.getMockImplementation();
+    mockGet.mockImplementation((url, opts) => (url === '/superadmin/performance/orgs'
+      ? Promise.resolve({ data: { window: opts?.params?.window, step_s: 7200, start: 1_000_000, buckets: 3, covered_minutes: 10080, rows: [], total_points: [0.4, 0.9, 0.2], ...extra } })
+      : base(url, opts)));
+  };
+
+  it('one range choice drives the main chart and the organisations card (24 hours)', async () => {
+    withOrgs();
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Last 24 hours' }));
+    await waitFor(() => expect(mockGet.mock.calls.some((c) => c[0] === '/superadmin/performance/timeseries' && c[1]?.params?.window === '24h')).toBe(true));
+    await waitFor(() => expect(mockGet.mock.calls.some((c) => c[0] === '/superadmin/performance/orgs' && c[1]?.params?.window === '24h')).toBe(true));
+    expect(screen.getByText('Database operations, last 24 hours')).toBeTruthy();
+  });
+
+  it('7 days charts the combined organisation series and asks no 24 h timeseries', async () => {
+    withOrgs();
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Last 7 days' }));
+    await screen.findByText('Database operations, last 7 days');
+    await screen.findByText(/counting organisation traffic only/);
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Database operations per second' })).toBeTruthy());
+    expect(mockGet.mock.calls.some((c) => c[0] === '/superadmin/performance/timeseries' && c[1]?.params?.window === '24h')).toBe(false);
+  });
+
+  it('Refresh reloads the summary, and the live toggle stops background polling', async () => {
+    withOrgs();
+    render(<PerformancePanel />);
+    const refresh = await screen.findByRole('button', { name: 'Refresh' });
+    const before = summaryCalls();
+    fireEvent.click(refresh);
+    await waitFor(() => expect(summaryCalls()).toBeGreaterThan(before));
+    expect(screen.getByLabelText(/Live updates/).checked).toBe(true);
+    fireEvent.click(screen.getByLabelText(/Live updates/));
+    expect(screen.getByLabelText(/Live updates/).checked).toBe(false);
+  });
+
+  it('tiles turn red only for 5xx errors', async () => {
+    serve({ sum: summary({ http: { rps: 5, p95_ms: 90, s5xx_1m: 3, s429_1m: 0 } }) });
+    render(<PerformancePanel />);
+    const label = await screen.findByText('5xx errors (1 min)');
+    expect(label.parentElement.style.borderColor).toContain('--danger');
+    expect(screen.getByText('429 throttled (1 min)').parentElement.style.borderColor).toBe('');
+  });
+});
+
+describe('PerformancePanel storage card', () => {
+  const STORAGE = '/superadmin/performance/storage';
+  beforeEach(() => { mockGet.mockReset(); mockPut.mockReset(); mockPost.mockReset(); setHidden(false); });
+  afterEach(() => cleanup());
+
+  const withStorage = (data) => {
+    serve();
+    const base = mockGet.getMockImplementation();
+    mockGet.mockImplementation((url, opts) => (url === STORAGE ? Promise.resolve({ data }) : base(url, opts)));
+  };
+
+  it('shows MongoDB as active and explains that migration needs PostgreSQL first', async () => {
+    withStorage({ mode: 'mongo', postgres_configured: true, migration: { status: 'idle' } });
+    render(<PerformancePanel />);
+    expect(await screen.findByRole('button', { name: 'MongoDB (active)' })).toBeTruthy();
+    expect(screen.getByText(/Switch to PostgreSQL first/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Migrate history' })).toBeNull();
+  });
+
+  it('switching asks PUT with the chosen store, then offers the migrate button', async () => {
+    withStorage({ mode: 'mongo', postgres_configured: true, migration: { status: 'idle' } });
+    mockPut.mockResolvedValue({ data: { mode: 'postgres', postgres_configured: true, chosen_in_app: true, switched_by: 'root', migration: { status: 'idle' } } });
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'PostgreSQL' }));
+    await waitFor(() => expect(mockPut).toHaveBeenCalledWith('/superadmin/performance/storage', { mode: 'postgres' }));
+    expect(await screen.findByRole('button', { name: 'Migrate history' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'PostgreSQL (active)' })).toBeTruthy();
+  });
+
+  it('cannot switch to PostgreSQL when the server has no connection string', async () => {
+    withStorage({ mode: 'mongo', postgres_configured: false, migration: { status: 'idle' } });
+    render(<PerformancePanel />);
+    const btn = await screen.findByRole('button', { name: 'PostgreSQL' });
+    expect(btn.disabled).toBe(true);
+    expect(screen.getByText(/ANALYTICS_POSTGRES_URL/)).toBeTruthy();
+  });
+
+  it('Migrate history posts to the migrate route and shows progress', async () => {
+    withStorage({ mode: 'postgres', postgres_configured: true, migration: { status: 'idle' } });
+    mockPost.mockResolvedValue({ data: { mode: 'postgres', postgres_configured: true, migration: { status: 'running', counts: { counter_docs: 40, heat_docs: 2 } } } });
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Migrate history' }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/superadmin/performance/storage/migrate'));
+    expect(await screen.findByText(/40 daily records and 2 click maps so far/)).toBeTruthy();
+  });
+
+  it('shows a finished and a failed migration', async () => {
+    withStorage({ mode: 'postgres', postgres_configured: true, migration: { status: 'done', message: 'Copied and verified.', cutoff: '2026-10-10', counts: { counter_docs: 9, heat_docs: 1 } } });
+    const { unmount } = render(<PerformancePanel />);
+    expect(await screen.findByText(/Copied and verified\. 9 daily records and 1 click maps, up to 2026-10-10/)).toBeTruthy();
+    unmount();
+    withStorage({ mode: 'postgres', postgres_configured: true, migration: { status: 'failed', message: 'Stopped safely: timeout' } });
+    render(<PerformancePanel />);
+    expect(await screen.findByText('Stopped safely: timeout')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Run migration again' })).toBeTruthy();
+  });
+});
+

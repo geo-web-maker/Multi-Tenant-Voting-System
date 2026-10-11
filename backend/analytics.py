@@ -1182,10 +1182,86 @@ async def _warm_caps(db=None) -> None:
             _seen_channels[org].add(k1)
 
 
+_mode_override: str | None = None    # chosen on the Performance tab; wins over ANALYTICS_STORE until cleared
+_switch_info: dict = {}              # {"switched_at", "switched_by", "switch_day"} of the last saved choice
+_STORAGE_DOC = "analytics_storage"
+
+
+def storage_mode() -> str:
+    """The active store: the Performance-tab choice if one was saved, otherwise the ANALYTICS_STORE variable."""
+    return (_mode_override or os.getenv("ANALYTICS_STORE", "mongo")).strip().lower()
+
+
+def storage_status() -> dict:
+    """What the Performance tab shows. Never contains the connection string."""
+    return {
+        "mode": storage_mode(),
+        "env_mode": os.getenv("ANALYTICS_STORE", "mongo").strip().lower(),
+        "postgres_configured": bool(os.getenv("ANALYTICS_POSTGRES_URL", "").strip()),
+        "chosen_in_app": _mode_override is not None,
+        **{k: _switch_info.get(k) for k in ("switched_at", "switched_by", "switch_day")},
+    }
+
+
+async def load_storage_choice(db) -> None:
+    """Read the saved choice at boot. A bad or missing record leaves the environment setting in charge."""
+    global _mode_override, _switch_info
+    try:
+        doc = await db.platform_settings.find_one({"name": _STORAGE_DOC})
+    except Exception:
+        log.warning("analytics storage choice could not be read; using ANALYTICS_STORE", exc_info=True)
+        return
+    if doc and doc.get("mode") in ("mongo", "postgres"):
+        _mode_override = doc["mode"]
+        _switch_info = {k: doc.get(k) for k in ("switched_at", "switched_by", "switch_day")}
+
+
+async def switch_storage(db, mode: str, actor: str = "unknown") -> dict:
+    """Move live Site Usage writes to MongoDB or PostgreSQL without a restart.
+
+    Postgres is checked first (URL present, schema reachable) so a bad switch changes nothing. Buffered counters are
+    flushed into the store that is still active, so nothing is lost or counted twice across the switch. Data already
+    in the old store is NOT copied: use the migration for Mongo -> Postgres. Switching back does not copy anything.
+    """
+    global _store, _mode_override, _switch_info
+    mode = (mode or "").strip().lower()
+    if mode not in ("mongo", "postgres"):
+        raise ValueError("mode must be mongo or postgres.")
+    if mode == storage_mode():
+        return storage_status()
+    candidate = None
+    if mode == "postgres":
+        candidate = make_postgres_store_from_env()
+        if not candidate._url:
+            raise ValueError("ANALYTICS_POSTGRES_URL is not set on the server, so PostgreSQL cannot be used yet.")
+        try:
+            await asyncio.wait_for(candidate.ensure_schema(create=False), timeout=10)
+        except Exception as exc:
+            reason = candidate.safe_error(exc)
+            try:
+                await candidate.close()
+            except Exception:
+                pass
+            raise ValueError(f"PostgreSQL is not ready: {reason}") from None
+    await _flush_once(force=True)                      # write what is buffered to the store that is still active
+    old, _store = _store, candidate
+    _mode_override = mode
+    now = datetime.now(timezone.utc)
+    _switch_info = {"switched_at": now.isoformat(), "switched_by": actor, "switch_day": now.strftime("%Y-%m-%d")}
+    await db.platform_settings.update_one({"name": _STORAGE_DOC},
+                                          {"$set": {"name": _STORAGE_DOC, "mode": mode, **_switch_info}}, upsert=True)
+    if isinstance(old, PostgresAnalyticsStore):
+        try:
+            await old.close()
+        except Exception as exc:
+            log.warning("analytics Postgres pool close failed: %s", old.safe_error(exc))
+    return storage_status()
+
+
 def _analytics_store(db=None):
     """Resolve storage at runtime. Mongo is the default; Postgres is explicit opt-in."""
     global _store
-    mode = os.getenv("ANALYTICS_STORE", "mongo").strip().lower()
+    mode = storage_mode()
     if mode == "postgres":
         if not isinstance(_store, PostgresAnalyticsStore):
             _store = make_postgres_store_from_env()
@@ -1201,7 +1277,8 @@ def _analytics_store(db=None):
 async def start(db, create_indexes: bool = True) -> None:
     global _db, _task, _store
     _db = db
-    mode = os.getenv("ANALYTICS_STORE", "mongo").strip().lower()
+    await load_storage_choice(db)
+    mode = storage_mode()
     if mode == "postgres":
         _store = make_postgres_store_from_env()
     elif mode == "mongo":

@@ -1,14 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import usePolling from '../hooks/usePolling';
+import { DEFAULT_TZ } from '../tz';
 import { LoadingBlock } from './Spinner.jsx';
 import PerformanceSettings from './PerformanceSettings';
+import PerfStorage from './PerfStorage';
 import RevealGroup, { useRevealReady } from './RevealGroup';
 import PerfOrgs from './PerfOrgs';
+import { PerfChart, PerfLine } from './PerfCharts';
 import {
   STATUS_LABEL, barPct, fmtMb, fmtMs, fmtOps, fmtUptime, headerLine, headroomText, sinkIsUnhealthy, sinkLine,
   statusColorVar, viewState,
 } from '../perfFormat';
+
+export { PerfLine };
+const RANGES = [['15m', 'Last 15 min'], ['24h', 'Last 24 hours'], ['7d', 'Last 7 days']];
+const RANGE_TITLE = { '15m': 'Last 15 minutes', '24h': 'Last 24 hours', '7d': 'Last 7 days' };
 
 const POLL_MS = 5000;        // summary
 const SLOW_POLL_MS = 15000;  // series, breakdown, slow list
@@ -32,28 +39,6 @@ function Pill({ state }) {
     <span className="perf-pill" style={{ border: `1px solid ${color}`, color, borderRadius: 999, padding: '2px 10px', fontSize: 13, fontWeight: 600 }}>
       {STATUS_LABEL[state] || state}
     </span>
-  );
-}
-
-/** Small responsive SVG line chart. Dashed reference line for the cap. Colours are tokens only. */
-export function PerfLine({ points = [], cap = null, label, unit = '' }) {
-  const w = 600; const h = 170; const pad = { l: 42, r: 6, t: 10, b: 18 };
-  const vals = points.map((p) => (p === null || p === undefined ? null : p));
-  const max = Math.max(1, cap || 0, ...vals.filter((v) => v !== null));
-  const iw = w - pad.l - pad.r; const ih = h - pad.t - pad.b;
-  const x = (i) => pad.l + (vals.length > 1 ? (i / (vals.length - 1)) * iw : iw / 2);
-  const y = (v) => pad.t + ih - (v / max) * ih;
-  const runs = []; let cur = [];
-  vals.forEach((v, i) => { if (v === null) { if (cur.length) runs.push(cur); cur = []; } else cur.push(`${x(i)},${y(v)}`); });
-  if (cur.length) runs.push(cur);
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label} style={{ width: '100%', height: 'auto', display: 'block' }}>
-      <line x1={pad.l} y1={pad.t + ih} x2={w - pad.r} y2={pad.t + ih} stroke="var(--border-color)" />
-      <text x={2} y={pad.t + 12} fontSize="15" fill="var(--text-muted)">{Math.round(max)}{unit}</text>
-      <text x={2} y={pad.t + ih} fontSize="15" fill="var(--text-muted)">0</text>
-      {cap ? <line x1={pad.l} x2={w - pad.r} y1={y(cap)} y2={y(cap)} stroke="var(--danger)" strokeDasharray="5 4" /> : null}
-      {runs.map((r, i) => <polyline key={i} fill="none" stroke="var(--brand-primary, currentColor)" strokeWidth="2" points={r.join(' ')} />)}
-    </svg>
   );
 }
 
@@ -90,6 +75,10 @@ function PerformanceInner() {
   const [sink, setSink] = useState(null);
   const [history, setHistory] = useState(null);
   const [error, setError] = useState('');
+  const [range, setRange] = useState('15m');
+  const [live, setLive] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [orgData, setOrgData] = useState(null);   // the combined series for the 7-day chart comes from the organisations call
 
   const loadSummary = useCallback(async () => {
     const r = await api.get('/superadmin/performance/summary');
@@ -97,13 +86,13 @@ function PerformanceInner() {
   }, []);
   const loadSlow = useCallback(async () => {
     const [s, b, sl, sk] = await Promise.all([
-      api.get('/superadmin/performance/timeseries', { params: { window: '15m' } }),
+      api.get('/superadmin/performance/timeseries', { params: { window: range === '24h' ? '24h' : '15m' } }),
       api.get('/superadmin/performance/breakdown', { params: { by } }),
       api.get('/superadmin/performance/slow'),
       api.get('/superadmin/performance/sink'),
     ]);
     setSeries(s.data); setRows(b.data); setSlow(sl.data.commands || []); setSink(sk.data);
-  }, [by]);
+  }, [by, range]);
   const loadConfig = useCallback(async () => {
     const r = await api.get('/superadmin/performance/config');
     setConfig(r.data);
@@ -117,8 +106,13 @@ function PerformanceInner() {
   useEffect(() => { retry(); }, [retry]);
 
   // usePolling already stops while the browser tab is hidden and resumes when it is visible again.
-  usePolling(loadSummary, POLL_MS, true);
-  usePolling(loadSlow, SLOW_POLL_MS, true);
+  usePolling(loadSummary, POLL_MS, live);
+  usePolling(loadSlow, SLOW_POLL_MS, live);
+
+  const refreshNow = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+    loadSummary().catch(() => {}); loadSlow().catch(() => {});
+  }, [loadSummary, loadSlow]);
 
   const onSaved = useCallback((cfg) => { setConfig(cfg); loadSummary().catch(() => {}); }, [loadSummary]);
 
@@ -137,11 +131,21 @@ function PerformanceInner() {
   // Hold the whole page behind one spinner until every part has data, so sections appear together (RevealGroup).
   useRevealReady(!!summary && !!series);
   const opsSeries = useMemo(() => (series?.points || []).map((p) => (p.ops === undefined ? null : p.ops)), [series]);
+  // 15 min and 24 h come from the process-wide series; 7 days is the combined organisation series from the history sink.
+  const wide7 = range === '7d';
+  const chartPoints = wide7 ? (orgData?.window === '7d' ? orgData.total_points || [] : []) : opsSeries;
+  const chartStart = wide7 ? (orgData?.window === '7d' ? orgData.start : null) : series?.points?.[0]?.t;
+  const chartStep = wide7 ? orgData?.step_s : series?.step_s ?? (series?.points?.[1]?.t - series?.points?.[0]?.t);
+  const chartReady = wide7 ? orgData?.window === '7d' : series?.window === (range === '24h' ? '24h' : '15m') || (range === '15m' && !!series);
+  const chartCap = (range === '24h' || wide7 ? db.cap : series?.cap) || null;
 
+  // [label, value, tone]: a tile turns red only when the number is something to act on.
   const healthTiles = [
     ['Requests / s', fmtOps(summary?.http?.rps)], ['Request p95', fmtMs(summary?.http?.p95_ms)],
-    ['5xx errors (1 min)', summary?.http?.s5xx_1m ?? 0], ['429 throttled (1 min)', summary?.http?.s429_1m ?? 0],
-    ['DB connections', `${db.pool?.in_use ?? 0} / ${db.pool?.max ?? 'n/a'}`], ['Waiting for a connection', db.pool?.waiting ?? 0],
+    ['5xx errors (1 min)', summary?.http?.s5xx_1m ?? 0, (summary?.http?.s5xx_1m ?? 0) > 0 ? 'danger' : ''],
+    ['429 throttled (1 min)', summary?.http?.s429_1m ?? 0, (summary?.http?.s429_1m ?? 0) > 0 ? 'warning' : ''],
+    ['DB connections', `${db.pool?.in_use ?? 0} / ${db.pool?.max ?? 'n/a'}`],
+    ['Waiting for a connection', db.pool?.waiting ?? 0, (db.pool?.waiting ?? 0) > 0 ? 'warning' : ''],
     ['DB command p95', fmtMs(db.latency_ms?.p95)], ['Event-loop lag p95', fmtMs(summary?.runtime?.loop_lag_ms?.p95)],
     ['Memory', fmtMb(summary?.runtime?.rss_mb)], ['CPU', `${summary?.runtime?.cpu_pct ?? 'n/a'}%`],
   ];
@@ -157,12 +161,21 @@ function PerformanceInner() {
   const shown = state === 'collecting' ? 'nodata' : state;
   return (
     <div className="perf-grid" style={{ display: 'grid', gap: 12 }}>
-      <Card>
+      <section className="perf-card card-pad" style={{ gridColumn: '1 / -1' }}>
         <strong>{headerLine(config || { tier: summary.tier, ops_cap: db.cap, conn_cap: summary.conn_cap })}</strong>
         <p style={muted}>All organisations combined, one shared database cap. Figures cover this server process.</p>
         <p style={muted}>Uptime {fmtUptime(summary.uptime_s)}{summary.collecting_since ? ` · collecting since ${summary.collecting_since.slice(11, 16)} UTC` : ''}</p>
         {error ? <p style={{ ...muted, color: 'var(--danger)' }}>{error}</p> : null}
-      </Card>
+        <div className="perf-controls">
+          <div role="group" aria-label="Range" className="perf-seg">
+            {RANGES.map(([v, l]) => (
+              <button key={v} type="button" className="perf-btn" aria-pressed={range === v} onClick={() => setRange(v)}>{l}</button>
+            ))}
+          </div>
+          <button type="button" className="perf-btn perf-btn-primary" onClick={refreshNow}>Refresh</button>
+          <label className="perf-check"><input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} /> Live updates (5 s)</label>
+        </div>
+      </section>
 
       <Card title="Database load">
         {state === 'collecting' ? <p style={muted}>Collecting data, give it a minute.</p> : null}
@@ -187,19 +200,30 @@ function PerformanceInner() {
         </Card>
       ) : null}
 
-      <Card title="Last 15 minutes">
-        <PerfLine points={opsSeries} cap={series?.cap || null} label="Database operations per second" unit="/s" />
+      <Card title={`Database operations, ${RANGE_TITLE[range].toLowerCase()}`} wide>
+        <div style={{ opacity: chartReady ? 1 : 0.5, transition: 'opacity 0.15s' }}>
+          <PerfChart lines={[{ name: 'Database operations', points: chartPoints }]} cap={chartCap} range={range}
+            startTs={chartStart} stepS={chartStep} label="Database operations per second" fill />
+        </div>
+        <p style={{ ...muted, marginTop: 8 }}>
+          {wide7
+            ? 'Operations per second, averaged per 2 hours, counting organisation traffic only. Dashed line is the database cap.'
+            : `Operations per second${capped ? ', dashed line is the database cap' : ''}. Times are shown in ${DEFAULT_TZ}.`}
+        </p>
       </Card>
 
-      <PerfOrgs cap={db.cap || null} sinkType={sink?.type} />
+      <PerfOrgs range={range} live={live} refreshKey={refreshKey} cap={db.cap || null} sinkType={sink?.type} onData={setOrgData} />
 
-      <Card title="Server health" wide>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-          {healthTiles.map(([k, v]) => (
-            <div key={k}><div style={muted}>{k}</div><strong style={{ fontSize: 18 }}>{v}</strong></div>
+      <section style={{ gridColumn: '1 / -1' }} aria-label="Server health">
+        <div className="perf-tiles">
+          {healthTiles.map(([k, v, tone]) => (
+            <div key={k} className="perf-card card-pad perf-tile" style={tone ? { borderColor: `var(--${tone})` } : undefined}>
+              <div style={muted}>{k}</div>
+              <strong style={{ fontSize: 20, color: tone ? `var(--${tone})` : undefined }}>{v}</strong>
+            </div>
           ))}
         </div>
-      </Card>
+      </section>
 
       <Card title="Where the load comes from">
         <div role="tablist" style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -233,6 +257,8 @@ function PerformanceInner() {
         {history ? <p style={muted}>{history.minutes} minutes recorded, peak {fmtOps(history.peak)} ops/s.</p> : null}
         <p className="perf-sink" style={{ ...muted, marginTop: 8, color: sinkIsUnhealthy(sink) ? 'var(--danger)' : 'var(--text-muted)' }}>{sinkLine(sink)}{sink?.last_error ? ` · ${sink.last_error}` : ''}</p>
       </Card>
+
+      <PerfStorage />
 
       <PerformanceSettings config={config} onSaved={onSaved} />
 

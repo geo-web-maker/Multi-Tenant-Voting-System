@@ -249,6 +249,9 @@ async def test_org_series_buckets_totals_and_persisted_orgs():
     rows = {r["name"]: r for r in out["rows"]}
     assert (rows["a"]["ops"], rows["a"]["requests"], rows["a"]["errors_5xx"]) == (6, 2, 1)
     assert len(rows["a"]["points"]) == out["buckets"] == 15 and sum(rows["a"]["points"]) > 0
+    # The combined series covers every organisation, not just the charted top few.
+    assert len(out["total_points"]) == 15
+    assert abs(sum(out["total_points"]) - sum(rows[n]["points"][i] for n in rows for i in range(15))) < 0.01
     pm.set_clock(lambda: 1_000_000.0 + 60)           # next minute: the earlier one is finished
     batch = pm.build_batch()
     assert any("orgs" in r and r["orgs"]["a"] == [6, 2, 1, 0] for r in batch["rows"] if r.get("orgs"))

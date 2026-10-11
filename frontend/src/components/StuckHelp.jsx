@@ -1,16 +1,9 @@
 import React from 'react'
 import { getTemplate } from '../template.js'
+import reloadFresh from '../reloadFresh.js'
 
 // Shown when the first screen has been "loading" far longer than even a cold server needs. Most cases are a stale cached
 // copy, a browser extension or ad blocker dropping requests, or a flaky network, so the steps are ordered cheapest first.
-export async function reloadFresh() {
-  try {
-    if ('caches' in window) await Promise.all((await caches.keys()).map(k => caches.delete(k)))
-    if ('serviceWorker' in navigator) await Promise.all((await navigator.serviceWorker.getRegistrations()).map(r => r.unregister()))
-  } catch { /* best effort: still reload */ }
-  window.location.reload()
-}
-
 const STEPS = [
   ['Tap ', 'Reload fresh', ' below.'],
   ['Open this page in a ', 'private / incognito window', ' (paste the link).'],
@@ -58,6 +51,6 @@ export default function StuckHelp() {
 }
 
 const wrap = { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 10000, padding: 12, display: 'flex', justifyContent: 'center', boxSizing: 'border-box' }
-const card = { width: '100%', maxWidth: 420, fontSize: 14, textAlign: 'center', background: 'var(--card-bg, #fff)', color: 'var(--text-color, #111827)', border: '1px solid var(--border-color, #e5e9f2)', borderRadius: 14, padding: '14px 16px', boxShadow: '0 8px 30px rgba(0,0,0,0.15)' }
-const btn = { padding: '8px 14px', borderRadius: 8, border: '1px solid var(--border-color, #cbd5e1)', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 14 }
-const btnPrimary = { ...btn, background: 'var(--brand-primary, #2563eb)', borderColor: 'transparent', color: '#fff' }
+const card = { width: '100%', maxWidth: 420, fontSize: 14, textAlign: 'center', background: 'var(--card-bg)', color: 'var(--text-color)', border: '1px solid var(--border-color)', borderRadius: 14, padding: '14px 16px', boxShadow: '0 8px 30px rgba(0,0,0,0.15)' }
+const btn = { padding: '8px 14px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 14 }
+const btnPrimary = { ...btn, background: 'var(--brand-primary)', borderColor: 'transparent', color: 'var(--brand-on-primary, white)' }

@@ -1351,6 +1351,7 @@ async def org_series(window: str = "15m") -> dict:
     buckets = max(1, n_min * 60 // step)
     totals: dict[str, list] = {}
     series: dict[str, list] = {}
+    combined = [0] * buckets   # every organisation together, so the 7-day chart does not depend on the top-6 cut
     for t, per_org in per_min.items():
         if t < start:
             continue
@@ -1360,6 +1361,7 @@ async def org_series(window: str = "15m") -> dict:
             for i in range(4):
                 tot[i] += v[i]
             series.setdefault(name, [0] * buckets)[bi] += v[0]
+            combined[bi] += v[0]
     all_ops = sum(t[0] for t in totals.values()) or 1
     seconds = max(60, len(per_min) * 60)
     rows = [{
@@ -1370,7 +1372,8 @@ async def org_series(window: str = "15m") -> dict:
     for row in rows[:_ORG_SERIES_TOP]:
         row["points"] = [round(v / step, 3) for v in series[row["name"]]]
     return {"window": window if window in _ORG_RANGES else "15m", "step_s": step, "buckets": buckets, "start": start,
-            "covered_minutes": len(per_min), "rows": rows, "note": note}
+            "covered_minutes": len(per_min), "rows": rows, "note": note,
+            "total_points": [round(v / step, 3) for v in combined]}
 
 
 def build_batch(now: float | None = None) -> dict | None:

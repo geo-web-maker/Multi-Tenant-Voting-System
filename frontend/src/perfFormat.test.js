@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   viewState, fmtOps, fmtMs, fmtUptime, fmtAgo, barPct, headerLine, headroomText, sinkLine, sinkIsUnhealthy,
-  validateSettings, formFromConfig, applyTierChoice, editCap, formChanged, statusColorVar,
+  validateSettings, formFromConfig, applyTierChoice, editCap, formChanged, statusColorVar, clockLabel, tickIndexes,
 } from './perfFormat';
 
 const presets = [{ id: 'free', ops_cap: 100, conn_cap: 500 }, { id: 'custom', ops_cap: null, conn_cap: null }];
@@ -81,5 +81,21 @@ describe('settings form', () => {
   it('choosing a preset fills the caps', () => {
     const f = applyTierChoice({ ...formFromConfig(cfg), tier: 'custom', ops_cap: 250 }, 'free', presets);
     expect(f.tier).toBe('free'); expect(f.ops_cap).toBe(100); expect(f.conn_cap).toBe(500);
+  });
+});
+
+describe('chart axis helpers', () => {
+  it('clockLabel shows HH:MM for short ranges and D/M for 7 days, in the given zone', () => {
+    const t = Date.UTC(2026, 9, 11, 9, 5) / 1000;            // 09:05 UTC = 12:05 in Kampala
+    expect(clockLabel(t, '15m', 'Africa/Kampala')).toBe('12:05');
+    expect(clockLabel(t, '24h', 'UTC')).toBe('09:05');
+    expect(clockLabel(t, '7d', 'UTC')).toBe('11/10');
+    expect(clockLabel(NaN, '15m')).toBe('');
+  });
+  it('tickIndexes spreads ticks without duplicates', () => {
+    expect(tickIndexes(0)).toEqual([]);
+    expect(tickIndexes(1)).toEqual([0]);
+    expect(tickIndexes(9, 4)).toEqual([0, 2, 4, 6, 8]);
+    expect(tickIndexes(3, 4)).toEqual([0, 1, 2]);
   });
 });
