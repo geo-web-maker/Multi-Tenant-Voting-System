@@ -7,6 +7,18 @@ import ViewAsBanner from './components/ViewAsBanner.jsx'
 import { consumeViewAsHandoff } from './session.js'
 import { setTemplateImpl } from './template.js'
 
+// After a redeploy, a tab (or cached index.html) can point at hashed chunks that no longer exist. Reload once to pick up
+// the new build; the 10 s guard stops a reload loop if the failure is a real outage rather than a stale build.
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault()
+  try {
+    const last = Number(sessionStorage.getItem('chunk_reload_at') || 0)
+    if (Date.now() - last < 10000) return
+    sessionStorage.setItem('chunk_reload_at', String(Date.now()))
+  } catch { /* storage blocked: reload once anyway */ }
+  window.location.reload()
+})
+
 async function start() {
   // Must run before <App/> reads the session: a superadmin's "View as" tab starts here.
   consumeViewAsHandoff()
