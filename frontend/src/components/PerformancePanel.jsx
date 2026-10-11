@@ -75,7 +75,7 @@ function PerformanceInner() {
   const [sink, setSink] = useState(null);
   const [history, setHistory] = useState(null);
   const [error, setError] = useState('');
-  const [range, setRange] = useState('15m');
+  const [range, setRange] = useState('24h');   // 24 h by default: 15 minutes is too short for long-term monitoring
   const [live, setLive] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [orgData, setOrgData] = useState(null);   // the combined series for the 7-day chart comes from the organisations call

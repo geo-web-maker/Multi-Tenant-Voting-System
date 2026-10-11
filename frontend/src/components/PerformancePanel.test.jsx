@@ -277,11 +277,20 @@ describe('PerformancePanel shared range bar', () => {
   it('7 days charts the combined organisation series and asks no 24 h timeseries', async () => {
     withOrgs();
     render(<PerformancePanel />);
+    await screen.findByText('Database operations, last 24 hours');   // the tab opens on 24 hours
+    const before24h = mockGet.mock.calls.filter((c) => c[0] === '/superadmin/performance/timeseries' && c[1]?.params?.window === '24h').length;
     fireEvent.click(await screen.findByRole('button', { name: 'Last 7 days' }));
     await screen.findByText('Database operations, last 7 days');
     await screen.findByText(/counting organisation traffic only/);
     await waitFor(() => expect(screen.getByRole('img', { name: 'Database operations per second' })).toBeTruthy());
-    expect(mockGet.mock.calls.some((c) => c[0] === '/superadmin/performance/timeseries' && c[1]?.params?.window === '24h')).toBe(false);
+    const after24h = mockGet.mock.calls.filter((c) => c[0] === '/superadmin/performance/timeseries' && c[1]?.params?.window === '24h').length;
+    expect(after24h).toBe(before24h);   // choosing 7 days asks for no further 24 h timeseries
+  });
+
+  it('opens on the last 24 hours by default', async () => {
+    withOrgs();
+    render(<PerformancePanel />);
+    expect(await screen.findByText('Database operations, last 24 hours')).toBeTruthy();
   });
 
   it('Refresh reloads the summary, and the live toggle stops background polling', async () => {
