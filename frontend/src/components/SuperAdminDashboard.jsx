@@ -1429,6 +1429,8 @@ const handleSuperAdminRemoveStudent = async () => {
                     <option value="Returning Officer">Returning Officer</option>
                     <option value="Polling Assistant">Polling Assistant</option>
                     <option value="Presiding Officer">Presiding Officer</option>
+                    <option value="Communications & Logistics Officer">Communications & Logistics Officer</option>
+                    <option value="Polling & Compliance Commissioner">Polling & Compliance Commissioner</option>
                   </select>
               
                   <div className="comm-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
