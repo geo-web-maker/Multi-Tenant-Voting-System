@@ -144,7 +144,20 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         no_store(response)
         if window not in ("15m", "24h", "7d"):
             raise HTTPException(400, "window must be 15m, 24h or 7d.")
-        return await perf_metrics.org_series(window)
+        data = await perf_metrics.org_series(window)
+        # org_series only knows organisations that sent a request in this window, and the org this tab is open on
+        # always has one (the tab's own polling), so a quiet org would vanish. List every organisation, quiet ones at zero.
+        try:
+            slugs = [o["slug"] async for o in get_db().organizations.find({}, {"slug": 1}) if o.get("slug")]
+            have = {r["name"] for r in data["rows"]}
+            zeros = [0] * data["buckets"]
+            for slug in sorted(set(slugs) - have):
+                data["rows"].append({"name": slug, "ops": 0, "share": 0, "ops_s": 0, "requests": 0,
+                                     "errors_5xx": 0, "throttled_429": 0,
+                                     "points": list(zeros) if len(data["rows"]) < 6 else None})
+        except Exception:
+            log.debug("performance orgs: could not list organisations", exc_info=True)
+        return data
 
     @router.get("/superadmin/performance/slow")
     async def slow(response: Response, admin: dict = guard):

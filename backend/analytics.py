@@ -1123,15 +1123,16 @@ async def _warm_caps(db) -> None:
             _seen_channels[i["o"]].add(i["a"])
 
 
-async def start(db) -> None:
+async def start(db, create_indexes: bool = True) -> None:
     global _db, _task
     _db = db
     try:
-        await db.analytics_counters.create_index(
-            [("org_id", 1), ("day", 1), ("kind", 1), ("k1", 1), ("k2", 1), ("device", 1), ("seg", 1)], unique=True)
-        await db.analytics_counters.create_index("day_dt", expireAfterSeconds=400 * 86400)
-        await db.analytics_heat.create_index(
-            [("org_id", 1), ("page", 1), ("device", 1), ("seg", 1), ("kind", 1), ("gx", 1), ("gy", 1)], unique=True)
+        if create_indexes:
+            await db.analytics_counters.create_index(
+                [("org_id", 1), ("day", 1), ("kind", 1), ("k1", 1), ("k2", 1), ("device", 1), ("seg", 1)], unique=True)
+            await db.analytics_counters.create_index("day_dt", expireAfterSeconds=400 * 86400)
+            await db.analytics_heat.create_index(
+                [("org_id", 1), ("page", 1), ("device", 1), ("seg", 1), ("kind", 1), ("gx", 1), ("gy", 1)], unique=True)
         await _warm_caps(db)
     except Exception:
         log.warning("analytics index/cache setup failed", exc_info=True)

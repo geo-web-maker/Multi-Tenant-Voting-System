@@ -203,7 +203,7 @@ function PerformanceInner() {
       <Card title={`Database operations, ${RANGE_TITLE[range].toLowerCase()}`} wide>
         <div style={{ opacity: chartReady ? 1 : 0.5, transition: 'opacity 0.15s' }}>
           <PerfChart lines={[{ name: 'Database operations', points: chartPoints }]} cap={chartCap} range={range}
-            startTs={chartStart} stepS={chartStep} label="Database operations per second" fill />
+            startTs={chartStart} stepS={chartStep} label="Database operations per second" fill fitData />
         </div>
         <p style={{ ...muted, marginTop: 8 }}>
           {wide7

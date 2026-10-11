@@ -3,7 +3,7 @@ import api, { getErrorMessage } from '../api';
 import usePolling from '../hooks/usePolling';
 import { useRevealReady } from './RevealGroup';
 import { BarRows } from './UsageCharts';
-import { PerfChart, ChartLegend } from './PerfCharts';
+import { PerfChart, ChartLegend, ORG_COLORS } from './PerfCharts';
 import { fmtOps } from '../perfFormat';
 
 const POLL_MS = 15000;
@@ -34,7 +34,7 @@ export default function PerfOrgs({ range = '15m', live = true, refreshKey = 0, s
 
   const rows = useMemo(() => data?.rows || [], [data]);
   const items = useMemo(() => rows.map((r) => ({ ...r, label: r.name, value: r.ops })), [rows]);
-  const lines = useMemo(() => rows.filter((r) => r.points).map((r) => ({ name: r.name, points: r.points })), [rows]);
+  const lines = useMemo(() => rows.filter((r) => r.points).map((r, i) => ({ name: r.name, points: r.points, color: ORG_COLORS[i % ORG_COLORS.length] })), [rows]);
   const busiest = rows.length > 1 && rows[0].share >= 0.5 ? rows[0] : null;
   const matched = data && data.window === range;
   const start = matched ? data.start : null;
@@ -49,7 +49,7 @@ export default function PerfOrgs({ range = '15m', live = true, refreshKey = 0, s
       {busiest ? <p style={{ ...muted, color: 'var(--warning)', margin: '8px 0' }}>{busiest.name} is using {pctText(busiest.share)} of the load.</p> : null}
       {matched && lines.length ? (
         <div style={{ marginTop: 10 }}>
-          <PerfChart lines={lines} cap={cap} range={range} startTs={start} stepS={data.step_s} label="Operations per second by organisation" />
+          <PerfChart lines={lines} cap={cap} fitData range={range} startTs={start} stepS={data.step_s} label="Operations per second by organisation" />
           <ChartLegend items={lines} />
         </div>
       ) : null}
