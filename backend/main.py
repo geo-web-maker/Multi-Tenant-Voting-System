@@ -5390,9 +5390,13 @@ async def issue_candidate_list(request: Request,
     if not sections:
         raise HTTPException(400, "There are no approved candidates to list yet.")
     latest = await candidate_list.latest_list(t)
-    if latest and latest.get("signature") == candidate_list.signature(sections):
-        return {"status": "unchanged", "list_id": latest["list_id"]}
     branding = await t.settings.find_one({"name": "branding"}) or {}
+    # "Unchanged" means the names AND the look (certificate style, organisation name) are the same. A style change
+    # alone is a reason to reissue by hand: the style is frozen into each list when it is issued.
+    if (latest and latest.get("signature") == candidate_list.signature(sections)
+            and (latest.get("document_template") or "classic") == _doc_template(branding.get("document_template"))
+            and (latest.get("org_name") or "") == (branding.get("org_name", "") or "")):
+        return {"status": "unchanged", "list_id": latest["list_id"]}
     new = await candidate_list.issue(
         t, reason="Issued manually", actor=current_actor(request), now=datetime.utcnow(), sections=sections,
         branding={"org_name": branding.get("org_name", ""),

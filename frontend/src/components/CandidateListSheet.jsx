@@ -50,6 +50,19 @@ function Superseded({ at }) {
   );
 }
 
+function SampleMark() {
+  return (
+    <>
+      <div aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', overflow: 'hidden' }}>
+        <div style={{ fontSize: 150, fontWeight: 900, letterSpacing: 10, color: 'rgba(30,64,175,0.10)', transform: 'rotate(-28deg)', whiteSpace: 'nowrap' }}>SAMPLE</div>
+      </div>
+      <div style={{ position: 'absolute', top: 6, left: 0, right: 0, textAlign: 'center', fontSize: 12, fontWeight: 700, color: CL.red }}>
+        Sample only. Not an official list: the names are made up and the code does not verify.
+      </div>
+    </>
+  );
+}
+
 function Header({ template, list, branding, first, page, total, ink, accent }) {
   const formal = template === 'formal';
   const font = formal ? SERIF : TIMES;
@@ -121,7 +134,7 @@ function Footer({ template, list, verifyUrl, qrDataUrl, ink, accent, org }) {
   );
 }
 
-export function CandidateListPage({ list, branding = {}, items, page, total, verifyUrl, qrDataUrl }) {
+export function CandidateListPage({ list, branding = {}, items, page, total, verifyUrl, qrDataUrl, sample = false }) {
   const template = list.document_template === 'formal' ? 'formal' : 'classic';
   const formal = template === 'formal';
   const ink = formal ? sealInk(branding.primary_color) : CL.text;
@@ -148,6 +161,7 @@ export function CandidateListPage({ list, branding = {}, items, page, total, ver
         <div style={{ ...inner, border: `4px double ${accent}`, padding: '30px 46px 22px' }}>{body}</div>
       )}
       {list.current === false ? <Superseded at={list.superseded_at} /> : null}
+      {sample ? <SampleMark /> : null}
     </div>
   );
 }

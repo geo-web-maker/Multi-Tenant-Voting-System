@@ -6,25 +6,16 @@ import { paginate, fmtStamp } from '../candidateListPages';
 import { CandidateListPage, ScaledPage } from './CandidateListSheet';
 import { LoadingBlock } from './Spinner.jsx';
 import { CL } from '../candidateListColors';
+import { PRINT_CSS } from '../candidateListPrint';
 
 // Official List of Candidates. The system issues it by itself (when vetting closes, and after real changes to the
 // approved candidates), so this block is mostly "download the current one". Download changes nothing: it prints
 // the latest issued list. Superadmin and Commission also get a tucked-away "Issue now" for the case where
 // something went wrong. The server enforces who may do what; the UI only mirrors it.
-const PRINT_CSS = `
-  @media print {
-    @page { size: A4 portrait; margin: 0; }
-    body[data-printing="candidate-list"] .cl-other { display: none !important; }
-    .cl-fit { width: 210mm !important; height: 297mm !important; max-width: none !important; margin: 0 !important; overflow: hidden !important; break-after: page; page-break-after: always; }
-    .cl-fit.cl-last { break-after: auto; page-break-after: auto; }
-    .cl-fit-in { transform: none !important; }
-    .cl-sheets { padding: 0 !important; }
-  }
-`;
 
 const errText = (e, fallback) => e?.response?.data?.detail || fallback;
 const card = { padding: 16, border: '1px solid var(--border-color)', borderRadius: 12, background: 'var(--card-bg, transparent)', marginBottom: 16 };
-const btn = { padding: '9px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, background: 'var(--accent-color, #3b82f6)', color: CL.white };
+const btn = { padding: '9px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, background: `var(--accent-color, ${CL.blue})`, color: CL.white };
 const ghost = { ...btn, background: 'transparent', color: 'var(--text-color)', border: '1px solid var(--border-color)' };
 const muted = { fontSize: 13, opacity: 0.7, margin: '4px 0 12px' };
 

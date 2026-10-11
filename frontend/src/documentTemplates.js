@@ -3,8 +3,8 @@ import { properName } from './displayText';
 // Printed certificate looks an organisation can choose. The ids must match DOCUMENT_TEMPLATES in backend/main.py.
 // A missing or unknown id always means "classic": that is how every certificate issued before the choice existed was printed.
 export const DOCUMENT_TEMPLATES = [
-  { id: 'classic', label: 'Classic', landscape: false, hint: 'Gold double border, serif type, centred. Prints portrait.' },
-  { id: 'formal', label: 'Formal digital seal', landscape: true, hint: 'Framed in your brand colour with a digital seal carrying the organisation name, a QR code and the issue time. Prints landscape.' },
+  { id: 'classic', label: 'Classic', landscape: false, hint: 'Gold double border, serif type, centred. Certificate and candidate list both print portrait.' },
+  { id: 'formal', label: 'Formal digital seal', landscape: true, hint: 'Framed in your brand colour with a digital seal carrying the organisation name, a QR code and the issue time. The certificate prints landscape; the candidate list stays A4 portrait, with the numbered names and the seal in its footer.' },
 ];
 
 export const resolveDocTemplate = (id) => (DOCUMENT_TEMPLATES.some((t) => t.id === id) ? id : 'classic');

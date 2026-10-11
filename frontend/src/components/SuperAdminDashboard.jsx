@@ -13,6 +13,7 @@ import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
 import { getTemplate } from '../template';
 import { PrintStyles, ApplicationSnapshotDoc, SampleCertificateDoc } from './CandidateStatusPortal';
+import SampleCandidateListDoc from './CandidateListSample';
 import { DOCUMENT_TEMPLATES, resolveDocTemplate } from '../documentTemplates';
 import VoterStats from './VoterStats';
 import { SmsUsageTile } from './SecurityPanel';
@@ -100,6 +101,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [brandSaving, setBrandSaving] = useState(false);
   const [sampleCert, setSampleCert] = useState(null);   // {longNames} while the sample certificate is open
   const [sampleLong, setSampleLong] = useState(false);
+  const [sampleList, setSampleList] = useState(false);   // true while the sample candidate list is open
 
   // --- Positions state ---
   const [positions, setPositions]   = useState([]);
@@ -942,6 +944,10 @@ const handleSuperAdminRemoveStudent = async () => {
         <SampleCertificateDoc template={branding.document_template} branding={branding} longNames={sampleCert.longNames} onClose={() => setSampleCert(null)} />
       </>
     );
+  }
+
+  if (sampleList) {
+    return <SampleCandidateListDoc branding={branding} longNames={sampleLong} onClose={() => setSampleList(false)} />;
   }
 
   if (printingApp) {
@@ -1977,8 +1983,11 @@ const handleSuperAdminRemoveStudent = async () => {
                   (e.g. "— Dean of Students") — they don't need an account in this system. Leave the whole list
                   empty to fall back to every commissioner on record, listed automatically.
                 </small>
-                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Certificate style</label>
-                <div role="radiogroup" aria-label="Certificate style" style={{ display: 'grid', gap: '8px' }}>
+                <label style={{ fontSize: '12px', opacity: 0.7, marginTop: '14px' }}>Certificate and candidate list style</label>
+                <small style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+                  One choice, two documents: the style you pick here is used for both the certified results certificate and the Official List of Candidates, so they always look like a matching set.
+                </small>
+                <div role="radiogroup" aria-label="Certificate and candidate list style" style={{ display: 'grid', gap: '8px' }}>
                   {DOCUMENT_TEMPLATES.map(t => {
                     const on = resolveDocTemplate(branding.document_template) === t.id;
                     return (
@@ -1994,14 +2003,16 @@ const handleSuperAdminRemoveStudent = async () => {
                   })}
                 </div>
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button type="button" style={ghostBtn} onClick={() => setSampleCert({ longNames: sampleLong })}>Print sample</button>
+                  <button type="button" style={ghostBtn} onClick={() => setSampleCert({ longNames: sampleLong })}>Print sample certificate</button>
+                  <button type="button" style={ghostBtn} onClick={() => setSampleList(true)}>Print sample candidate list</button>
                   <label style={{ fontSize: '12px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <input type="checkbox" checked={sampleLong} onChange={e => setSampleLong(e.target.checked)} /> Use long names
                   </label>
                 </div>
                 <small style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                  The sample uses the style selected above, even before you save, with your current logo and colours. It is marked SAMPLE and is not recorded anywhere.
+                  The samples use the style selected above, even before you save, with your current logo and colours. "Use long names" applies to both. They are marked SAMPLE and are not recorded anywhere.
                   Certificates already issued keep the style they were issued with.
+                  The Official List of Candidates uses this style too: the list is styled when it is issued, so a style change shows on the next list issued (use "Issue now" in Official Document to reissue straight away).
                 </small>
 
                 <div style={{
