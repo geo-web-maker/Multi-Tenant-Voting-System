@@ -73,7 +73,8 @@ async def test_postgres_write_is_an_idempotent_upsert_then_retention_delete():
     await sink.write(batch())
     await sink.write(batch())
     verbs = [v for v, _ in log]
-    assert verbs.count("INSERT") == 2 and verbs.count("DELETE") == 2 and verbs[0] == "CREATE"
+    # written every second now, so the retention DELETE runs on the first write and then at most every 10 minutes
+    assert verbs.count("INSERT") == 2 and verbs.count("DELETE") == 1 and verbs[0] == "CREATE"
     assert "ON CONFLICT" in ps.PostgresSink.UPSERT
 
 
@@ -195,3 +196,88 @@ def test_gap_is_null_not_zero():
     rows = ps.gap_fill([batch(999_900)], 999_840, 999_960)
     by_t = {r["t"]: r for r in rows}
     assert by_t[999_840].get("ops") is None and by_t[999_900]["ops"] == 5
+
+
+class Recorder(ps.Sink):
+    name = "postgres"
+
+    def __init__(self, fail=False):
+        self.writes, self.fail, self.stored = [], fail, []
+
+    async def write(self, b):
+        if self.fail:
+            raise TimeoutError("down")
+        self.writes.append(b)
+
+    async def read(self, s, e):
+        return self.stored
+
+
+def _op(i=0):
+    pm.COMMAND_LISTENER.started(type("E", (), {"command_name": "find", "command": {"find": "voters"}, "request_id": i})())
+
+
+async def test_postgres_sink_writes_on_every_tick_including_the_minute_in_progress():
+    sink = Recorder()
+    pm.install_sink(sink)
+    pm.set_clock(lambda: 1_000_000.0 + 5)
+    pm._stamp_collecting()
+    _op()
+    await pm.flush_once()
+    pm.set_clock(lambda: 1_000_000.0 + 6)
+    await pm.flush_once()
+    assert len(sink.writes) == 2                       # one write per tick, not one per five minutes
+    live = sink.writes[-1]["rows"][-1]
+    assert live["t"] == pm._minute(1_000_006.0) and live["ops"] == 1
+
+
+async def test_postgres_idle_minute_is_zero_not_a_gap():
+    sink = Recorder()
+    pm.install_sink(sink)
+    pm._stamp_collecting()
+    pm.set_clock(lambda: 1_000_000.0 + 5)
+    await pm.flush_once()
+    pm.set_clock(lambda: 1_000_000.0 + 125)            # two minutes later, nothing happened
+    await pm.flush_once()
+    rows = sink.writes[-1]["rows"]
+    assert len(rows) >= 2 and all(r["ops"] == 0 for r in rows)
+
+
+async def test_postgres_failed_tick_retries_only_finished_minutes():
+    sink = Recorder(fail=True)
+    pm.install_sink(sink)
+    pm._stamp_collecting()
+    pm.set_clock(lambda: 1_000_000.0 + 5)
+    await pm.flush_once()
+    assert pm.sink_status()["queued"] == 0             # a lone in-progress snapshot is dropped; the next second replaces it
+    pm.set_clock(lambda: 1_000_000.0 + 70)             # a minute has finished
+    await pm.flush_once()
+    assert pm.sink_status()["queued"] == 1
+
+
+async def test_postgres_first_tick_never_overwrites_the_previous_process_minutes():
+    sink = Recorder()
+    pm.install_sink(sink)
+    pm._stamp_collecting()
+    pm.set_clock(lambda: 1_000_000.0 + 5)
+    await pm.flush_once()
+    rows = sink.writes[0]["rows"]
+    assert len(rows) == 1 and rows[0]["t"] == pm._minute(1_000_005.0)
+
+
+async def test_mongo_cadence_is_unchanged():
+    pm.install_sink(Recorder())
+    pm._manager.sink.name = "mongo"
+    assert pm._flush_interval({"persist_s": 300}) == 300
+    pm._manager.sink.name = "postgres"
+    assert pm._flush_interval({"persist_s": 300}) == 1 and pm._flush_interval({"persist_s": 0}) == 0
+
+
+async def test_postgres_24h_chart_fills_gaps_from_the_database():
+    sink = Recorder()
+    sink.stored = [{"_id": 999_900, "rows": [{"t": 999_900, "ops": 120, "reqs": 7, "http_p95": 12.0}]}]
+    pm.install_sink(sink)
+    data = await pm.timeseries_filled("24h")
+    by_t = {p["t"]: p for p in data["points"]}
+    assert by_t[999_900]["ops"] == 2.0 and by_t[999_900]["reqs"] == 7
+    assert by_t[999_840]["ops"] is None                # a minute nobody recorded stays a gap

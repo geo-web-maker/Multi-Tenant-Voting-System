@@ -1133,6 +1133,39 @@ def timeseries(window: str = "15m") -> dict:
     return {"window": "15m", "step_s": 1, "cap": cfg.get("ops_cap"), "points": points}
 
 
+async def timeseries_filled(window: str = "15m") -> dict:
+    """Like timeseries(), but on the Postgres sink the 24-hour chart fills minutes memory lacks (after a restart) from the database."""
+    data = timeseries(window)
+    if window != "24h":
+        return data
+    if _manager is None:
+        ensure_sink()
+    if not _live_sink():
+        return data
+    pts = data["points"]
+    if not any(p["ops"] is None for p in pts):
+        return data
+    try:
+        batches = await _manager.sink.read(pts[0]["t"], pts[-1]["t"])
+    except Exception:
+        _swallow_once("timeseries_history")
+        data["note"] = "Older history could not be read from the database."
+        return data
+    by_t = {}
+    for batch in batches:
+        for row in (batch.get("rows") if isinstance(batch, dict) else None) or []:
+            if isinstance(row, dict) and row.get("t") is not None and row.get("ops") is not None:
+                by_t[int(row["t"])] = row
+    for p in pts:
+        if p["ops"] is None:
+            row = by_t.get(p["t"])
+            if row:
+                p["ops"] = round(row["ops"] / 60.0, 2)
+                p["reqs"] = row.get("reqs")
+                p["http_p95"] = row.get("http_p95")
+    return data
+
+
 def breakdown(by: str = "collection") -> dict:
     now_min = _minute()
     if by == "route":
@@ -1324,7 +1357,7 @@ _ORG_SERIES_TOP = 6
 
 
 async def org_series(window: str = "15m") -> dict:
-    """Per-organisation load over 15 minutes, 24 hours (memory) or 7 days (memory plus the history sink)."""
+    """Per-organisation load over 15 minutes (memory), 24 hours or 7 days (memory plus the history sink; on Postgres the sink fills every minute memory lacks)."""
     n_min, step = _ORG_RANGES.get(window, _ORG_RANGES["15m"])
     now_min = _minute()
     start = now_min - (n_min - 1) * 60
@@ -1335,11 +1368,12 @@ async def org_series(window: str = "15m") -> dict:
         if slot is not None:
             per_min[t] = _org_minute(slot)
     note = None
-    if n_min > 1440:
+    if _manager is None:
+        ensure_sink()
+    from_sink = _live_sink() and n_min >= 1440   # Postgres: the database is the source, memory only supplies the newest minutes
+    if n_min > 1440 or from_sink:
         try:
-            if _manager is None:
-                ensure_sink()
-            for batch in await _manager.sink.read(start, now_min - 1440 * 60):
+            for batch in await _manager.sink.read(start, now_min if from_sink else now_min - 1440 * 60):
                 for row in (batch.get("rows") if isinstance(batch, dict) else None) or []:
                     t = row.get("t") if isinstance(row, dict) else None
                     if t is None or t < start or t in per_min or not row.get("orgs"):
@@ -1376,6 +1410,26 @@ async def org_series(window: str = "15m") -> dict:
             "total_points": [round(v / step, 3) for v in combined]}
 
 
+def _row_for(t: int, slot, live: bool = False) -> dict:
+    if slot is None:
+        # live (Postgres) mode: a minute inside this process's life with no traffic is a quiet minute (0), not a gap.
+        alive = _collecting_since is not None and t >= _minute(_collecting_since)
+        if live and alive:
+            return {"t": t, "ops": 0, "cmds": 0, "reqs": 0, "http_p95": None}
+        return {"t": t, "ops": None}
+    row = {
+        "t": t,
+        "ops": slot["ops"],
+        "cmds": slot["cmds"],
+        "reqs": slot["reqs"],
+        "http_p95": _pct(slot["http_hist"], API_EDGES, 0.95),
+    }
+    orgs = _org_minute(slot)
+    if orgs:
+        row["orgs"] = orgs   # per-organisation [ops, requests, 5xx, 429]; lets the Performance tab chart 7 days
+    return row
+
+
 def build_batch(now: float | None = None) -> dict | None:
     """Finished minutes since the previous flush. The current minute stays in memory."""
     global _last_flushed_minute
@@ -1389,24 +1443,34 @@ def build_batch(now: float | None = None) -> dict | None:
     rows = []
     t = start
     while t <= end:
-        slot = MINUTES.value(t)
-        if slot is None:
-            rows.append({"t": t, "ops": None})
-        else:
-            row = {
-                "t": t,
-                "ops": slot["ops"],
-                "cmds": slot["cmds"],
-                "reqs": slot["reqs"],
-                "http_p95": _pct(slot["http_hist"], API_EDGES, 0.95),
-            }
-            orgs = _org_minute(slot)
-            if orgs:
-                row["orgs"] = orgs   # per-organisation [ops, requests, 5xx, 429]; lets the Performance tab chart 7 days
-            rows.append(row)
+        rows.append(_row_for(t, MINUTES.value(t)))
         t += 60
     _last_flushed_minute = end
     return {"_id": rows[0]["t"], "minute_dt": datetime_iso(rows[0]["t"]), "rows": rows}
+
+
+def build_live_batch(now: float | None = None) -> tuple[dict, list]:
+    """Postgres sink: finished minutes not yet written PLUS the minute in progress, so a restart loses about a second.
+
+    Returns (batch, finished_rows). Only the finished rows are worth retrying: the in-progress row is
+    replaced by the next second's snapshot, and replaying an old snapshot could overwrite a newer one."""
+    global _last_flushed_minute
+    now = _now() if now is None else now
+    cur = _minute(now)
+    end = cur - 60
+    # First tick after a start: begin at the minute in progress. The minutes before it belong to the previous
+    # process, whose rows are already in the database and must not be overwritten with empty ones.
+    start = _last_flushed_minute + 60 if _last_flushed_minute is not None else cur
+    finished = []
+    t = max(0, start)
+    while t <= end:
+        row = _row_for(t, MINUTES.value(t), live=True)
+        if row.get("ops") is not None:
+            finished.append(row)
+        t += 60
+    _last_flushed_minute = end
+    rows = finished + [_row_for(cur, MINUTES.value(cur), live=True)]
+    return {"_id": rows[0]["t"], "minute_dt": datetime_iso(rows[0]["t"]), "rows": rows}, finished
 
 
 def _hot() -> bool:
@@ -1417,11 +1481,61 @@ def _hot() -> bool:
     return _last_full_ops() >= (cap * cfg["warn_pct"] / 100.0)
 
 
+def _live_sink() -> bool:
+    """True when history goes to a separate Postgres database: that sink is written every second."""
+    return _manager is not None and _manager.sink.name == "postgres"
+
+
+def _flush_interval(cfg: dict) -> int:
+    """Seconds between history writes. Postgres: PERF_POSTGRES_FLUSH_SECONDS (default 1). Everything else: the saved setting."""
+    if not cfg.get("persist_s"):
+        return 0
+    if _live_sink():
+        try:
+            return max(1, int(os.getenv("PERF_POSTGRES_FLUSH_SECONDS") or "1"))
+        except ValueError:
+            return 1
+    return int(cfg["persist_s"])
+
+
+_last_alert_at = 0.0
+
+
+async def _alerts_due(cfg: dict) -> None:
+    """Alerts keep the saved cadence (at least a minute) even when history is written every second."""
+    global _last_alert_at
+    gap = max(60, int(cfg.get("persist_s") or 60)) if _live_sink() else 0
+    if gap and _now() - _last_alert_at < gap:
+        return
+    _last_alert_at = _now()
+    try:
+        await dispatch_alerts(evaluate_perf_alerts(_alert_sample(cfg, summary()["db"], _loop_stats(), _now())))
+    except Exception:
+        _swallow_once("flush_alerts")
+
+
+async def _flush_live() -> None:
+    """One write per tick to Postgres. The upsert is idempotent, so the same minute can be rewritten every second."""
+    batch, finished = build_live_batch()
+    try:
+        await asyncio.wait_for(_manager.sink.write(batch), timeout=5)
+        _manager.mark_ok()
+        await _manager.drain()
+    except Exception as exc:
+        _manager.mark_err(exc)
+        if finished:
+            _manager.enqueue({"_id": finished[0]["t"], "minute_dt": datetime_iso(finished[0]["t"]), "rows": finished})
+    await _alerts_due(current_config())
+
+
 async def flush_once() -> None:
     if _manager is None or not collecting():
         return
     cfg = current_config()
     if not cfg.get("persist_s"):
+        return
+    if _live_sink():
+        await _flush_live()
         return
     batch = build_batch()
     hot = _manager.sink.name == "mongo" and _hot()
@@ -1456,7 +1570,7 @@ async def _persist_loop():
     while True:
         try:
             cfg = current_config()
-            wait = cfg.get("persist_s") or 60
+            wait = _flush_interval(cfg) or 60
             await asyncio.sleep(max(1, int(wait)))
             if collecting() and cfg.get("persist_s"):
                 await flush_once()

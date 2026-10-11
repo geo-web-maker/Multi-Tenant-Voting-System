@@ -172,6 +172,7 @@ class PostgresSink(Sink):
         self._ready = False
         self._pool_factory = pool_factory
         self.last_pool_kwargs = None
+        self._last_purge = None   # written every second now, so the retention DELETE runs at most every 10 minutes
 
     async def _get_pool(self):
         if self._pool is None:
@@ -195,10 +196,13 @@ class PostgresSink(Sink):
                 self._ready = True
             when = datetime.fromtimestamp(int(batch["_id"]), tz=timezone.utc)
             await con.execute(self.UPSERT, int(batch["_id"]), when, json.dumps(batch.get("rows") or []))
-            try:
-                await con.execute(self.DELETE, self._days)
-            except Exception:
-                _swallow_once("pg_retention")
+            import time as _t
+            if self._last_purge is None or _t.monotonic() - self._last_purge >= 600:
+                self._last_purge = _t.monotonic()
+                try:
+                    await con.execute(self.DELETE, self._days)
+                except Exception:
+                    _swallow_once("pg_retention")
 
     async def read(self, start_epoch: int, end_epoch: int) -> list[dict]:
         pool = await asyncio.wait_for(self._get_pool(), timeout=5)

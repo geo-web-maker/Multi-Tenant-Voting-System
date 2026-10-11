@@ -91,7 +91,7 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         no_store(response)
         if window not in _WINDOWS:
             raise HTTPException(400, "window must be 15m or 24h.")
-        return perf_metrics.timeseries(window)
+        return await perf_metrics.timeseries_filled(window)
 
     @router.get("/superadmin/performance/breakdown")
     async def breakdown(response: Response, by: str = "collection", admin: dict = guard):
