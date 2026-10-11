@@ -86,6 +86,12 @@ async def test_a_tie_or_no_votes_waits_for_the_chair_and_is_logged(env):
     empty = await _ready_application(env, "v2", "Kato John")
     assert (await _vote(env, tied, tokens[0], "approve", "com1")).status_code == 200
     assert (await _vote(env, tied, tokens[1], "deny", "com2")).status_code == 200
+    # Whoever acts first decides, so the superadmin path below needs an application of its own (it used to
+    # approve `tied`, after which the Chairperson's decision on the same application correctly got a 409).
+    await env.voter("v3", "Namu Peter", ("256700111444",))
+    sa_app = await _ready_application(env, "v3", "Namu Peter")
+    assert (await _vote(env, sa_app, tokens[0], "approve", "com1")).status_code == 200
+    assert (await _vote(env, sa_app, tokens[1], "deny", "com2")).status_code == 200
 
     await _end_vetting(env)
     rows = {r["_id"]: r for r in (await env.client.get("/admin/applications", headers=tokens[0])).json()
@@ -112,12 +118,15 @@ async def test_a_tie_or_no_votes_waits_for_the_chair_and_is_logged(env):
     assert (await env.client.post(f"/admin/applications/{tied}/closeout-decision", headers=env.com1,
                                   json={"decision": "approve"})).status_code == 403
     # The superadmin may decide even though a Chairperson is on the panel.
-    sa_row = [r for r in (await env.client.get("/admin/applications", headers=env.sa)).json() if r["_id"] == tied][0]
+    sa_row = [r for r in (await env.client.get("/admin/applications", headers=env.sa)).json() if r["_id"] == sa_app][0]
     assert sa_row["vetting_closed_undecided"] is True
-    r = await env.client.post(f"/superadmin/applications/{tied}/closeout-decision", headers=env.sa,
+    r = await env.client.post(f"/superadmin/applications/{sa_app}/closeout-decision", headers=env.sa,
                               json={"decision": "approve"})
     assert r.status_code == 200, r.text
-    assert (await env.db.applications.find_one({"_id": ObjectId(tied)}))["closeout_decider"] == "superadmin"
+    assert (await env.db.applications.find_one({"_id": ObjectId(sa_app)}))["closeout_decider"] == "superadmin"
+    # The same application is now resolved: a second decision, from the Chairperson, is refused.
+    assert (await env.client.post(f"/admin/applications/{sa_app}/closeout-decision", headers=tokens[0],
+                                  json={"decision": "deny"})).status_code == 409
 
     r = await env.client.post(f"/admin/applications/{empty}/closeout-decision", headers=tokens[0],
                               json={"decision": "deny", "reason": "  Nobody voted  "})
@@ -138,7 +147,7 @@ async def test_a_tie_or_no_votes_waits_for_the_chair_and_is_logged(env):
 
     hidden = await _audit(env, env.com2)
     undecided = [x for x in hidden if x["action"] == "application_closeout_undecided"]
-    assert {x["details"].get("app_id") for x in undecided} == {tied, empty}
+    assert {x["details"].get("app_id") for x in undecided} == {tied, empty, sa_app}
     assert all(x["actor"] == "system" and "approve_count" not in x["details"] for x in undecided)
     assert not [x for x in hidden if x["action"] == "application_closeout_decided"]
     full = await _audit(env, env.sa, "/superadmin/audit-log")

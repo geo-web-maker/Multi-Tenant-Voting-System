@@ -1,0 +1,472 @@
+diff -ruN a/backend/analytics.py b/backend/analytics.py
+--- a/backend/analytics.py	2026-10-10 10:42:05.393415239 +0000
++++ b/backend/analytics.py	2026-10-10 10:42:05.396890527 +0000
+@@ -514,24 +514,57 @@
+                 log.debug("analytics alert send failed", exc_info=True)
+ 
+ 
+-async def _flush_once() -> None:
++# Every distinct counter key and heat cell is one database write per flush, and a busy election has hundreds, all
++# sent in one burst. Two knobs spread that out (defaults chosen for a small, ops-capped database):
++#   ANALYTICS_HEAT_FLUSH_S  heat-map cells are flushed this often (default 300 s; counters stay on the 30 s tick).
++#                           Hits on the same cell inside the window coalesce into one write. 0 = every tick.
++#   ANALYTICS_FLUSH_CHUNK / ANALYTICS_FLUSH_PACE_S  at most CHUNK writes, then a pause (default 25 per 0.5 s).
++def _heat_flush_s() -> float:
++    return float(os.getenv("ANALYTICS_HEAT_FLUSH_S", "300"))
++
++
++def _chunk_size() -> int:
++    return max(1, int(os.getenv("ANALYTICS_FLUSH_CHUNK", "25")))
++
++
++def _pace_s() -> float:
++    return max(0.0, float(os.getenv("ANALYTICS_FLUSH_PACE_S", "0.5")))
++
++
++async def _flush_once(include_heat: bool = True) -> None:
+     global _deltas, _heat, _last_flush_at
+     if _db is None:
+         return
+     now = datetime.now(timezone.utc)
+     _conc_delta(now)
+     deltas, _deltas = _deltas, {}
+-    heat, _heat = _heat, defaultdict(int)
+-    ops, hops = _build_ops(deltas, heat)
++    if include_heat:
++        heat, _heat = _heat, defaultdict(int)
++    else:
++        heat = {}
++    d_items, h_items = list(deltas.items()), list(heat.items())
++    size, pace = _chunk_size(), _pace_s()
++    chunks = ([("c", d_items[i:i + size]) for i in range(0, len(d_items), size)]
++              + [("h", h_items[i:i + size]) for i in range(0, len(h_items), size)])
++    done = 0
+     try:
+-        if ops:
+-            await _db.analytics_counters.bulk_write(ops, ordered=False)
+-        if hops:
+-            await _db.analytics_heat.bulk_write(hops, ordered=False)
++        for kind, part in chunks:
++            if done and pace:
++                await asyncio.sleep(pace)
++            if kind == "c":
++                ops, _ = _build_ops(dict(part), {})
++                await _db.analytics_counters.bulk_write(ops, ordered=False)
++            else:
++                _, hops = _build_ops({}, dict(part))
++                await _db.analytics_heat.bulk_write(hops, ordered=False)
++            done += 1
+         _last_flush_at = now.isoformat()
+     except Exception:
+-        _restore(deltas, heat)
+-        log.debug("analytics flush failed; buffers restored", exc_info=True)
++        # Put back only what was not written (the failed chunk and everything after it).
++        rest_c = {k: v for kind, part in chunks[done:] if kind == "c" for k, v in part}
++        rest_h = {k: v for kind, part in chunks[done:] if kind == "h" for k, v in part}
++        _restore(rest_c, rest_h)
++        log.debug("analytics flush failed; unwritten buffers restored", exc_info=True)
+     try:
+         await _send_alerts()
+     except Exception:
+@@ -540,10 +573,14 @@
+ 
+ 
+ async def _flusher() -> None:
++    last_heat = time.monotonic()
+     while True:
+         await asyncio.sleep(30)
+         try:
+-            await _flush_once()
++            heat_due = time.monotonic() - last_heat >= _heat_flush_s()
++            if heat_due:
++                last_heat = time.monotonic()
++            await _flush_once(include_heat=heat_due)
+         except asyncio.CancelledError:
+             raise
+         except Exception:
+diff -ruN a/backend/main.py b/backend/main.py
+--- a/backend/main.py	2026-10-10 10:42:05.390751791 +0000
++++ b/backend/main.py	2026-10-10 10:42:05.396280776 +0000
+@@ -3461,6 +3461,19 @@
+     """Reserve the voter's next SMS slot or raise 429. Optimistic-concurrency on `version`, so
+     20 parallel Resend taps produce exactly one reservation. Returns {"snapshot", "wait"}."""
+     key = _otp_key(request, student_id)
++    # Nearly every voter is on their FIRST send, where the read below always misses. Try the insert first: the
++    # unique index on `key` (created at startup) makes it succeed only when no state exists, so this is the same
++    # decision for one DB call instead of two. Any existing state falls through to the read path unchanged.
++    now = datetime.utcnow()
++    wait = ol.next_wait(1)
++    try:
++        await db.otp_send_state.insert_one({
++            "key": key, "send_count": 1, "last_send_at": now,
++            "next_send_at": now + timedelta(seconds=wait), "sends_24h": [now], "version": 0,
++        })
++        return {"snapshot": None, "wait": wait}
++    except DuplicateKeyError:
++        pass
+     for _ in range(3):
+         now = datetime.utcnow()
+         doc = await db.otp_send_state.find_one({"key": key})
+@@ -3531,6 +3544,14 @@
+     Returns (allowed, tokens_after, retry_after)."""
+     key = _otp_key(request, student_id)
+     interval = params["interval"]
++    # Most voters get their code right first time and have no bucket yet: insert first (unique `key` index), and
++    # only read when a bucket already exists. Same outcome, one DB call instead of two on the common path.
++    try:
++        await db.otp_guess_state.insert_one(
++            {"key": key, "tokens": ol.FREE_GUESSES - 1.0, "updated_at": datetime.utcnow(), "v": 0})
++        return True, ol.FREE_GUESSES - 1.0, 0
++    except DuplicateKeyError:
++        pass
+     for _ in range(4):
+         now = datetime.utcnow()
+         doc = await db.otp_guess_state.find_one({"key": key})
+@@ -4152,17 +4173,17 @@
+         return await _verify_otp_legacy(data, request)
+ 
+     search = org_query(request, get_forgiving_filter(data.student_id))
+-    voter = await tdb(request).voters.find_one(search)
+-    if not voter:
+-        analytics.set_reason(request, "voter_not_found")
+-        raise HTTPException(status_code=404, detail="Voter not found.")
+-    sid = voter["student_id"]
++    sid = normalize_student_id(data.student_id)      # voters are stored normalized and `search` matches exactly this
+ 
+     record = await tdb(request).otps.find_one(search) or await db.admin_otps.find_one(search)
+     created_at = (record or {}).get("created_at")
+     live = bool(record and created_at
+                 and datetime.utcnow() - created_at <= timedelta(minutes=ol.CODE_TTL_MINUTES))
+     if not live:
++        # Only the failure paths need the voter row (it decides 404 vs "request a new code").
++        if not await tdb(request).voters.find_one(search, {"_id": 1}):
++            analytics.set_reason(request, "voter_not_found")
++            raise HTTPException(status_code=404, detail="Voter not found.")
+         # No live code: a guess cannot succeed, so it must NOT cost the voter a token (otherwise anyone
+         # could lock any voter out for free). Limited only by the per-IP guard.
+         if record:
+@@ -4181,9 +4202,12 @@
+     if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
+         voter_token, vote_jti = create_voter_token(
+             student_id=normalize_student_id(sid), org_id=request.state.org_id)
+-        await tdb(request).voters.update_one(search, {"$set": {
++        marked = await tdb(request).voters.update_one(search, {"$set": {
+             "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
+             "authenticated_at": datetime.utcnow()}})
++        if marked.matched_count != 1:                 # voter removed since the code was sent: no session for them
++            analytics.set_reason(request, "voter_not_found")
++            raise HTTPException(status_code=404, detail="Voter not found.")
+         await tdb(request).otps.delete_one(search)
+         await db.otp_guess_state.delete_one({"key": _otp_key(request, sid)})   # success forgives the bucket
+         await count_verified(request.state.org_id)
+@@ -4352,7 +4376,10 @@
+     # under concurrent load when many voters hit the same popular
+     # candidate's document at once — instead of surfacing them as hard
+     # errors to the voter. See /vote for the same pattern.
+-    async def _do_bulk_vote(session):
++    async def _voter_gate(session):
++        """The original eligibility checks, in their original order. Runs on every failure path (so every
++        error keeps its exact status, message and precedence) and as the fallback when the fast claim below
++        cannot be used. Returns the voter document when every check passes."""
+         student = await tdb(request).voters.find_one(
+             get_forgiving_filter(data.student_id), session=session
+         )
+@@ -4366,37 +4393,50 @@
+             analytics.set_reason(request, "otp_required")
+             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
+         _assert_voter_session(request, student)
++        return student
+ 
+-        # Validate every candidate exists BEFORE writing anything. The old
+-        # version incremented whichever candidates happened to resolve and
+-        # silently swallowed failures for the rest — a voter could end up
+-        # marked as voted with some of their choices never counted. Now
+-        # it's genuinely all-or-nothing: either every choice is recorded,
+-        # or none are and the voter can retry.
++    async def _do_bulk_vote(session):
++        # Validate every candidate exists BEFORE writing anything: all-or-nothing, as before.
+         candidates = await tdb(request).candidates.find(
+             {"_id": {"$in": candidate_oids}}, session=session
+         ).to_list(length=None)
++        # One candidate per position (a crafted request could otherwise cast two ballots for President).
++        problem = None
+         if len(candidates) != len(set(candidate_oids)):
+-            analytics.set_reason(request, "candidate_missing")
+-            raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
+-
+-        # Nothing previously stopped two candidates for the SAME position
+-        # both being submitted — a voter (or a crafted request bypassing the
+-        # UI) could cast two ballots for President in one go. One candidate
+-        # per position, same as a real ballot.
+-        positions = [c.get("position") for c in candidates]
+-        if len(positions) != len(set(positions)):
+-            analytics.set_reason(request, "duplicate_pick")
+-            raise HTTPException(status_code=400, detail="Only one candidate can be selected per position.")
+-
+-        claimed = await tdb(request).voters.update_one(
+-            {"_id": student["_id"], "has_voted": {"$ne": True}},
+-            {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
+-            session=session
+-        )
+-        if claimed.matched_count != 1:
+-            analytics.set_reason(request, "already_voted")
+-            raise HTTPException(status_code=400, detail="You have already cast your vote.")
++            problem = ("candidate_missing", 404, "One or more selected candidates could not be found.")
++        elif len({c.get("position") for c in candidates}) != len(candidates):
++            problem = ("duplicate_pick", 400, "Only one candidate can be selected per position.")
++
++        # FAST PATH: check + claim in ONE atomic write instead of read-then-write. The filter carries every
++        # condition the checks above enforce (not yet voted, authenticated, and the jti of THIS signed token must
++        # equal the one stored at the latest OTP verification), so a stale, replayed or second request matches
++        # nothing. Anything that does not match falls to _voter_gate for the precise error.
++        claimed = False
++        if problem is None:
++            try:
++                jti = verify_voter_token(request, normalize_student_id(data.student_id), request.state.org_id)["jti"]
++            except HTTPException:
++                jti = None                                   # _voter_gate raises the same 401/403 in the same order
++            if jti:
++                claimed = await tdb(request).voters.find_one_and_update(
++                    {**get_forgiving_filter(data.student_id), "has_voted": {"$ne": True},
++                     "last_status": "authenticated", "vote_jti": jti},
++                    {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
++                    projection={"_id": 1}, session=session) is not None
++
++        if not claimed:
++            student = await _voter_gate(session)
++            if problem is not None:
++                analytics.set_reason(request, problem[0])
++                raise HTTPException(status_code=problem[1], detail=problem[2])
++            updated = await tdb(request).voters.update_one(
++                {"_id": student["_id"], "has_voted": {"$ne": True}},
++                {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
++                session=session
++            )
++            if updated.matched_count != 1:
++                analytics.set_reason(request, "already_voted")
++                raise HTTPException(status_code=400, detail="You have already cast your vote.")
+         # Same append-only pattern as /vote, batched as one insert_many so a
+         # multi-position ballot is still a single round trip inside the
+         # transaction (still all-or-nothing with the has_voted update above).
+diff -ruN a/backend/tests/test_vetting_closeout.py b/backend/tests/test_vetting_closeout.py
+--- a/backend/tests/test_vetting_closeout.py	2026-10-10 10:42:05.394878107 +0000
++++ b/backend/tests/test_vetting_closeout.py	2026-10-10 10:42:05.398576015 +0000
+@@ -86,6 +86,12 @@
+     empty = await _ready_application(env, "v2", "Kato John")
+     assert (await _vote(env, tied, tokens[0], "approve", "com1")).status_code == 200
+     assert (await _vote(env, tied, tokens[1], "deny", "com2")).status_code == 200
++    # Whoever acts first decides, so the superadmin path below needs an application of its own (it used to
++    # approve `tied`, after which the Chairperson's decision on the same application correctly got a 409).
++    await env.voter("v3", "Namu Peter", ("256700111444",))
++    sa_app = await _ready_application(env, "v3", "Namu Peter")
++    assert (await _vote(env, sa_app, tokens[0], "approve", "com1")).status_code == 200
++    assert (await _vote(env, sa_app, tokens[1], "deny", "com2")).status_code == 200
+ 
+     await _end_vetting(env)
+     rows = {r["_id"]: r for r in (await env.client.get("/admin/applications", headers=tokens[0])).json()
+@@ -112,12 +118,15 @@
+     assert (await env.client.post(f"/admin/applications/{tied}/closeout-decision", headers=env.com1,
+                                   json={"decision": "approve"})).status_code == 403
+     # The superadmin may decide even though a Chairperson is on the panel.
+-    sa_row = [r for r in (await env.client.get("/admin/applications", headers=env.sa)).json() if r["_id"] == tied][0]
++    sa_row = [r for r in (await env.client.get("/admin/applications", headers=env.sa)).json() if r["_id"] == sa_app][0]
+     assert sa_row["vetting_closed_undecided"] is True
+-    r = await env.client.post(f"/superadmin/applications/{tied}/closeout-decision", headers=env.sa,
++    r = await env.client.post(f"/superadmin/applications/{sa_app}/closeout-decision", headers=env.sa,
+                               json={"decision": "approve"})
+     assert r.status_code == 200, r.text
+-    assert (await env.db.applications.find_one({"_id": ObjectId(tied)}))["closeout_decider"] == "superadmin"
++    assert (await env.db.applications.find_one({"_id": ObjectId(sa_app)}))["closeout_decider"] == "superadmin"
++    # The same application is now resolved: a second decision, from the Chairperson, is refused.
++    assert (await env.client.post(f"/admin/applications/{sa_app}/closeout-decision", headers=tokens[0],
++                                  json={"decision": "deny"})).status_code == 409
+ 
+     r = await env.client.post(f"/admin/applications/{empty}/closeout-decision", headers=tokens[0],
+                               json={"decision": "deny", "reason": "  Nobody voted  "})
+@@ -138,7 +147,7 @@
+ 
+     hidden = await _audit(env, env.com2)
+     undecided = [x for x in hidden if x["action"] == "application_closeout_undecided"]
+-    assert {x["details"].get("app_id") for x in undecided} == {tied, empty}
++    assert {x["details"].get("app_id") for x in undecided} == {tied, empty, sa_app}
+     assert all(x["actor"] == "system" and "approve_count" not in x["details"] for x in undecided)
+     assert not [x for x in hidden if x["action"] == "application_closeout_decided"]
+     full = await _audit(env, env.sa, "/superadmin/audit-log")
+diff -ruN a/backend/tests/test_vote_path_budget.py b/backend/tests/test_vote_path_budget.py
+--- a/backend/tests/test_vote_path_budget.py	1970-01-01 00:00:00.000000000 +0000
++++ b/backend/tests/test_vote_path_budget.py	2026-10-10 10:42:05.398533483 +0000
+@@ -0,0 +1,174 @@
++"""Voter-path call budgets after the single-write ballot claim, insert-first OTP state and lazy voter read, plus
++proof that every /vote-bulk rejection keeps its status, message and precedence, and that analytics flushing is
++chunked, coalesced and loses nothing on failure."""
++import pytest
++
++import analytics
++import main
++from tests.opcount import CountingDB, FakeClient
++from tests.test_flows import env, ident, code_from, tick  # noqa: F401
++
++pytestmark = pytest.mark.asyncio
++
++
++@pytest.fixture(autouse=True)
++def _fake_sessions(monkeypatch):
++    monkeypatch.setattr(main, "client", FakeClient())          # mongomock has no transactions
++
++
++@pytest.fixture
++def counted(env, monkeypatch):
++    cdb = CountingDB(main.db)
++    monkeypatch.setattr(main, "db", cdb)
++    monkeypatch.setattr(main, "client", FakeClient())
++    monkeypatch.setattr(main, "_SETTINGS_TTL", 5.0)
++    main.invalidate_settings()
++    yield cdb
++    main.invalidate_settings()
++
++
++async def cand(e, name="A", position="President", order=1):
++    return str((await e.db.candidates.insert_one(
++        {"org_id": e.org_id, "name": name, "position": position, "order": order})).inserted_id)
++
++
++async def login(e, sid="v1", name="Ayebale Elizabeth"):
++    assert (await ident(e, sid, name)).status_code == 200
++    r = await e.client.post("/verify-otp", json={"student_id": sid, "code": code_from(e)})
++    assert r.status_code == 200, r.text
++    return r.json()["voter_token"]
++
++
++async def bulk(e, tok, ids, sid="v1"):
++    return await e.client.post("/vote-bulk", headers={"X-Voter-Token": tok}, json={"student_id": sid, "candidate_ids": ids})
++
++
++async def test_budgets_per_step(env, counted):
++    c1, c2 = await cand(env), await cand(env, "B", "Secretary", 2)
++    await env.voter("w", "Warm Up", ("256700111999",)); await login(env, "w", "Warm Up")      # warm caches
++    s = counted.snapshot()
++    assert (await ident(env)).status_code == 200
++    assert sum(counted.since(s).values()) <= 9
++    s = counted.snapshot()
++    r = await env.client.post("/verify-otp", json={"student_id": "v1", "code": code_from(env)})
++    assert r.status_code == 200
++    assert sum(counted.since(s).values()) <= 8, counted.since(s)                      # was 10
++    s = counted.snapshot()
++    assert (await bulk(env, r.json()["voter_token"], [c1, c2])).status_code == 200
++    d = counted.since(s)
++    assert d.get(("voters", "find_one"), 0) == 0 and d.get(("voters", "find_one_and_update")) == 1, d
++    assert sum(d.values()) <= 2 + 1 + 2 + 1, d                                        # was 4 + positions
++
++
++async def test_vote_is_recorded_once_and_replay_is_refused(env):
++    c1 = await cand(env)
++    tok = await login(env)
++    assert (await bulk(env, tok, [c1])).status_code == 200
++    assert await env.db.vote_events.count_documents({}) == 1
++    voter = await env.db.voters.find_one({"student_id": "v1"})
++    assert voter["has_voted"] is True and voter["last_status"] == "completed" and "vote_jti" not in voter
++    r = await bulk(env, tok, [c1])                                                    # same valid token again
++    assert r.status_code == 400 and "already cast" in r.text
++    assert await env.db.vote_events.count_documents({}) == 1
++
++
++async def test_rejections_keep_status_message_and_precedence(env):
++    c1 = await cand(env)
++    c1b = await cand(env, "A2", "President", 2)
++    ghost = "5" * 24
++    tok = await login(env)
++    assert (await bulk(env, "garbage", [c1])).status_code == 401                      # bad token
++    assert (await bulk(env, tok, [ghost])).status_code == 404 and "candidates" in (await bulk(env, tok, [ghost])).text
++    r = await bulk(env, tok, [c1, c1b])
++    assert r.status_code == 400 and "per position" in r.text
++    voter = await env.db.voters.find_one({"student_id": "v1"})
++    assert voter["has_voted"] is False and voter.get("vote_jti")                      # rejected ballot cost nothing
++    assert (await bulk(env, tok, [c1], sid="nobody")).status_code in (403, 404)
++    # a newer login invalidates the older token even though it is validly signed
++    tick(minutes=30)                                                                  # past the resend cooldown
++    tok2 = await login(env)
++    r = await bulk(env, tok, [c1])
++    assert r.status_code == 401 and "expired" in r.text
++    assert (await bulk(env, tok2, [c1])).status_code == 200
++    # ineligible voter with a bad candidate gets the VOTER error first, as before
++    r = await bulk(env, tok2, [ghost])
++    assert r.status_code == 400 and "already cast" in r.text
++
++
++async def test_voting_without_otp_is_forbidden(env):
++    c1 = await cand(env)
++    await env.voter("n1", "No Otp", ("256700111555",))
++    r = await bulk(env, "x", [c1], sid="n1")
++    assert r.status_code == 403                                                        # OTP check precedes the token check
++    import auth
++    tok, _ = auth.create_voter_token(student_id="n1", org_id=env.org_id)
++    r = await bulk(env, tok, [c1], sid="n1")
++    assert r.status_code == 403 and "OTP" in r.text
++
++
++async def test_cooldown_and_guess_bucket_still_enforced_with_insert_first(env, counted):
++    await env.voter("g1", "Gee One", ("256700111888",))
++    s = counted.snapshot()
++    assert (await ident(env, "g1", "Gee One")).status_code == 200
++    d = counted.since(s)
++    assert d.get(("otp_send_state", "insert_one")) == 1 and d.get(("otp_send_state", "find_one"), 0) == 0, d
++    r = await ident(env, "g1", "Gee One")                                             # resend inside the cooldown
++    assert r.status_code == 429 and "wait" in r.text.lower()
++    # wrong guesses are charged against the bucket, and a right one still works afterwards
++    for _ in range(2):
++        assert (await env.client.post("/verify-otp", json={"student_id": "g1", "code": "000000"})).status_code == 400
++    bucket = await env.db.otp_guess_state.find_one({})
++    assert bucket["tokens"] == pytest.approx(main.ol.FREE_GUESSES - 2, abs=0.01)
++    r = await env.client.post("/verify-otp", json={"student_id": "g1", "code": code_from(env)})
++    assert r.status_code == 200
++
++
++async def test_verify_otp_unknown_voter_and_no_code_messages_unchanged(env):
++    r = await env.client.post("/verify-otp", json={"student_id": "ghost", "code": "123456"})
++    assert r.status_code == 404 and "not found" in r.text.lower()
++    r = await env.client.post("/verify-otp", json={"student_id": "v1", "code": "123456"})
++    assert r.status_code == 400 and "request a new code" in r.text.lower()
++
++
++# ---- analytics flush ---------------------------------------------------------------------------------------------
++class FakeColl:
++    def __init__(self, fail_on=None):
++        self.calls, self.fail_on = [], fail_on
++
++    async def bulk_write(self, ops, ordered=False):
++        if self.fail_on is not None and len(self.calls) == self.fail_on:
++            raise RuntimeError("db down")
++        self.calls.append(len(ops))
++
++
++class FakeDB:
++    def __init__(self, fail_on=None):
++        self.analytics_counters, self.analytics_heat = FakeColl(fail_on), FakeColl()
++
++
++def _seed(n_counters, n_heat):
++    analytics._deltas.clear(); analytics._heat.clear()
++    for i in range(n_counters):
++        analytics._deltas[("o", "2026-10-10", "pv", f"/p{i}", "", "d", "s")] = {"n": 1}
++    for i in range(n_heat):
++        analytics._heat[("o", "/p", "d", "s", "click", i, 0)] = 2
++
++
++async def test_flush_is_chunked_and_heat_waits_for_its_own_cadence(monkeypatch):
++    monkeypatch.setenv("ANALYTICS_FLUSH_CHUNK", "25"); monkeypatch.setenv("ANALYTICS_FLUSH_PACE_S", "0")
++    fdb = FakeDB(); monkeypatch.setattr(analytics, "_db", fdb)
++    _seed(60, 40)
++    await analytics._flush_once(include_heat=False)
++    assert fdb.analytics_counters.calls == [25, 25, 10] and fdb.analytics_heat.calls == []
++    assert len(analytics._heat) == 40                                                 # kept for the next heat flush
++    await analytics._flush_once(include_heat=True)
++    assert fdb.analytics_heat.calls == [25, 15] and len(analytics._heat) == 0
++
++
++async def test_failed_chunk_restores_only_what_was_not_written(monkeypatch):
++    monkeypatch.setenv("ANALYTICS_FLUSH_CHUNK", "25"); monkeypatch.setenv("ANALYTICS_FLUSH_PACE_S", "0")
++    fdb = FakeDB(fail_on=1); monkeypatch.setattr(analytics, "_db", fdb)               # 2nd counter chunk fails
++    _seed(60, 10)
++    await analytics._flush_once()
++    assert fdb.analytics_counters.calls == [25]
++    assert len(analytics._deltas) == 35 and len(analytics._heat) == 10                # nothing double-counted or lost

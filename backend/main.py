@@ -3720,6 +3720,19 @@ async def reserve_send(request: Request, student_id: str) -> dict:
     """Reserve the voter's next SMS slot or raise 429. Optimistic-concurrency on `version`, so
     20 parallel Resend taps produce exactly one reservation. Returns {"snapshot", "wait"}."""
     key = _otp_key(request, student_id)
+    # Nearly every voter is on their FIRST send, where the read below always misses. Try the insert first: the
+    # unique index on `key` (created at startup) makes it succeed only when no state exists, so this is the same
+    # decision for one DB call instead of two. Any existing state falls through to the read path unchanged.
+    now = datetime.utcnow()
+    wait = ol.next_wait(1)
+    try:
+        await db.otp_send_state.insert_one({
+            "key": key, "send_count": 1, "last_send_at": now,
+            "next_send_at": now + timedelta(seconds=wait), "sends_24h": [now], "version": 0,
+        })
+        return {"snapshot": None, "wait": wait}
+    except DuplicateKeyError:
+        pass
     for _ in range(3):
         now = datetime.utcnow()
         doc = await db.otp_send_state.find_one({"key": key})
@@ -3790,6 +3803,14 @@ async def consume_guess(request: Request, student_id: str, params: dict) -> tupl
     Returns (allowed, tokens_after, retry_after)."""
     key = _otp_key(request, student_id)
     interval = params["interval"]
+    # Most voters get their code right first time and have no bucket yet: insert first (unique `key` index), and
+    # only read when a bucket already exists. Same outcome, one DB call instead of two on the common path.
+    try:
+        await db.otp_guess_state.insert_one(
+            {"key": key, "tokens": ol.FREE_GUESSES - 1.0, "updated_at": datetime.utcnow(), "v": 0})
+        return True, ol.FREE_GUESSES - 1.0, 0
+    except DuplicateKeyError:
+        pass
     for _ in range(4):
         now = datetime.utcnow()
         doc = await db.otp_guess_state.find_one({"key": key})
@@ -4411,17 +4432,17 @@ async def verify_otp(data: OTPCheck, request: Request):
         return await _verify_otp_legacy(data, request)
 
     search = org_query(request, get_forgiving_filter(data.student_id))
-    voter = await tdb(request).voters.find_one(search)
-    if not voter:
-        analytics.set_reason(request, "voter_not_found")
-        raise HTTPException(status_code=404, detail="Voter not found.")
-    sid = voter["student_id"]
+    sid = normalize_student_id(data.student_id)      # voters are stored normalized and `search` matches exactly this
 
     record = await tdb(request).otps.find_one(search) or await db.admin_otps.find_one(search)
     created_at = (record or {}).get("created_at")
     live = bool(record and created_at
                 and datetime.utcnow() - created_at <= timedelta(minutes=ol.CODE_TTL_MINUTES))
     if not live:
+        # Only the failure paths need the voter row (it decides 404 vs "request a new code").
+        if not await tdb(request).voters.find_one(search, {"_id": 1}):
+            analytics.set_reason(request, "voter_not_found")
+            raise HTTPException(status_code=404, detail="Voter not found.")
         # No live code: a guess cannot succeed, so it must NOT cost the voter a token (otherwise anyone
         # could lock any voter out for free). Limited only by the per-IP guard.
         if record:
@@ -4440,9 +4461,12 @@ async def verify_otp(data: OTPCheck, request: Request):
     if secrets.compare_digest(str(record.get("code", "")), str(data.code)):
         voter_token, vote_jti = create_voter_token(
             student_id=normalize_student_id(sid), org_id=request.state.org_id)
-        await tdb(request).voters.update_one(search, {"$set": {
+        marked = await tdb(request).voters.update_one(search, {"$set": {
             "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
             "authenticated_at": datetime.utcnow()}})
+        if marked.matched_count != 1:                 # voter removed since the code was sent: no session for them
+            analytics.set_reason(request, "voter_not_found")
+            raise HTTPException(status_code=404, detail="Voter not found.")
         await tdb(request).otps.delete_one(search)
         await db.otp_guess_state.delete_one({"key": _otp_key(request, sid)})   # success forgives the bucket
         await count_verified(request.state.org_id)
@@ -4611,7 +4635,10 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
     # under concurrent load when many voters hit the same popular
     # candidate's document at once — instead of surfacing them as hard
     # errors to the voter. See /vote for the same pattern.
-    async def _do_bulk_vote(session):
+    async def _voter_gate(session):
+        """The original eligibility checks, in their original order. Runs on every failure path (so every
+        error keeps its exact status, message and precedence) and as the fallback when the fast claim below
+        cannot be used. Returns the voter document when every check passes."""
         student = await tdb(request).voters.find_one(
             get_forgiving_filter(data.student_id), session=session
         )
@@ -4625,37 +4652,50 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             analytics.set_reason(request, "otp_required")
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
         _assert_voter_session(request, student)
+        return student
 
-        # Validate every candidate exists BEFORE writing anything. The old
-        # version incremented whichever candidates happened to resolve and
-        # silently swallowed failures for the rest — a voter could end up
-        # marked as voted with some of their choices never counted. Now
-        # it's genuinely all-or-nothing: either every choice is recorded,
-        # or none are and the voter can retry.
+    async def _do_bulk_vote(session):
+        # Validate every candidate exists BEFORE writing anything: all-or-nothing, as before.
         candidates = await tdb(request).candidates.find(
             {"_id": {"$in": candidate_oids}}, session=session
         ).to_list(length=None)
+        # One candidate per position (a crafted request could otherwise cast two ballots for President).
+        problem = None
         if len(candidates) != len(set(candidate_oids)):
-            analytics.set_reason(request, "candidate_missing")
-            raise HTTPException(status_code=404, detail="One or more selected candidates could not be found.")
+            problem = ("candidate_missing", 404, "One or more selected candidates could not be found.")
+        elif len({c.get("position") for c in candidates}) != len(candidates):
+            problem = ("duplicate_pick", 400, "Only one candidate can be selected per position.")
 
-        # Nothing previously stopped two candidates for the SAME position
-        # both being submitted — a voter (or a crafted request bypassing the
-        # UI) could cast two ballots for President in one go. One candidate
-        # per position, same as a real ballot.
-        positions = [c.get("position") for c in candidates]
-        if len(positions) != len(set(positions)):
-            analytics.set_reason(request, "duplicate_pick")
-            raise HTTPException(status_code=400, detail="Only one candidate can be selected per position.")
+        # FAST PATH: check + claim in ONE atomic write instead of read-then-write. The filter carries every
+        # condition the checks above enforce (not yet voted, authenticated, and the jti of THIS signed token must
+        # equal the one stored at the latest OTP verification), so a stale, replayed or second request matches
+        # nothing. Anything that does not match falls to _voter_gate for the precise error.
+        claimed = False
+        if problem is None:
+            try:
+                jti = verify_voter_token(request, normalize_student_id(data.student_id), request.state.org_id)["jti"]
+            except HTTPException:
+                jti = None                                   # _voter_gate raises the same 401/403 in the same order
+            if jti:
+                claimed = await tdb(request).voters.find_one_and_update(
+                    {**get_forgiving_filter(data.student_id), "has_voted": {"$ne": True},
+                     "last_status": "authenticated", "vote_jti": jti},
+                    {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
+                    projection={"_id": 1}, session=session) is not None
 
-        claimed = await tdb(request).voters.update_one(
-            {"_id": student["_id"], "has_voted": {"$ne": True}},
-            {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
-            session=session
-        )
-        if claimed.matched_count != 1:
-            analytics.set_reason(request, "already_voted")
-            raise HTTPException(status_code=400, detail="You have already cast your vote.")
+        if not claimed:
+            student = await _voter_gate(session)
+            if problem is not None:
+                analytics.set_reason(request, problem[0])
+                raise HTTPException(status_code=problem[1], detail=problem[2])
+            updated = await tdb(request).voters.update_one(
+                {"_id": student["_id"], "has_voted": {"$ne": True}},
+                {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
+                session=session
+            )
+            if updated.matched_count != 1:
+                analytics.set_reason(request, "already_voted")
+                raise HTTPException(status_code=400, detail="You have already cast your vote.")
         # Same append-only pattern as /vote, batched as one insert_many so a
         # multi-position ballot is still a single round trip inside the
         # transaction (still all-or-nothing with the has_voted update above).
