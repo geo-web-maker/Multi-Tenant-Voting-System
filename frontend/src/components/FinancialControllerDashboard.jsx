@@ -7,6 +7,7 @@ import PanelHatButton from './PanelHatButton';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import CandidateListBlock from './CandidateListBlock';
 import ConsoleFrame from './ConsoleFrame';
 import ReceiptLink from './ReceiptLink';
 import { regNo } from '../regNo';
@@ -18,7 +19,7 @@ import { getTemplate } from '../template';
 // votes on the candidate.
 
 const SECTION_IDS = ['voters', 'candidates'];
-const SHARED_IDS = SHARED_TAB_DEFS.map(t => t.id);
+const SHARED_IDS = [...SHARED_TAB_DEFS.map(t => t.id), 'candidate_list'];
 
 // Same three views for both sections; only the wording differs.
 const STATUS_LABELS = {
@@ -166,6 +167,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
   const tabs = [
     { id: 'voters',     label: 'Voter payments',     count: voterLists.pending.length },
     { id: 'candidates', label: 'Candidate payments', count: candidateLists.pending.length },
+    { id: 'candidate_list', label: <>Candidate list</>, icon: 'file' },
     ...SHARED_TAB_DEFS,
   ];
 
@@ -506,6 +508,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
         </ScrollList>
         )}
 
+        {activeTab === 'candidate_list' && <CandidateListBlock />}
         <SharedTabPanels activeTab={activeTab} />
         </ConsoleFrame>
       </div>

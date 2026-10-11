@@ -48,6 +48,7 @@ TENANT_COLLECTIONS = frozenset({
     "candidate_tokens",
     "exception_grants",
     "certificates",
+    "candidate_lists",
     "voter_import_previews",
     "nomination_uploads",
     "demo_inbox",

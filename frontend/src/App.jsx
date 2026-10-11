@@ -85,6 +85,7 @@ const FinancialControllerDashboard = lazy(() => import('./components/FinancialCo
 const OverseerDashboard = lazy(() => import('./components/OverseerDashboard'));
 const CandidateStatusPortal = lazy(() => import('./components/CandidateStatusPortal'));
 const VerifyCertificate = lazy(() => import('./components/VerifyCertificate'));
+const VerifyCandidateList = lazy(() => import('./components/VerifyCandidateList'));
 const HeatmapOverlay = lazy(() => import('./components/HeatmapOverlay'));
 
 
@@ -110,8 +111,13 @@ function matchVerifyId() {
   return window.location.pathname.match(/^\/verify\/([A-Za-z0-9_-]+)$/)?.[1] || null;
 }
 
+function matchVerifyListId() {
+  return window.location.pathname.match(/^\/verify-list\/([A-Za-z0-9_-]+)$/)?.[1] || null;
+}
+
 function App() {
   const statusToken = matchStatusToken();
+  const verifyListId = matchVerifyListId();
   const verifyId = matchVerifyId();
   const [supportContacts, setSupportContacts] = useState([]);
   const [supportPhone, setSupportPhone] = useState("");
@@ -712,6 +718,10 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   // loads the app shell before this check runs; no Vercel config change needed.
   if (statusToken) {
     return <Suspense fallback={<LoadingBlock text="Loading…" />}><CandidateStatusPortal token={statusToken} /></Suspense>;
+  }
+  // What a candidate list's QR code opens — public, read-only (see VerifyCandidateList).
+  if (verifyListId) {
+    return <Suspense fallback={<LoadingBlock text="Loading…" />}><VerifyCandidateList listId={verifyListId} /></Suspense>;
   }
   // What a certificate's QR code opens — public, read-only (see VerifyCertificate).
   if (verifyId) {

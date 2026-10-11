@@ -52,6 +52,7 @@ from regno_audit import audit_reg_numbers
 import otp_limits as ol
 from tenant_db import scoped_db as _tenant_scoped_db, scoped_db_for as _tenant_scoped_db_for, cross_tenant
 import analytics
+import candidate_list
 import nomination_storage
 
 from auth import (
@@ -196,6 +197,7 @@ PERF_INDEXES = [
     ("candidate_tokens", [("token", 1)]),
     ("candidate_tokens", [("org_id", 1), ("round_id", 1), ("student_id", 1)]),
     ("certificates", [("certificate_id", 1)]),
+    ("candidate_lists", [("list_id", 1)]),
     ("organizations", [("slug", 1)]),
     ("voters", [("org_id", 1), ("has_voted", 1)]),
 ]
@@ -214,7 +216,7 @@ async def _ensure_perf_indexes() -> None:
 # last created. Bump INDEX_SCHEMA_VERSION when you add or change an index in _create_startup_indexes (a change
 # to PERF_INDEXES is picked up automatically), or set FORCE_INDEX_SYNC=1 for one boot to re-create everything,
 # for example after dropping an index by hand in Atlas.
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 
 
 def _index_signature() -> str:
@@ -276,6 +278,8 @@ async def _create_startup_indexes() -> None:
     # makes the second one fail loudly instead of silently forking the chain.
     await db.audit_checkpoints.create_index([("org_id", 1), ("to_id", 1)], unique=True)
     await db.audit_checkpoints.create_index([("org_id", 1), ("from_id", 1)], unique=True)
+    # Official List of Candidates: the unique (org_id, seq) pair is what stops two workers issuing the same list.
+    await db.candidate_lists.create_index([("org_id", 1), ("seq", 1)], unique=True)
     # OTP verify-attempt lockouts (brute-force guard on /verify-otp).
     await db.otp_attempts.create_index("key", unique=True)
     await db.otp_attempts.create_index("last_attempt", expireAfterSeconds=24 * 3600)
@@ -652,7 +656,8 @@ def _is_public(path: str, method: str) -> bool:
     # candidate-portal-spec §3.2/§3.4: read-only, token/id-scoped, no admin
     # session involved at all — same reasoning as the voter-facing routes
     # in PUBLIC_PATHS above (auth happens per-request via the token itself).
-    if method == "GET" and (path.startswith("/candidates/status/") or path.startswith("/verify/")):
+    if method == "GET" and (path.startswith("/candidates/status/") or path.startswith("/verify/")
+                            or path.startswith("/verify-list/")):
         return True
     return False
 
@@ -2017,6 +2022,15 @@ async def _resolve_position_titles(position_ids, org_id: str) -> dict:
     return {pid: found.get(pid, (pid, 0)) for pid in wanted}
 
 
+async def _candidates_changed(org_id: str, reason: str) -> None:
+    """The approved candidates changed: flag the Official List of Candidates for a (debounced) reissue.
+    Never raises: a failure here must not undo or block the ballot change that triggered it."""
+    try:
+        await candidate_list.mark_dirty(tdb_for(org_id), reason, datetime.utcnow())
+    except Exception:
+        logger.exception("Could not flag the candidate list for reissue (org %s).", org_id)
+
+
 async def _create_candidate_from_application(app_doc: dict, org_id: str):
     org_id = require_org(org_id)
     title, order = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
@@ -2033,6 +2047,7 @@ async def _create_candidate_from_application(app_doc: dict, org_id: str):
         "org_id": org_id,
         "is_demo": bool(app_doc.get("is_demo")),
     })
+    await _candidates_changed(org_id, "Candidate approved")
 
 async def _position_fee(position_id: str, org_id: str) -> int:
     """Nomination fee (UGX) configured on a position; 0 when none/unknown."""
@@ -2552,6 +2567,7 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
             try:
                 await tdb_for(org_id).candidates.delete_many({"application_id": str(app_doc["_id"])})
                 await _revoke_certificate_for_application(app_doc, org_id)
+                await _candidates_changed(org_id, "Approval rolled back")
             except Exception:
                 logger.exception(f"Rollback cleanup failed for application {app_id}.")
             await tdb_for(org_id).applications.update_one(
@@ -2641,6 +2657,7 @@ async def _resolve_removal(app_id: str, app_doc: dict, org_id: str = None):
         cand = await tdb_for(org_id).candidates.find_one({"application_id": app_id})
         await tdb_for(org_id).candidates.delete_one({"application_id": app_id})
         await _revoke_certificate_for_application(app_doc, org_id)
+        await _candidates_changed(org_id, "Candidate removed")
         # Was only logger.info'd — a candidate removed by commission majority
         # never showed up in the Activity Log at all, unlike a superadmin's
         # forced removal (candidate_removed, logged in
@@ -2853,6 +2870,46 @@ async def _vetting_closeout_loop(interval_s: int) -> None:
             raise
         except Exception:
             logger.exception("Vetting close-out sweep crashed; trying again next interval.")
+        try:
+            await _sweep_candidate_lists()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Candidate list sweep crashed; trying again next interval.")
+
+
+# --- Official List of Candidates (see candidate_list.py) -----------------------------------------------------------
+
+async def _maybe_issue_candidate_list(org_id: str):
+    """Issue the list if one is due (first list after vetting closes; a debounced reissue after a real change).
+    Safe to call often and from several workers: nothing is written unless a list is due, and the unique
+    (org_id, seq) index lets only one worker win."""
+    if not org_id or not await _vetting_window_ended(org_id):
+        return None
+    still_open = await tdb_for(org_id).applications.count_documents({
+        "status": "pending", "finance_cleared": True,
+        "vetting_closed_undecided": {"$ne": True}, "closeout_handled": {"$ne": True}})
+    branding = await tdb_for(org_id).settings.find_one({"name": "branding"}) or {}
+    new = await candidate_list.maybe_issue(
+        tdb_for(org_id), vetting_ended=True, closeout_complete=still_open == 0,
+        branding={"org_name": branding.get("org_name", ""),
+                  "document_template": _doc_template(branding.get("document_template"))},
+        now=datetime.utcnow())
+    if new:
+        await log_action("candidate_list_issued", "system",
+                         {"list_id": new["list_id"], "reason": new["reason"], "count": new["count"]}, org_id=org_id)
+    return new
+
+
+async def _sweep_candidate_lists() -> int:
+    checked = 0
+    async for org in db.organizations.find({}, {"_id": 1}):
+        try:
+            await _maybe_issue_candidate_list(str(org["_id"]))
+        except Exception:
+            logger.exception("Candidate list sweep failed for org %s.", org.get("_id"))
+        checked += 1
+    return checked
 
 
 async def _apply_closeout_decision(app_id: str, app_doc: dict, org_id: str, decision: str,
@@ -5304,6 +5361,62 @@ async def get_candidate_status(token: str, request: Request):
             "branding": branding}
 
 
+@app.get("/admin/candidate-list")
+async def get_candidate_list(request: Request,
+                             admin: dict = Depends(require_role(*candidate_list.DOWNLOAD_ROLES))):
+    """Latest issued Official List of Candidates. Download-only: reading never issues or supersedes anything.
+    Superadmin, Commission, IT admin and Financial Controller (names and positions only, no fees or contacts)."""
+    org_id = require_org(request.state.org_id)
+    await _maybe_issue_candidate_list(org_id)
+    can_issue = admin["role"] in candidate_list.ISSUE_ROLES
+    if not await _vetting_window_ended(org_id):
+        return {"available": False, "reason": "not_closed", "can_issue": can_issue}
+    doc = await candidate_list.latest_list(tdb_for(org_id))
+    if not doc:
+        return {"available": False, "reason": "none", "can_issue": can_issue}
+    branding = await tdb_for(org_id).settings.find_one({"name": "branding"}, {"_id": 0, "org_id": 0}) or {}
+    return {"available": True, "can_issue": can_issue, "list": candidate_list.download_view(doc),
+            "branding": {k: branding.get(k) for k in ("org_name", "university_name", "logo_url",
+                                                       "university_logo_url", "primary_color", "accent_color")}}
+
+
+@app.post("/admin/candidate-list/issue")
+async def issue_candidate_list(request: Request,
+                               admin: dict = Depends(require_role(*candidate_list.ISSUE_ROLES))):
+    """Manual fallback ("Issue now"). Superadmin and Commission only: issuing supersedes the earlier list."""
+    org_id = require_org(request.state.org_id)
+    t = tdb_for(org_id)
+    sections = await candidate_list.current_sections(t)
+    if not sections:
+        raise HTTPException(400, "There are no approved candidates to list yet.")
+    latest = await candidate_list.latest_list(t)
+    if latest and latest.get("signature") == candidate_list.signature(sections):
+        return {"status": "unchanged", "list_id": latest["list_id"]}
+    branding = await t.settings.find_one({"name": "branding"}) or {}
+    new = await candidate_list.issue(
+        t, reason="Issued manually", actor=current_actor(request), now=datetime.utcnow(), sections=sections,
+        branding={"org_name": branding.get("org_name", ""),
+                  "document_template": _doc_template(branding.get("document_template"))})
+    if not new:
+        raise HTTPException(409, "A list was just issued by someone else. Please refresh.")
+    await t.settings.update_one({"name": candidate_list.STATE_NAME}, {"$unset": {"dirty_at": "", "dirty_reason": ""}})
+    await log_action("candidate_list_issued", current_actor(request),
+                     {"list_id": new["list_id"], "reason": new["reason"], "count": new["count"]}, org_id=org_id)
+    return {"status": "issued", "list_id": new["list_id"]}
+
+
+@app.get("/verify-list/{list_id}")
+async def verify_candidate_list(list_id: str, request: Request):
+    """Public. What a list's QR code opens: current, or superseded since a date. Never returns the names."""
+    await _check_rate_limit(request, bucket="verify_list", limit=30, window_s=60,
+                            message="Too many requests. Please try again shortly.")
+    # Deliberately cross-tenant, like /verify/{certificate_id}: the list id identifies the issuing tenant.
+    doc = await cross_tenant(db).candidate_lists.find_one({"list_id": list_id})
+    if not doc:
+        raise HTTPException(404, "Candidate list not found.")
+    return candidate_list.public_view(doc)
+
+
 @app.get("/verify/{certificate_id}")
 async def verify_certificate(certificate_id: str, request: Request):
     """
@@ -6607,6 +6720,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 async def add_candidate(candidate: CandidateCreate, request: Request, admin: dict = Depends(require_role("superadmin"))):
     candidate.name = normalize_name(candidate.name)
     result = await tdb(request).candidates.insert_one(candidate.dict())
+    await _candidates_changed(request.state.org_id, "Candidate added")
     await log_action("candidate_added", current_actor(request), {
         "name": candidate.name, "position": candidate.position
     }, org_id=request.state.org_id)
@@ -6624,6 +6738,7 @@ async def update_candidate(candidate_id: str, data: dict, request: Request, admi
     if data.get("image_url"):
         upd["image_url"] = data["image_url"]
     await tdb(request).candidates.update_one({"_id": oid}, {"$set": upd})
+    await _candidates_changed(request.state.org_id, "Candidate updated")
     await log_action("candidate_updated", current_actor(request), {
         "candidate_id": candidate_id, "name": upd.get("name"), "position": upd.get("position")
     }, org_id=request.state.org_id)
@@ -6635,6 +6750,7 @@ async def delete_candidate(candidate_id: str, request: Request, admin: dict = De
     oid = parse_oid(candidate_id, "candidate id")
     doomed = await tdb(request).candidates.find_one({"_id": oid})
     await tdb(request).candidates.delete_one({"_id": oid})
+    await _candidates_changed(request.state.org_id, "Candidate deleted")
     await log_action("candidate_deleted", current_actor(request), {
         "candidate_id": candidate_id,
         "name": (doomed or {}).get("name", ""),
@@ -8125,6 +8241,7 @@ async def superadmin_revert_application_to_pending(app_id: str, data: Applicatio
 
     if cand:
         await tdb(request).candidates.delete_one({"_id": cand["_id"]})
+        await _candidates_changed(org_id, "Approval reverted")
     if from_status == "approved":
         await _revoke_certificate_for_application(app_doc, org_id)
 
@@ -8253,6 +8370,7 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
         if "position_id" in changes: cand_set.update({"position": position_title, "order": position_order})
         if cand_set:
             await tdb(request).candidates.update_one({"_id": cand["_id"]}, {"$set": cand_set})
+            await _candidates_changed(request.state.org_id, "Candidate details corrected")
 
     links_revoked = 0
     if "student_id" in changes:
@@ -8329,6 +8447,7 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
         raise HTTPException(404, "Candidate not found.")
 
     await tdb(request).candidates.delete_one({"_id": oid})
+    await _candidates_changed(request.state.org_id, "Candidate removed")
     await log_action("candidate_removed", current_actor(request), {
     "name": cand.get("name"), "position": cand.get("position")
     }, org_id=request.state.org_id)

@@ -6,6 +6,7 @@ import {
   SHARED_TAB_DEFS, ROADMAP_TAB_DEF, SharedTabPanels, OfficialCertificationBlock,
 } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import CandidateListBlock from './CandidateListBlock';
 import { Icon } from './icons.jsx';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
@@ -2582,7 +2583,12 @@ const handleSuperAdminRemoveStudent = async () => {
             dashboards, reading /admin/audit-log instead of the
             superadmin-only route. */}
         <SharedTabPanels activeTab={activeTab} canEditSchedule isChief />
-        {activeTab === 'official_doc' && <OfficialCertificationBlock />}
+        {activeTab === 'official_doc' && (
+          <>
+            <CandidateListBlock />
+            <div className="cl-other"><OfficialCertificationBlock /></div>
+          </>
+        )}
         {activeTab === 'usage_analytics' && <AnalyticsPanel organizations={organizations} />}
         {activeTab === 'performance' && <PerformancePanel />}
 

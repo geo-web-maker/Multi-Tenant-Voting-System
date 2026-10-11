@@ -6,6 +6,7 @@ import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import CandidateListBlock from './CandidateListBlock';
 import ContactChangesQueue from './ContactChangesQueue';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import ReceiptLink from './ReceiptLink';
@@ -424,7 +425,12 @@ export default function CommissionDashboard({ onLogout }) {
         {activeTab === 'reset_otp' && (isChief || isDeputyChief) && <ResetOtpLimitsPanel canOverrideCaps />}
 
         <SharedTabPanels activeTab={activeTab} isChief={isChief || isDeputyChief} />
-        {activeTab === 'official_doc' && <OfficialCertificationBlock />}
+        {activeTab === 'official_doc' && (
+          <>
+            <CandidateListBlock />
+            <div className="cl-other"><OfficialCertificationBlock /></div>
+          </>
+        )}
 
         </div>
         </div>

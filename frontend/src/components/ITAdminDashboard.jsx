@@ -4,6 +4,7 @@ import api from '../api';
 import { usePersistedTab } from '../session';
 import { SHARED_TAB_DEFS, SharedTabPanels } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import CandidateListBlock from './CandidateListBlock';
 import ConsoleFrame from './ConsoleFrame';
 import RevealGroup from './RevealGroup';
 import { RosterStats, RecentActivity } from './SharedAdminPanels';
@@ -238,6 +239,7 @@ export default function ITAdminDashboard({ onLogout }) {
     ...(rosterFrozen ? [] : [{ id: 'remove', label: <>Remove Student</> }]),
     { id: 'requests', label: <>My Requests</>, count: myRequests.length },
     { id: 'reset_otp', label: <>Reset OTP</> },
+    { id: 'candidate_list', label: <>Candidate list</>, icon: 'file' },
     ...SHARED_TAB_DEFS,
   ];
 
@@ -617,6 +619,7 @@ export default function ITAdminDashboard({ onLogout }) {
             </RevealGroup>
           </div>
         )}
+        {activeTab === 'candidate_list' && <CandidateListBlock />}
         <SharedTabPanels activeTab={activeTab} />
         </ConsoleFrame>
       </div>
