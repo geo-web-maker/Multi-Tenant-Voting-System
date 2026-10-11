@@ -24,6 +24,10 @@
   --info:    #3498db;
   --accent-purple: #9b59b6;
 
+  /* --- Per-organisation chart lines (Performance tab); templates may override --- */
+  --org-1: #f1c40f; --org-2: #3498db; --org-3: #2ecc71; --org-4: #e74c3c;
+  --org-5: #9b59b6; --org-6: #e67e22; --org-7: #1abc9c; --org-8: var(--text-color);
+
 
   color-scheme: light dark;
   color: var(--text-color);

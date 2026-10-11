@@ -157,17 +157,19 @@ def _seed(n_counters, n_heat):
 async def test_flush_is_chunked_and_heat_waits_for_its_own_cadence(monkeypatch):
     monkeypatch.setenv("ANALYTICS_FLUSH_CHUNK", "25"); monkeypatch.setenv("ANALYTICS_FLUSH_PACE_S", "0")
     fdb = FakeDB(); monkeypatch.setattr(analytics, "_db", fdb)
+    monkeypatch.setattr(analytics, "_last_db_flush", 0.0)    # an earlier test's flush must not make this tick "not due"
     _seed(60, 40)
     await analytics._flush_once(include_heat=False)
     assert fdb.analytics_counters.calls == [25, 25, 10] and fdb.analytics_heat.calls == []
     assert len(analytics._heat) == 40                                                 # kept for the next heat flush
-    await analytics._flush_once(include_heat=True)
+    await analytics._flush_once(include_heat=True, force=True)    # the counter tick is not due again for 30 s, so force it
     assert fdb.analytics_heat.calls == [25, 15] and len(analytics._heat) == 0
 
 
 async def test_failed_chunk_restores_only_what_was_not_written(monkeypatch):
     monkeypatch.setenv("ANALYTICS_FLUSH_CHUNK", "25"); monkeypatch.setenv("ANALYTICS_FLUSH_PACE_S", "0")
     fdb = FakeDB(fail_on=1); monkeypatch.setattr(analytics, "_db", fdb)               # 2nd counter chunk fails
+    monkeypatch.setattr(analytics, "_last_db_flush", 0.0)
     _seed(60, 10)
     await analytics._flush_once()
     assert fdb.analytics_counters.calls == [25]

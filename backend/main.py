@@ -308,8 +308,24 @@ async def _create_startup_indexes() -> None:
         await db.positions.create_index([("org_id", 1), ("order", 1)])
         await db.candidates.create_index([("org_id", 1), ("order", 1)])
         await db.voters.create_index([("org_id", 1), ("student_id", 1)])
+        # Admin login emails: sparse, so only the few voters who hold a role are indexed.
+        for _f in _ADMIN_EMAIL_FIELDS:
+            await db.voters.create_index([("org_id", 1), (_f, 1)], sparse=True)
+        await db.panel_members.create_index([("org_id", 1), ("email", 1)])
     except Exception:
         logger.exception("Could not create hot-path indexes (continuing without them)")
+    # One-time-safe backfill: admin login emails are now matched exactly in lowercase, so any stored with capitals
+    # (set before this change, or restored from an old backup) are lowercased here. Touches only the few voters
+    # who hold a role, and only when something differs, so it is a no-op on later boots.
+    try:
+        for _f in _ADMIN_EMAIL_FIELDS:
+            async for _v in cross_tenant(db).voters.find({_f: {"$type": "string"}}, {_f: 1}):
+                _cur = _v.get(_f) or ""
+                _low = _email_key(_cur)
+                if _low != _cur:
+                    await cross_tenant(db).voters.update_one({"_id": _v["_id"]}, {"$set": {_f: _low}})
+    except Exception:
+        logger.exception("Admin email lowercase backfill failed (logins for mixed-case emails may not match)")
     # Phase exception grants — looked up on every gated action.
     await db.exception_grants.create_index([("org_id", 1), ("student_id", 1), ("phase", 1)])
     await db.nomination_uploads.create_index([("org_id", 1), ("created_at", -1)])
@@ -1957,7 +1973,7 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
     # voter["org_id"] is the source of truth for which org this voter
     # belongs to (set at import time), not the caller's request context,
     # since some callers here run outside a request (e.g. scripts).
-    branding_doc = (await tdb_for(voter["org_id"]).settings.find_one({"name": "branding"})
+    branding_doc = (await cached_setting(voter["org_id"], "branding")
                     if voter.get("org_id") else None)
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
 
@@ -2072,7 +2088,7 @@ async def _notify_applicant(app_doc: dict, org_id: str, text_for) -> str:
         phones = (voter or {}).get("phone_numbers") or []
         if not phones:
             return "no_phone"
-        b = await tdb_for(org_id).settings.find_one({"name": "branding", "org_id": org_id}) or {}
+        b = await cached_setting(org_id, "branding") or {}
         title, _ = await _resolve_position_title(app_doc.get("position_id", ""), org_id)
         text = text_for(b.get("org_name") or "the election", title)
         ok = await send_sms(phones[0], text, None, kind="notice", org_id=org_id)
@@ -2304,6 +2320,13 @@ async def _external_has_no_end(request: Request, p: dict) -> bool:
     return (not p.get("is_member")) and (await _panel_access_end(request, p)) is None
 
 
+def _email_key(email) -> str:
+    """Canonical form of an admin login email. Stored lowercase and looked up by exact match, so the lookup
+    can use an index; the old case-insensitive regex could not and scanned every voter on each login attempt."""
+    return (email or "").strip().lower()
+
+
+_ADMIN_EMAIL_FIELDS = ("it_admin_email", "financial_controller_email", "overseer_email", "commissioner_email")
 _PANEL_LOGIN_EMAIL_FIELDS = ("it_admin_email", "financial_controller_email", "overseer_email",
                              "commissioner_email")
 
@@ -2313,7 +2336,7 @@ async def _panel_email_conflict(request: Request, email: str, exclude_pm_id: str
     so a panel email equal to someone's commissioner (or any other role) email would silently capture
     that person's login and lock them out of their own role. Panel emails must therefore be unique
     across the panel AND across every other role's login email. Returns the message, or None if free."""
-    pattern = {"$regex": f"^{re.escape(email)}$", "$options": "i"}
+    pattern = _email_key(email)
     q = {"email": pattern}
     if exclude_pm_id:
         q["panel_member_id"] = {"$ne": exclude_pm_id}
@@ -2952,7 +2975,7 @@ async def _validate_voter_attrs(org_id: str, attrs: dict | None) -> dict:
 
 
 async def get_voter_fields_for_org(org_id: str) -> list[dict]:
-    doc = await tdb_for(org_id).settings.find_one({"org_id": org_id, "name": "voter_fields"}) or {}
+    doc = await cached_setting(org_id, "voter_fields") or {}
     return merge_voter_fields(doc.get("fields"))
 
 
@@ -3605,12 +3628,18 @@ VALID_APPROVAL_POLICIES = {"unanimous", "majority_total", "majority_cast"}
 # takes effect immediately for votes. The phase schedule it also checks IS cached (changes on a timetable). SETTINGS_CACHE_TTL_S=0 disables the cache (tests do this unless they test the cache).
 # -----------------------------------------------------------------------------------------------
 _SETTINGS_TTL = float(os.getenv("SETTINGS_CACHE_TTL_S", "5"))
+# Documents an admin edits rarely and that every public page reads get a longer TTL. Every write site calls
+# invalidate_settings(org_id, name), so this instance sees an edit at once; other instances within the TTL.
+# Still switched off when SETTINGS_CACHE_TTL_S=0 (tests).
+_SETTINGS_LONG_TTL = float(os.getenv("SETTINGS_LONG_CACHE_TTL_S", "60"))
+_SETTINGS_LONG_NAMES = frozenset({"branding", "voter_fields"})
 _SETTINGS_CACHE: dict = {}
 
 
 async def cached_setting(org_id, name: str):
     """find_one({"name": name, org scope}) with a short TTL. Returns a private copy (callers may mutate)."""
     key = (str(org_id), name)
+    ttl = _SETTINGS_LONG_TTL if (_SETTINGS_TTL > 0 and name in _SETTINGS_LONG_NAMES) else _SETTINGS_TTL
     if _SETTINGS_TTL > 0:
         hit = _SETTINGS_CACHE.get(key)
         if hit and hit[0] > time.monotonic():
@@ -3619,7 +3648,7 @@ async def cached_setting(org_id, name: str):
         perf_metrics.note_cache("settings", False)
     doc = await tdb_for(org_id).settings.find_one({"name": name})
     if _SETTINGS_TTL > 0:
-        _SETTINGS_CACHE[key] = (time.monotonic() + _SETTINGS_TTL, copy.deepcopy(doc))
+        _SETTINGS_CACHE[key] = (time.monotonic() + ttl, copy.deepcopy(doc))
     return doc
 
 
@@ -5316,7 +5345,7 @@ async def get_candidate_status(token: str, request: Request):
 
     # Branding is scoped by the token's org here, so the portal never depends on
     # a tenant header that a bare status link doesn't carry.
-    b = await tdb_for(org_id).settings.find_one({"name": "branding"}) or {}
+    b = await cached_setting(org_id, "branding") or {}
     branding = {k: b.get(k, "") for k in
                 ("logo_url", "org_name", "university_name", "university_logo_url", "primary_color", "accent_color")}
 
@@ -5374,7 +5403,7 @@ async def get_candidate_list(request: Request,
     doc = await candidate_list.latest_list(tdb_for(org_id))
     if not doc:
         return {"available": False, "reason": "none", "can_issue": can_issue}
-    branding = await tdb_for(org_id).settings.find_one({"name": "branding"}, {"_id": 0, "org_id": 0}) or {}
+    branding = await cached_setting(org_id, "branding") or {}
     return {"available": True, "can_issue": can_issue, "list": candidate_list.download_view(doc),
             "branding": {k: branding.get(k) for k in ("org_name", "university_name", "logo_url",
                                                        "university_logo_url", "primary_color", "accent_color")}}
@@ -5439,7 +5468,7 @@ async def verify_certificate(certificate_id: str, request: Request):
     # empty; fall back to the org's current branding (name only, nothing else).
     org_name = cert.get("org_name", "")
     if not org_name and cert.get("org_id"):
-        b = await tdb_for(cert["org_id"]).settings.find_one({"name": "branding"}) or {}
+        b = await cached_setting(cert["org_id"], "branding") or {}
         org_name = b.get("org_name", "")
     return {
         "verified": True,
@@ -5566,7 +5595,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
 
     # ── IT Admin ──
     it_admin = await tdb(request).voters.find_one({
-        "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "it_admin_email": _email_key(data.email),
         "is_it_admin": True
     })
     if it_admin:
@@ -5591,7 +5620,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
 
     # ── Financial Controller ──
     financial_controller = await tdb(request).voters.find_one({
-        "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "financial_controller_email": _email_key(data.email),
         "is_financial_controller": True
     })
     if financial_controller:
@@ -5617,7 +5646,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
 
     # ── Overseer ──
     overseer = await tdb(request).voters.find_one({
-        "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "overseer_email": _email_key(data.email),
         "is_overseer": True
     })
     if overseer:
@@ -5644,7 +5673,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
     # Panel members live in panel_members (not voters), so externals (non-members)
     # can log in here without a voter row. Same timing-safe shape as the others.
     panelist = await tdb(request).panel_members.find_one({
-        "email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "email": _email_key(data.email),
         "active": True,
     })
     if panelist:
@@ -5678,7 +5707,7 @@ async def _verify_admin_credentials(data: AdminLoginCheck, request: Request):
 
     # ── Commissioner ──
     commissioner = await tdb(request).voters.find_one({
-        "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "commissioner_email": _email_key(data.email),
         "is_commissioner": True
     })
     if not commissioner:
@@ -6605,7 +6634,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 
     # Try IT admin first
     it_admin = await tdb(request).voters.find_one({
-        "it_admin_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "it_admin_email": _email_key(data.email),
         "is_it_admin": True
     })
     if it_admin:
@@ -6627,7 +6656,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 
     # Try Financial Controller
     financial_controller = await tdb(request).voters.find_one({
-        "financial_controller_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "financial_controller_email": _email_key(data.email),
         "is_financial_controller": True
     })
     if financial_controller:
@@ -6649,7 +6678,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 
     # Try Overseer
     overseer = await tdb(request).voters.find_one({
-        "overseer_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "overseer_email": _email_key(data.email),
         "is_overseer": True
     })
     if overseer:
@@ -6671,7 +6700,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 
     # Try Vetting Panel member (panel_members; no voter row for externals)
     panelist = await tdb(request).panel_members.find_one({
-        "email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "email": _email_key(data.email),
         "active": True,
     })
     if panelist:
@@ -6696,7 +6725,7 @@ async def set_new_password(data: SetNewPassword, request: Request):
 
     # Try commissioner
     commissioner = await tdb(request).voters.find_one({
-        "commissioner_email": {"$regex": f"^{re.escape(data.email)}$", "$options": "i"},
+        "commissioner_email": _email_key(data.email),
         "is_commissioner": True
     })
     if commissioner:
@@ -8076,7 +8105,7 @@ async def set_it_admin_credentials(student_id: str, data: SetEmailOnly, request:
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
-            "it_admin_email":                data.email,
+            "it_admin_email":                _email_key(data.email),
             "it_admin_password_hash":        hashed,
             "it_admin_must_change_password": True,
             "it_admin_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
@@ -9150,7 +9179,7 @@ async def set_commissioner_credentials(student_id: str, data: SetEmailOnly, requ
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
-            "commissioner_email":                data.email,
+            "commissioner_email":                _email_key(data.email),
             "commissioner_password_hash":        hashed,
             "commissioner_must_change_password": True,
             "commissioner_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
@@ -9656,7 +9685,7 @@ async def set_financial_controller_credentials(student_id: str, data: SetEmailOn
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
-            "financial_controller_email":                data.email,
+            "financial_controller_email":                _email_key(data.email),
             "financial_controller_password_hash":        hashed,
             "financial_controller_must_change_password": True,
             "financial_controller_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
@@ -9748,7 +9777,7 @@ async def set_overseer_credentials(student_id: str, data: SetEmailOnly, request:
     await tdb(request).voters.update_one(
         {"_id": voter["_id"]},
         {"$set": {
-            "overseer_email":                data.email,
+            "overseer_email":                _email_key(data.email),
             "overseer_password_hash":        hashed,
             "overseer_must_change_password": True,
             "overseer_temp_password_expires": datetime.utcnow() + timedelta(hours=TEMP_PASSWORD_EXPIRE_HOURS),
@@ -12487,6 +12516,7 @@ async def superadmin_put_voter_fields(data: VoterFieldsUpdate, request: Request)
             "name": "voter_fields", "min_group_size": min_group, "updated_at": datetime.utcnow(),
             "fields": [{k: f[k] for k in ("key", "label", "enabled", "public")} for f in new_fields]})},
         upsert=True)
+    invalidate_settings(request.state.org_id, "voter_fields")
     if purge:
         await tdb(request).voters.update_many({}, {"$unset": {f"attrs.{k}": "" for k in purge}})
 

@@ -13,10 +13,11 @@ const LINE_STYLES = [
   { color: '--brand-accent', dash: '7 4' }, { color: '--text-muted', dash: '' },
 ];
 
-// Per-organisation lines: four different hues from the theme's status tokens, then dashes so a fifth and sixth still differ.
+// Per-organisation lines: eight hues from the theme's own --org-N tokens (defined per template in
+// index.css / blueprint.css so they stay distinct there), then the same hues dashed for a ninth org onwards.
 export const ORG_LINE_STYLES = [
-  { color: '--warning', dash: '' }, { color: '--info', dash: '' }, { color: '--success', dash: '' },
-  { color: '--danger', dash: '' }, { color: '--text-color', dash: '7 4' }, { color: '--info', dash: '2 4' },
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ color: `--org-${n}`, dash: '' })),
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ color: `--org-${n}`, dash: '7 4' })),
 ];
 const lineColor = (l, st) => `var(${l.color || st.color})`;
 const lineDash = (l, st) => (l.dash !== undefined ? l.dash : st.dash) || undefined;

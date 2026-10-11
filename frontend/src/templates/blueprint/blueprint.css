@@ -49,6 +49,13 @@ html[data-template="blueprint"][data-theme="dark"] {
     --bp-ok-edge: rgb(105 219 124 / .35); --bp-wn-edge: rgb(255 192 120 / .35); --bp-no-edge: rgb(255 163 163 / .35); --bp-mu-edge: rgb(163 184 212 / .35);
   }
 }
+/* Per-organisation chart lines: eight clearly different hues per mode (the status tokens above are all orange-ish here). */
+html[data-template="blueprint"]:not([data-theme]),
+html[data-template="blueprint"][data-theme="light"] { --org-1: #c2410c; --org-2: #1c7ed6; --org-3: #1b6e2f; --org-4: #c2255c; --org-5: #946800; --org-6: #6741d9; --org-7: #0b7285; --org-8: #14213d; }
+html[data-template="blueprint"][data-theme="dark"] { --org-1: #ff922b; --org-2: #74c0fc; --org-3: #69db7c; --org-4: #f783ac; --org-5: #ffe066; --org-6: #b197fc; --org-7: #38d9a9; --org-8: #e8f0fb; }
+@media (prefers-color-scheme: dark) {
+  html[data-template="blueprint"]:not([data-theme]) { --org-1: #ff922b; --org-2: #74c0fc; --org-3: #69db7c; --org-4: #f783ac; --org-5: #ffe066; --org-6: #b197fc; --org-7: #38d9a9; --org-8: #e8f0fb; }
+}
 @media (max-width: 768px) {
   html[data-template="blueprint"] { --bp-gut: var(--bp-s4); --bp-pad: var(--bp-s4); --bp-hh: 56px; }
 }
