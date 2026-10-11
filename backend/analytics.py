@@ -585,12 +585,22 @@ async def _flush_once(force: bool = False) -> None:
                 # cleanly and the restored buffers cannot be counted twice. Mongo is NOT given this timeout:
                 # a cancelled bulk_write can already have applied part of its $inc operations.
                 await asyncio.wait_for(store.write(deltas, heat), timeout=5)
+            elif getattr(store, "supports_pacing", False):
+                # force = shutdown/final flush: skip the pauses between chunks so it finishes inside the stop timeout.
+                await store.write(deltas, heat, paced=not force)
             else:
                 await store.write(deltas, heat)
             _last_flush_at = now.isoformat()
             _flush_pending_keys = set()
+        except asyncio.CancelledError:
+            left = getattr(store, "unwritten", None)
+            _restore(*(left if left is not None else (deltas, heat)))
+            _flush_pending_keys = set()
+            raise
         except Exception as exc:
-            _restore(deltas, heat)
+            # A chunked Mongo flush reports only what it did not write; restoring the whole snapshot would
+            # double-count the chunks that already landed.
+            _restore(*(getattr(exc, "remaining", None) or (deltas, heat)))
             _flush_pending_keys = set()
             if getattr(store, "name", "mongo") == "postgres":
                 log.warning("analytics Postgres flush failed; buffers restored: %s", store.safe_error(exc))

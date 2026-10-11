@@ -329,3 +329,63 @@ async def test_postgres_read_failure_is_a_503_not_an_empty_dashboard(env, monkey
         r = await env.client.get(path, headers=env.sa)
         assert r.status_code == 503, (path, r.status_code, r.text)
         assert "temporarily unavailable" in r.text
+
+
+class _FakeColl:
+    def __init__(self, log, name, fail_on=None):
+        self.log, self.name, self.fail_on = log, name, fail_on
+
+    async def bulk_write(self, ops, ordered=False):
+        self.log.append((self.name, len(ops)))
+        if self.fail_on is not None and len([x for x in self.log if x[0] == self.name]) == self.fail_on:
+            raise RuntimeError("boom")
+
+
+def _mongo_store(log, fail_on=None):
+    from analytics_store import MongoAnalyticsStore
+
+    class DB:
+        analytics_counters = _FakeColl(log, "c", fail_on)
+        analytics_heat = _FakeColl(log, "h")
+
+    return MongoAnalyticsStore(DB(), lambda d, h: (list(d.items()), list(h.items())))
+
+
+@pytest.mark.asyncio
+async def test_mongo_flush_is_chunked_and_paced(monkeypatch):
+    monkeypatch.setenv("ANALYTICS_FLUSH_CHUNK", "5")
+    monkeypatch.setenv("ANALYTICS_FLUSH_PACE_S", "0.01")
+    log = []
+    deltas = {("o", "d", "pv", str(i), "", "all", "all"): {"n": 1} for i in range(12)}
+    await _mongo_store(log).write(deltas, {("o", "p", "d", "s", "k", 1, 1): 3})
+    assert sum(n for _, n in log) == 13 and max(n for _, n in log) <= 5
+
+
+@pytest.mark.asyncio
+async def test_mongo_flush_default_is_unchanged(monkeypatch):
+    monkeypatch.delenv("ANALYTICS_FLUSH_CHUNK", raising=False)
+    log = []
+    await _mongo_store(log).write({("o", "d", "pv", str(i), "", "a", "a"): {"n": 1} for i in range(12)}, {})
+    assert log == [("c", 12)]
+
+
+@pytest.mark.asyncio
+async def test_failed_chunk_restores_only_unwritten(monkeypatch):
+    monkeypatch.setenv("ANALYTICS_ALERTS_ENABLED", "false")
+    monkeypatch.setenv("ANALYTICS_FLUSH_CHUNK", "2")
+    monkeypatch.setenv("ANALYTICS_FLUSH_PACE_S", "0")
+    monkeypatch.setattr(a, "_deltas", {})
+    monkeypatch.setattr(a, "_heat", __import__("collections").defaultdict(int))
+    monkeypatch.setattr(a, "_flush_pending_keys", set())
+    monkeypatch.setattr(a, "_last_db_flush", 0.0)
+    a._db = object()
+    log = []
+    store = _mongo_store(log, fail_on=2)  # second chunk fails
+    monkeypatch.setattr(a, "_analytics_store", lambda _db=None: store)
+    keys = [("o", "2026-10-11", "pv", str(i), "", "all", "all") for i in range(5)]
+    for k in keys:
+        a._inc(k, {"n": 1})
+    await a._flush_once(force=True)
+    left = {k for k in a._deltas if k[2] == "pv"}
+    assert left == set(keys[2:])  # chunk 1 (keys 0-1) landed and is not counted again
+    a._db = None

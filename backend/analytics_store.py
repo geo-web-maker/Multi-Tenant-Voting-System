@@ -153,6 +153,34 @@ def counter_documents_from_rows(rows: Iterable[Any]) -> list[dict]:
     return list(docs.values())
 
 
+
+class PartialFlushError(Exception):
+    """A chunked Mongo flush failed part-way. `remaining` is only what was not written, so chunks that already
+    landed are not restored and counted twice."""
+
+    def __init__(self, deltas: dict, heat: dict):
+        super().__init__("analytics flush failed part-way")
+        self.remaining = (deltas, heat)
+
+
+def _split_items(items: list) -> tuple[dict, dict]:
+    return ({k: v for t, k, v in items if t == "c"}, {k: v for t, k, v in items if t == "h"})
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 class MongoAnalyticsStore:
     name = "mongo"
 
@@ -181,12 +209,44 @@ class MongoAnalyticsStore:
             out.append({"org_id": key.get("o"), "kind": key.get("k"), "k1": key.get("a"), "k2": key.get("b")})
         return out
 
-    async def write(self, deltas: dict, heat: dict) -> None:
-        ops, hops = self._build_ops(deltas, heat)
-        if ops:
-            await self.db.analytics_counters.bulk_write(ops, ordered=False)
-        if hops:
-            await self.db.analytics_heat.bulk_write(hops, ordered=False)
+    supports_pacing = True
+    unwritten: tuple | None = None
+
+    async def write(self, deltas: dict, heat: dict, paced: bool = True) -> None:
+        # ANALYTICS_FLUSH_CHUNK = max Mongo ops per bulk_write (0 = one bulk per collection, the old behaviour).
+        # ANALYTICS_FLUSH_PACE_S = pause between chunks. Chunk 5 + pace 1.0 caps the flusher near 5 ops/s.
+        chunk = _env_int("ANALYTICS_FLUSH_CHUNK", 0)
+        if chunk <= 0:
+            ops, hops = self._build_ops(deltas, heat)
+            if ops:
+                await self.db.analytics_counters.bulk_write(ops, ordered=False)
+            if hops:
+                await self.db.analytics_heat.bulk_write(hops, ordered=False)
+            return
+        pace = max(0.0, _env_float("ANALYTICS_FLUSH_PACE_S", 1.0)) if paced else 0.0
+        items = [("c", k, v) for k, v in deltas.items()] + [("h", k, v) for k, v in heat.items()]
+        self.unwritten = None
+        for i in range(0, len(items), chunk):
+            part = items[i:i + chunk]
+            d = {k: v for t, k, v in part if t == "c"}
+            h = {k: v for t, k, v in part if t == "h"}
+            written = False
+            try:
+                ops, hops = self._build_ops(d, h)
+                if ops:
+                    await self.db.analytics_counters.bulk_write(ops, ordered=False)
+                if hops:
+                    await self.db.analytics_heat.bulk_write(hops, ordered=False)
+                written = True
+                if pace and i + chunk < len(items):
+                    await asyncio.sleep(pace)
+            except asyncio.CancelledError:
+                # Stopped mid-flush (shutdown): hand back what was not yet written so the final flush can finish it.
+                # Cancelled during the pause: this chunk landed. Cancelled during the write: treat it as unwritten.
+                self.unwritten = _split_items(items[i + chunk:] if written else items[i:])
+                raise
+            except Exception as exc:
+                raise PartialFlushError(*_split_items(items[i:])) from exc
 
     async def fetch_counters(self, orgs, days: int, seg: str, device: str, now: datetime) -> list[dict]:
         query: dict[str, Any] = {
