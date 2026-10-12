@@ -60,6 +60,7 @@ READ ONLY THESE (do not read anything else "for context"):
  1. The card for <ID> in BALLOTBOX_PHASE_RUNBOOK.md (§4).
  2. The playbook line ranges that card lists, via `sed -n A,Bp`. Also playbook lines 11-22 (rules A1).
  3. Only the source files the card names.
+ 4. If the card changes ANY front-end screen: docs/UI_TEMPLATE_MANUAL.md (whole file). Build with its kit classes only.
 
 DO:
  - Run the card's PRE-CHECK first. If the code does not match the card, STOP, write
@@ -68,11 +69,14 @@ DO:
  - While working, run only the targeted tests. Run the full suites once, at the end.
  - Commit after each sub-step that is green:  `<ID>: <what> [be N / fe N / lint 0]`
  - Never read, print, or commit *.env files. Never run against production. Never widen scope.
+ - Front-end changes: no hex colours, no new card or button styles, and look at the page in BOTH templates
+   (default and VITE_UI_TEMPLATE=blueprint), light and dark, at 1100 px and 390 px, before you finish.
  - Do not add dependencies. Do not edit files outside the card's FILES list. If you must, STOP and say why.
  - Keep command output short (`| tail -15`). Do not re-read files you already read.
 
 FINISH WITH:
  - Full backend + frontend tests, lint, and (if frontend changed) `npx vite build`.
+ - If frontend changed: also `VITE_UI_TEMPLATE=blueprint npx vitest run` (src/uiTemplateRules.test.js must pass).
  - Write progress/<ID>.md using the template in §6 (paste the real result lines), commit it.
  - Reply with at most 10 lines: status, commit SHAs, test counts, anything for a human to check.
 

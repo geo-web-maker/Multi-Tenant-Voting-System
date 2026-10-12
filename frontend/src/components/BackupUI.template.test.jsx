@@ -1,7 +1,7 @@
 import React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { setTemplateImpl } from '../template';
 import { BackupCard, BackupPill, tileClass, cardClass } from './BackupUI';
 
@@ -14,6 +14,7 @@ afterEach(() => { cleanup(); setTemplateImpl(null); });
 
 describe('Backups UI follows the active template', () => {
   it('uses the standard classes and pill in the default template', () => {
+    setTemplateImpl(null);
     render(<BackupCard title="T"><BackupPill state="passed" /></BackupCard>);
     expect(document.querySelector('.perf-card')).toBeTruthy();
     expect(screen.queryByTestId('bp-pill')).toBeNull();
@@ -21,14 +22,15 @@ describe('Backups UI follows the active template', () => {
     expect(tileClass()).toContain('perf-tile');
   });
 
-  it('uses the Blueprint card, tile surface and Pill when Blueprint is registered', () => {
+  it('uses the same panel and tile classes in Blueprint, with the Blueprint Pill', () => {
     setTemplateImpl(fakeBlueprint);
     render(<BackupCard title="T"><BackupPill state="failed" /></BackupCard>);
-    expect(document.querySelector('.bp-card-x')).toBeTruthy();
-    expect(document.querySelector('.perf-card')).toBeNull();
+    // One card for both templates: a second bp-card would nest an accent top border inside the console shell.
+    expect(document.querySelector('.perf-card')).toBeTruthy();
+    expect(document.querySelector('.bp-card-x')).toBeNull();
     expect(screen.getByTestId('bp-pill').dataset.tone).toBe('neg');
-    expect(cardClass()).toBe('bp-card-x');
-    expect(tileClass()).toBe('perf-tile');        // never bp.cls.alt: that is Blueprint's red error block
+    expect(cardClass()).toBe('perf-card card-pad');
+    expect(tileClass()).toBe('perf-card card-pad perf-tile');
   });
 
   it('never states health by colour alone: the word is always rendered', () => {
@@ -39,16 +41,20 @@ describe('Backups UI follows the active template', () => {
     }
   });
 
-  it('blueprint.css gives the shared perf controls scoped 48 px rules inside @media screen, without !important', () => {
-    const css = readFileSync('src/blueprint.css', 'utf8');
-    const start = css.indexOf('BACKUPS / PERFORMANCE TABS');
+  it('the live blueprint.css carries one scoped PANEL KIT block, and no stale second copy exists', () => {
+    const css = readFileSync('src/templates/blueprint/blueprint.css', 'utf8');
+    const start = css.indexOf('===== PANEL KIT');
+    const end = css.indexOf('===== /PANEL KIT');
     expect(start).toBeGreaterThan(css.indexOf('@media screen'));
-    expect(start).toBeLessThan(css.indexOf('7. PRINT'));
-    const section = css.slice(start, css.indexOf('/* ===== /NEUTRALISERS'));
+    expect(end).toBeGreaterThan(start);
+    expect(start).toBeLessThan(css.indexOf('===== NEUTRALISERS'));
+    const section = css.slice(start, end);
     expect(section).toMatch(/\.perf-btn[^{]*\{[^}]*min-height: var\(--bp-tap\)/);
     expect(section).toMatch(/\.perf-field[^{]*\{[^}]*min-height: var\(--bp-tap\)/);
     expect(section).not.toContain('!important');
     expect(section).toContain('--bp-ai');
+    // src/blueprint.css used to be an unimported copy that tests read while the app loaded another file.
+    expect(existsSync('src/blueprint.css')).toBe(false);
   });
 
   it('no Backup component hard-codes the default card class or Blueprint bp- class names', () => {

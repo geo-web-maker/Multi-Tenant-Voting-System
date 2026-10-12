@@ -206,7 +206,8 @@ describe('AlertPanel', () => {
     const { container } = render(<AlertPanel alerts={alerts} />);
     expect(container.querySelector('.bp-pill').textContent).toBe(label);
     expect(container.querySelector('.bp-pill').className).toBe(cls);
-    expect(container.firstChild.className).toBe('bp-card');
+    // Panels are plain bordered cards inside the console shell (no nested accent-topped bp-card): same class as Backups and Performance.
+    expect(container.firstChild.className).toBe('perf-card card-pad');
   });
 
   it('blueprint: items keep their text; critical = alert box, warning = warn banner', async () => {

@@ -11,7 +11,7 @@ export default function AlertPanel({ alerts, footer = null }) {
   const state = overallAlertState(alerts);
   const bp = getTemplate(); // render-time: null => the standard UI
   return (
-    <div style={bp ? { minWidth: 0 } : box} className={bp ? bp.cls.card : 'card-pad'} data-testid="alert-panel">
+    <div style={box} className="perf-card card-pad" data-testid="alert-panel">
       <h3 style={h3}>Alerts</h3>
       <p style={{ margin: 0 }}>
         {bp ? <bp.Pill tone={PILL_TONE[state]}>{alertLabel(state)}</bp.Pill> : (

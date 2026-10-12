@@ -10,8 +10,8 @@ const read = (p) => fs.readFileSync(path.join(SRC, p), 'utf8');
 describe('E17 performance tab targets', () => {
   it('blueprint.css lifts buttons to 44px and fields to 48px, scoped, without !important', () => {
     const css = read('templates/blueprint/blueprint.css');
-    expect(css).toMatch(/html\[data-template="blueprint"\] \.perf-btn,\s*html\[data-template="blueprint"\] \.perf-actions button\s*\{[^}]*min-height:\s*44px/);
-    expect(css).toMatch(/html\[data-template="blueprint"\] \.perf-field\s*\{[^}]*min-height:\s*48px/);
+    expect(css).toMatch(/html\[data-template="blueprint"\] \.perf-btn,\s*html\[data-template="blueprint"\] \.perf-actions button\s*\{[^}]*min-height:\s*var\(--bp-tap\)/);   // --bp-tap = 48 px
+    expect(css).toMatch(/html\[data-template="blueprint"\] \.perf-field\s*\{[^}]*min-height:\s*var\(--bp-tap\)/);
     expect(css.match(/\.perf-[^{]*\{[^}]*!important/g)).toBeNull();
   });
   it('the rule sits inside the screen-only block', () => {

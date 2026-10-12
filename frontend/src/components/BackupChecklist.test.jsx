@@ -84,7 +84,7 @@ describe('both templates are styled', () => {
   });
   it('the stylesheet Blueprint actually imports styles tiles and checklists, scoped and without !important', () => {
     for (const c of ['perf-tile', ...classes.slice(0, 4)]) expect(live, c).toContain(`html[data-template="blueprint"] .${c}`);
-    const block = live.slice(live.indexOf('Backups: nested tiles and checklists'), live.indexOf('html[data-template="blueprint"] .perf-chips li'));
+    const block = live.slice(live.indexOf('===== PANEL KIT'), live.indexOf('html[data-template="blueprint"] .perf-chips li'));
     expect(block).not.toContain('!important');
     expect(block).toContain('var(--bp-ok)');
     expect(block).toContain('var(--bp-no)');

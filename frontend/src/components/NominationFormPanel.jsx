@@ -1,12 +1,9 @@
 import React from 'react';
 import api from '../api';
-import { getTemplate } from '../template';
 
 const defaults = { enabled: false, required: true, title: 'Nomination Form', instructions: '', template_file: null, accepted_types: ['pdf'], max_mb: 5, collect_phone: false };
 
 export default function NominationFormPanel() {
-  const bp = getTemplate();
-  const k = bp?.cls;
   const [saved, setSaved] = React.useState(defaults);
   const [form, setForm] = React.useState(defaults);
   const [reason, setReason] = React.useState('');
@@ -53,60 +50,57 @@ export default function NominationFormPanel() {
   };
 
   return (
-    <div style={box} className={k?.card}>
-      <h4 style={{ margin: '0 0 4px' }} className={k?.sec}>Nomination form</h4>
-      <p style={{ margin: '0 0 14px', fontSize: 12, opacity: .65 }}>Configure the downloadable blank form and the completed form applicants must attach. Changes are audit-logged.</p>
-      <div style={grid}>
-        <label style={lbl}>Enable section <input type="checkbox" checked={Boolean(form.enabled)} onChange={e => setForm({ ...form, enabled: e.target.checked })} /></label>
-        <label style={lbl}>Require upload <input type="checkbox" checked={Boolean(form.required)} disabled={!form.enabled} onChange={e => setForm({ ...form, required: e.target.checked })} /></label>
-        <label style={lbl}>Ask applicants for a phone number <input type="checkbox" checked={Boolean(form.collect_phone)} onChange={e => setForm({ ...form, collect_phone: e.target.checked })} /></label>
+    <section className="perf-card card-pad" style={{ marginBottom: 16 }} aria-label="Nomination form settings">
+      <h3 style={h3}>Nomination form</h3>
+      <p className="perf-lead">Configure the downloadable blank form and the completed form applicants must attach. Changes are audit-logged.</p>
+      <div className="perf-checks">
+        <label className="perf-check"><input type="checkbox" checked={Boolean(form.enabled)} onChange={e => setForm({ ...form, enabled: e.target.checked })} /> Enable section</label>
+        <label className="perf-check"><input type="checkbox" checked={Boolean(form.required)} disabled={!form.enabled} onChange={e => setForm({ ...form, required: e.target.checked })} /> Require upload</label>
+        <label className="perf-check"><input type="checkbox" checked={Boolean(form.collect_phone)} onChange={e => setForm({ ...form, collect_phone: e.target.checked })} /> Ask applicants for a phone number</label>
       </div>
-      {form.collect_phone && <p style={{ margin: '0 0 10px', fontSize: 12, opacity: .65 }}>For registers with no phone numbers. Saved on the voter record, and only when that record has none yet. Works even if the nomination form section above is off.</p>}
-      <input style={inp} value={form.title} maxLength={80} placeholder="Nomination Form" onChange={e => setForm({ ...form, title: e.target.value })} aria-label="Nomination form title" />
-      <textarea style={{ ...inp, minHeight: 100, marginTop: 8 }} value={form.instructions} maxLength={2000} placeholder="Instructions shown to applicants" onChange={e => setForm({ ...form, instructions: e.target.value })} aria-label="Nomination form instructions" />
-      <div style={{ marginTop: 10 }}>
-        <b style={{ fontSize: 12 }}>Accepted types</b>
-        <label style={check}><input type="checkbox" checked={form.accepted_types.includes('pdf')} onChange={() => toggleType('pdf')} /> PDF</label>
-        <label style={check}><input type="checkbox" checked={form.accepted_types.includes('docx')} onChange={() => toggleType('docx')} /> DOCX</label>
+      {form.collect_phone && <p className="perf-note">For registers with no phone numbers. Saved on the voter record, and only when that record has none yet. Works even if the nomination form section above is off.</p>}
+      <div className="perf-stack" style={{ marginTop: 12 }}>
+        <input className="perf-field" value={form.title} maxLength={80} placeholder="Nomination Form" onChange={e => setForm({ ...form, title: e.target.value })} aria-label="Nomination form title" />
+        <textarea className="perf-field" value={form.instructions} maxLength={2000} placeholder="Instructions shown to applicants" onChange={e => setForm({ ...form, instructions: e.target.value })} aria-label="Nomination form instructions" />
       </div>
-      <label style={{ ...lbl, marginTop: 10 }}>Maximum size (MB) <input type="number" min="1" max="10" value={form.max_mb} onChange={e => setForm({ ...form, max_mb: Number(e.target.value) })} style={{ ...inp, width: 110, marginLeft: 8 }} /></label>
-      <div style={uploadBox}>
-        <b style={{ fontSize: 12 }}>Blank template</b>
-        {form.template_file ? <span style={{ fontSize: 12, opacity: .75 }}>{form.template_file.filename}</span> : <span style={{ fontSize: 12, opacity: .55 }}>No template uploaded</span>}
-        <label style={uploadBtn}>{uploading ? 'Uploading…' : 'Upload PDF/DOCX'}<input type="file" accept=".pdf,.docx" disabled={uploading} style={{ display: 'none' }} onChange={e => uploadTemplate(e.target.files?.[0])} /></label>
+      <div style={{ marginTop: 12 }}>
+        <b style={{ fontSize: 13 }}>Accepted types</b>
+        <div className="perf-btnbar" style={{ columnGap: 16 }}>
+          <label className="perf-check"><input type="checkbox" checked={form.accepted_types.includes('pdf')} onChange={() => toggleType('pdf')} /> PDF</label>
+          <label className="perf-check"><input type="checkbox" checked={form.accepted_types.includes('docx')} onChange={() => toggleType('docx')} /> DOCX</label>
+        </div>
       </div>
-      <div style={uploadBox}>
-        <b style={{ fontSize: 12 }}>Signed-form storage</b>
-        <span style={{ fontSize: 12, opacity: .6 }}>Checks the private bucket settings without submitting an application.</span>
-        <button type="button" onClick={testStorage} disabled={testing} style={{ ...uploadBtn, background: 'transparent', color: 'inherit' }} data-testid="test-storage">{testing ? 'Testing…' : 'Test storage'}</button>
+      <label className="perf-check" style={{ marginTop: 4 }}>Maximum size (MB) <input className="perf-field" type="number" min="1" max="10" value={form.max_mb} onChange={e => setForm({ ...form, max_mb: Number(e.target.value) })} style={{ width: 110 }} /></label>
+      <div className="perf-row">
+        <span className="perf-row-title">Blank template</span>
+        <span className="perf-row-text">{form.template_file ? form.template_file.filename : 'No template uploaded'}</span>
+        <label className="perf-btn">{uploading ? 'Uploading…' : 'Upload PDF/DOCX'}<input type="file" accept=".pdf,.docx" disabled={uploading} style={{ display: 'none' }} onChange={e => uploadTemplate(e.target.files?.[0])} /></label>
+      </div>
+      <div className="perf-row">
+        <span className="perf-row-title">Signed-form storage</span>
+        <span className="perf-row-text">Checks the private bucket settings without submitting an application.</span>
+        <button type="button" className="perf-btn" onClick={testStorage} disabled={testing} data-testid="test-storage">{testing ? 'Testing…' : 'Test storage'}</button>
         {test && (
           <div role="status" style={{ flexBasis: '100%', fontSize: 12, lineHeight: 1.7 }}>
-            {test.error ? <span style={{ color: 'var(--danger)' }}>{test.error}</span> : (
+            {test.error ? <span className="perf-msg" data-kind="error">{test.error}</span> : (
               <>
-                <b style={{ color: test.ok ? 'var(--success)' : 'var(--danger)' }}>{test.ok ? 'Storage works: signed forms can be uploaded, read by staff and deleted.' : 'Storage is not working yet.'}</b>
+                <b className="perf-msg" data-kind={test.ok ? 'ok' : 'error'}>{test.ok ? 'Storage works: signed forms can be uploaded, read by staff and deleted.' : 'Storage is not working yet.'}</b>
                 {test.steps.map(st => (
-                  <div key={st.name}><span aria-hidden="true">{st.ok ? '✓' : '✗'}</span> <b>{st.name}</b>: <span style={{ opacity: .8 }}>{st.detail}</span></div>
+                  <div key={st.name}><span aria-hidden="true">{st.ok ? '✓' : '✗'}</span> <b>{st.name}</b>: <span className="perf-row-text">{st.detail}</span></div>
                 ))}
               </>
             )}
           </div>
         )}
       </div>
-      <input style={{ ...inp, width: '100%', marginTop: 8, boxSizing: 'border-box' }} value={reason} maxLength={300} placeholder="Reason for change (required)" aria-label="Reason for change" onChange={e => setReason(e.target.value)} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
-        <button onClick={save} disabled={!canSave} style={{ ...saveBtn, opacity: canSave ? 1 : .5 }} className={k?.btn}>{busy ? 'Saving…' : 'Save nomination-form settings'}</button>
-        {(!typesOk || !sizeOk) && <span role="alert" style={{ fontSize: 12, color: 'var(--danger)' }}>{!typesOk ? 'Choose at least one file type.' : 'Maximum size must be 1–10 MB.'}</span>}
-        {msg.text && <span role="status" style={{ fontSize: 12, color: msg.kind === 'error' ? 'var(--danger)' : 'var(--success)' }}>{msg.text}</span>}
+      <input className="perf-field" style={{ width: '100%', marginTop: 12 }} value={reason} maxLength={300} placeholder="Reason for change (required)" aria-label="Reason for change" onChange={e => setReason(e.target.value)} />
+      <div className="perf-btnbar perf-btnbar-stack" style={{ marginTop: 12 }}>
+        <button type="button" onClick={save} disabled={!canSave} className="perf-btn perf-btn-primary">{busy ? 'Saving…' : 'Save nomination-form settings'}</button>
+        {(!typesOk || !sizeOk) && <span role="alert" className="perf-msg" data-kind="error">{!typesOk ? 'Choose at least one file type.' : 'Maximum size must be 1–10 MB.'}</span>}
+        {msg.text && <span role="status" className="perf-msg" data-kind={msg.kind === 'error' ? 'error' : 'ok'}>{msg.text}</span>}
       </div>
-    </div>
+    </section>
   );
 }
 
-const box = { padding: 16, border: '1px solid var(--border-color)', borderRadius: 12, background: 'var(--card-bg)', marginBottom: 16 };
-const inp = { padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', fontSize: 14, boxSizing: 'border-box', width: '100%' };
-const lbl = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, opacity: .8 };
-const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12, marginBottom: 10 };
-const check = { display: 'inline-flex', gap: 6, margin: '6px 16px 0 0', fontSize: 12 };
-const uploadBox = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 12, padding: 10, borderRadius: 8, border: '1px solid var(--border-color)' };
-const uploadBtn = { padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border-color)', cursor: 'pointer', fontWeight: 600, marginLeft: 'auto' };
-const saveBtn = { padding: '10px 16px', background: 'var(--success)', color: 'white', border: 0, borderRadius: 8, fontWeight: 700, cursor: 'pointer' };
+const h3 = { margin: '0 0 6px', fontSize: 15 };

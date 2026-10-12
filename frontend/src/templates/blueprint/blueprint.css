@@ -540,27 +540,40 @@ html[data-template="blueprint"] {
     html[data-template="blueprint"] .vp-actions button { width: 100%; }
   }
 
-  /* Performance tab (E17): buttons and tap targets reach the 44 px floor, form fields are 48 px tall (R10).
-     Plain classes (no bp- prefix) so default JS carries no bp- strings; scoped to the template, with no priority overrides. */
-  html[data-template="blueprint"] .perf-btn,
-  html[data-template="blueprint"] .perf-actions button { min-height: 44px; padding-left: var(--bp-s4); padding-right: var(--bp-s4); }
-  html[data-template="blueprint"] .perf-field { min-height: 48px; font-size: 16px; }
-  html[data-template="blueprint"] .perf-check { min-height: 44px; }
-
-  /* Backups: nested tiles and checklists. The tile rule used to live only in src/blueprint.css, which nothing imports. Tokens only, no priority overrides. */
-  html[data-template="blueprint"] .perf-tile { background: var(--bp-sf2); border: 1px solid var(--bp-line); border-radius: var(--bp-rs); padding: var(--bp-s3) var(--bp-s4); }
+  /* ===== PANEL KIT (perf-*): the one Blueprint look for Performance, Backups, Nomination form, Demo controls, Alerts ===== */
+  /* Cards are plain bordered panels inside the console shell (the shell is already the accent-topped .bp-card), exactly like
+     Site Usage: no second accent top border, no shadow, no extra margin. The surface comes from the token bridge. */
+  html[data-template="blueprint"] .perf-card { background: var(--bp-sf); border-color: var(--bp-line); border-radius: var(--bp-rs); }
+  /* Tap targets: 48 px (--bp-tap) for buttons, fields and tick rows. No priority overrides. */
+  html[data-template="blueprint"] .perf-btn, html[data-template="blueprint"] .perf-actions button { min-height: var(--bp-tap); padding-left: var(--bp-s4); padding-right: var(--bp-s4); border-radius: 99px; }
+  html[data-template="blueprint"] .perf-field { min-height: var(--bp-tap); font-size: 16px; }
+  html[data-template="blueprint"] .perf-check { min-height: var(--bp-tap); }
+  /* Selected / primary buttons: --bp-ai is the readable ink on the accent in both themes (white on the dark-theme orange fails). */
+  html[data-template="blueprint"] .perf-btn[aria-selected="true"], html[data-template="blueprint"] .perf-btn[aria-pressed="true"],
+  html[data-template="blueprint"] .perf-btn-primary { background: var(--bp-ac); color: var(--bp-ai); border-color: var(--bp-ac); }
+  html[data-template="blueprint"] .perf-btn:not([aria-selected="true"]):not([aria-pressed="true"]):not(.perf-btn-primary):not(.perf-btn-danger) { border-color: var(--bp-line-ui); color: var(--bp-tx); background: transparent; }
+  /* A <label> styled as a button (file picker) must not pick up the mono uppercase label look. */
+  html[data-template="blueprint"] label.perf-btn { font: 700 13px system-ui; text-transform: none; letter-spacing: 0; }
+  html[data-template="blueprint"] .perf-btn-danger { background: var(--bp-no-tint); color: var(--bp-no); border-color: var(--bp-no); }
+  /* Nested tiles use the same surface as the card they sit in (as in the standard UI and on Site Usage). */
+  html[data-template="blueprint"] .perf-tile { border-radius: var(--bp-rs); padding: var(--bp-s3) var(--bp-s4); min-width: 0; overflow-wrap: anywhere; }
+  html[data-template="blueprint"] .perf-row { border-color: var(--bp-line); border-radius: var(--bp-rs); }
+  html[data-template="blueprint"] .perf-lead, html[data-template="blueprint"] .perf-note, html[data-template="blueprint"] .perf-row-text,
   html[data-template="blueprint"] .perf-tile-label, html[data-template="blueprint"] .perf-tile-sub,
   html[data-template="blueprint"] .perf-checksummary, html[data-template="blueprint"] .perf-detail,
   html[data-template="blueprint"] .perf-detail-caption, html[data-template="blueprint"] .perf-kv dt { color: var(--bp-mu); }
+  html[data-template="blueprint"] .perf-msg[data-kind="error"] { color: var(--bp-no); }
+  html[data-template="blueprint"] .perf-msg[data-kind="ok"] { color: var(--bp-ok); }
   html[data-template="blueprint"] .perf-checkrow { border-top-color: var(--bp-line); }
   html[data-template="blueprint"] .perf-checkicon[data-ok="true"], html[data-template="blueprint"] .perf-kv dd[data-status="passed"] { color: var(--bp-ok); }
   html[data-template="blueprint"] .perf-checkicon[data-ok="false"], html[data-template="blueprint"] .perf-kv dd[data-status="failed"] { color: var(--bp-no); }
   html[data-template="blueprint"] .perf-kv dd[data-status="warning"] { color: var(--bp-wn); }
   html[data-template="blueprint"] .perf-chips li { border-color: var(--bp-line-ui); background: var(--bp-sf2); color: var(--bp-tx); }
   @media (max-width: 768px) {
-    html[data-template="blueprint"] .perf-actions { flex-direction: column; }
+    html[data-template="blueprint"] .perf-actions, html[data-template="blueprint"] .perf-btnbar.perf-btnbar-stack { flex-direction: column; }
     html[data-template="blueprint"] .perf-actions button { width: 100%; }
   }
+  /* ===== /PANEL KIT ===== */
 
   /* ===== NEUTRALISERS ===== */
   /* N1 App.jsx:321 - org branding is written inline on <html> (brandColors.js sets --bp-ac to the org accent, nudged to read on the template's surfaces, plus --bp-ai ink). The template is single-accent, so every screen that still asks for --brand-* gets that same colour and its ink (D1). N2/N3 (App shell) and N5/N6 (dashboard shell, BP-T7a) are below. */

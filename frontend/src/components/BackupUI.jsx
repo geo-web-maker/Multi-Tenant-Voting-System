@@ -35,11 +35,10 @@ export const statusLabel = (raw) => {
   return String(raw).replaceAll('_', ' ');
 };
 
-// Class helpers so nested tiles and dialogs follow the active template instead of hard-coding the default card look.
-export const cardClass = () => { const bp = getTemplate(); return bp ? bp.cls.card : 'perf-card card-pad'; };
-// bp.cls.alt is Blueprint's red error block, so tiles must not use it: in Blueprint a plain perf-tile is styled
-// by the scoped rule in blueprint.css; the standard UI keeps the bordered card look.
-export const tileClass = () => (getTemplate() ? 'perf-tile' : 'perf-card card-pad perf-tile');
+// One card and one tile for both templates. Blueprint only re-tones .perf-card / .perf-tile (blueprint.css, "PANEL KIT"): panels sit
+// inside the console shell, which is already the accent-topped card, so a second bp-card here would nest accent borders.
+export const cardClass = () => 'perf-card card-pad';
+export const tileClass = () => 'perf-card card-pad perf-tile';
 
 export function BackupCard({ title, note, children, className = '' }) {
   return <section className={`${cardClass()} ${className}`.trim()}>

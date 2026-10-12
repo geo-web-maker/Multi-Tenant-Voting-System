@@ -1005,6 +1005,27 @@ td, th {
 .perf-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
 @media (prefers-reduced-motion: reduce) { .perf-card * { transition: none !important; animation: none !important; } }
 
+/* Shared panel kit, part 2 (Nomination form, Demo controls, Alerts and every later panel). One card, one button set, one field,
+   one bordered row, so a new page cannot invent its own. Both templates use these; Blueprint only re-tones them (blueprint.css, "PANEL KIT"). */
+.perf-btn-danger { background: var(--danger); border-color: var(--danger); color: white; }
+label.perf-btn, a.perf-btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.perf-field { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font-family: inherit; min-width: 0; box-sizing: border-box; }
+.perf-field:disabled { opacity: 0.6; }
+textarea.perf-field { min-height: 100px; resize: vertical; }
+.perf-lead { margin: 0 0 12px; font-size: 13px; color: var(--text-muted); }
+.perf-note { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.perf-stack { display: grid; gap: 8px; }
+.perf-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); column-gap: 16px; }
+.perf-check input[type="checkbox"], .perf-check input[type="radio"] { flex: 0 0 auto; }
+.perf-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; }
+.perf-row > .perf-btn { margin-left: auto; }
+.perf-row-title { font-weight: 700; }
+.perf-row-text { color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
+.perf-btnbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.perf-msg { font-size: 13px; }
+.perf-msg[data-kind="error"] { color: var(--danger); }
+.perf-msg[data-kind="ok"] { color: var(--success); }
+
 /* Tap targets for the Vetting Panel / close-out buttons and the Performance tab, default template.
    Mirrors the Blueprint rules (44 px buttons, 48 px fields, stacked on phones). */
 .vp-actions button, button.vp-switch { min-height: 44px; padding-left: 16px; padding-right: 16px; }
@@ -1013,5 +1034,6 @@ td, th {
 .perf-check { min-height: 44px; }
 @media (max-width: 768px) {
   .vp-actions, .perf-actions { flex-direction: column; }
+  .perf-btnbar.perf-btnbar-stack { flex-direction: column; align-items: stretch; }
   .vp-actions button, .perf-actions button { width: 100%; }
 }
