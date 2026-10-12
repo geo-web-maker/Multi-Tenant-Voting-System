@@ -73,7 +73,10 @@ export default function BackupsPanel() {
         else errors.push({ name: names[index], error: result.reason });
       });
       if (results[0].status === 'rejected') throw results[0].reason;
-      setLoadError(errors.length ? `${errors.map((e) => e.name).join(', ')} data could not be refreshed.` : '');
+      // /summary degrades per section (200 + section_errors) instead of failing whole; say which parts are missing.
+      const sectionErrors = results[0].value?.data?.section_errors || [];
+      const failed = [...errors.map((e) => e.name), ...sectionErrors.map((e) => e.section)];
+      setLoadError(failed.length ? `${[...new Set(failed)].join(', ')} data could not be refreshed.` : '');
       if (errors.length && !silent) toast(getErrorMessage(errors[0].error, 'Some backup information could not be loaded.'), { kind: 'error' });
     } catch (e) {
       const message = getErrorMessage(e, 'Unable to load Backups.');

@@ -94,6 +94,15 @@ async def _verify_backups(live_db):
         errors.append({"tenant": "_global", "error": _safe_error(exc)})
     return {"status": "failed" if errors else "passed", "tenants": rows, "errors": errors}
 
+async def _section(errors, name, awaitable, fallback):
+    """Run one summary section; a failure degrades only that section instead of 500-ing the whole panel."""
+    try:
+        return await awaitable
+    except Exception as exc:  # noqa: BLE001 - deliberately broad: the dashboard must stay readable
+        errors.append({"section": name, "error": _safe_error(exc)})
+        return fallback
+
+
 async def _mirror_info(live_db):
     state = await live_db.backup_meta.find_one({"_id": "mirror_state"}) or {}
     last = state.get("last_ok_at")
@@ -179,7 +188,13 @@ async def _alerts(live_db, connections, b2, mirror, restore, cfg):
             add("full_backup_stale", "warning", "full_backup_age_min", age, threshold,
                 f"No sufficiently recent full backup for {row.get('slug') or row.get('tenant')}")
     mirror_lag = mirror.get("lag_minutes")
-    open_any = any(backup._active(await backup._election_flags(live_db, x.get("org_id"))) for x in await backup.list_tenants(live_db))
+    # NB: no `await` inside a generator expression handed to any()/all()/sum(): that makes it an async
+    # generator, which sync consumers cannot iterate (TypeError -> plain-text 500 on /summary).
+    open_any = False
+    for x in await backup.list_tenants(live_db):
+        if backup._active(await backup._election_flags(live_db, x.get("org_id"))):
+            open_any = True
+            break
     lag_threshold = cfg["mirror_lag_active_minutes"] if open_any else cfg["mirror_lag_idle_minutes"]
     if mirror.get("enabled") and (mirror_lag is None or mirror_lag > lag_threshold):
         add("mirror_behind", "warning", "mirror_lag_min", mirror_lag, lag_threshold, "Mirror is stale or has never completed a sync")
@@ -268,24 +283,30 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
 
     @router.get("/superadmin/backups/summary")
     async def summary(response: Response, admin: dict = guard):
-        no_store(response); db = get_db()
-        connections = await _connections(db)
-        b2 = await backup_probes.b2_summary(db)
-        mirror = await _mirror_info(db); restore = await _restore_info(db)
-        cfg_doc = await db.platform_settings.find_one({"name": "backup_monitor_config"}) or {}
-        cfg = {**_CONFIG_DEFAULTS, **(cfg_doc.get("values") or {})}
-        alerts = await _alerts(db, connections, b2, mirror, restore, cfg)
-        migration = await _migration_state(db, connections, b2, mirror, restore)
-        ownerless = await backup.ownerless_preflight(db)
+        no_store(response); db = get_db(); errors = []
+        connections = await _section(errors, "connections", _connections(db), {"connections": [], "guards": [], "overall": "unknown"})
+        b2 = await _section(errors, "b2", backup_probes.b2_summary(db), {"totals": {}, "object_count": None, "last_failure": "unavailable", "asset_failures": 0, "tenants": []})
+        mirror = await _section(errors, "mirror", _mirror_info(db), {"enabled": False, "counts": [], "consecutive_failures": 0})
+        restore = await _section(errors, "restore", _restore_info(db), {"last": None, "running": None})
+        async def _cfg():
+            doc = await db.platform_settings.find_one({"name": "backup_monitor_config"}) or {}
+            return {**_CONFIG_DEFAULTS, **(doc.get("values") or {})}
+        cfg = await _section(errors, "config", _cfg(), dict(_CONFIG_DEFAULTS))
+        alerts = await _section(errors, "alerts", _alerts(db, connections, b2, mirror, restore, cfg), [])
+        migration = await _section(errors, "migration", _migration_state(db, connections, b2, mirror, restore), None)
+        ownerless = await _section(errors, "ownerless_preflight", backup.ownerless_preflight(db), {"counts": {}, "safe": None})
         levels = {a["level"] for a in alerts}
-        overall = "critical" if "critical" in levels else "warning" if levels or connections.get("overall") != "healthy" else "healthy"
-        jobs = await db.backup_jobs.find({"status": {"$in": ["queued", "running"]}},
-            {"_id": 1, "kind": 1, "status": 1, "steps": 1, "started_at": 1}).sort("started_at", -1).limit(8).to_list(8)
-        for job in jobs: job["run_id"] = str(job.pop("_id")); job["started_at"] = _iso(job.get("started_at"))
+        overall = "critical" if "critical" in levels else "warning" if levels or errors or connections.get("overall") != "healthy" else "healthy"
+        async def _jobs():
+            rows = await db.backup_jobs.find({"status": {"$in": ["queued", "running"]}},
+                {"_id": 1, "kind": 1, "status": 1, "steps": 1, "started_at": 1}).sort("started_at", -1).limit(8).to_list(8)
+            for job in rows: job["run_id"] = str(job.pop("_id")); job["started_at"] = _iso(job.get("started_at"))
+            return rows
+        jobs = await _section(errors, "jobs_running", _jobs(), [])
         return {"overall": overall, "checked_at": datetime.now(timezone.utc).isoformat(), "alerts": alerts,
                 "connections": connections.get("connections", []), "guards": connections.get("guards", []),
                 "b2": b2, "mirror": mirror, "restore": {**restore, "next_scheduled": _next_restore_schedule(cfg.get("restore_test_weekly", True))},
-                "migration": migration, "ownerless_preflight": ownerless, "jobs_running": jobs}
+                "migration": migration, "ownerless_preflight": ownerless, "jobs_running": jobs, "section_errors": errors}
 
     @router.get("/superadmin/backups/connections")
     async def connections(response: Response, admin: dict = guard):

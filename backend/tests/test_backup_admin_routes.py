@@ -100,7 +100,8 @@ async def test_token_endpoints_reject_missing_and_bad_token(env, monkeypatch, pa
 
 def test_new_paths_are_org_exempt_and_public_to_the_session_guard():
     src = open("main.py", encoding="utf-8").read()
-    assert '"/superadmin/backups"' in src.split("ORG_EXEMPT_PREFIXES", 1)[1][:600]
+    # Anchor on the tuple definition: an earlier comment in main.py also mentions the name.
+    assert '"/superadmin/backups"' in src.split("ORG_EXEMPT_PREFIXES = ", 1)[1][:900]
     for p in ("/internal/backup/probe", "/internal/backup/mirror-sync", "/internal/backup/restore-test"):
         assert p in src
 
