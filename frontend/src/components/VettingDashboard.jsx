@@ -137,8 +137,8 @@ export default function VettingDashboard({ onLogout }) {
         <div style={card}>
           <p style={{ margin: '0 0 12px' }}>We could not load your panel details. Check your connection and try again.</p>
           <div className="vp-actions" style={row}>
-            <button style={btnApprove} onClick={loadMe}>Retry</button>
-            {onLogout && <button style={hatBtn} onClick={onLogout}>Log out</button>}
+            <button  onClick={loadMe} className="perf-btn perf-btn-primary">Retry</button>
+            {onLogout && <button  onClick={onLogout} className="perf-btn">Log out</button>}
           </div>
         </div>
       </Shell>
@@ -177,7 +177,7 @@ export default function VettingDashboard({ onLogout }) {
         refreshing={loading}
         onLogout={onLogout}
         actions={canSwitchBack ? (
-          <button className="vp-switch" style={hatBtn} onClick={() => switchHat().catch((e) => toast(e.response?.data?.detail || 'Could not switch back.', { kind: 'error' }))}>
+          <button className="vp-switch perf-btn"  onClick={() => switchHat().catch((e) => toast(e.response?.data?.detail || 'Could not switch back.', { kind: 'error' }))}>
             {`Switch back to ${backLabel}`}
           </button>
         ) : null}
@@ -232,8 +232,8 @@ export default function VettingDashboard({ onLogout }) {
             )}
             {canVote && (
               <div className="vp-actions" style={row}>
-                <button style={btnApprove} disabled={busy[`vote-${id}`]} onClick={() => vote(app, 'approve')}>Approve</button>
-                <button style={btnDeny} disabled={busy[`vote-${id}`]} onClick={() => vote(app, 'deny')}>Deny</button>
+                <button  disabled={busy[`vote-${id}`]} onClick={() => vote(app, 'approve')} className="perf-btn perf-btn-primary">Approve</button>
+                <button  disabled={busy[`vote-${id}`]} onClick={() => vote(app, 'deny')} className="perf-btn perf-btn-danger">Deny</button>
               </div>
             )}
             {app.awaiting_final_decision && !app.tie_break_available && !closed && (
@@ -257,8 +257,8 @@ export default function VettingDashboard({ onLogout }) {
                   onChange={(e) => setReasons((r) => ({ ...r, [id]: e.target.value }))}
                 />
                 <div className="vp-actions" style={row}>
-                  <button style={btnApprove} disabled={busy[`close-${id}`]} onClick={() => closeOut(app, 'approve')}>Approve</button>
-                  <button style={btnDeny} disabled={busy[`close-${id}`]} onClick={() => closeOut(app, 'deny')}>Deny</button>
+                  <button  disabled={busy[`close-${id}`]} onClick={() => closeOut(app, 'approve')} className="perf-btn perf-btn-primary">Approve</button>
+                  <button  disabled={busy[`close-${id}`]} onClick={() => closeOut(app, 'deny')} className="perf-btn perf-btn-danger">Deny</button>
                 </div>
               </div>
             )}
@@ -274,8 +274,8 @@ export default function VettingDashboard({ onLogout }) {
                   onChange={(e) => setReasons((r) => ({ ...r, [id]: e.target.value }))}
                 />
                 <div className="vp-actions" style={row}>
-                  <button style={btnApprove} disabled={busy[`tie-${id}`]} onClick={() => tieBreak(app, 'approve')}>Approve</button>
-                  <button style={btnDeny} disabled={busy[`tie-${id}`]} onClick={() => tieBreak(app, 'deny')}>Deny</button>
+                  <button  disabled={busy[`tie-${id}`]} onClick={() => tieBreak(app, 'approve')} className="perf-btn perf-btn-primary">Approve</button>
+                  <button  disabled={busy[`tie-${id}`]} onClick={() => tieBreak(app, 'deny')} className="perf-btn perf-btn-danger">Deny</button>
                 </div>
               </div>
             )}
@@ -316,7 +316,7 @@ export default function VettingDashboard({ onLogout }) {
 
 // Same outer-wrap + dashboard-shell frame every other dashboard uses.
 function NominationRow({ app, onView, busy }) {
-  if (app.has_nomination_form) return <div style={{ ...note, display: 'flex', alignItems: 'center', gap: 8 }}><span>Nomination form: {app.nomination_form_filename || 'submitted'}</span><button style={hatBtn} disabled={busy} onClick={() => onView(app.id || app._id)}>{busy ? 'Opening…' : 'View'}</button></div>;
+  if (app.has_nomination_form) return <div style={{ ...note, display: 'flex', alignItems: 'center', gap: 8 }}><span>Nomination form: {app.nomination_form_filename || 'submitted'}</span><button  disabled={busy} onClick={() => onView(app.id || app._id)} className="perf-btn">{busy ? 'Opening…' : 'View'}</button></div>;
   return <p style={note}>Nomination form: {app.nomination_form_required ? 'Required — not uploaded' : 'Not required at submission'}</p>;
 }
 
@@ -363,12 +363,12 @@ function ConfidentialityGate({ me, accepting, onAccept, onLogout }) {
           <span>I understand and will keep everything I see here confidential.</span>
         </label>
 
-        <button style={{ ...btnApprove, width: '100%', padding: '12px 16px', fontSize: '14px', opacity: agreed && !accepting ? 1 : 0.55, cursor: agreed && !accepting ? 'pointer' : 'not-allowed' }}
-                disabled={!agreed || accepting} onClick={onAccept}>
+        <button 
+                disabled={!agreed || accepting} onClick={onAccept} className="perf-btn perf-btn-primary" style={{ cursor: agreed && !accepting ? 'pointer' : 'not-allowed', width: '100%', opacity: agreed && !accepting ? 1 : 0.55 }}>
           {accepting ? 'Recording…' : 'I have read this and accept'}
         </button>
         {onLogout && (
-          <button style={{ ...hatBtn, width: '100%', marginTop: 10 }} onClick={onLogout}>Log out</button>
+          <button  onClick={onLogout} className="perf-btn" style={{ cursor: 'pointer', width: '100%', marginTop: 10 }}>Log out</button>
         )}
       </div>
     </div>
@@ -410,10 +410,10 @@ const note     = { fontSize: '13px', margin: '10px 0 0', opacity: 0.85 };
 const row      = { display: 'flex', gap: '10px', marginTop: '12px' };
 const tieBox   = { marginTop: '12px', padding: '12px', borderRadius: '8px', border: '1px solid var(--warning)' };
 const input    = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', marginBottom: '8px' };
-const btnBase  = { padding: '8px 16px', borderRadius: '8px', border: 'none', color: 'var(--bp-ai, #fff)', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' };
-const btnApprove = { ...btnBase, backgroundColor: 'var(--bp-ok, #2ecc71)' };
-const btnDeny    = { ...btnBase, backgroundColor: 'var(--bp-no, #e74c3c)' };
-const hatBtn   = { padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
+
+
+
+
 
 const gateCard   = { width: '100%', maxWidth: '460px', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '32px 28px', border: '1px solid var(--border-color)', boxShadow: '0 8px 30px rgba(0,0,0,0.08)', boxSizing: 'border-box' };
 const gateIcon   = { width: '52px', height: '52px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', marginBottom: '14px', backgroundColor: 'color-mix(in srgb, var(--info) 15%, transparent)' };

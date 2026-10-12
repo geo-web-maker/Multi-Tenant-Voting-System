@@ -3,7 +3,8 @@ import { BarRows } from './UsageCharts';
 import { PerfChart } from './PerfCharts';
 import AlertPanel from './AlertPanel';
 import BackupJobList from './BackupJobList';
-import { BackupButton, BackupCard, BackupPill, bytesText, muted, safeTime, tileClass } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill } from './BackupUI';
+import { bytesText, muted, safeTime, tileClass } from './BackupUtils';
 
 const SUBTABS = [
   ['connections', 'Connections', 'live_mongo'], ['b2', 'Backblaze', 'b2_backup_bucket'],

@@ -162,7 +162,7 @@ export default function CommissionDashboard({ onLogout }) {
           refreshing={loading}
           onLogout={onLogout}
           actions={panelLinked ? (
-            <button className="vp-switch" onClick={goToPanel} disabled={switchingHat} style={{ ...hatBtn, opacity: switchingHat ? 0.6 : 1 }}>
+            <button className="vp-switch perf-btn" onClick={goToPanel} disabled={switchingHat}  style={{ cursor: 'pointer', opacity: switchingHat ? 0.6 : 1 }}>
               {switchingHat ? 'Switching…' : 'Switch to Vetting Panel'}
             </button>
           ) : null}
@@ -473,6 +473,6 @@ const lockedNote = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, 
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
 
 const tieHint = { padding: '10px 14px', marginBottom: '16px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)' };
-const hatBtn = { padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', fontWeight: '600' };
+
 
 const outcomeCard = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };

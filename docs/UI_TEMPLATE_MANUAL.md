@@ -103,7 +103,9 @@ If you rename a kit class or marker comment, update these tests in the same chan
 
 One card per session. Write `progress/<card>.md` (what changed, what you ran, what you did not run). Any deliberate departure from this manual or the guide goes in `docs/DEVIATIONS.md` with the reason. Provide a forward patch; a reverse (remove) patch only when asked.
 
-## 9. Open items
+## 9. Open items (updated 12 October 2026)
 
-- Older admin panels (`SuperAdminDashboard.jsx`, `SharedAdminPanels.jsx`, `ContactChangesQueue.jsx`) still use their own inline `btn` styles (solid green/blue, 13 px). Moving them to the kit is a future card; do it screen by screen with the Blueprint run above.
-- Fields in `PerformanceSettings.jsx` still carry an inline style that duplicates `.perf-field`; it can be removed.
+- The priority admin-panel migration is now applied to the working tree: 162 button/style usages across the listed admin dashboards and small panels use the shared `perf-btn` kit; the migrated files were removed from `LEGACY_BUTTON_FILES`. Remaining allow-list entries are Tier A voter/applicant flows, public/export/utility flows with bespoke interaction needs, or small text-link controls. Their rationale is recorded in `progress/UI-BUTTONS-REMAINDER.md` and `docs/DEVIATIONS.md`.
+- `PerformanceSettings.jsx` no longer repeats the `.perf-field` inline style.
+- `BackupUI.jsx` contains React components only; pure formatting/status helpers live in `BackupUtils.js` to avoid `react-refresh/only-export-components` warnings.
+- Automated frontend tests, lint and both builds still need to be run in an environment with the project dependencies installed. Real browser/device checks remain mandatory; the change log records what could not be seen here.

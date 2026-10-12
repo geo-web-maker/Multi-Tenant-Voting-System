@@ -86,7 +86,7 @@ export default function LegacyDataPanel() {
     <div style={{ ...box, gridColumn: '1 / -1' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <b style={{ fontSize: 14 }}>Legacy data check</b>
-        <button style={ghost} disabled={busy} onClick={load}>{busy ? 'Checking…' : 'Check again'}</button>
+        <button  disabled={busy} onClick={load} className="perf-btn">{busy ? 'Checking…' : 'Check again'}</button>
       </div>
       <p style={note}>
         Finds records that belong to no organization (left over from before multi-tenancy). The app no longer reads or writes
@@ -116,8 +116,8 @@ export default function LegacyDataPanel() {
               <option value="">Assign to organization…</option>
               {orgs.map(o => <option key={o._id} value={String(o._id)}>{o.name} ({o.slug})</option>)}
             </select>
-            <button style={primary} disabled={busy} onClick={assign}>Assign selected</button>
-            <button style={danger} disabled={busy} onClick={remove}>Remove selected</button>
+            <button  disabled={busy} onClick={assign} className="perf-btn perf-btn-primary">Assign selected</button>
+            <button  disabled={busy} onClick={remove} className="perf-btn perf-btn-danger">Remove selected</button>
           </div>
         </>
       )}
@@ -129,6 +129,6 @@ const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding
 const note = { fontSize: 12, opacity: 0.8, margin: '6px 0' };
 const inp = { padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, minWidth: 220 };
 const base = { padding: '9px 16px', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13, color: 'var(--bp-ai, var(--bg-color))' };
-const primary = { ...base, background: 'var(--bp-ok, var(--success))' };
-const danger = { ...base, background: 'var(--danger)' };
-const ghost = { ...base, background: 'transparent', color: 'var(--text-color)', border: '1px solid var(--border-color)' };
+
+
+

@@ -15,8 +15,8 @@ import { PRINT_CSS } from '../candidateListPrint';
 
 const errText = (e, fallback) => e?.response?.data?.detail || fallback;
 const card = { padding: 16, border: '1px solid var(--border-color)', borderRadius: 12, background: 'var(--card-bg, transparent)', marginBottom: 16 };
-const btn = { padding: '9px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, background: `var(--accent-color, ${CL.blue})`, color: CL.white };
-const ghost = { ...btn, background: 'transparent', color: 'var(--text-color)', border: '1px solid var(--border-color)' };
+
+
 const muted = { fontSize: 13, opacity: 0.7, margin: '4px 0 12px' };
 
 export default function CandidateListBlock() {
@@ -97,7 +97,7 @@ export default function CandidateListBlock() {
               Issued {fmtStamp(list.issued_at)} · {list.count} candidate{list.count === 1 ? '' : 's'} · {list.reason}
               {!list.current && ` · superseded ${fmtStamp(list.superseded_at)}`}
             </div>
-            <button style={btn} onClick={download}>Download PDF</button>
+            <button  onClick={download} className="perf-btn perf-btn-primary">Download PDF</button>
             <span style={{ fontSize: 12, opacity: 0.6, marginLeft: 10 }}>Choose “Save as PDF” in the print dialog.</span>
           </div>
         )}
@@ -106,7 +106,7 @@ export default function CandidateListBlock() {
           <details style={{ marginBottom: 16, fontSize: 13 }}>
             <summary style={{ cursor: 'pointer', opacity: 0.8 }}>Something wrong with the list?</summary>
             <p style={muted}>Issuing builds a new list from the approved candidates right now and marks the previous one as superseded.</p>
-            <button style={ghost} onClick={issueNow} disabled={busy}>{busy ? 'Issuing…' : 'Issue now'}</button>
+            <button  onClick={issueNow} disabled={busy} className="perf-btn">{busy ? 'Issuing…' : 'Issue now'}</button>
           </details>
         )}
       </div>

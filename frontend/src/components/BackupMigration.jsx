@@ -1,7 +1,8 @@
 import React from 'react';
 import { BarRows } from './UsageCharts';
 import BackupJobList from './BackupJobList';
-import { BackupButton, BackupCard, BackupPill, ChecklistRows, muted, safeTime, tileClass } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill, ChecklistRows } from './BackupUI';
+import { muted, safeTime, tileClass } from './BackupUtils';
 
 const CHECK_CAPTIONS = { 'No election open': 'Open now', 'No uncovered tenant-data collections': 'Not yet covered by backups' };
 

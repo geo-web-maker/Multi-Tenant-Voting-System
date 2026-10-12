@@ -76,8 +76,8 @@ export default function VoterFieldsPanel() {
             </div>
             <label style={chk}><input type="checkbox" checked={f.enabled} disabled={busy} onChange={e => toggle(f, { enabled: e.target.checked })} /> Collect</label>
             <label style={chk}><input type="checkbox" checked={f.public} disabled={busy || !f.enabled} onChange={e => toggle(f, { public: e.target.checked })} /> Publish turnout</label>
-            <button style={ghost} disabled={busy} onClick={() => purge(f)}>Erase data</button>
-            {!f.standard && <button style={{ ...ghost, color: 'var(--danger)' }} disabled={busy} onClick={() => remove(f)}>Remove</button>}
+            <button  disabled={busy} onClick={() => purge(f)} className="perf-btn">Erase data</button>
+            {!f.standard && <button  disabled={busy} onClick={() => remove(f)} className="perf-btn" style={{ cursor: 'pointer' }}>Remove</button>}
           </div>
         ))}
       </div>
@@ -87,13 +87,13 @@ export default function VoterFieldsPanel() {
           <input style={inp} value={nf.key} onChange={e => setNf({ ...nf, key: e.target.value })} placeholder="hostel" /></label>
         <label style={{ ...fld, flex: 1, minWidth: 120 }}><span style={lbl}>Display label</span>
           <input style={inp} value={nf.label} onChange={e => setNf({ ...nf, label: e.target.value })} placeholder="Hostel" /></label>
-        <button style={btn} disabled={busy || !nf.key.trim()} onClick={add}>Add field</button>
+        <button  disabled={busy || !nf.key.trim()} onClick={add} className="perf-btn perf-btn-primary">Add field</button>
       </div>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 12, flexWrap: 'wrap' }}>
         <label style={{ ...fld, width: 200 }}><span style={lbl}>Smallest group shown publicly</span>
           <input style={inp} type="number" min={5} max={100} value={minGroup} onChange={e => setMinGroup(Number(e.target.value))} /></label>
-        <button style={btn} disabled={busy || minGroup === d.min_group_size} onClick={() => save({ min_group_size: minGroup }, 'Saved.')}>Save</button>
+        <button  disabled={busy || minGroup === d.min_group_size} onClick={() => save({ min_group_size: minGroup }, 'Saved.')} className="perf-btn perf-btn-primary">Save</button>
         <span style={{ fontSize: 12, opacity: 0.65 }}>Smaller groups are combined into "Other" on the public page.</span>
       </div>
     </div>
@@ -105,7 +105,7 @@ const note = { fontSize: 12, opacity: 0.75, margin: '6px 0' };
 const fld = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 };
 const lbl = { fontSize: 12, opacity: 0.65, fontWeight: 600 };
 const inp = { padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, width: '100%', boxSizing: 'border-box' };
-const btn = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', background: 'var(--bp-ok, #2ecc71)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
-const ghost = { padding: '6px 10px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: 8, cursor: 'pointer', fontSize: 12 };
+
+
 const row = { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px solid var(--border-color)' };
 const chk = { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 };

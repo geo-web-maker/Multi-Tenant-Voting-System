@@ -126,10 +126,10 @@ export default function VoterImportReview({ file, onClose, onDone }) {
       <div style={modal}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h3 style={{ margin: 0, color: 'var(--text-color)' }}>{stage === 'map' ? 'Match file columns' : 'Review voter update'}</h3>
-          <button style={ghostBtn} onClick={onClose} disabled={applying}>Cancel</button>
+          <button  onClick={onClose} disabled={applying} className="perf-btn">Cancel</button>
         </div>
         {stage === 'review' && (
-          <button style={{ ...ghostBtn, marginBottom: 10 }} onClick={backToMap} disabled={applying}>← Change column matching</button>
+          <button  onClick={backToMap} disabled={applying} className="perf-btn" style={{ cursor: 'pointer', marginBottom: 10 }}>← Change column matching</button>
         )}
         <p style={{ margin: '0 0 12px', fontSize: 12, opacity: 0.6 }}>
           {file.name} — nothing changes until you press Apply. Vote status, roles and admin logins of existing voters are never touched.
@@ -159,7 +159,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
                   value={idLabel} maxLength={60} placeholder="e.g. Student Number"
                   onChange={e => setIdLabel(e.target.value)} />
                 {idHeading && idHeading.toLowerCase() !== idLabel.trim().toLowerCase() && (
-                  <button type="button" style={{ ...ghostBtn, marginTop: 6 }} onClick={() => setIdLabel(idHeading)}>
+                  <button type="button"  onClick={() => setIdLabel(idHeading)} className="perf-btn" style={{ cursor: 'pointer', marginTop: 6 }}>
                     Use the column heading “{idHeading}”
                   </button>
                 )}
@@ -167,8 +167,8 @@ export default function VoterImportReview({ file, onClose, onDone }) {
               </div>
             )}
             {inspect && (
-              <button style={{ ...primaryBtn, marginTop: 14, opacity: missing.length || mapBusy ? 0.5 : 1 }}
-                disabled={missing.length > 0 || mapBusy} onClick={runPreview}>
+              <button 
+                disabled={missing.length > 0 || mapBusy} onClick={runPreview} className="perf-btn perf-btn-primary" style={{ width: '100%', cursor: 'pointer' , marginTop: 14, opacity: missing.length || mapBusy ? 0.5 : 1 }}>
                 {missing.length ? `Choose a column for ${missing.map(m => m.label).join(' and ')}` : 'Continue — compare with current voters'}
               </button>
             )}
@@ -298,7 +298,7 @@ export default function VoterImportReview({ file, onClose, onDone }) {
               </div>
             )}
 
-            <button style={{ ...primaryBtn, opacity: canApply ? 1 : 0.5 }} disabled={!canApply} onClick={apply}>
+            <button  disabled={!canApply} onClick={apply} className="perf-btn perf-btn-primary" style={{ width: '100%', cursor: 'pointer' , opacity: canApply ? 1 : 0.5 }}>
               {applying ? 'Applying…' : 'Apply update'}
             </button>
           </>
@@ -317,5 +317,5 @@ const optRow = { display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, margi
 const row = { display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border-color)' };
 const diffLine = { fontSize: 12, marginTop: 2, overflowWrap: 'anywhere' };
 const sel = { padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)', fontSize: 12 };
-const ghostBtn = { padding: '8px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: 8, cursor: 'pointer', fontSize: 13 };
-const primaryBtn = { width: '100%', padding: 12, background: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' };
+
+

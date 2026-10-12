@@ -22,12 +22,12 @@ export default function ViewAsBanner() {
   const close = () => { clearAdminSession(); window.close(); window.location.replace('/'); };
   return (
     <div role="status" className="no-print" style={{ position: 'sticky', top: 0, zIndex: 10000, display: 'flex', gap: 12, alignItems: 'center',
-      justifyContent: 'space-between', flexWrap: 'wrap', padding: '8px 14px', background: '#f39c12', color: '#1a1a1a', fontSize: 13, fontWeight: 600 }}>
+      justifyContent: 'space-between', flexWrap: 'wrap', padding: '8px 14px', background: 'var(--warning, #f39c12)', color: 'var(--bp-ai, #1a1a1a)', fontSize: 13, fontWeight: 600 }}>
       <span>
         Read-only view of {v.name} ({LABELS[v.role] || v.role}). Nothing you do here can change data.
         {left !== null && ` Ends in ${left} min.`}
       </span>
-      <button onClick={close} style={{ padding: '4px 12px', border: '1px solid #1a1a1a', background: 'transparent', borderRadius: 6, cursor: 'pointer', fontWeight: 700 }}>
+      <button onClick={close} style={{ padding: '4px 12px', border: '1px solid var(--bp-ai, #1a1a1a)', background: 'transparent', borderRadius: 6, cursor: 'pointer', fontWeight: 700 }}>
         Close view
       </button>
     </div>

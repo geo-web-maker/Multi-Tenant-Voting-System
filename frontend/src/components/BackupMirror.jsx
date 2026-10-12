@@ -1,7 +1,8 @@
 import React from 'react';
 import { BarRows } from './UsageCharts';
 import BackupJobList from './BackupJobList';
-import { BackupButton, BackupCard, BackupPill, bytesText, muted, safeTime, tileClass } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill } from './BackupUI';
+import { bytesText, muted, safeTime, tileClass } from './BackupUtils';
 
 export default function BackupMirror({ mirror, jobs = [], run, viewAs, runningKinds = [] }) {
   const counts = (mirror?.counts || []).map((c) => ({ label: c.collection, value: Math.abs(Number(c.live || 0) - Number(c.mirror || 0)),

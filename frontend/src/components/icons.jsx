@@ -31,8 +31,8 @@ const ICONS = {
   lock: [Lock], back: [ArrowLeft], next: [ArrowRight], check: [Check], close: [X], plus: [Plus],
   minus: [Minus], trend: [TrendingUp], chevronDown: [ChevronDown], chevronUp: [ChevronUp],
   dot: [Circle, { fill: 'currentColor', strokeWidth: 0, style: { width: '0.55em', height: '0.55em' } }],
-  dotGreen: [Circle, { fill: '#10b981', color: '#10b981', strokeWidth: 0, style: { width: '0.6em', height: '0.6em' } }],
-  dotRed: [Circle, { fill: '#ef4444', color: '#ef4444', strokeWidth: 0, style: { width: '0.6em', height: '0.6em' } }],
+  dotGreen: [Circle, { fill: 'var(--success, #10b981)', color: 'var(--success, #10b981)', strokeWidth: 0, style: { width: '0.6em', height: '0.6em' } }],
+  dotRed: [Circle, { fill: 'var(--danger, #ef4444)', color: 'var(--danger, #ef4444)', strokeWidth: 0, style: { width: '0.6em', height: '0.6em' } }],
 };
 
 // legacy glyph -> icon name (used to convert strings that still contain emoji at render time)

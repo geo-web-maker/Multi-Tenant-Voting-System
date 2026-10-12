@@ -126,7 +126,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
               <option value="all">All devices</option><option value="mobile">Mobile</option>
               <option value="tablet">Tablet</option><option value="desktop">Desktop</option>
             </select>
-            <button type="button" style={btn} onClick={() => { setLoading(true); load(); }}>Refresh</button>
+            <button type="button"  onClick={() => { setLoading(true); load(); }} className="perf-btn perf-btn-primary">Refresh</button>
             <label style={check}><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Auto-refresh (30 s)</label>
             <label style={check}><input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} /> Compare organisations</label>
           </div>
@@ -222,7 +222,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
                 <div key={page} style={{ marginTop: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <h4 style={{ ...h4, margin: 0, overflowWrap: 'anywhere' }}>{page}</h4>
-                    {HEATMAP_PAGES.includes(page) && <button type="button" style={btn} onClick={() => setFrame({ page, width: 390 })}>Heatmap</button>}
+                    {HEATMAP_PAGES.includes(page) && <button type="button"  onClick={() => setFrame({ page, width: 390 })} className="perf-btn perf-btn-primary">Heatmap</button>}
                   </div>
                   <BarRows items={items.slice(0, 8)} />
                 </div>
@@ -230,7 +230,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
               {!data?.elements?.length && <p style={muted}>No clicks have been recorded for this period.</p>}
               <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {HEATMAP_PAGES.filter((p) => !data?.elements?.some((e) => e.page === p)).map((p) => (
-                  <button key={p} type="button" style={btn} onClick={() => setFrame({ page: p, width: 390 })}>Heatmap: {p}</button>
+                  <button key={p} type="button"  onClick={() => setFrame({ page: p, width: 390 })} className="perf-btn perf-btn-primary">Heatmap: {p}</button>
                 ))}
               </div>
             </div>
@@ -275,7 +275,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
                     </tbody>
                   </table>
                   {apiRows.length > 10 ? (
-                    <button type="button" style={{ ...btn, background: 'transparent', color: 'var(--brand-primary)', border: 0, padding: '0 4px', marginTop: 4 }} aria-expanded={apiAll} onClick={() => setApiAll((v) => !v)}>
+                    <button type="button"  aria-expanded={apiAll} onClick={() => setApiAll((v) => !v)} className="perf-btn" style={{ cursor: 'pointer' , marginTop: 4 }}>
                       {apiAll ? 'Show fewer' : `Show all ${apiRows.length}`}
                     </button>
                   ) : null}
@@ -305,7 +305,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
             <div style={panel} className="card-pad">
               <h3 style={h3}>Danger zone</h3>
               <p style={muted}>Clears all Site Usage data for the active organisation. Voting data is not affected.</p>
-              <button type="button" style={dangerBtn} onClick={clear}>Clear analytics</button>
+              <button type="button"  onClick={clear} className="perf-btn perf-btn-danger">Clear analytics</button>
               <p style={{ ...muted, marginTop: 10 }}>Last saved to the database: {data?.meta?.last_flush_at ? fmtZoned(data.meta.last_flush_at, tz) : 'not yet'}. Dropped batches: {data?.meta?.dropped_over_capacity ?? 0}.</p>
             </div>
           </>
@@ -320,7 +320,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
               {FRAME_WIDTHS.map((w) => (
                 <button key={w} type="button" aria-pressed={frame.width === w} style={frame.width === w ? segOn : segOff} onClick={() => setFrame({ ...frame, width: w })}>{w} px</button>
               ))}
-              <button type="button" style={btn} onClick={() => setFrame(null)}>Close</button>
+              <button type="button"  onClick={() => setFrame(null)} className="perf-btn perf-btn-primary">Close</button>
             </div>
             <p style={muted}>Vertical positions may drift slightly when page length changes.</p>
             <div style={{ overflow: 'auto', maxWidth: '100%', marginTop: 10, border: '1px solid var(--border-color)', borderRadius: 8 }}>
@@ -344,8 +344,8 @@ const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
 const h3 = { margin: '0 0 10px', fontSize: 15 };
 const h4 = { margin: '14px 0 6px', fontSize: 13, color: 'var(--text-muted)' };
 const inputStyle = { minHeight: 44, padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, flex: '1 1 140px' };
-const btn = { minHeight: 44, padding: '0 16px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--brand-primary)', color: 'var(--brand-on-primary, white)', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
-const dangerBtn = { ...btn, background: 'var(--danger)' };
+
+
 const segOff = { flex: 1, minHeight: 44, padding: '0 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
 const segOn = { ...segOff, background: 'var(--brand-primary)', color: 'var(--brand-on-primary, white)', borderColor: 'var(--brand-primary)' };
 const check = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 44, fontSize: 13 };

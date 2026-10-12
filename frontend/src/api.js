@@ -3,6 +3,19 @@ import axios from 'axios';
 // Base URL for the backend API — same env var every component already uses.
 export const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
+// Same-origin proxy mode: set VITE_API_URL=/api and vercel.json rewrites /api/* to the backend. The browser then only
+// talks to the site's own origin, so ad blockers / content blockers have nothing cross-origin to drop and CORS
+// never applies. Large bodies (photo/document uploads, roster import, register export) can exceed the proxy's size
+// and time limits, so those few endpoints go straight to the backend (VITE_API_DIRECT_URL, e.g. the Render URL).
+// Unset, they use API_BASE like everything else, so local dev and non-proxy deployments are unchanged.
+export const API_DIRECT_BASE = import.meta.env.VITE_API_DIRECT_URL || API_BASE;
+const DIRECT_EXACT = new Set(['/admin/upload-image', '/apply/upload-image', '/apply/upload-document', '/admin/voters/export']);
+const DIRECT_PREFIXES = ['/admin/import-voters/'];
+export function baseUrlFor(url) {
+  const path = String(url || '').split('?')[0];
+  return DIRECT_EXACT.has(path) || DIRECT_PREFIXES.some((p) => path.startsWith(p)) ? API_DIRECT_BASE : API_BASE;
+}
+
 // The org slug for this deployment, set at build time per-org.
 // Example: an org's Vercel deployment sets VITE_ORG_SLUG=kyuccu in its .env.
 // Left unset, requests carry no X-Org-Slug header and the backend rejects them (400):
@@ -67,6 +80,8 @@ export const _resetNetFailForTests = () => lastNetFail.clear();
 
 api.interceptors.request.use((config) => {
   config.__an_started = performance.now();
+  // Pick the base per request; a caller that set its own baseURL keeps it.
+  if (!config.__baseChosen) { config.baseURL = baseUrlFor(config.url); config.__baseChosen = true; }
   // "View as" tab: refuse writes before they leave the browser (the server also rejects them).
   if (sessionStorage.getItem('view_as') && !['get', 'head', 'options'].includes((config.method || 'get').toLowerCase())) {
     return Promise.reject({ config, response: { status: 403, data: { detail: 'Read-only view: this action is disabled.' } } });

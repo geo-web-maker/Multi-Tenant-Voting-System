@@ -187,7 +187,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
     </div>
   );
   const reasonToggle = (id) => (
-    <button style={ghostBtn} onClick={() => setShowReasonBox(prev => ({ ...prev, [id]: !prev[id] }))}>
+    <button  onClick={() => setShowReasonBox(prev => ({ ...prev, [id]: !prev[id] }))} className="perf-btn">
       {showReasonBox[id] ? 'Hide reason' : '+ Add reason'}
     </button>
   );
@@ -226,13 +226,13 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   }
                 }}
               />
-              <button style={greenBtn} onClick={() => {
+              <button  onClick={() => {
                 const el = document.querySelector('[data-fcid-input]');
                 if (el && el.value.trim()) {
                   setFcId(el.value.trim());
                   sessionStorage.setItem('financial_controller_id', el.value.trim());
                 }
-              }}>Confirm</button>
+              }} className="perf-btn perf-btn-primary">Confirm</button>
             </div>
             <p style={{ margin: '8px 0 0', fontSize: '12px', opacity: 0.5 }}>
               This is stored only for this browser session and used to tag your decisions.
@@ -243,8 +243,8 @@ export default function FinancialControllerDashboard({ onLogout }) {
         {fcId && (
           <div style={infoPill}>
             Deciding as: <strong>{fcId}</strong>
-            <button style={{ ...ghostBtn, padding: '3px 10px', marginLeft: '10px', fontSize: '12px' }}
-              onClick={() => { setFcId(''); sessionStorage.removeItem('financial_controller_id'); }}>
+            <button 
+              onClick={() => { setFcId(''); sessionStorage.removeItem('financial_controller_id'); }} className="perf-btn" style={{ cursor: 'pointer', marginLeft: '10px' }}>
               Change
             </button>
           </div>
@@ -338,17 +338,17 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   {reasonBox(change._id, 'Reason (required to deny)…')}
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     <button
-                      style={{ ...greenBtn, flex: 1 }}
+                      
                       disabled={isDecidingNow}
                       onClick={() => decideVoterRequest(change._id, 'approve')}
-                    >
+                     className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', flex: 1 }}>
                       {isDecidingNow ? 'Submitting…' : <>Approve</>}
                     </button>
                     <button
-                      style={{ ...redBtn, flex: 1 }}
+                      
                       disabled={isDecidingNow}
                       onClick={() => decideVoterRequest(change._id, 'deny')}
-                    >
+                     className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>
                       {isDecidingNow ? 'Submitting…' : <>Deny</>}
                     </button>
                     {reasonToggle(change._id)}
@@ -415,17 +415,17 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   {reasonBox(app._id, 'Reason (required to reject, and shown to the candidate; optional note when clearing)…')}
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     <button
-                      style={{ ...greenBtn, flex: 1 }}
+                      
                       disabled={isDecidingNow}
                       onClick={() => decideCandidatePayment(app._id, 'clear')}
-                    >
+                     className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', flex: 1 }}>
                       {isDecidingNow ? 'Submitting…' : <>Clear payment</>}
                     </button>
                     <button
-                      style={{ ...redBtn, flex: 1 }}
+                      
                       disabled={isDecidingNow}
                       onClick={() => decideCandidatePayment(app._id, 'reject')}
-                    >
+                     className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>
                       {isDecidingNow ? 'Submitting…' : <>Reject</>}
                     </button>
                     {reasonToggle(app._id)}
@@ -447,10 +447,10 @@ export default function FinancialControllerDashboard({ onLogout }) {
                     {reasonBox(app._id, 'Why is this clearance being reversed? (internal, not shown to the candidate)…')}
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                       <button
-                        style={{ ...redBtn, flex: 1 }}
+                        
                         disabled={isDecidingNow}
                         onClick={() => reverseClearance(app._id)}
-                      >
+                       className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>
                         {isDecidingNow ? 'Submitting…' : 'Reverse to pending'}
                       </button>
                       {reasonToggle(app._id)}
@@ -478,17 +478,17 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   {reasonBox(app._id, 'What was resolved? (e.g. balance paid, receipt checked) — internal…')}
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     <button
-                      style={{ ...ghostBtn, flex: 1 }}
+                      
                       disabled={isDecidingNow}
                       onClick={() => reinstate(app._id, 'pending')}
-                    >
+                     className="perf-btn" style={{ cursor: 'pointer', flex: 1 }}>
                       {isDecidingNow ? 'Submitting…' : 'Move to pending'}
                     </button>
                     <button
-                      style={{ ...greenBtn, flex: 1 }}
+                      
                       disabled={isDecidingNow}
                       onClick={() => reinstate(app._id, 'cleared')}
-                    >
+                     className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', flex: 1 }}>
                       {isDecidingNow ? 'Submitting…' : 'Clear payment'}
                     </button>
                     {reasonToggle(app._id)}
@@ -542,10 +542,10 @@ const container  = { width: '100%', backgroundColor: 'var(--card-bg)', borderRad
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const payBox     = { marginTop: '10px', padding: '10px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };
 const inp        = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
-const btn        = { padding: '9px 16px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn   = { ...btn, backgroundColor: 'var(--bp-ok, #2ecc71)' };
-const redBtn     = { ...btn, backgroundColor: 'var(--bp-no, #e74c3c)' };
-const ghostBtn   = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+
+
+
+
 const pill       = (active) => ({
   padding: '6px 14px', borderRadius: '999px', cursor: 'pointer', fontSize: '12px', fontWeight: active ? 'bold' : 'normal',
   border: `1px solid ${active ? 'var(--success)' : 'var(--border-color)'}`,

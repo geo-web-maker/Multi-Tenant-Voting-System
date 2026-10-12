@@ -102,7 +102,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
       {!readOnly && data.roster && data.roster.phase === 'pre_freeze' && <div style={{ ...box, marginBottom: 12 }}>The roster is not frozen yet. IT admins still edit directly. Requests appear here from the freeze onward.</div>}
       <div style={{ display: 'flex', gap: 8, margin: '12px 0', flexWrap: 'wrap' }}>
         {['pending', 'approved', 'denied', 'expired', 'all'].map(f => (
-          <button key={f} onClick={() => setFilter(f)} style={{ ...ghost, ...(filter === f && { borderColor: 'var(--success)', color: 'var(--success)' }) }}>
+          <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f} className="perf-btn">
             {f} ({f === 'all' ? data.items.length : data.items.filter(c => c.status === f).length})
           </button>
         ))}
@@ -132,7 +132,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
                 <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', margin: '6px 0' }}>
                   <input type="checkbox" checked={Boolean(ack[c.id])} onChange={e => setAck({ ...ack, [c.id]: e.target.checked })} /> I have checked
                 </label>)}
-              <button disabled={busy === c.id} style={{ ...btn, background: 'var(--bp-no, #e74c3c)', marginTop: 6 }} onClick={() => forceApprove(c)}>Break-glass approve</button>
+              <button disabled={busy === c.id}  onClick={() => forceApprove(c)} className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', marginTop: 6 }}>Break-glass approve</button>
             </>
           )}
           {c.status === 'pending' && !readOnly && (
@@ -143,8 +143,8 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
                 </label>)}
               <p style={muted}>If the old number is still reachable, phone it and ask whether the voter asked for this. A “no” means deny and escalate. Expires {fmt(c.expires_at)}.</p>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button disabled={busy === c.id} style={{ ...btn, background: 'var(--bp-ok, #2ecc71)', flex: 1 }} onClick={() => decide(c, 'approve')}>Approve</button>
-                <button disabled={busy === c.id} style={{ ...btn, background: 'var(--bp-no, #e74c3c)', flex: 1 }} onClick={() => decide(c, 'deny')}>Deny</button>
+                <button disabled={busy === c.id}  onClick={() => decide(c, 'approve')} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', flex: 1 }}>Approve</button>
+                <button disabled={busy === c.id}  onClick={() => decide(c, 'deny')} className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>Deny</button>
               </div>
             </>
           )}
@@ -172,7 +172,7 @@ export default function ContactChangesQueue({ readOnly = false, breakGlass = fal
                         {e.undone_at ? (
                           <span style={{ opacity: 0.6 }} title={`Undone by ${e.undone_by || 'N/A'} · ${fmt(e.undone_at)}: ${e.undo_reason || ''}`}>Undone</span>
                         ) : e.can_undo ? (
-                          <button disabled={undoBusy === e.id} style={{ ...ghost, padding: '4px 8px', fontSize: 11, borderColor: 'var(--danger)', color: 'var(--danger)' }} onClick={() => undoEntry(e)}>Undo</button>
+                          <button disabled={undoBusy === e.id}  onClick={() => undoEntry(e)} className="perf-btn" style={{ cursor: 'pointer' }}>Undo</button>
                         ) : null}
                       </td>
                     )}
@@ -191,7 +191,7 @@ const Flag = ({ children }) => (
 );
 const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 14, background: 'var(--card-bg)' };
 const muted = { fontSize: 12, opacity: 0.75, margin: '4px 0' };
-const ghost = { padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontSize: 12 };
-const btn = { padding: '10px 14px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
+
+
 const th = { textAlign: 'left', padding: 6, borderBottom: '1px solid var(--border-color)', whiteSpace: 'nowrap' };
 const td = { padding: 6, borderBottom: '1px solid var(--border-color)' };

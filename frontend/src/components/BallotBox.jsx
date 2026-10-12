@@ -297,7 +297,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
             <p style={{ color: 'var(--text-muted)' }}>This will clear all your currently selected candidates. This action cannot be undone.</p>
             <div className={k?.row2} style={k ? undefined : { display: 'flex', gap: '15px', marginTop: '20px' }}>
               <button onClick={() => setShowClearConfirm(false)} className={k?.ghost} style={k ? undefined : cancelBtnStyle}>Keep My Votes</button>
-              <button onClick={confirmClearAll} className={k?.danger} style={k ? undefined : {...confirmBtnStyle, backgroundColor: '#e11d48'}}>Yes, Clear All</button>
+              <button onClick={confirmClearAll} className={k?.danger} style={k ? undefined : {...confirmBtnStyle, backgroundColor: 'var(--danger, #e11d48)'}}>Yes, Clear All</button>
             </div>
           </div>
         </div>
@@ -433,7 +433,7 @@ const summaryRowStyle = {
   alignItems: 'center',  // <--- This centers the name and the photo
   gap: '12px' 
 };
-const clearAllBtnStyle = { flex: 1, whiteSpace: 'nowrap', backgroundColor: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '16px 18px', borderRadius: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' };
+const clearAllBtnStyle = { flex: 1, whiteSpace: 'nowrap', backgroundColor: 'transparent', color: 'var(--danger, #f87171)', border: '1px solid var(--danger, #f87171)', padding: '16px 18px', borderRadius: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' };
 const cancelBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontWeight: '600', cursor: 'pointer', backgroundColor: 'transparent' };
 const confirmBtnStyle = { flex: 1, padding: '14px', borderRadius: '10px', border: 'none', color: 'var(--bp-ai, #fff)', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' };
 const footerBarStyle = { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'var(--card-bg)', padding: '24px', borderTop: '1px solid var(--border-color)', zIndex: 1000 };

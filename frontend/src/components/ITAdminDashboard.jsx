@@ -303,13 +303,13 @@ export default function ITAdminDashboard({ onLogout }) {
                       value={p}
                       onChange={e => updateAddPhone(i, e.target.value)} />
                     {addForm.phones.length > 1 && (
-                      <button type="button" style={ghostBtn} onClick={() => removeAddPhoneRow(i)} aria-label="Remove phone number">
+                      <button type="button"  onClick={() => removeAddPhoneRow(i)} aria-label="Remove phone number" className="perf-btn">
                         <Icon name="trash" />
                       </button>
                     )}
                   </div>
                 ))}
-                <button type="button" style={{ ...ghostBtn, marginTop: '8px', alignSelf: 'flex-start' }} onClick={addAddPhoneRow}>
+                <button type="button"  onClick={addAddPhoneRow} className="perf-btn" style={{ cursor: 'pointer', marginTop: '8px', alignSelf: 'flex-start' }}>
                   + Add another phone number
                 </button>
 
@@ -369,8 +369,8 @@ export default function ITAdminDashboard({ onLogout }) {
                 </label>
                 {paymentProofPreview && (
                   <button type="button"
-                    style={{ ...ghostBtn, marginTop: '6px', fontSize: '12px', color: 'var(--bp-no, #e74c3c)' }}
-                    onClick={() => { setPaymentProof(null); setPaymentProofPreview(null); }}>
+                    
+                    onClick={() => { setPaymentProof(null); setPaymentProofPreview(null); }} className="perf-btn" style={{ cursor: 'pointer', marginTop: '6px' }}>
                     Remove receipt
                   </button>
                 )}
@@ -378,7 +378,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 {addError && <div style={errorBox}><Icon name="warning" /> {addError}</div>}
                 {addSuccess && <div style={successBox}><Icon name="success" /> {addSuccess}</div>}
 
-              <button type="submit" style={{ ...greenBtn, marginTop: '14px' }} disabled={addSubmitting}>
+              <button type="submit"  disabled={addSubmitting} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: '14px' }}>
                 {uploadingProof ? <><Icon name="loading" /> Uploading receipt…</> : addSubmitting ? 'Submitting…' : <>{bypass ? 'Add Voter' : 'Submit Add Request'}</>}
               </button>
               </form>
@@ -491,7 +491,7 @@ export default function ITAdminDashboard({ onLogout }) {
                 {removeError && <div style={errorBox}><Icon name="warning" /> {removeError}</div>}
                 {removeSuccess && <div style={successBox}><Icon name="success" /> {removeSuccess}</div>}
 
-                <button type="submit" style={{ ...redBtn, marginTop: '14px' }} disabled={removeSubmitting}>
+                <button type="submit"  disabled={removeSubmitting} className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', marginTop: '14px' }}>
                   {removeSubmitting ? 'Submitting…' : <>Submit Removal Request</>}
                 </button>
               </form>
@@ -513,7 +513,7 @@ export default function ITAdminDashboard({ onLogout }) {
         {activeTab === 'requests' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '14px' }}>
-              <button style={ghostBtn} onClick={() => fetchMyRequests()} disabled={loading}>
+              <button  onClick={() => fetchMyRequests()} disabled={loading} className="perf-btn">
                 {loading ? 'Syncing…' : <>Refresh</>}
               </button>
             </div>
@@ -580,10 +580,10 @@ export default function ITAdminDashboard({ onLogout }) {
 
                 {req.status === 'pending' && (
                   <button
-                    style={{ ...ghostBtn, marginTop: '12px', color: 'var(--bp-no, #e74c3c)', borderColor: 'var(--bp-no, #e74c3c)' }}
+                    
                     disabled={cancelling[req._id]}
                     onClick={() => handleCancel(req._id)}
-                  >
+                   className="perf-btn" style={{ cursor: 'pointer', marginTop: '12px' }}>
                     {cancelling[req._id] ? 'Withdrawing…' : <>Withdraw Request</>}
                   </button>
                 )}
@@ -600,17 +600,17 @@ export default function ITAdminDashboard({ onLogout }) {
                 <span style={{ fontSize: '13px' }}>
                   You have <b>{pendingCount}</b> request{pendingCount !== 1 ? 's' : ''} awaiting approval.
                 </span>
-                <button style={ghostBtn} onClick={() => setActiveTab('requests')}>View requests</button>
+                <button  onClick={() => setActiveTab('requests')} className="perf-btn">View requests</button>
               </div>
             )}
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px' }}>
               {!rosterFrozen && (
-                <button style={greenBtn} onClick={() => setActiveTab('add')}>+ Add Student</button>
+                <button  onClick={() => setActiveTab('add')} className="perf-btn perf-btn-primary">+ Add Student</button>
               )}
-              <button style={ghostBtn} onClick={() => setActiveTab('voters')}>Voters</button>
-              <button style={ghostBtn} onClick={() => setActiveTab('edit')}>Edit Student</button>
+              <button  onClick={() => setActiveTab('voters')} className="perf-btn">Voters</button>
+              <button  onClick={() => setActiveTab('edit')} className="perf-btn">Edit Student</button>
               {!rosterFrozen && (
-                <button style={ghostBtn} onClick={() => setActiveTab('remove')}>Remove Student</button>
+                <button  onClick={() => setActiveTab('remove')} className="perf-btn">Remove Student</button>
               )}
             </div>
             <RevealGroup text="Loading overview…">
@@ -660,10 +660,10 @@ const cardTitle   = { margin: '0 0 6px', color: 'var(--text-color)', fontSize: '
 const formCol     = { display: 'flex', flexDirection: 'column', gap: '4px' };
 const lbl         = { fontSize: '12px', opacity: 0.65, fontWeight: '600' };
 const inp         = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
-const btn         = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn    = { ...btn, backgroundColor: 'var(--bp-ok, #2ecc71)' };
-const redBtn      = { ...btn, backgroundColor: 'var(--bp-no, #e74c3c)' };
-const ghostBtn    = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+
+
+
+
 const appCard     = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };
 const infoBox     = { padding: '12px 16px', backgroundColor: 'color-mix(in srgb, var(--info) 10%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--info) 30%, transparent)' };
 const errorBox    = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--danger) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--danger) 40%, transparent)', color: 'var(--danger)', fontSize: '12px', fontWeight: '600', marginTop: '10px' };

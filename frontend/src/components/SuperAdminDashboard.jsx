@@ -983,25 +983,15 @@ const handleSuperAdminRemoveStudent = async () => {
             onClick={handleToggleElection}
             aria-disabled={!isElectionOpen && isCertified}
             title={!isElectionOpen && isCertified ? 'Revoke certification before starting the election' : undefined}
-            style={{
-              ...btn,
-              backgroundColor: isElectionOpen ? 'var(--bp-wn, #e67e22)' : 'var(--success)',
-              opacity: !isElectionOpen && isCertified ? 0.5 : 1,
-              cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer',
-            }}
-          >
+            
+           className="perf-btn perf-btn-primary" style={{ cursor: !isElectionOpen && isCertified ? 'not-allowed' : 'pointer', opacity: !isElectionOpen && isCertified ? 0.5 : 1 }}>
             {isElectionOpen ? <>Stop Election</> : <>Start Election</>}
           </button>
           <button
             onClick={handleToggleCertification}
             disabled={isElectionOpen}
-            style={{
-              ...btn,
-              backgroundColor: isCertified ? 'var(--bp-ok, #10b981)' : 'var(--bp-wn, #f59e0b)',
-              opacity: isElectionOpen ? 0.5 : 1,
-              cursor: isElectionOpen ? 'not-allowed' : 'pointer',
-            }}
-          >
+            
+           className="perf-btn perf-btn-primary" style={{ cursor: isElectionOpen ? 'not-allowed' : 'pointer', opacity: isElectionOpen ? 0.5 : 1 }}>
             {isCertified ? <>Certified</> : <>Certify Results</>}
           </button>
         </>}
@@ -1062,7 +1052,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   Photo: <input type="file" accept="image/*"
                     onChange={e => setNewCandidate({ ...newCandidate, image: e.target.files[0] })} />
                 </label>
-                <button type="submit" style={greenBtn} disabled={uploading}>
+                <button type="submit"  disabled={uploading} className="perf-btn perf-btn-primary">
                   {uploading ? 'Uploading…' : '+ Add to Ballot'}
                 </button>
               </form>
@@ -1073,7 +1063,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <h4 style={{ ...cardTitle, marginBottom: '5px' }}>
                   Current Ballot ({candidates.length} candidates)
                 </h4>
-                <button style={ghostBtn} onClick={() => setIsPreviewOpen(true)}>Preview Ballot</button>
+                <button  onClick={() => setIsPreviewOpen(true)} className="perf-btn">Preview Ballot</button>
               </div>
               <ScrollList>
               {candidates.map(c => (
@@ -1096,8 +1086,8 @@ const handleSuperAdminRemoveStudent = async () => {
                           onChange={e => setEditForm({ ...editForm, newImage: e.target.files[0] })} />
                       </label>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button style={greenBtn} onClick={() => handleUpdateCandidate(c._id)} disabled={uploading}>Save</button>
-                        <button style={ghostBtn} onClick={() => setEditingId(null)}>Cancel</button>
+                        <button  onClick={() => handleUpdateCandidate(c._id)} disabled={uploading} className="perf-btn perf-btn-primary">Save</button>
+                        <button  onClick={() => setEditingId(null)} className="perf-btn">Cancel</button>
                       </div>
                     </div>
                   ) : (
@@ -1193,8 +1183,8 @@ const handleSuperAdminRemoveStudent = async () => {
                   onChange={(e) => setEditApp(x => ({ ...x, form: { ...x.form, reason: e.target.value } }))} />
               </label>
               <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                <button style={ghostBtn} disabled={editAppSaving} onClick={() => setEditApp(null)}>Cancel</button>
-                <button style={greenBtn} disabled={editAppSaving || editApp.form.reason.trim().length < 3} onClick={saveEditApplication}>
+                <button  disabled={editAppSaving} onClick={() => setEditApp(null)} className="perf-btn">Cancel</button>
+                <button  disabled={editAppSaving || editApp.form.reason.trim().length < 3} onClick={saveEditApplication} className="perf-btn perf-btn-primary">
                   {editAppSaving ? 'Saving…' : 'Save changes'}
                 </button>
               </div>
@@ -1228,8 +1218,7 @@ const handleSuperAdminRemoveStudent = async () => {
           <div>
             <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
               {['all','pending','approved','denied','removed'].map(f => (
-                <button key={f} onClick={() => setAppFilter(f)}
-                  style={{ ...ghostBtn, ...(appFilter === f && { borderColor: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ok, #2ecc71)' }) }}>
+                <button key={f} onClick={() => setAppFilter(f)} aria-pressed={appFilter === f} className="perf-btn">
                   {f.charAt(0).toUpperCase() + f.slice(1)}
                   {' '}({f === 'all' ? applications.length : applications.filter(a => a.status === f).length})
                 </button>
@@ -1315,8 +1304,8 @@ const handleSuperAdminRemoveStudent = async () => {
                           {app.closeout_counts ? ` (${app.closeout_counts.approve} approve, ${app.closeout_counts.deny} deny)` : ''}.
                         </p>
                         <div className="vp-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                            <button style={greenBtn} onClick={() => handleCloseoutDecision(app._id, 'approve')}>Decide: approve</button>
-                            <button style={redBtn} onClick={() => handleCloseoutDecision(app._id, 'deny')}>Decide: deny</button>
+                            <button  onClick={() => handleCloseoutDecision(app._id, 'approve')} className="perf-btn perf-btn-primary">Decide: approve</button>
+                            <button  onClick={() => handleCloseoutDecision(app._id, 'deny')} className="perf-btn perf-btn-danger">Decide: deny</button>
                           </div>
                       </div>
                     )}
@@ -1329,44 +1318,44 @@ const handleSuperAdminRemoveStudent = async () => {
                 {/* Superadmin action buttons — always available */}
                 <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
                   {app.status !== 'approved' && app.status !== 'removed' && (
-                    <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceApprove(app._id)}>
+                    <button  onClick={() => handleForceApprove(app._id)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', flex: 1 }}>
                       Force Approve
                     </button>
                   )}
                   {app.status !== 'denied' && app.status !== 'removed' && (
-                    <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceDeny(app._id)}>
+                    <button  onClick={() => handleForceDeny(app._id)} className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>
                       Force Deny
                     </button>
                   )}
                   {app.status === 'approved' && (
-                    <button style={{ ...redBtn, flex: 1 }} onClick={async () => {
+                    <button  onClick={async () => {
                       if (await confirm('Remove this approved candidate from the ballot?', { danger: true, confirmText: 'Remove' })) {
                         // Find matching candidate by application_id and remove
                         const cand = candidates.find(c => c.application_id === app._id);
                         if (cand) handleRemoveCandidateOverride(cand._id);
                         else toast('Candidate not found in ballot — may have been removed already.', { kind: 'error' });
                       }
-                    }}>
+                    }} className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>
                       Remove from Ballot
                     </button>
                   )}
                   {app.superadmin_override && (app.status === 'approved' || app.status === 'denied') && (
-                    <button style={ghostBtn} onClick={() => handleRevertToPending(app)}>
+                    <button  onClick={() => handleRevertToPending(app)} className="perf-btn">
                       Revert to Pending
                     </button>
                   )}
                   {app.application_snapshot && (
-                    <button style={ghostBtn} onClick={() => setPrintingApp(app)}>
+                    <button  onClick={() => setPrintingApp(app)} className="perf-btn">
                       {app.edit_history?.length > 0 ? 'View / print PDF (edited + original)' : 'View / print PDF'}
                     </button>
                   )}
-                  <button style={ghostBtn} onClick={() => openEditApplication(app)}>
+                  <button  onClick={() => openEditApplication(app)} className="perf-btn">
                     Edit application
                   </button>
-                  <button style={ghostBtn} onClick={() => handleResendStatusLink(app.student_id)}>
+                  <button  onClick={() => handleResendStatusLink(app.student_id)} className="perf-btn">
                     Resend status link
                   </button>
-                  <button style={ghostBtn} onClick={() => handleRevokeStatusLink(app.student_id)}>
+                  <button  onClick={() => handleRevokeStatusLink(app.student_id)} className="perf-btn">
                     Revoke status link
                   </button>
                 </div>
@@ -1439,26 +1428,26 @@ const handleSuperAdminRemoveStudent = async () => {
                     {c.is_chief_commissioner ? (
                       <button
                         onClick={() => handleClearChief(c.student_id)}
-                        style={{ ...ghostBtn, color: 'var(--warning)', borderColor: 'var(--warning)', fontSize: '12px' }}>
+                         className="perf-btn" style={{ cursor: 'pointer' }}>
                         Clear Chairperson
                       </button>
                     ) : (
                       <button
                         onClick={() => handleSetChief(c.student_id)}
-                        style={{ ...ghostBtn, fontSize: '12px' }}>
+                         className="perf-btn" style={{ cursor: 'pointer' }}>
                         Set Chairperson
                       </button>
                     )}
                     {c.is_deputy_chief_commissioner ? (
                       <button
                         onClick={() => handleClearDeputyChief(c.student_id)}
-                        style={{ ...ghostBtn, color: 'var(--info)', borderColor: 'var(--info)', fontSize: '12px' }}>
+                         className="perf-btn" style={{ cursor: 'pointer' }}>
                         Clear Deputy Chairperson
                       </button>
                     ) : (
                       <button
                         onClick={() => handleSetDeputyChief(c.student_id)}
-                        style={{ ...ghostBtn, fontSize: '12px' }}>
+                         className="perf-btn" style={{ cursor: 'pointer' }}>
                         Set Deputy Chairperson
                       </button>
                     )}
@@ -1480,17 +1469,17 @@ const handleSuperAdminRemoveStudent = async () => {
                         onChange={e => setCommCredEmail(prev => ({ ...prev, [c.student_id]: e.target.value }))}
                       />
                       <button
-                        style={{ ...greenBtn, fontSize: '12px', padding: '6px 12px' }}
+                        
                         onClick={() => handleSetCommissionerCredentials(c.student_id)}
-                      >
+                       className="perf-btn perf-btn-primary" style={{ cursor: 'pointer' }}>
                         Send Credentials
                       </button>
                       {c.commissioner_email && (
                         <button
-                          style={{ ...ghostBtn, fontSize: '12px', padding: '6px 12px' }}
+                          
                           disabled={resetting[c.student_id]}
                           onClick={() => handleResetCommissionerPassword(c.student_id)}
-                        >
+                         className="perf-btn" style={{ cursor: 'pointer' }}>
                           {resetting[c.student_id] ? 'Sending…' : <>Reset Password</>}
                         </button>
                       )}
@@ -1515,7 +1504,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       <br />
                       <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                     </div>
-                    <button style={greenBtn} onClick={() => handleToggleCommissioner(v.student_id)}>
+                    <button  onClick={() => handleToggleCommissioner(v.student_id)} className="perf-btn perf-btn-primary">
                       + Make Commissioner
                     </button>
                   </div>
@@ -1591,7 +1580,7 @@ const handleSuperAdminRemoveStudent = async () => {
                 <input style={inp} type="number" placeholder="Ballot order (0 = first)"
                   value={newPosition.order}
                   onChange={e => setNewPosition({ ...newPosition, order: parseInt(e.target.value) || 0 })} />
-                <button style={greenBtn} onClick={handleAddPosition} disabled={posLoading}>
+                <button  onClick={handleAddPosition} disabled={posLoading} className="perf-btn perf-btn-primary">
                   {posLoading ? 'Saving…' : '+ Add Position'}
                 </button>
               </div>
@@ -1619,7 +1608,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       onChange={e => setEditPositionForm({ ...editPositionForm, order: e.target.value })} />
                     <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
                       <button style={redLink} onClick={handleCancelEditPosition}>Cancel</button>
-                      <button style={greenBtn} onClick={() => handleSaveEditPosition(p._id)} disabled={editPosSaving}>
+                      <button  onClick={() => handleSaveEditPosition(p._id)} disabled={editPosSaving} className="perf-btn perf-btn-primary">
                         {editPosSaving ? 'Saving…' : 'Save'}
                       </button>
                     </div>
@@ -1912,20 +1901,20 @@ const handleSuperAdminRemoveStudent = async () => {
                     ))}
                     <button
                       type="button"
-                      style={{ ...ghostBtn, width: 'fit-content', marginLeft: '12px' }}
+                      
                       disabled={(g.contacts || []).length >= 6}
                       onClick={() => setBranding({ ...branding, support_contacts: branding.support_contacts.map((x, j) => j === gi ? { ...x, contacts: [...(x.contacts || []), { name: '', link: '' }] } : x) })}
-                    >
+                     className="perf-btn" style={{ cursor: 'pointer', width: 'fit-content', marginLeft: '12px' }}>
                       + Add contact
                     </button>
                   </div>
                 ))}
                 <button
                   type="button"
-                  style={{ ...ghostBtn, width: 'fit-content' }}
+                  
                   disabled={(branding.support_contacts || []).length >= 12}
                   onClick={() => setBranding({ ...branding, support_contacts: [...(branding.support_contacts || []), { reason: '', contacts: [{ name: '', link: '' }] }] })}
-                >
+                 className="perf-btn" style={{ cursor: 'pointer', width: 'fit-content' }}>
                   + Add reason
                 </button>
 
@@ -2007,8 +1996,8 @@ const handleSuperAdminRemoveStudent = async () => {
                   })}
                 </div>
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button type="button" style={ghostBtn} onClick={() => setSampleCert({ longNames: sampleLong })}>Print sample certificate</button>
-                  <button type="button" style={ghostBtn} onClick={() => setSampleList(true)}>Print sample candidate list</button>
+                  <button type="button"  onClick={() => setSampleCert({ longNames: sampleLong })} className="perf-btn">Print sample certificate</button>
+                  <button type="button"  onClick={() => setSampleList(true)} className="perf-btn">Print sample candidate list</button>
                   <label style={{ fontSize: '12px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <input type="checkbox" checked={sampleLong} onChange={e => setSampleLong(e.target.checked)} /> Use long names
                   </label>
@@ -2030,7 +2019,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   }}>Active button</span>
                 </div>
         
-                <button style={{ ...greenBtn, marginTop: '14px' }} onClick={handleSaveBranding} disabled={brandSaving}>
+                <button  onClick={handleSaveBranding} disabled={brandSaving} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: '14px' }}>
                   {brandSaving ? 'Saving…' : <>Save Branding</>}
                 </button>
               </div>
@@ -2092,12 +2081,8 @@ const handleSuperAdminRemoveStudent = async () => {
               <button
                 onClick={handleResetElection}
                 disabled={isCertified}
-                style={{
-                  ...btn, backgroundColor: 'var(--bp-no, #d63031)',
-                  opacity: isCertified ? 0.4 : 1,
-                  cursor: isCertified ? 'not-allowed' : 'pointer',
-                }}
-              >
+                
+               className="perf-btn perf-btn-danger" style={{ cursor: isCertified ? 'not-allowed' : 'pointer', opacity: isCertified ? 0.4 : 1 }}>
                 {isCertified ? 'Cannot Reset — Results Certified' : 'Full Election Reset'}
               </button>
             </div>
@@ -2151,15 +2136,15 @@ const handleSuperAdminRemoveStudent = async () => {
                       value={itCredEmail[a.student_id] || ''}
                       onChange={e => setItCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
                     />
-                    <button style={greenBtn} onClick={() => handleSetItAdminCredentials(a.student_id)}>
+                    <button  onClick={() => handleSetItAdminCredentials(a.student_id)} className="perf-btn perf-btn-primary">
                       Send Credentials
                     </button>
                     {a.it_admin_email && (
                       <button
-                        style={ghostBtn}
+                        
                         disabled={resetting[a.student_id]}
                         onClick={() => handleResetItAdminPassword(a.student_id)}
-                      >
+                       className="perf-btn">
                         {resetting[a.student_id] ? 'Sending…' : <>Reset Password</>}
                       </button>
                     )}
@@ -2189,7 +2174,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         <br />
                         <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                       </div>
-                      <button style={greenBtn} onClick={() => handleToggleItAdmin(v.student_id)}>
+                      <button  onClick={() => handleToggleItAdmin(v.student_id)} className="perf-btn perf-btn-primary">
                         + Make IT Admin
                       </button>
                     </div>
@@ -2220,7 +2205,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   ))}
                   <input style={inp} placeholder="Reason" value={saDirectAdd.reason}
                     onChange={e => setSaDirectAdd({ ...saDirectAdd, reason: e.target.value })} required />
-                  <button type="submit" style={greenBtn}>+ Add Student Instantly</button>
+                  <button type="submit"  className="perf-btn perf-btn-primary">+ Add Student Instantly</button>
                 </form>
               </div>
 
@@ -2276,7 +2261,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   )}
                   <input style={inp} placeholder="Reason" value={saDirectRemove.reason}
                     onChange={e => setSaDirectRemove({ ...saDirectRemove, reason: e.target.value })} />
-                  <button style={redBtn} onClick={handleSuperAdminRemoveStudent}>
+                  <button  onClick={handleSuperAdminRemoveStudent} className="perf-btn perf-btn-danger">
                     Remove Student Instantly
                   </button>
                 </div>
@@ -2285,8 +2270,7 @@ const handleSuperAdminRemoveStudent = async () => {
 
             <div style={{ display: 'flex', gap: '8px', margin: '20px 0 16px', flexWrap: 'wrap' }}>
               {['all', 'pending', 'approved', 'force_approved', 'denied', 'force_denied', 'cancelled'].map(f => (
-                <button key={f} onClick={() => setScFilter(f)}
-                  style={{ ...ghostBtn, ...(scFilter === f && { borderColor: 'var(--success)', color: 'var(--success)' }) }}>
+                <button key={f} onClick={() => setScFilter(f)} aria-pressed={scFilter === f} className="perf-btn">
                   {f.replace('_', ' ')}
                   {' '}({f === 'all' ? studentChanges.length : studentChanges.filter(c => c.status === f).length})
                 </button>
@@ -2335,10 +2319,10 @@ const handleSuperAdminRemoveStudent = async () => {
 
                 {change.status === 'pending' && (
                   <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                    <button style={{ ...greenBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'approve')}>
+                    <button  onClick={() => handleForceStudentChange(change._id, 'approve')} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', flex: 1 }}>
                       Force Approve
                     </button>
-                    <button style={{ ...redBtn, flex: 1 }} onClick={() => handleForceStudentChange(change._id, 'deny')}>
+                    <button  onClick={() => handleForceStudentChange(change._id, 'deny')} className="perf-btn perf-btn-danger" style={{ cursor: 'pointer', flex: 1 }}>
                       Force Deny
                     </button>
                   </div>
@@ -2397,15 +2381,15 @@ const handleSuperAdminRemoveStudent = async () => {
                       value={fcCredEmail[a.student_id] || ''}
                       onChange={e => setFcCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
                     />
-                    <button style={greenBtn} onClick={() => handleSetFinancialControllerCredentials(a.student_id)}>
+                    <button  onClick={() => handleSetFinancialControllerCredentials(a.student_id)} className="perf-btn perf-btn-primary">
                       Send Credentials
                     </button>
                     {a.financial_controller_email && (
                       <button
-                        style={ghostBtn}
+                        
                         disabled={resetting[a.student_id]}
                         onClick={() => handleResetFinancialControllerPassword(a.student_id)}
-                      >
+                       className="perf-btn">
                         {resetting[a.student_id] ? 'Sending…' : <>Reset Password</>}
                       </button>
                     )}
@@ -2435,7 +2419,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         <br />
                         <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                       </div>
-                      <button style={greenBtn} onClick={() => handleToggleFinancialController(v.student_id)}>
+                      <button  onClick={() => handleToggleFinancialController(v.student_id)} className="perf-btn perf-btn-primary">
                         + Make Financial Controller
                       </button>
                     </div>
@@ -2484,15 +2468,15 @@ const handleSuperAdminRemoveStudent = async () => {
                       value={ovCredEmail[a.student_id] || ''}
                       onChange={e => setOvCredEmail(prev => ({ ...prev, [a.student_id]: e.target.value }))}
                     />
-                    <button style={greenBtn} onClick={() => handleSetOverseerCredentials(a.student_id)}>
+                    <button  onClick={() => handleSetOverseerCredentials(a.student_id)} className="perf-btn perf-btn-primary">
                       Send Credentials
                     </button>
                     {a.overseer_email && (
                       <button
-                        style={ghostBtn}
+                        
                         disabled={resetting[a.student_id]}
                         onClick={() => handleResetOverseerPassword(a.student_id)}
-                      >
+                       className="perf-btn">
                         {resetting[a.student_id] ? 'Sending…' : <>Reset Password</>}
                       </button>
                     )}
@@ -2522,7 +2506,7 @@ const handleSuperAdminRemoveStudent = async () => {
                         <br />
                         <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                       </div>
-                      <button style={greenBtn} onClick={() => handleToggleOverseer(v.student_id)}>
+                      <button  onClick={() => handleToggleOverseer(v.student_id)} className="perf-btn perf-btn-primary">
                         + Make Overseer
                       </button>
                     </div>
@@ -2557,7 +2541,7 @@ const handleSuperAdminRemoveStudent = async () => {
                   value={orgForm.frontend_url}
                   onChange={e => setOrgForm(prev => ({ ...prev, frontend_url: e.target.value }))}
                 />
-                <button type="submit" style={greenBtn} disabled={orgCreating}>
+                <button type="submit"  disabled={orgCreating} className="perf-btn perf-btn-primary">
                   {orgCreating ? 'Provisioning…' : '+ Create Organisation'}
                 </button>
               </form>
@@ -2667,10 +2651,10 @@ const appCard     = { border: '1px solid var(--border-color)', borderRadius: '12
 const formCol     = { display: 'flex', flexDirection: 'column', gap: '10px' };
 const inp         = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
 const fileLabel   = { fontSize: '12px', opacity: 0.7 };
-const btn         = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn    = { ...btn, backgroundColor: 'var(--success)' };
-const redBtn      = { ...btn, backgroundColor: 'var(--bp-no, #e74c3c)' };
-const ghostBtn    = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+
+
+
+
 const editLink    = { background: 'none', border: 'none', color: 'var(--info)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const redLink     = { background: 'none', border: 'none', color: 'var(--bp-no, #e74c3c)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const badge       = { marginLeft: '8px', fontSize: '10px', backgroundColor: 'color-mix(in srgb, var(--info) 20%, transparent)', color: 'var(--info)', padding: '2px 6px', borderRadius: '4px' };
@@ -2722,7 +2706,7 @@ function FinalReasonEditor({ appId, initial }) {
       </label>
       <textarea style={{ ...inp, minHeight: '56px', marginTop: '4px' }} maxLength={500}
         value={text} onChange={e => setText(e.target.value)} />
-      <button style={{ ...ghostBtn, marginTop: '6px' }} disabled={saving || !dirty} onClick={save}>
+      <button  disabled={saving || !dirty} onClick={save} className="perf-btn" style={{ cursor: 'pointer', marginTop: '6px' }}>
         {saving ? 'Saving…' : 'Save reason'}
       </button>
     </div>

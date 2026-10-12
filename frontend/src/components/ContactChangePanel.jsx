@@ -83,7 +83,7 @@ export default function ContactChangePanel({ student = null, compact = false }) 
               <textarea style={{ ...inp, height: 64 }} value={form.evidence_note} placeholder={`What did you check? (${noteMin}+ characters)`}
                 onChange={e => setForm({ ...form, evidence_note: e.target.value })} />
               {error && <p style={{ color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}><Icon name="warning" /> {error}</p>}
-              <button type="button" style={{ ...btn, opacity: canSend ? 1 : 0.5 }} disabled={!canSend} onClick={send}>
+              <button type="button"  disabled={!canSend} onClick={send} className="perf-btn perf-btn-primary" style={{ marginTop: 10, cursor: 'pointer' , opacity: canSend ? 1 : 0.5 }}>
                 {busy ? 'Submitting…' : 'Submit contact change'}
               </button>
             </>
@@ -106,7 +106,7 @@ export default function ContactChangePanel({ student = null, compact = false }) 
             {c.status === 'pending' && c.expires_at && <> · expires {new Date(c.expires_at + 'Z').toLocaleTimeString()}</>}
             {c.status === 'approved' && c.notice_status === 'failed' && <> · notice SMS to old number failed</>}
           </p>
-          {c.status === 'pending' && <button type="button" style={ghost} onClick={() => cancel(c.id)}>Withdraw</button>}
+          {c.status === 'pending' && <button type="button"  onClick={() => cancel(c.id)} className="perf-btn">Withdraw</button>}
         </div>
       ))}
       </ScrollList>
@@ -117,5 +117,5 @@ export default function ContactChangePanel({ student = null, compact = false }) 
 const box = { border: '1px solid var(--border-color)', borderRadius: 10, padding: 12, background: 'var(--card-bg)' };
 const muted = { fontSize: 12, opacity: 0.7, margin: '4px 0 8px' };
 const inp = { width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 10, borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--surface-2)', color: 'var(--text-color)' };
-const btn = { marginTop: 10, padding: '10px 16px', borderRadius: 8, border: 'none', background: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ai, #fff)', fontWeight: 700, cursor: 'pointer' };
-const ghost = { padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontSize: 12 };
+
+

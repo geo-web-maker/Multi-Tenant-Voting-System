@@ -949,7 +949,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 className={k?.btn}
                 style={bp ? { opacity: isVerifying ? 0.7 : 1, cursor: isVerifying ? 'wait' : 'pointer' } : {
                   ...primaryBtnStyle,
-                  backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : '#bdc3c7',
+                  backgroundColor: (isElectionOpen || isAdminPath) ? 'var(--success)' : 'var(--text-muted, #bdc3c7)',
                   opacity: isVerifying ? 0.7 : 1,
                   cursor: isVerifying ? 'wait' : 'pointer',
                 }}
@@ -1122,8 +1122,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             <button 
               onClick={() => setShowGuide(false)}
               style={{
-                backgroundColor: '#34495e',
-                color: '#fff',
+                backgroundColor: 'var(--brand-primary, #34495e)',
+                color: 'var(--brand-on-primary, #fff)',
                 border: 'none',
                 padding: '12px 20px',
                 borderRadius: '8px',
@@ -1144,7 +1144,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
               orgName={orgName}
             />
             
-            <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted, #94a3b8)' }}>
               <p>This is a guide. Log in to cast your actual vote.</p>
             </div>
           </div>
@@ -1305,9 +1305,9 @@ const modalOverlayStyle = { position: 'fixed', top: 0, left: 0, right: 0, bottom
 
 const modalContentStyle = { backgroundColor: 'var(--card-bg)', padding: '32px', borderRadius: '20px', width: '90%', maxWidth: '400px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', zIndex: 3001 };
 
-const selectionBtnStyle = { width: '100%', padding: '15px', backgroundColor: '#f8f9fa', color: '#2c3e50', border: '1px solid #dee2e6', borderRadius: '8px', marginBottom: '10px', textAlign: 'left', cursor: 'pointer' };
+const selectionBtnStyle = { width: '100%', padding: '15px', backgroundColor: 'var(--card-bg, #f8f9fa)', color: 'var(--text-color, #2c3e50)', border: '1px solid var(--border-color, #dee2e6)', borderRadius: '8px', marginBottom: '10px', textAlign: 'left', cursor: 'pointer' };
 
-const linkBtnStyle = { background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', marginTop: '15px', width: '100%' };
+const linkBtnStyle = { background: 'none', border: 'none', color: 'var(--info, #007bff)', cursor: 'pointer', marginTop: '15px', width: '100%' };
 
 const resendBtnStyle = { background: 'none', border: '1px solid var(--bp-ok, #2ecc71)', color: 'var(--success)', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '600' };
 

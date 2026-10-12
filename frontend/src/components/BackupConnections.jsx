@@ -1,5 +1,6 @@
 import React from 'react';
-import { BackupButton, BackupCard, BackupPill, bytesText, GuardRows, muted, safeTime } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill, GuardRows } from './BackupUI';
+import { bytesText, muted, safeTime } from './BackupUtils';
 
 export default function BackupConnections({ data, summary, onTest, viewAs }) {
   const probes = data?.connections || summary?.connections || [];

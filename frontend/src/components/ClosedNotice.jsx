@@ -9,8 +9,8 @@ import { fmtZoned } from '../tz';
 // authority (exception grants can still let a specific student through).
 
 const noticeStyle = {
-  backgroundColor: '#fff3cd', color: '#856404', padding: '10px', borderRadius: '6px',
-  marginBottom: '15px', textAlign: 'center', fontSize: '14px', border: '1px solid #ffeeba',
+  backgroundColor: 'var(--bp-wn-tint, #fff3cd)', color: 'var(--bp-wn, #856404)', padding: '10px', borderRadius: '6px',
+  marginBottom: '15px', textAlign: 'center', fontSize: '14px', border: '1px solid var(--bp-wn-edge, #ffeeba)',
 };
 
 /** Text for the voting notice, or null when voting is open. */

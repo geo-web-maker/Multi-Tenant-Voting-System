@@ -22,46 +22,30 @@ const BP_CARD_ALLOWED = ['App.jsx', 'components/ApplicantPortal.jsx', 'component
 // Files that still define their own inline button styles (legacy admin dialect). Migrating one to the kit means removing it here.
 // A file NOT in this list that adds a `const ...Btn = {` fails: use perf-btn instead.
 const LEGACY_BUTTON_FILES = [
+  // Core voter/applicant flow: preserve the existing task-specific forms, OTP, and voting interaction surfaces.
   'App.jsx',
-  'components/AdminDashboard.jsx',
-  'components/AnalyticsPanel.jsx',
   'components/ApplicantPortal.jsx',
   'components/BallotBox.jsx',
-  'components/CandidateListBlock.jsx',
-  'components/CandidateListSample.jsx',
+  'components/LoginErrorActions.jsx',
+  'components/OtpInput.jsx',
+  // Standalone/public tools: status portal, mapping/export, and public result controls keep their own navigation and data-entry affordances.
   'components/CandidateStatusPortal.jsx',
   'components/ColumnMapper.jsx',
-  'components/CommissionDashboard.jsx',
-  'components/ContactChangePanel.jsx',
-  'components/ContactChangesQueue.jsx',
+  'components/Results.jsx',
+  'components/VoterRegisterSearch.jsx',
+  'components/VoterList.jsx',
+  'components/TabBar.jsx',
+  // Demo/help/utility surfaces use compact links, icon actions, or floating/help launchers rather than admin action pills.
   'components/DemoInbox.jsx',
-  'components/FinancialControllerDashboard.jsx',
   'components/FloatingHelpMenu.jsx',
   'components/HelpPanel.jsx',
   'components/HelpTriggers.jsx',
-  'components/ITAdminDashboard.jsx',
-  'components/LinkBuilder.jsx',
-  'components/LoginErrorActions.jsx',
   'components/MobileMoneyNumber.jsx',
-  'components/OtpInput.jsx',
   'components/PanelHatButton.jsx',
-  'components/PaymentInfoPanel.jsx',
-  'components/ResetOtpLimitsPanel.jsx',
-  'components/Results.jsx',
-  'components/SecurityPanel.jsx',
-  'components/SharedAdminPanels.jsx',
-  'components/StuckHelp.jsx',
-  'components/SuperAdminDashboard.jsx',
-  'components/SuperAdminStudentEdit.jsx',
-  'components/TabBar.jsx',
   'components/UIFeedback.jsx',
-  'components/UploadBypassPanel.jsx',
-  'components/VettingDashboard.jsx',
-  'components/VettingPanelManager.jsx',
-  'components/VoterFieldsPanel.jsx',
-  'components/VoterImportReview.jsx',
-  'components/VoterList.jsx',
-  'components/VoterRegisterSearch.jsx',
+  // Two compact inline text-link actions intentionally remain link-like, not large primary/destructive action buttons.
+  'components/ResetOtpLimitsPanel.jsx',
+  'components/SharedAdminPanels.jsx',
 ];
 
 describe('UI template rules (docs/UI_TEMPLATE_MANUAL.md)', () => {

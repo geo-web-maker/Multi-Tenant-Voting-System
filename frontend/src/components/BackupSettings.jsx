@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { BackupButton, BackupCard, muted } from './BackupUI';
+import { BackupButton, BackupCard } from './BackupUI';
+import { muted } from './BackupUtils';
 
 const NUMBER_FIELDS = [
   ['full_backup_active_hours', 'Full backup max age during an open election (hours)'],

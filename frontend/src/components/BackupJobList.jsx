@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { BackupCard, BackupPill, durationText, muted, safeTime } from './BackupUI';
+import { BackupCard, BackupPill } from './BackupUI';
+import { durationText, muted, safeTime } from './BackupUtils';
 
 export default function BackupJobList({ jobs = [], title = 'Recent jobs', limit = 8, onSelectJob }) {
   const [all, setAll] = useState(false);

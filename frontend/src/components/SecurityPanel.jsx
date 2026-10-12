@@ -250,17 +250,17 @@ export default function SecurityPanel() {
 
         <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
           <input style={inp} value={reasonSms} onChange={e => setReasonSms(e.target.value)} placeholder="e.g. EgoSMS credit low, routing OTPs via MamboSMS" /></label>
-        <button style={{ ...btn, marginTop: 8 }} onClick={saveSms}>Save SMS routing</button>
+        <button  onClick={saveSms} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: 8 }}>Save SMS routing</button>
 
         <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '16px 0 8px' }} />
         <b style={{ fontSize: 13 }}>Test &amp; check providers</b>
         <p style={note}>Sends a real (billable) test message. “Current routing” behaves exactly like a voter OTP; the provider buttons test one account directly, ignoring routing.</p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <input style={{ ...inp, maxWidth: 220 }} value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="Phone, e.g. 2567XXXXXXXX" />
-          <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={!!testing} onClick={() => sendTest()}>{testing === 'routing' ? 'Sending…' : 'Current routing'}</button>
-          <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={!!testing} onClick={() => sendTest('egosms')}>{testing === 'egosms' ? 'Sending…' : 'EgoSMS'}</button>
-          <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={!!testing} onClick={() => sendTest('mambosms')}>{testing === 'mambosms' ? 'Sending…' : 'MamboSMS'}</button>
-          <button style={{ ...btn, background: '#7f8c8d' }} disabled={!!testing} onClick={checkBalances}>{testing === 'balances' ? 'Checking…' : 'Check balances'}</button>
+          <button  disabled={!!testing} onClick={() => sendTest()} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'routing' ? 'Sending…' : 'Current routing'}</button>
+          <button  disabled={!!testing} onClick={() => sendTest('egosms')} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'egosms' ? 'Sending…' : 'EgoSMS'}</button>
+          <button  disabled={!!testing} onClick={() => sendTest('mambosms')} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'mambosms' ? 'Sending…' : 'MamboSMS'}</button>
+          <button  disabled={!!testing} onClick={checkBalances} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'balances' ? 'Checking…' : 'Check balances'}</button>
         </div>
         {balances && (
           <p style={note}>
@@ -300,7 +300,7 @@ export default function SecurityPanel() {
 
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
         <input style={inp} value={reasonSec} onChange={e => setReasonSec(e.target.value)} placeholder="e.g. election-day hardening" /></label>
-      <button style={btn} onClick={saveSecurity}>Save security settings</button>
+      <button  onClick={saveSecurity} className="perf-btn perf-btn-primary">Save security settings</button>
 
       <div style={{ ...box, gridColumn: '1 / -1' }}>
         <b style={{ fontSize: 14 }}>SMS budget</b>
@@ -319,7 +319,7 @@ export default function SecurityPanel() {
           <span style={{ fontSize: 13 }}>Enforce (leave off / monitor-only until the dry run passes)</span></label>
         <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
           <input style={inp} value={reasonBudget} onChange={e => setReasonBudget(e.target.value)} placeholder="e.g. topped up 5,000 credits" /></label>
-        <button style={{ ...btn, marginTop: 8 }} onClick={saveBudget}>Save SMS budget</button>
+        <button  onClick={saveBudget} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: 8 }}>Save SMS budget</button>
       </div>
 
       <NameNormalizerTile />
@@ -329,7 +329,7 @@ export default function SecurityPanel() {
 
       <div style={box}>
         <b style={{ fontSize: 14 }}>Roster ledger integrity</b>
-        <button style={{ ...btn, background: 'var(--bp-ac, #3498db)', marginLeft: 10 }} onClick={verifyLedger}>Verify chain</button>
+        <button  onClick={verifyLedger} className="perf-btn" style={{ cursor: 'pointer', marginLeft: 10 }}>Verify chain</button>
         {ledger && <p style={{ ...note, color: ledger.valid ? 'var(--success)' : 'var(--danger)' }}>
           {ledger.valid ? `VERIFIED — ${ledger.entries} entries` : `MISMATCH at entry #${ledger.first_bad_seq}`}</p>}
       </div>
@@ -365,8 +365,8 @@ function NameNormalizerTile() {
     <div style={box}>
       <b style={{ fontSize: 14 }}>Name formatting clean-up</b>
       <p style={note}>New names are capitalised automatically when saved. This fixes names that were stored before that (voter register, applications, candidates, change requests). It changes letter case and spacing only. IDs, phone numbers, votes and the audit history are not touched.</p>
-      <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(true)}>Preview changes</button>
-      <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !report || !report.dry_run || report.total_changed === 0} onClick={() => run(false)}>Apply</button>
+      <button  disabled={busy} onClick={() => run(true)} className="perf-btn" style={{ cursor: 'pointer' }}>Preview changes</button>
+      <button  disabled={busy || !report || !report.dry_run || report.total_changed === 0} onClick={() => run(false)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginLeft: 10 }}>Apply</button>
       {report && (
         <div style={{ marginTop: 10, fontSize: 13 }}>
           <div style={{ fontWeight: 700, color: report.dry_run ? 'inherit' : 'var(--success)' }}>
@@ -414,8 +414,8 @@ function RegNumberCheckTile() {
     <div style={box}>
       <b style={{ fontSize: 14 }}>{idText.nounCap} check</b>
       <p style={note}>{idText.nounCap}s are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
-      <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(false)}>Check database</button>
-      <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !r || r.fix || fixable === 0} onClick={() => run(true)}>Fix</button>
+      <button  disabled={busy} onClick={() => run(false)} className="perf-btn" style={{ cursor: 'pointer' }}>Check database</button>
+      <button  disabled={busy || !r || r.fix || fixable === 0} onClick={() => run(true)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginLeft: 10 }}>Fix</button>
       {r && (
         <div style={{ marginTop: 10, fontSize: 13 }}>
           <div style={{ fontWeight: 700, color: r.issues_found === 0 || r.fix ? 'var(--success)' : 'var(--danger)' }}>
@@ -465,8 +465,8 @@ function ApplicationEditReconcileTile() {
     <div style={box}>
       <b style={{ fontSize: 14 }}>Unrecorded application edits</b>
       <p style={note}>Finds applications whose details were changed before the Edit application button existed, so they never showed as edited. Preview lists them; Apply records each change in its history. The edit time shown will be today, because the real time was never saved.</p>
-      <button style={{ ...btn, background: 'var(--bp-ac, #3498db)' }} disabled={busy} onClick={() => run(true)}>Preview</button>
-      <button style={{ ...btn, marginLeft: 10 }} disabled={busy || !report || !report.dry_run || report.items.length === 0} onClick={() => run(false)}>Apply</button>
+      <button  disabled={busy} onClick={() => run(true)} className="perf-btn" style={{ cursor: 'pointer' }}>Preview</button>
+      <button  disabled={busy || !report || !report.dry_run || report.items.length === 0} onClick={() => run(false)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginLeft: 10 }}>Apply</button>
       {report && (
         <div style={{ marginTop: 10, fontSize: 13 }}>
           <div style={{ fontWeight: 700, color: report.dry_run ? 'inherit' : 'var(--success)' }}>
@@ -489,4 +489,4 @@ const note = { fontSize: 12, opacity: 0.75, margin: '6px 0' };
 const fld = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 };
 const lbl = { fontSize: 12, opacity: 0.65, fontWeight: 600 };
 const inp = { padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, width: '100%', boxSizing: 'border-box' };
-const btn = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', background: 'var(--bp-ok, #2ecc71)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13 };
+

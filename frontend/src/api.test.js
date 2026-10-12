@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { AxiosError } from 'axios';
-import api, { retryConfig, DEFAULT_TIMEOUT_MS, shouldReportNetFail, _resetNetFailForTests } from './api';
+import api, { retryConfig, DEFAULT_TIMEOUT_MS, shouldReportNetFail, _resetNetFailForTests, baseUrlFor, API_BASE, API_DIRECT_BASE } from './api';
 
 // Fake transport: replays a scripted list of outcomes and records every attempt.
 function script(outcomes) {
@@ -112,5 +112,19 @@ describe('analytics hygiene (guide 5.1 / 5.2)', () => {
     expect(shouldReportNetFail('/a', 20000)).toBe(false);
     expect(shouldReportNetFail('/b', 20000)).toBe(true);
     expect(shouldReportNetFail('/a', 31001)).toBe(true);
+  });
+});
+
+describe('proxy / direct routing (same-origin /api with direct large-body endpoints)', () => {
+  it('sends uploads, roster import and the register export to the direct base', () => {
+    for (const u of ['/admin/upload-image', '/apply/upload-image', '/apply/upload-document', '/admin/import-voters/inspect',
+      '/admin/import-voters/preview', '/admin/import-voters/apply', '/admin/voters/export']) {
+      expect(baseUrlFor(u), u).toBe(API_DIRECT_BASE);
+    }
+  });
+  it('keeps everything else, including the export permission check, on the default base', () => {
+    for (const u of ['/', '/public/bootstrap', '/verify-otp', '/vote', '/admin/voters/export/permission', '/analytics/collect']) {
+      expect(baseUrlFor(u), u).toBe(API_BASE);
+    }
   });
 });

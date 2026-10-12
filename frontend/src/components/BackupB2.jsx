@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { BarRows } from './UsageCharts';
 import BackupJobList from './BackupJobList';
-import { BackupButton, BackupCard, BackupPill, bytesText, muted, safeTime, tileClass } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill } from './BackupUI';
+import { bytesText, muted, safeTime, tileClass } from './BackupUtils';
 
 export default function BackupB2({ b2, jobs = [], run, viewAs, runningKinds = [] }) {
   const [tenant, setTenant] = useState('');

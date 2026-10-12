@@ -564,7 +564,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
             })}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <button style={primaryBtn} onClick={saveSchedule} disabled={saving}>
+            <button  onClick={saveSchedule} disabled={saving} className="perf-btn perf-btn-primary">
               {saving ? 'Saving…' : 'Save Schedule'}
             </button>
             {dirty && (
@@ -572,8 +572,8 @@ export function Timeline({ canEdit = false, isChief = false }) {
                 <span style={{ fontSize: '12px', color: 'var(--warning)' }}>
                   Unsaved changes — not overwritten by the automatic refresh
                 </span>
-                <button type="button" style={{ ...ghostBtn, fontSize: '12px', padding: '6px 12px' }}
-                  onClick={() => { setDirty(false); load(); }}>
+                <button type="button" 
+                  onClick={() => { setDirty(false); load(); }} className="perf-btn" style={{ cursor: 'pointer' }}>
                   Discard &amp; reload
                 </button>
               </>
@@ -607,7 +607,7 @@ export function Timeline({ canEdit = false, isChief = false }) {
             <label style={mutedStyle}>Expires (optional)</label>
             <input type="datetime-local" style={inputStyle} value={grantForm.expires_at}
               onChange={e => setGrantForm({ ...grantForm, expires_at: e.target.value })} />
-            <button style={primaryBtn} type="submit">Grant Exception</button>
+            <button  type="submit" className="perf-btn perf-btn-primary">Grant Exception</button>
           </form>
         </div>
       )}
@@ -762,8 +762,8 @@ export function RoadmapEditor({ canEdit = false }) {
               <strong style={{ fontSize: '13px' }}>Row {i + 1}</strong>
               {canEdit && (
                 <div style={{ display: 'flex', gap: '6px' }}>
-                  <button style={ghostBtn} onClick={() => moveRow(i, -1)} disabled={i === 0} title="Move up">↑</button>
-                  <button style={ghostBtn} onClick={() => moveRow(i, 1)} disabled={i === rows.length - 1} title="Move down">↓</button>
+                  <button  onClick={() => moveRow(i, -1)} disabled={i === 0} title="Move up" className="perf-btn">↑</button>
+                  <button  onClick={() => moveRow(i, 1)} disabled={i === rows.length - 1} title="Move down" className="perf-btn">↓</button>
                   <button style={linkBtn} onClick={() => removeRow(i)}>Remove</button>
                 </div>
               )}
@@ -812,15 +812,15 @@ export function RoadmapEditor({ canEdit = false }) {
                 )}
               </div>
             ))}
-            {canEdit && <button style={ghostBtn} onClick={() => addActivity(i)}>+ Add activity</button>}
+            {canEdit && <button  onClick={() => addActivity(i)} className="perf-btn">+ Add activity</button>}
           </div>
         ))}
       </div>
 
       {canEdit && (
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <button style={ghostBtn} onClick={addRow}>+ Add row</button>
-          <button style={primaryBtn} onClick={save} disabled={saving}>
+          <button  onClick={addRow} className="perf-btn">+ Add row</button>
+          <button  onClick={save} disabled={saving} className="perf-btn perf-btn-primary">
             {saving ? 'Saving…' : 'Save Roadmap'}
           </button>
         </div>
@@ -869,9 +869,9 @@ export function ActivityLog() {
         <input style={{ ...inputStyle, maxWidth: '260px' }} placeholder="Filter by actor…"
           value={actor} onChange={e => setActor(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && load()} />
-        <button style={ghostBtn} onClick={() => load()}>Search</button>
+        <button  onClick={() => load()} className="perf-btn">Search</button>
         {(filter || actor) && (
-          <button style={ghostBtn} onClick={() => { setFilter(''); setActor(''); load('', ''); }}>Clear</button>
+          <button  onClick={() => { setFilter(''); setActor(''); load('', ''); }} className="perf-btn">Clear</button>
         )}
       </div>
 
@@ -953,10 +953,10 @@ export function ChainView() {
       </p>
 
       <div style={filterRow} className="stack-mobile">
-        <button style={primaryBtn} onClick={verify} disabled={verifying}>
+        <button  onClick={verify} disabled={verifying} className="perf-btn perf-btn-primary">
           {verifying ? 'Verifying…' : <>Verify Chain</>}
         </button>
-        <button style={ghostBtn} onClick={load}>Refresh</button>
+        <button  onClick={load} className="perf-btn">Refresh</button>
       </div>
 
       {anchorFailures > 0 && (
@@ -1404,7 +1404,7 @@ export function RosterStats({ onRegisteredClick }) {
             <div style={{ fontSize: '11px', opacity: 0.7 }}>{c.label}</div>
           </>;
           return clickable ? (
-            <button key={c.label} type="button" onClick={onRegisteredClick} style={{ ...statCard, textAlign: 'center', cursor: 'pointer', color: 'inherit', width: '100%' }}>{body}</button>
+            <button key={c.label} type="button" onClick={onRegisteredClick}  className="perf-btn" style={{ textAlign: 'center', cursor: 'pointer', width: '100%' }}>{body}</button>
           ) : <div key={c.label} style={statCard}>{body}</div>;
         })}
       </div>
@@ -1496,10 +1496,10 @@ export function OfficialCertificationBlock() {
       </p>
 
       <div style={filterRow} className="stack-mobile no-print">
-        <button style={primaryBtn} onClick={load} disabled={loading}>
+        <button  onClick={load} disabled={loading} className="perf-btn perf-btn-primary">
           {loading ? 'Building…' : <>Generate Official Document</>}
         </button>
-        {report && <button style={ghostBtn} onClick={() => window.print()}>Print</button>}
+        {report && <button  onClick={() => window.print()} className="perf-btn">Print</button>}
       </div>
 
       {error && <p style={errStyle} className="no-print">{error}</p>}
@@ -1597,8 +1597,8 @@ const countdownStyle = { fontSize: '12px', margin: '6px 0', fontWeight: 700, col
 const filterRow = { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px', alignItems: 'center' };
 const formCol = { display: 'flex', flexDirection: 'column', gap: '10px' };
 const inputStyle = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
-const primaryBtn = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', backgroundColor: 'var(--info)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '13px' };
-const ghostBtn = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
+
+
 const linkBtn = { background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontWeight: 700, fontSize: '12px' };
 const scrollBox = { maxHeight: '460px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px', marginTop: '10px' };
 const tableStyle = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, tableLayout: 'fixed' };
@@ -1608,7 +1608,7 @@ const rowStyle = { borderBottom: '1px solid var(--border-color)' };
 const emptyCell = { ...tdStyle, textAlign: 'center', opacity: 0.45, padding: '28px' };
 const barTrack = { width: '100%', height: '8px', background: 'var(--surface-2)', borderRadius: '4px', overflow: 'hidden', marginTop: '6px' };
 const statGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px', marginBottom: '14px' };
-const statCard = { ...panel, padding: '14px', textAlign: 'center' };
+
 const anomalyPill = { fontSize: '11px', padding: '4px 10px', borderRadius: '10px', background: 'color-mix(in srgb, var(--warning) 18%, transparent)', color: 'var(--warning)', fontWeight: 600 };
 const okBanner = { padding: '12px', borderRadius: '8px', background: 'color-mix(in srgb, var(--success) 15%, transparent)', color: 'var(--success)', fontSize: '13px', fontWeight: 600, marginBottom: '10px' };
 const badBanner = { padding: '12px', borderRadius: '8px', background: 'color-mix(in srgb, var(--danger) 15%, transparent)', color: 'var(--danger)', fontSize: '13px', fontWeight: 700, marginBottom: '10px' };

@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { setTemplateImpl } from '../template';
-import { BackupCard, BackupPill, tileClass, cardClass } from './BackupUI';
+import { BackupCard, BackupPill } from './BackupUI';
+import { tileClass, cardClass } from './BackupUtils';
 
 const fakeBlueprint = {
   cls: { card: 'bp-card-x', alt: 'bp-alt-x', warnBan: 'bp-ban bp-warn' },

@@ -171,7 +171,7 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialSt
         <textarea style={{ ...inp, height: 64 }} value={note} onChange={e => setNote(e.target.value)}
           placeholder="Short note: what did you check? (3+ characters)" />
         {error && <p style={{ color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}><Icon name="warning" /> {error}</p>}
-        <button type="button" style={{ ...btn, opacity: canReset ? 1 : 0.5 }} disabled={!canReset} onClick={reset}>
+        <button type="button"  disabled={!canReset} onClick={reset} className="perf-btn perf-btn-primary" style={{ marginTop: 12, cursor: 'pointer', opacity: canReset ? 1 : 0.5 }}>
           {busy ? 'Resetting…' : 'Reset limits'}
         </button>
       </div>
@@ -206,7 +206,7 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialSt
             onChange={e => setCap({ ...cap, cap: e.target.value })} />
           <input style={inp} placeholder="Reason (required, logged)" value={cap.reason}
             onChange={e => setCap({ ...cap, reason: e.target.value })} />
-          <button type="button" style={{ ...btn, opacity: canSaveCap ? 1 : 0.5 }} disabled={!canSaveCap} onClick={saveCap}>
+          <button type="button"  disabled={!canSaveCap} onClick={saveCap} className="perf-btn perf-btn-primary" style={{ marginTop: 12, cursor: 'pointer', opacity: canSaveCap ? 1 : 0.5 }}>
             {capBusy ? 'Saving…' : 'Save cap'}
           </button>
         </div>
@@ -220,7 +220,7 @@ const muted = { fontSize: 12, opacity: 0.7, margin: '4px 0 10px' };
 const selectedRow = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 };
 const selectedText = { minWidth: 0, overflowWrap: 'anywhere' };
 const inp = { width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13 };
-const btn = { marginTop: 12, padding: '10px 18px', borderRadius: 8, border: 'none', background: 'var(--bp-ok, #2ecc71)', color: 'var(--bp-ai, #fff)', fontWeight: 700, cursor: 'pointer', fontSize: 13 };
+
 const linkBtn = { padding: '4px 8px', background: 'none', border: 'none', color: 'var(--accent, #2ecc71)', cursor: 'pointer', fontSize: 12, fontWeight: 600, textDecoration: 'underline' };
 const list = { position: 'absolute', left: 0, right: 0, zIndex: 20, border: '1px solid var(--border-color)', borderRadius: 8, marginTop: 4, overflow: 'hidden', background: 'var(--card-bg)', boxShadow: '0 4px 14px rgba(0,0,0,0.15)' };
 const listItem = { display: 'block', width: '100%', textAlign: 'left', padding: 12, background: 'var(--card-bg)', border: 'none', borderBottom: '1px solid var(--border-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: 13 };

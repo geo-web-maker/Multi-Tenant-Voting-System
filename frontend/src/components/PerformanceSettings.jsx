@@ -6,7 +6,6 @@ import {
 } from '../perfFormat';
 
 const field = { display: 'grid', gap: 4, marginBottom: 12 };
-const input = { padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', font: 'inherit', minWidth: 0 };
 const err = { color: 'var(--danger)', fontSize: 13, margin: 0 };
 const hint = { color: 'var(--text-muted)', fontSize: 12, margin: 0 };
 
@@ -74,7 +73,7 @@ export default function PerformanceSettings({ config, onSaved }) {
       {open && (
         <div style={{ marginTop: 12 }}>
           <Field id="perf-tier" label="Tier" source={src.ops_cap} error={errors.tier}>
-            <select id="perf-tier" className="perf-field" style={input} value={form.tier}
+            <select id="perf-tier" className="perf-field" value={form.tier}
               onChange={(e) => setForm(applyTierChoice(form, e.target.value, presets))}>
               {presets.map((p) => <option key={p.id} value={p.id}>{p.id === 'custom' ? 'Custom' : p.id}</option>)}
             </select>
@@ -83,28 +82,28 @@ export default function PerformanceSettings({ config, onSaved }) {
 
           <div className="perf-fields" style={{ marginTop: 12 }}>
           <Field id="perf-ops" label="Ops cap (operations per second)" source={src.ops_cap} error={errors.ops_cap}>
-            <input id="perf-ops" className="perf-field" style={input} inputMode="numeric" disabled={form.ops_nocap}
+            <input id="perf-ops" className="perf-field" inputMode="numeric" disabled={form.ops_nocap}
               value={form.ops_nocap ? '' : form.ops_cap} onChange={(e) => setForm(editCap(form, { ops_cap: e.target.value }, presets))} />
             <label className="perf-check"><input type="checkbox" checked={form.ops_nocap}
               onChange={(e) => setForm(editCap(form, { ops_nocap: e.target.checked }, presets))} /> No hard cap</label>
           </Field>
           <Field id="perf-conn" label="Connection cap" source={src.conn_cap} error={errors.conn_cap}>
-            <input id="perf-conn" className="perf-field" style={input} inputMode="numeric" disabled={form.conn_nocap}
+            <input id="perf-conn" className="perf-field" inputMode="numeric" disabled={form.conn_nocap}
               value={form.conn_nocap ? '' : form.conn_cap} onChange={(e) => setForm(editCap(form, { conn_cap: e.target.value }, presets))} />
             <label className="perf-check"><input type="checkbox" checked={form.conn_nocap}
               onChange={(e) => setForm(editCap(form, { conn_nocap: e.target.checked }, presets))} /> No hard cap</label>
           </Field>
           <Field id="perf-warn" label="Warn at (% of cap)" source={src.warn_pct} error={errors.warn_pct}>
-            <input id="perf-warn" className="perf-field" style={input} inputMode="numeric" value={form.warn_pct} onChange={(e) => set({ warn_pct: e.target.value })} />
+            <input id="perf-warn" className="perf-field" inputMode="numeric" value={form.warn_pct} onChange={(e) => set({ warn_pct: e.target.value })} />
           </Field>
           <Field id="perf-crit" label="Critical at (% of cap)" source={src.crit_pct} error={errors.crit_pct}>
-            <input id="perf-crit" className="perf-field" style={input} inputMode="numeric" value={form.crit_pct} onChange={(e) => set({ crit_pct: e.target.value })} />
+            <input id="perf-crit" className="perf-field" inputMode="numeric" value={form.crit_pct} onChange={(e) => set({ crit_pct: e.target.value })} />
           </Field>
           <Field id="perf-slow" label="Slow command (ms)" source={src.slow_ms} error={errors.slow_ms}>
-            <input id="perf-slow" className="perf-field" style={input} inputMode="numeric" value={form.slow_ms} onChange={(e) => set({ slow_ms: e.target.value })} />
+            <input id="perf-slow" className="perf-field" inputMode="numeric" value={form.slow_ms} onChange={(e) => set({ slow_ms: e.target.value })} />
           </Field>
           <Field id="perf-persist" label="History write interval" source={src.persist_s} error={errors.persist_s}>
-            <select id="perf-persist" className="perf-field" style={input} value={form.persist_s} onChange={(e) => set({ persist_s: Number(e.target.value) })}>
+            <select id="perf-persist" className="perf-field" value={form.persist_s} onChange={(e) => set({ persist_s: Number(e.target.value) })}>
               {PERSIST_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </Field>

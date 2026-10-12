@@ -1,7 +1,8 @@
 import React from 'react';
 import { BarRows } from './UsageCharts';
 import BackupJobList from './BackupJobList';
-import { BackupButton, BackupCard, BackupPill, muted, safeTime } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill } from './BackupUI';
+import { muted, safeTime } from './BackupUtils';
 
 export default function BackupRestoreTest({ restore, jobs = [], migration, run, viewAs, runningKinds = [], onSelectJob }) {
   const last = restore?.last;

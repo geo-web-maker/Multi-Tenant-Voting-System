@@ -12,7 +12,8 @@ import BackupMirror from './BackupMirror';
 import BackupRestoreTest from './BackupRestoreTest';
 import BackupMigration from './BackupMigration';
 import BackupSettings from './BackupSettings';
-import { BackupButton, BackupCard, BackupPill, muted, cardClass } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill } from './BackupUI';
+import { muted, cardClass } from './BackupUtils';
 
 const ROOT = '/superadmin/backups';
 const apiUrl = (path) => path.startsWith(ROOT) ? path : `${ROOT}${path.startsWith('/') ? path : `/${path}`}`;

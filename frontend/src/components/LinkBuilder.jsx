@@ -35,7 +35,7 @@ export default function LinkBuilder({ host, onCopy = defaultCopy }) {
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
         <input aria-label="Tagged link" readOnly value={result.ok ? result.url : ''} style={{ ...field, flex: '2 1 240px' }} />
-        <button type="button" onClick={copy} disabled={!result.ok} style={btn}>{copied ? 'Copied' : 'Copy link'}</button>
+        <button type="button" onClick={copy} disabled={!result.ok}  className="perf-btn perf-btn-primary">{copied ? 'Copied' : 'Copy link'}</button>
       </div>
       {showError && <p role="alert" style={{ ...muted, color: 'var(--danger)', marginTop: 6 }}>{result.error}</p>}
     </div>
@@ -46,4 +46,4 @@ const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding
 const h3 = { margin: '0 0 10px', fontSize: 15 };
 const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
 const field = { minHeight: 44, padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, flex: '1 1 140px' };
-const btn = { minHeight: 44, padding: '0 16px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--brand-primary)', color: 'var(--brand-on-primary, white)', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
+

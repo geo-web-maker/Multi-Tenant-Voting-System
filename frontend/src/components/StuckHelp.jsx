@@ -42,8 +42,8 @@ export default function StuckHelp() {
         <strong style={{ display: 'block', marginBottom: 6 }}>Taking longer than usual?</strong>
         <ol style={{ margin: '0 0 10px', paddingLeft: 18, textAlign: 'left', lineHeight: 1.5 }}>{steps}</ol>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-          <button type="button" onClick={reloadFresh} style={btnPrimary}>Reload fresh</button>
-          <button type="button" onClick={copyLink} style={btn}>{label}</button>
+          <button type="button" onClick={reloadFresh}  className="perf-btn perf-btn-primary">Reload fresh</button>
+          <button type="button" onClick={copyLink}  className="perf-btn">{label}</button>
         </div>
       </div>
     </div>
@@ -52,5 +52,3 @@ export default function StuckHelp() {
 
 const wrap = { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 10000, padding: 12, display: 'flex', justifyContent: 'center', boxSizing: 'border-box' }
 const card = { width: '100%', maxWidth: 420, fontSize: 14, textAlign: 'center', background: 'var(--card-bg)', color: 'var(--text-color)', border: '1px solid var(--border-color)', borderRadius: 14, padding: '14px 16px', boxShadow: '0 8px 30px rgba(0,0,0,0.15)' }
-const btn = { padding: '8px 14px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 14 }
-const btnPrimary = { ...btn, background: 'var(--brand-primary)', borderColor: 'transparent', color: 'var(--brand-on-primary, white)' }

@@ -101,7 +101,7 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
       <form onSubmit={search} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <input style={{ ...inp, flex: '1 1 220px' }} placeholder={`Search by name or ${idText.noun}`}
           aria-label="Search students" value={q} onChange={e => setQ(e.target.value)} />
-        <button type="submit" style={ghostBtn} disabled={q.trim().length < 2}>Search</button>
+        <button type="submit"  disabled={q.trim().length < 2} className="perf-btn">Search</button>
       </form>
 
       {results.length > 0 && (
@@ -140,13 +140,13 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
               <input style={{ ...inp, flex: 1, textDecoration: p.removed ? 'line-through' : 'none', opacity: p.removed ? 0.5 : 1 }}
                 aria-label="Phone number" value={p.value} disabled={p.removed || frozen}
                 onChange={e => setPhone(p.key, { value: e.target.value })} placeholder="e.g. 0705123456" />
-              <button type="button" style={ghostBtn} disabled={frozen} onClick={() => setPhone(p.key, { removed: !p.removed })}
-                aria-label={p.removed ? 'Undo remove' : 'Remove phone'}>
+              <button type="button"  disabled={frozen} onClick={() => setPhone(p.key, { removed: !p.removed })}
+                aria-label={p.removed ? 'Undo remove' : 'Remove phone'} className="perf-btn">
                 <Icon name={p.removed ? 'refresh' : 'trash'} />
               </button>
             </div>
           ))}
-          <button type="button" style={{ ...ghostBtn, marginTop: '8px' }} disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))}>
+          <button type="button"  disabled={frozen} onClick={() => setDraft(withNewPhoneRow(draft))} className="perf-btn" style={{ cursor: 'pointer', marginTop: '8px' }}>
             Add phone number
           </button>
 
@@ -187,8 +187,8 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
               onChange={e => setReason(e.target.value)} placeholder="Why is this change being made?" />
           </label>
           {error && <p style={errText}><Icon name="warning" /> {error}</p>}
-          <button type="button" style={{ ...greenBtn, marginTop: '12px', opacity: canSave ? 1 : 0.5 }}
-            disabled={!canSave} onClick={save}>
+          <button type="button" 
+            disabled={!canSave} onClick={save} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: '12px', opacity: canSave ? 1 : 0.5 }}>
             {saving ? 'Saving…' : <>Save changes</>}
           </button>
         </div>
@@ -199,7 +199,7 @@ export default function SuperAdminStudentEdit({ initialStudentId = '' }) {
         <input style={{ ...inp, flex: '1 1 220px' }} aria-label="Search history"
           placeholder={`Search by old or new ${idText.noun}, or name`}
           value={histQ} onChange={e => setHistQ(e.target.value)} />
-        <button type="submit" style={ghostBtn} disabled={histLoading}>{histLoading ? 'Searching…' : 'Search'}</button>
+        <button type="submit"  disabled={histLoading} className="perf-btn">{histLoading ? 'Searching…' : 'Search'}</button>
       </form>
       {history.length === 0 && !histLoading && <p style={muted}>No changes recorded.</p>}
       <ScrollList maxHeight="60vh">
@@ -233,9 +233,9 @@ const lbl = { fontSize: '12px', opacity: 0.65, fontWeight: '600' };
 const inp = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box', minHeight: '44px' };
 const field = { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 };
 const fieldGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' };
-const btn = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', minHeight: '44px' };
-const greenBtn = { ...btn, backgroundColor: 'var(--bp-ok, #2ecc71)' };
-const ghostBtn = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', minHeight: '44px' };
+
+
+
 const list = { border: '1px solid var(--border-color)', borderRadius: '8px', marginTop: '8px', overflow: 'hidden' };
 const listItem = { display: 'block', width: '100%', textAlign: 'left', padding: '12px', background: 'var(--card-bg)', border: 'none', borderBottom: '1px solid var(--border-color)', color: 'var(--text-color)', cursor: 'pointer', fontSize: '13px', minHeight: '44px' };
 const review = { marginTop: '16px', padding: '12px', border: '1px dashed var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--card-bg)' };

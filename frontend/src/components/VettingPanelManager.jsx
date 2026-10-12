@@ -216,11 +216,11 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <button style={ghostBtn} onClick={() => setEditing(editing === p.panel_member_id ? null : p.panel_member_id)}>
+                  <button  onClick={() => setEditing(editing === p.panel_member_id ? null : p.panel_member_id)} className="perf-btn">
                     {editing === p.panel_member_id ? 'Close' : 'Edit'}
                   </button>
-                  <button style={ghostBtn} onClick={() => reissue(p)}>Reissue password</button>
-                  {!p.active && <button style={greenBtn} onClick={() => setActive(p, true)}>Activate</button>}
+                  <button  onClick={() => reissue(p)} className="perf-btn">Reissue password</button>
+                  {!p.active && <button  onClick={() => setActive(p, true)} className="perf-btn perf-btn-primary">Activate</button>}
                 </div>
                 {editing === p.panel_member_id && (
                   <PanelistEditor schedule={data}
@@ -237,9 +237,9 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
         <div>
           <h4 style={{ ...cardTitle, marginBottom: '5px' }}>Add to the Panel</h4>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-            <button type="button" style={mode === 'commissioners' ? tabOn : ghostBtn} onClick={() => switchMode('commissioners')}>Admins</button>
-            <button type="button" style={mode === 'roll' ? tabOn : ghostBtn} onClick={() => switchMode('roll')}>Voter roll</button>
-            <button type="button" style={mode === 'external' ? tabOn : ghostBtn} onClick={() => switchMode('external')}>Outside person</button>
+            <button type="button" className="perf-btn" aria-pressed={mode === 'commissioners'} onClick={() => switchMode('commissioners')}>Admins</button>
+            <button type="button" className="perf-btn" aria-pressed={mode === 'roll'} onClick={() => switchMode('roll')}>Voter roll</button>
+            <button type="button" className="perf-btn" aria-pressed={mode === 'external'} onClick={() => switchMode('external')}>Outside person</button>
           </div>
 
           {mode === 'commissioners' && !picked && (
@@ -266,7 +266,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                       <br />
                       <small style={{ opacity: 0.6 }}>{regNo(c.student_id)}</small>
                     </div>
-                    <button style={greenBtn} onClick={() => pickVoter(c)}>+ Add to Panel</button>
+                    <button  onClick={() => pickVoter(c)} className="perf-btn perf-btn-primary">+ Add to Panel</button>
                   </div>
                 ))}
               </div>
@@ -288,7 +288,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                       <br />
                       <small style={{ opacity: 0.6 }}>{regNo(v.student_id)}</small>
                     </div>
-                    <button style={greenBtn} onClick={() => pickVoter(v)}>+ Add to Panel</button>
+                    <button  onClick={() => pickVoter(v)} className="perf-btn perf-btn-primary">+ Add to Panel</button>
                   </div>
                 ))}
                 {voters.length > 0 && matches.length === 0 && (
@@ -320,7 +320,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                 <>
                   <p style={meta}>No new login: they open the Vetting Panel from a button on their own admin screen.</p>
                   <textarea style={{ ...inp, minHeight: 60 }} placeholder="Reason for appointment (required)" required value={form.appointment_reason} onChange={set('appointment_reason')} />
-                  <button type="submit" disabled={saving} style={{ ...greenBtn, opacity: saving ? 0.6 : 1 }}>
+                  <button type="submit" disabled={saving}  className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
                     {saving ? 'Adding…' : 'Add to Panel'}
                   </button>
                 </>
@@ -343,7 +343,7 @@ export default function VettingPanelManager({ voters = [], commissioners = [] })
                 </select>
               </label>
               {!form.is_member && <p style={meta}>Outside people need one access end. If both are set, the earlier one applies.</p>}
-              <button type="submit" disabled={saving} style={{ ...greenBtn, opacity: saving ? 0.6 : 1 }}>
+              <button type="submit" disabled={saving}  className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
                 {saving ? 'Adding…' : 'Add panelist'}
               </button>
               </>
@@ -412,7 +412,7 @@ function PanelistEditor({ panelist, schedule, onDone }) {
         </label>
       )}
       <p style={meta}>Setting a date replaces a phase-based end, and the other way round. Externals must always keep one.</p>
-      <button type="button" style={{ ...greenBtn, marginTop: 6 }} disabled={saving} onClick={save}>
+      <button type="button"  disabled={saving} onClick={save} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: 6 }}>
         {saving ? 'Saving…' : 'Save changes'}
       </button>
     </div>
@@ -431,10 +431,10 @@ const inp      = { padding: '10px 12px', borderRadius: '8px', border: '1px solid
 const grid     = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8, marginTop: 8 };
 const checkRow = { display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, fontSize: '13px' };
 const labelStyle = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: '12px' };
-const btn      = { padding: '10px 18px', color: 'var(--bp-ai, #fff)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
-const greenBtn = { ...btn, backgroundColor: 'var(--success)' };
-const ghostBtn = { padding: '9px 14px', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' };
-const tabOn    = { ...ghostBtn, borderColor: 'var(--info)', color: 'var(--info)', fontWeight: 'bold' };
+
+
+
+
 const redLink  = { background: 'none', border: 'none', color: 'var(--bp-no, #e74c3c)', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' };
 const infoBox  = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--info)', marginBottom: 12, fontSize: '13px' };
 const warnBox  = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--warning)', marginBottom: 12, fontSize: '13px' };
