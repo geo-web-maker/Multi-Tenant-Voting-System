@@ -972,7 +972,30 @@ td, th {
 .perf-seg .perf-btn { flex: 1; padding: 0 12px; }
 @media (max-width: 480px) { .perf-seg { flex-basis: 100%; } .perf-seg .perf-btn { padding: 0 6px; white-space: nowrap; } }
 .perf-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-.perf-tile { min-width: 0; overflow-wrap: anywhere; }
+.perf-tile { min-width: 0; overflow-wrap: anywhere; display: grid; gap: 2px; align-content: start; }
+.perf-tile-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.perf-tile-sub { font-size: 12px; color: var(--text-muted); }
+/* Checklists (migration readiness, safety guards): one column, wraps inside the card, details as chips / label-value rows. */
+.perf-checksummary { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); }
+.perf-checklist { list-style: none; margin: 4px 0 0; padding: 0; }
+.perf-checkrow { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 0 8px; padding: 10px 0; border-top: 1px solid var(--border-color); }
+.perf-checkrow:first-child { border-top: 0; }
+.perf-checkicon { font-weight: 800; text-align: center; line-height: 1.4; }
+.perf-checkicon[data-ok="true"] { color: var(--success); }
+.perf-checkicon[data-ok="false"] { color: var(--danger); }
+.perf-checkbody { min-width: 0; display: grid; gap: 6px; overflow-wrap: anywhere; }
+.perf-checkhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
+.perf-checkname { font-size: 13px; line-height: 1.4; min-width: 0; flex: 1 1 14em; }
+.perf-detailwrap { display: grid; gap: 4px; min-width: 0; }
+.perf-detail, .perf-detail-caption { margin: 0; font-size: 12px; color: var(--text-muted); }
+.perf-chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.perf-chips li { border: 1px solid var(--border-color); border-radius: 999px; padding: 1px 10px; font-size: 12px; overflow-wrap: anywhere; }
+.perf-kv { display: grid; grid-template-columns: minmax(0, 42%) minmax(0, 1fr); gap: 2px 12px; margin: 0; font-size: 12px; }
+.perf-kv dt { color: var(--text-muted); text-transform: capitalize; }
+.perf-kv dd { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.perf-kv dd[data-status="passed"] { color: var(--success); }
+.perf-kv dd[data-status="failed"] { color: var(--danger); }
+.perf-kv dd[data-status="warning"] { color: var(--warning); }
 .perf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .perf-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .perf-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); column-gap: 16px; }

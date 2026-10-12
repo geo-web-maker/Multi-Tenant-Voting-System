@@ -1,0 +1,502 @@
+--- a/backend/backup_admin_routes.py	2026-10-12 00:40:36.000000000 +0000
++++ b/backend/backup_admin_routes.py	2026-10-12 07:13:22.554514132 +0000
+@@ -94,6 +94,15 @@
+         errors.append({"tenant": "_global", "error": _safe_error(exc)})
+     return {"status": "failed" if errors else "passed", "tenants": rows, "errors": errors}
+ 
++async def _section(errors, name, awaitable, fallback):
++    """Run one summary section; a failure degrades only that section instead of 500-ing the whole panel."""
++    try:
++        return await awaitable
++    except Exception as exc:  # noqa: BLE001 - deliberately broad: the dashboard must stay readable
++        errors.append({"section": name, "error": _safe_error(exc)})
++        return fallback
++
++
+ async def _mirror_info(live_db):
+     state = await live_db.backup_meta.find_one({"_id": "mirror_state"}) or {}
+     last = state.get("last_ok_at")
+@@ -179,7 +188,13 @@
+             add("full_backup_stale", "warning", "full_backup_age_min", age, threshold,
+                 f"No sufficiently recent full backup for {row.get('slug') or row.get('tenant')}")
+     mirror_lag = mirror.get("lag_minutes")
+-    open_any = any(backup._active(await backup._election_flags(live_db, x.get("org_id"))) for x in await backup.list_tenants(live_db))
++    # NB: no `await` inside a generator expression handed to any()/all()/sum(): that makes it an async
++    # generator, which sync consumers cannot iterate (TypeError -> plain-text 500 on /summary).
++    open_any = False
++    for x in await backup.list_tenants(live_db):
++        if backup._active(await backup._election_flags(live_db, x.get("org_id"))):
++            open_any = True
++            break
+     lag_threshold = cfg["mirror_lag_active_minutes"] if open_any else cfg["mirror_lag_idle_minutes"]
+     if mirror.get("enabled") and (mirror_lag is None or mirror_lag > lag_threshold):
+         add("mirror_behind", "warning", "mirror_lag_min", mirror_lag, lag_threshold, "Mirror is stale or has never completed a sync")
+@@ -268,24 +283,30 @@
+ 
+     @router.get("/superadmin/backups/summary")
+     async def summary(response: Response, admin: dict = guard):
+-        no_store(response); db = get_db()
+-        connections = await _connections(db)
+-        b2 = await backup_probes.b2_summary(db)
+-        mirror = await _mirror_info(db); restore = await _restore_info(db)
+-        cfg_doc = await db.platform_settings.find_one({"name": "backup_monitor_config"}) or {}
+-        cfg = {**_CONFIG_DEFAULTS, **(cfg_doc.get("values") or {})}
+-        alerts = await _alerts(db, connections, b2, mirror, restore, cfg)
+-        migration = await _migration_state(db, connections, b2, mirror, restore)
+-        ownerless = await backup.ownerless_preflight(db)
++        no_store(response); db = get_db(); errors = []
++        connections = await _section(errors, "connections", _connections(db), {"connections": [], "guards": [], "overall": "unknown"})
++        b2 = await _section(errors, "b2", backup_probes.b2_summary(db), {"totals": {}, "object_count": None, "last_failure": "unavailable", "asset_failures": 0, "tenants": []})
++        mirror = await _section(errors, "mirror", _mirror_info(db), {"enabled": False, "counts": [], "consecutive_failures": 0})
++        restore = await _section(errors, "restore", _restore_info(db), {"last": None, "running": None})
++        async def _cfg():
++            doc = await db.platform_settings.find_one({"name": "backup_monitor_config"}) or {}
++            return {**_CONFIG_DEFAULTS, **(doc.get("values") or {})}
++        cfg = await _section(errors, "config", _cfg(), dict(_CONFIG_DEFAULTS))
++        alerts = await _section(errors, "alerts", _alerts(db, connections, b2, mirror, restore, cfg), [])
++        migration = await _section(errors, "migration", _migration_state(db, connections, b2, mirror, restore), None)
++        ownerless = await _section(errors, "ownerless_preflight", backup.ownerless_preflight(db), {"counts": {}, "safe": None})
+         levels = {a["level"] for a in alerts}
+-        overall = "critical" if "critical" in levels else "warning" if levels or connections.get("overall") != "healthy" else "healthy"
+-        jobs = await db.backup_jobs.find({"status": {"$in": ["queued", "running"]}},
+-            {"_id": 1, "kind": 1, "status": 1, "steps": 1, "started_at": 1}).sort("started_at", -1).limit(8).to_list(8)
+-        for job in jobs: job["run_id"] = str(job.pop("_id")); job["started_at"] = _iso(job.get("started_at"))
++        overall = "critical" if "critical" in levels else "warning" if levels or errors or connections.get("overall") != "healthy" else "healthy"
++        async def _jobs():
++            rows = await db.backup_jobs.find({"status": {"$in": ["queued", "running"]}},
++                {"_id": 1, "kind": 1, "status": 1, "steps": 1, "started_at": 1}).sort("started_at", -1).limit(8).to_list(8)
++            for job in rows: job["run_id"] = str(job.pop("_id")); job["started_at"] = _iso(job.get("started_at"))
++            return rows
++        jobs = await _section(errors, "jobs_running", _jobs(), [])
+         return {"overall": overall, "checked_at": datetime.now(timezone.utc).isoformat(), "alerts": alerts,
+                 "connections": connections.get("connections", []), "guards": connections.get("guards", []),
+                 "b2": b2, "mirror": mirror, "restore": {**restore, "next_scheduled": _next_restore_schedule(cfg.get("restore_test_weekly", True))},
+-                "migration": migration, "ownerless_preflight": ownerless, "jobs_running": jobs}
++                "migration": migration, "ownerless_preflight": ownerless, "jobs_running": jobs, "section_errors": errors}
+ 
+     @router.get("/superadmin/backups/connections")
+     async def connections(response: Response, admin: dict = guard):
+--- a/backend/tests/test_backup_admin_routes.py	2026-10-12 06:13:52.000000000 +0000
++++ b/backend/tests/test_backup_admin_routes.py	2026-10-12 07:12:31.376159480 +0000
+@@ -100,7 +100,8 @@
+ 
+ def test_new_paths_are_org_exempt_and_public_to_the_session_guard():
+     src = open("main.py", encoding="utf-8").read()
+-    assert '"/superadmin/backups"' in src.split("ORG_EXEMPT_PREFIXES", 1)[1][:600]
++    # Anchor on the tuple definition: an earlier comment in main.py also mentions the name.
++    assert '"/superadmin/backups"' in src.split("ORG_EXEMPT_PREFIXES = ", 1)[1][:900]
+     for p in ("/internal/backup/probe", "/internal/backup/mirror-sync", "/internal/backup/restore-test"):
+         assert p in src
+ 
+--- a/backend/tests/test_backup_summary_resilience.py	1970-01-01 00:00:00.000000000 +0000
++++ b/backend/tests/test_backup_summary_resilience.py	2026-10-12 07:12:31.379922585 +0000
+@@ -0,0 +1,134 @@
++"""Regression cover for the 'Unable to load Backups.' outage.
++
++Root cause: `_alerts` had `any(<genexp containing await> ...)`. An `await` inside a generator expression makes
++it an async generator, which any() cannot iterate -> TypeError -> plain-text 500 from /superadmin/backups/summary
++-> the panel showed only the frontend's fallback string. These tests pin the fix and the error surface around it.
++"""
++import ast
++import pathlib
++
++import pytest
++
++import backup
++import backup_admin_routes as bar
++import backup_probes
++from tests.test_flows import env  # noqa: F401  (fixture)
++from tests.test_backup_admin_routes import _clean, no_org  # noqa: F401  (autouse fixture + helper)
++
++pytestmark = pytest.mark.asyncio
++SUMMARY = "/superadmin/backups/summary"
++BACKEND = pathlib.Path(__file__).resolve().parent.parent
++
++
++# ---------------------------------------------------------------- static guard: the bug class itself
++def _await_in_sync_genexp(tree):
++    """Line numbers of generator expressions (inside async defs) that await in their element/conditions.
++
++    An await in the *outermost iterable* is evaluated eagerly in the enclosing coroutine and is fine."""
++    bad = []
++    for fn in ast.walk(tree):
++        if not isinstance(fn, ast.AsyncFunctionDef):
++            continue
++        for node in ast.walk(fn):
++            if not isinstance(node, ast.GeneratorExp):
++                continue
++            parts = [node.elt]
++            for i, gen in enumerate(node.generators):
++                parts.append(gen.target)
++                parts.extend(gen.ifs)
++                if i > 0:
++                    parts.append(gen.iter)
++            if any(isinstance(m, ast.Await) for part in parts for m in ast.walk(part)):
++                bad.append(node.lineno)
++    return sorted(set(bad))
++
++
++def test_scanner_detects_the_original_bug():
++    src = "async def f(db):\n    return any(await g(x) for x in await h(db))\n"
++    assert _await_in_sync_genexp(ast.parse(src)) == [2]
++    ok = "async def f(db):\n    return sum(c for c in await h(db))\n"
++    assert _await_in_sync_genexp(ast.parse(ok)) == []
++
++
++def test_no_await_inside_generator_expressions_in_backend():
++    offenders = {}
++    for path in BACKEND.glob("*.py"):
++        lines = _await_in_sync_genexp(ast.parse(path.read_text(encoding="utf-8")))
++        if lines:
++            offenders[path.name] = lines
++    assert not offenders, f"await inside a generator expression (async generator -> TypeError in any/all/sum): {offenders}"
++
++
++# ---------------------------------------------------------------- _alerts itself
++async def _db_with_tenants(*, is_open_flags):
++    from mongomock_motor import AsyncMongoMockClient
++    db = AsyncMongoMockClient()["alerts_unit"]
++    for i, is_open in enumerate(is_open_flags):
++        res = await db.organizations.insert_one({"slug": f"org{i}", "name": f"Org {i}"})
++        await db.settings.insert_one({"name": "election_config", "org_id": str(res.inserted_id), "is_open": is_open})
++    return db
++
++
++def _kinds(alerts):
++    return {a["kind"] for a in alerts}
++
++
++async def _run_alerts(db, *, lag):
++    connections = {"connections": [], "guards": [], "overall": "healthy"}
++    mirror = {"enabled": True, "lag_minutes": lag, "consecutive_failures": 0, "counts": []}
++    cfg = {**bar._CONFIG_DEFAULTS, "mirror_lag_active_minutes": 30, "mirror_lag_idle_minutes": 600}
++    b2 = {"totals": {}, "object_count": 0, "last_failure": None, "asset_failures": 0, "tenants": []}
++    return await bar._alerts(db, connections, b2, mirror, {"last": None, "running": None}, cfg)
++
++
++async def test_alerts_use_tight_mirror_threshold_when_any_election_open():
++    db = await _db_with_tenants(is_open_flags=[False, True])
++    assert "mirror_behind" in _kinds(await _run_alerts(db, lag=120))  # 120 > 30 (active)
++
++
++async def test_alerts_use_idle_mirror_threshold_when_no_election_open():
++    db = await _db_with_tenants(is_open_flags=[False, False])
++    assert "mirror_behind" not in _kinds(await _run_alerts(db, lag=120))  # 120 < 600 (idle)
++
++
++async def test_alerts_do_not_crash_with_no_tenants():
++    db = await _db_with_tenants(is_open_flags=[])
++    await _run_alerts(db, lag=5)
++
++
++# ---------------------------------------------------------------- HTTP: /summary degrades instead of 500
++async def test_summary_returns_200_and_shape(env):
++    r = await env.client.get(SUMMARY, headers=no_org(env.sa))
++    assert r.status_code == 200, r.text[:300]
++    body = r.json()
++    for key in ("overall", "alerts", "connections", "b2", "mirror", "restore", "migration",
++                "ownerless_preflight", "jobs_running", "section_errors"):
++        assert key in body, key
++    assert body["section_errors"] == []
++
++
++@pytest.mark.parametrize("section,target,attr", [
++    ("alerts", bar, "_alerts"),
++    ("mirror", bar, "_mirror_info"),
++    ("restore", bar, "_restore_info"),
++    ("migration", bar, "_migration_state"),
++    ("ownerless_preflight", backup, "ownerless_preflight"),
++    ("b2", backup_probes, "b2_summary"),
++    ("connections", bar, "_connections"),
++])
++async def test_summary_survives_a_failing_section(env, monkeypatch, section, target, attr):
++    async def boom(*a, **k):
++        raise RuntimeError("boom mongodb://user:secretpw@host.example.net/db")
++    monkeypatch.setattr(target, attr, boom)
++    r = await env.client.get(SUMMARY, headers=no_org(env.sa))
++    assert r.status_code == 200, (section, r.status_code, r.text[:300])
++    body = r.json()
++    failed = {e["section"]: e["error"] for e in body["section_errors"]}
++    assert section in failed
++    assert "secretpw" not in failed[section]          # connection strings are redacted
++    assert body["overall"] in ("warning", "critical")  # a degraded panel is never reported 'healthy'
++
++
++async def test_summary_stays_superadmin_only(env):
++    assert (await env.client.get(SUMMARY)).status_code in (401, 403)
++    assert (await env.client.get(SUMMARY, headers=env.it)).status_code in (401, 403)
+--- a/frontend/src/components/BackupChecklist.test.jsx	1970-01-01 00:00:00.000000000 +0000
++++ b/frontend/src/components/BackupChecklist.test.jsx	2026-10-12 07:36:32.423312205 +0000
+@@ -0,0 +1,95 @@
++import React from 'react';
++import { afterEach, describe, expect, it } from 'vitest';
++import { cleanup, render, screen, within } from '@testing-library/react';
++import { readFileSync } from 'node:fs';
++import { setTemplateImpl } from '../template';
++import { ChecklistRows, DetailLines, GuardRows } from './BackupUI';
++
++const fakeBlueprint = {
++  cls: { card: 'bp-card-x', alt: 'bp-alt-x', warnBan: 'bp-ban bp-warn' },
++  Pill: ({ tone, children }) => <span data-testid="bp-pill" data-tone={tone}>{children}</span>,
++};
++const ITEMS = [
++  { name: 'No election open', ok: false, detail: ['assk', 'kyues'] },
++  { name: 'Probes healthy', ok: false, detail: { live_mongo: 'down', migration_target: 'unconfigured', postgres_history: 'ok' } },
++  { name: 'Mirror synced', ok: true },
++  { name: 'No ownerless records', ok: true, detail: { candidate_lists: 0, certificates: 0 } },
++];
++afterEach(() => { cleanup(); setTemplateImpl(null); });
++
++describe.each([['standard', null], ['blueprint', fakeBlueprint]])('ChecklistRows in the %s template', (_n, impl) => {
++  const setup = (props = {}) => { setTemplateImpl(impl); return render(<ChecklistRows items={ITEMS} {...props} />); };
++
++  it('summarises how many checks pass and lists blocked checks first', () => {
++    setup();
++    expect(screen.getByRole('status').textContent).toBe('2 of 4 checks passing');
++    const names = screen.getAllByRole('listitem').filter((li) => li.className === 'perf-checkrow').map((li) => within(li).getByText(/^(No |Probes|Mirror)/, { selector: 'strong' }).textContent);
++    expect(names.slice(0, 2)).toEqual(['No election open', 'Probes healthy']);
++  });
++
++  it('states each result in words, exactly once per item', () => {
++    setup();
++    expect(screen.getAllByText('Blocked')).toHaveLength(2);
++    expect(screen.getAllByText('Passed')).toHaveLength(2);
++  });
++
++  it('never prints raw JSON: lists become chips, objects become label/value rows', () => {
++    const { container } = setup({ captions: { 'No election open': 'Open now' } });
++    expect(container.textContent).not.toMatch(/[{}[\]"]/);
++    expect(container.querySelectorAll('.perf-chips li')).toHaveLength(2);
++    expect(screen.getByText('Open now')).toBeTruthy();
++    expect(container.querySelector('dt').textContent).toBe('live mongo');
++    expect(container.querySelector('dd[data-status="failed"]').textContent).toBe('Failed');
++    expect(screen.getByText('Not configured')).toBeTruthy();   // 'unconfigured' reads as words
++  });
++
++  it('marks the icon by state for colour, with the word carried by the pill', () => {
++    const { container } = setup();
++    expect(container.querySelectorAll('.perf-checkicon[data-ok="false"]')).toHaveLength(2);
++    expect(container.querySelectorAll('.perf-checkicon[data-ok="true"]')).toHaveLength(2);
++    expect(container.querySelector('.perf-checkicon').getAttribute('aria-hidden')).toBe('true');
++  });
++
++  it('shows the empty message and nothing else when there are no checks', () => {
++    setTemplateImpl(impl);
++    render(<ChecklistRows items={[]} empty="Readiness checks have not run yet." />);
++    expect(screen.getByText('Readiness checks have not run yet.')).toBeTruthy();
++    expect(screen.queryByRole('status')).toBeNull();
++  });
++
++  it('GuardRows keeps its "Failed" wording', () => {
++    setTemplateImpl(impl);
++    render(<GuardRows guards={[{ name: 'Write guard', ok: false, detail: 'Frozen' }]} />);
++    expect(screen.getByText('Failed')).toBeTruthy();
++    expect(screen.getByText('Frozen')).toBeTruthy();
++  });
++});
++
++describe('DetailLines', () => {
++  it('renders nothing for empty details', () => {
++    for (const d of [null, '', [], {}]) { const { container } = render(<DetailLines detail={d} />); expect(container.innerHTML).toBe(''); cleanup(); }
++  });
++  it('keeps a plain string as text', () => {
++    render(<DetailLines detail="Run the plan first." />);
++    expect(screen.getByText('Run the plan first.')).toBeTruthy();
++  });
++});
++
++describe('both templates are styled', () => {
++  const live = readFileSync('src/templates/blueprint/blueprint.css', 'utf8');
++  const std = readFileSync('src/index.css', 'utf8');
++  const classes = ['perf-checkrow', 'perf-checkicon', 'perf-chips', 'perf-kv', 'perf-tile-label'];
++  it('the standard stylesheet defines every checklist class', () => {
++    for (const c of classes) expect(std, c).toContain(`.${c}`);
++  });
++  it('the stylesheet Blueprint actually imports styles tiles and checklists, scoped and without !important', () => {
++    for (const c of ['perf-tile', ...classes.slice(0, 4)]) expect(live, c).toContain(`html[data-template="blueprint"] .${c}`);
++    const block = live.slice(live.indexOf('Backups: nested tiles and checklists'), live.indexOf('html[data-template="blueprint"] .perf-chips li'));
++    expect(block).not.toContain('!important');
++    expect(block).toContain('var(--bp-ok)');
++    expect(block).toContain('var(--bp-no)');
++  });
++  it('src/templates/blueprint/index.js imports that same file', () => {
++    expect(readFileSync('src/templates/blueprint/index.js', 'utf8')).toContain("import './blueprint.css'");
++  });
++});
+--- a/frontend/src/components/BackupMigration.jsx	2026-10-12 06:17:22.000000000 +0000
++++ b/frontend/src/components/BackupMigration.jsx	2026-10-12 07:36:18.666592267 +0000
+@@ -1,7 +1,9 @@
+ import React from 'react';
+ import { BarRows } from './UsageCharts';
+ import BackupJobList from './BackupJobList';
+-import { BackupButton, BackupCard, BackupPill, muted, safeTime, tileClass } from './BackupUI';
++import { BackupButton, BackupCard, BackupPill, ChecklistRows, muted, safeTime, tileClass } from './BackupUI';
++
++const CHECK_CAPTIONS = { 'No election open': 'Open now', 'No uncovered tenant-data collections': 'Not yet covered by backups' };
+ 
+ export default function BackupMigration({ migration, jobs = [], run, liftFreeze, viewAs, runningKinds = [] }) {
+   const checklist = migration?.checklist || [];
+@@ -20,13 +22,9 @@
+       <div className="perf-controls"><BackupPill state={migration?.ready ? 'passed' : 'warning'}>{migration?.ready ? 'Ready to cut over' : 'Not ready to cut over'}</BackupPill>
+         <span style={muted}>Freeze {freeze.active ? `active (${freeze.expires_in_seconds ?? 0}s remaining)` : 'inactive'}</span>
+       </div>
+-      {checklist.length ? <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>{checklist.map((item) => <div key={item.name} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+-        <span aria-hidden="true" style={{ color: item.ok ? 'var(--success)' : 'var(--danger)', fontWeight: 800 }}>{item.ok ? '✓' : '!'}</span>
+-        <div style={{ minWidth: 0, flex: 1 }}><strong style={{ fontSize: 13 }}>{item.name}</strong>{item.detail ? <p style={muted}>{typeof item.detail === 'string' ? item.detail : JSON.stringify(item.detail)}</p> : null}</div>
+-        <BackupPill state={item.ok ? 'passed' : 'failed'}>{item.ok ? 'Passed' : 'Blocked'}</BackupPill>
+-      </div>)}</div> : <p style={muted}>Readiness checks have not run yet.</p>}
++      <ChecklistRows items={checklist} captions={CHECK_CAPTIONS} empty="Readiness checks have not run yet." />
+       <div className="perf-tiles" style={{ marginTop: 12 }}>
+-        {[['Source', migration?.source?.label, migration?.source?.database], ['Target', migration?.target?.label, migration?.target?.database]].map(([label, main, db]) => <div className={tileClass()} key={label}><span style={muted}>{label}</span><strong>{main || 'Not configured'}</strong><span style={muted}>{db || 'Database unknown'}</span></div>)}
++        {[['Source', migration?.source?.label, migration?.source?.database], ['Target', migration?.target?.label, migration?.target?.database]].map(([label, main, db]) => <div className={tileClass()} key={label}><span className="perf-tile-label">{label}</span><strong>{main || 'Not configured'}</strong><span className="perf-tile-sub">{db || 'Database unknown'}</span></div>)}
+       </div>
+     </BackupCard>
+     <BackupCard title="Migration workflow" note="Run in order: plan, copy rehearsal, enable write freeze, final pass, then verify. Environment-variable and domain cutover stays manual.">
+--- a/frontend/src/components/BackupUI.jsx	2026-10-12 06:42:41.000000000 +0000
++++ b/frontend/src/components/BackupUI.jsx	2026-10-12 07:37:08.867902955 +0000
+@@ -31,7 +31,7 @@
+   if (['critical', 'down', 'failed', 'invalid'].includes(s)) return 'Failed';
+   if (['running', 'queued'].includes(s)) return s === 'queued' ? 'Queued' : 'Running';
+   if (s === 'skipped') return 'Skipped';
+-  if (s === 'disabled') return 'Not configured';
++  if (['disabled', 'unconfigured'].includes(s)) return 'Not configured';
+   return String(raw).replaceAll('_', ' ');
+ };
+ 
+@@ -62,15 +62,61 @@
+   return <button type={type} className={`perf-btn${primary ? ' perf-btn-primary' : ''}`} onClick={onClick} disabled={disabled} title={title}>{children}</button>;
+ }
+ 
++const STATUS_WORDS_NEUTRAL = new Set(['unconfigured', 'disabled', 'not run', 'never', 'unknown']);
++const humanKey = (k) => String(k).replaceAll('_', ' ');
++const detailCell = (v) => {
++  if (v == null || v === '') return '—';
++  if (typeof v === 'string' && (statusOf(v) !== 'neutral' || STATUS_WORDS_NEUTRAL.has(v.toLowerCase()))) return statusLabel(v);
++  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
++  return JSON.stringify(v);
++};
++
++// Readable detail for a check: strings stay text, string lists become chips, objects become label/value rows.
++// Raw JSON used to be dumped here and ran off the right edge of a phone.
++export function DetailLines({ detail, caption }) {
++  if (detail == null || detail === '') return null;
++  let body;
++  if (Array.isArray(detail)) {
++    if (!detail.length) return null;
++    body = <ul className="perf-chips">{detail.map((v, i) => <li key={`${typeof v === 'string' ? v : i}-${i}`}>{typeof v === 'string' ? v : JSON.stringify(v)}</li>)}</ul>;
++  } else if (typeof detail === 'object') {
++    const entries = Object.entries(detail);
++    if (!entries.length) return null;
++    body = <dl className="perf-kv">{entries.map(([k, v]) => <React.Fragment key={k}>
++      <dt>{humanKey(k)}</dt><dd data-status={typeof v === 'string' ? statusOf(v) : 'neutral'}>{detailCell(v)}</dd>
++    </React.Fragment>)}</dl>;
++  } else {
++    body = <p className="perf-detail">{String(detail)}</p>;
++  }
++  return <div className="perf-detailwrap">{caption ? <span className="perf-detail-caption">{caption}</span> : null}{body}</div>;
++}
++
++// One vertical checklist for both templates: blocked items first, status word beside the name (never colour
++// alone), details wrapped inside the card. Shared by the migration readiness list and the safety guards.
++export function ChecklistRows({ items = [], okLabel = 'Passed', badLabel = 'Blocked', captions = {}, empty }) {
++  if (!items.length) return empty ? <p style={muted}>{empty}</p> : null;
++  const passing = items.filter((i) => i.ok).length;
++  const ordered = [...items].sort((a, b) => Number(!!a.ok) - Number(!!b.ok));
++  return <div>
++    <p className="perf-checksummary" role="status">{passing} of {items.length} checks passing</p>
++    <ul className="perf-checklist">
++      {ordered.map((item) => <li key={item.name} className="perf-checkrow">
++        <span aria-hidden="true" className="perf-checkicon" data-ok={item.ok ? 'true' : 'false'}>{item.ok ? '✓' : '!'}</span>
++        <div className="perf-checkbody">
++          <div className="perf-checkhead">
++            <strong className="perf-checkname">{item.name}</strong>
++            <BackupPill state={item.ok ? 'passed' : 'failed'}>{item.ok ? okLabel : badLabel}</BackupPill>
++          </div>
++          <DetailLines detail={item.detail} caption={captions[item.name]} />
++        </div>
++      </li>)}
++    </ul>
++  </div>;
++}
++
+ export function GuardRows({ guards = [] }) {
+   if (!guards.length) return <p style={muted}>Guard checks have not run yet.</p>;
+-  return <div style={{ display: 'grid', gap: 8 }}>
+-    {guards.map((g) => <div key={g.name} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0 }}>
+-      <span aria-hidden="true" style={{ fontWeight: 800, color: g.ok ? 'var(--success)' : 'var(--danger)' }}>{g.ok ? '✓' : '!'}</span>
+-      <span style={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: 13, flex: 1 }}>{g.name}{g.detail ? <span style={{ ...muted, display: 'block' }}>{typeof g.detail === 'string' ? g.detail : JSON.stringify(g.detail)}</span> : null}</span>
+-      <BackupPill state={g.ok ? 'passed' : 'failed'}>{g.ok ? 'Passed' : 'Failed'}</BackupPill>
+-    </div>)}
+-  </div>;
++  return <ChecklistRows items={guards} okLabel="Passed" badLabel="Failed" />;
+ }
+ 
+ export function TinyList({ items = [], empty = 'No entries yet.', labelKey = 'name', detailKey = 'detail' }) {
+--- a/frontend/src/components/BackupsPanel.jsx	2026-10-12 06:17:22.000000000 +0000
++++ b/frontend/src/components/BackupsPanel.jsx	2026-10-12 07:14:24.369426891 +0000
+@@ -73,7 +73,10 @@
+         else errors.push({ name: names[index], error: result.reason });
+       });
+       if (results[0].status === 'rejected') throw results[0].reason;
+-      setLoadError(errors.length ? `${errors.map((e) => e.name).join(', ')} data could not be refreshed.` : '');
++      // /summary degrades per section (200 + section_errors) instead of failing whole; say which parts are missing.
++      const sectionErrors = results[0].value?.data?.section_errors || [];
++      const failed = [...errors.map((e) => e.name), ...sectionErrors.map((e) => e.section)];
++      setLoadError(failed.length ? `${[...new Set(failed)].join(', ')} data could not be refreshed.` : '');
+       if (errors.length && !silent) toast(getErrorMessage(errors[0].error, 'Some backup information could not be loaded.'), { kind: 'error' });
+     } catch (e) {
+       const message = getErrorMessage(e, 'Unable to load Backups.');
+--- a/frontend/src/index.css	2026-10-12 02:16:02.000000000 +0000
++++ b/frontend/src/index.css	2026-10-12 07:36:18.667605950 +0000
+@@ -972,7 +972,30 @@
+ .perf-seg .perf-btn { flex: 1; padding: 0 12px; }
+ @media (max-width: 480px) { .perf-seg { flex-basis: 100%; } .perf-seg .perf-btn { padding: 0 6px; white-space: nowrap; } }
+ .perf-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+-.perf-tile { min-width: 0; overflow-wrap: anywhere; }
++.perf-tile { min-width: 0; overflow-wrap: anywhere; display: grid; gap: 2px; align-content: start; }
++.perf-tile-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
++.perf-tile-sub { font-size: 12px; color: var(--text-muted); }
++/* Checklists (migration readiness, safety guards): one column, wraps inside the card, details as chips / label-value rows. */
++.perf-checksummary { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); }
++.perf-checklist { list-style: none; margin: 4px 0 0; padding: 0; }
++.perf-checkrow { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 0 8px; padding: 10px 0; border-top: 1px solid var(--border-color); }
++.perf-checkrow:first-child { border-top: 0; }
++.perf-checkicon { font-weight: 800; text-align: center; line-height: 1.4; }
++.perf-checkicon[data-ok="true"] { color: var(--success); }
++.perf-checkicon[data-ok="false"] { color: var(--danger); }
++.perf-checkbody { min-width: 0; display: grid; gap: 6px; overflow-wrap: anywhere; }
++.perf-checkhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
++.perf-checkname { font-size: 13px; line-height: 1.4; min-width: 0; flex: 1 1 14em; }
++.perf-detailwrap { display: grid; gap: 4px; min-width: 0; }
++.perf-detail, .perf-detail-caption { margin: 0; font-size: 12px; color: var(--text-muted); }
++.perf-chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
++.perf-chips li { border: 1px solid var(--border-color); border-radius: 999px; padding: 1px 10px; font-size: 12px; overflow-wrap: anywhere; }
++.perf-kv { display: grid; grid-template-columns: minmax(0, 42%) minmax(0, 1fr); gap: 2px 12px; margin: 0; font-size: 12px; }
++.perf-kv dt { color: var(--text-muted); text-transform: capitalize; }
++.perf-kv dd { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
++.perf-kv dd[data-status="passed"] { color: var(--success); }
++.perf-kv dd[data-status="failed"] { color: var(--danger); }
++.perf-kv dd[data-status="warning"] { color: var(--warning); }
+ .perf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+ .perf-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+ .perf-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); column-gap: 16px; }
+--- a/frontend/src/templates/blueprint/blueprint.css	2026-10-11 15:43:20.000000000 +0000
++++ b/frontend/src/templates/blueprint/blueprint.css	2026-10-12 07:36:18.668471832 +0000
+@@ -546,6 +546,17 @@
+   html[data-template="blueprint"] .perf-actions button { min-height: 44px; padding-left: var(--bp-s4); padding-right: var(--bp-s4); }
+   html[data-template="blueprint"] .perf-field { min-height: 48px; font-size: 16px; }
+   html[data-template="blueprint"] .perf-check { min-height: 44px; }
++
++  /* Backups: nested tiles and checklists. The tile rule used to live only in src/blueprint.css, which nothing imports. Tokens only, no priority overrides. */
++  html[data-template="blueprint"] .perf-tile { background: var(--bp-sf2); border: 1px solid var(--bp-line); border-radius: var(--bp-rs); padding: var(--bp-s3) var(--bp-s4); }
++  html[data-template="blueprint"] .perf-tile-label, html[data-template="blueprint"] .perf-tile-sub,
++  html[data-template="blueprint"] .perf-checksummary, html[data-template="blueprint"] .perf-detail,
++  html[data-template="blueprint"] .perf-detail-caption, html[data-template="blueprint"] .perf-kv dt { color: var(--bp-mu); }
++  html[data-template="blueprint"] .perf-checkrow { border-top-color: var(--bp-line); }
++  html[data-template="blueprint"] .perf-checkicon[data-ok="true"], html[data-template="blueprint"] .perf-kv dd[data-status="passed"] { color: var(--bp-ok); }
++  html[data-template="blueprint"] .perf-checkicon[data-ok="false"], html[data-template="blueprint"] .perf-kv dd[data-status="failed"] { color: var(--bp-no); }
++  html[data-template="blueprint"] .perf-kv dd[data-status="warning"] { color: var(--bp-wn); }
++  html[data-template="blueprint"] .perf-chips li { border-color: var(--bp-line-ui); background: var(--bp-sf2); color: var(--bp-tx); }
+   @media (max-width: 768px) {
+     html[data-template="blueprint"] .perf-actions { flex-direction: column; }
+     html[data-template="blueprint"] .perf-actions button { width: 100%; }

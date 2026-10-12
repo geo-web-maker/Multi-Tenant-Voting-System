@@ -1,7 +1,9 @@
 import React from 'react';
 import { BarRows } from './UsageCharts';
 import BackupJobList from './BackupJobList';
-import { BackupButton, BackupCard, BackupPill, muted, safeTime, tileClass } from './BackupUI';
+import { BackupButton, BackupCard, BackupPill, ChecklistRows, muted, safeTime, tileClass } from './BackupUI';
+
+const CHECK_CAPTIONS = { 'No election open': 'Open now', 'No uncovered tenant-data collections': 'Not yet covered by backups' };
 
 export default function BackupMigration({ migration, jobs = [], run, liftFreeze, viewAs, runningKinds = [] }) {
   const checklist = migration?.checklist || [];
@@ -20,13 +22,9 @@ export default function BackupMigration({ migration, jobs = [], run, liftFreeze,
       <div className="perf-controls"><BackupPill state={migration?.ready ? 'passed' : 'warning'}>{migration?.ready ? 'Ready to cut over' : 'Not ready to cut over'}</BackupPill>
         <span style={muted}>Freeze {freeze.active ? `active (${freeze.expires_in_seconds ?? 0}s remaining)` : 'inactive'}</span>
       </div>
-      {checklist.length ? <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>{checklist.map((item) => <div key={item.name} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-        <span aria-hidden="true" style={{ color: item.ok ? 'var(--success)' : 'var(--danger)', fontWeight: 800 }}>{item.ok ? '✓' : '!'}</span>
-        <div style={{ minWidth: 0, flex: 1 }}><strong style={{ fontSize: 13 }}>{item.name}</strong>{item.detail ? <p style={muted}>{typeof item.detail === 'string' ? item.detail : JSON.stringify(item.detail)}</p> : null}</div>
-        <BackupPill state={item.ok ? 'passed' : 'failed'}>{item.ok ? 'Passed' : 'Blocked'}</BackupPill>
-      </div>)}</div> : <p style={muted}>Readiness checks have not run yet.</p>}
+      <ChecklistRows items={checklist} captions={CHECK_CAPTIONS} empty="Readiness checks have not run yet." />
       <div className="perf-tiles" style={{ marginTop: 12 }}>
-        {[['Source', migration?.source?.label, migration?.source?.database], ['Target', migration?.target?.label, migration?.target?.database]].map(([label, main, db]) => <div className={tileClass()} key={label}><span style={muted}>{label}</span><strong>{main || 'Not configured'}</strong><span style={muted}>{db || 'Database unknown'}</span></div>)}
+        {[['Source', migration?.source?.label, migration?.source?.database], ['Target', migration?.target?.label, migration?.target?.database]].map(([label, main, db]) => <div className={tileClass()} key={label}><span className="perf-tile-label">{label}</span><strong>{main || 'Not configured'}</strong><span className="perf-tile-sub">{db || 'Database unknown'}</span></div>)}
       </div>
     </BackupCard>
     <BackupCard title="Migration workflow" note="Run in order: plan, copy rehearsal, enable write freeze, final pass, then verify. Environment-variable and domain cutover stays manual.">
