@@ -89,7 +89,6 @@ export default function BackupsPanel() {
   }, [range, toast]);
 
   // Initial load and range changes use the same quiet polling callback; manual refresh reports errors through useToast.
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- load sets state only after async requests complete
   useEffect(() => { load({ silent: false }); }, [load]);
   usePolling(load, 30000, auto);
   const runningJobs = useMemo(() => jobs.filter((j) => ACTIVE_STATUSES.has(j.status)), [jobs]);

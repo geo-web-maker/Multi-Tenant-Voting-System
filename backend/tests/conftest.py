@@ -20,6 +20,25 @@ if "sort" not in inspect.signature(BulkOperationBuilder.add_update).parameters:
 
     BulkOperationBuilder.add_update = _add_update_ignoring_sort
 
+# Same for ReplaceOne (restore, migrate and mirror all use it): pymongo >= 4.11 also passes `sort=` to add_replace.
+if "sort" not in inspect.signature(BulkOperationBuilder.add_replace).parameters:
+    _orig_add_replace = BulkOperationBuilder.add_replace
+
+    def _add_replace_ignoring_sort(self, *args, sort=None, **kwargs):
+        return _orig_add_replace(self, *args, **kwargs)
+
+    BulkOperationBuilder.add_replace = _add_replace_ignoring_sort
+
+
+@pytest.fixture(autouse=True)
+def _reset_analytics_buffers():
+    """analytics keeps process-wide buffers (live sessions, counter and heat deltas). A test that leaves live
+    sessions behind makes the next test's flush add a concurrency sample, so chunk counts depend on run order."""
+    import analytics
+    for name in ("_live", "_deltas", "_heat"):
+        getattr(analytics, name).clear()
+    yield
+
 
 @pytest.fixture(autouse=True)
 def _reset_org_cache():

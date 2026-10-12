@@ -146,13 +146,27 @@ async def test_delete_aborts_when_the_snapshot_fails(env, monkeypatch):
     assert await env.db.voters.count_documents({"org_id": None}) == 2
 
 
-async def test_removing_only_short_lived_sms_state_needs_no_snapshot(env, monkeypatch):
-    await env.db.sms_usage.insert_one({"org_key": "default"})
+async def test_removing_only_short_lived_otp_state_needs_no_snapshot(env, monkeypatch):
+    # sms_usage is backed up since BK-1, so it is NOT in this group; only the self-expiring limiter state is.
     await env.db.otp_send_state.insert_one({"key": "default:otp:v1"})
+    await env.db.otp_guess_state.insert_one({"key": "default:otp:v1"})
 
     async def never(db, label):
         raise AssertionError("no snapshot expected for non-backed-up collections")
     monkeypatch.setattr(main.backup, "snapshot_legacy_data", never)
     r = await env.client.post(f"{BASE}/delete", headers=env.sa,
-                              json={"collections": ["sms_usage", "otp_send_state"], "confirm": main.LEGACY_DELETE_CONFIRM})
+                              json={"collections": ["otp_send_state", "otp_guess_state"], "confirm": main.LEGACY_DELETE_CONFIRM})
     assert r.status_code == 200 and r.json()["remaining"] == 0
+
+
+async def test_removing_sms_usage_takes_a_snapshot_because_it_is_backed_up(env, monkeypatch):
+    await env.db.sms_usage.insert_one({"org_key": "default"})
+    calls = []
+
+    async def snap(db, label):
+        calls.append(label)
+        return {"key": "k"}
+    monkeypatch.setattr(main.backup, "snapshot_legacy_data", snap)
+    r = await env.client.post(f"{BASE}/delete", headers=env.sa,
+                              json={"collections": ["sms_usage"], "confirm": main.LEGACY_DELETE_CONFIRM})
+    assert r.status_code == 200 and calls == ["legacy-delete"]

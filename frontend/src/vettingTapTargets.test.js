@@ -17,9 +17,10 @@ describe('E15 vetting action targets', () => {
   it('every vetting action row and switch button carries the class', () => {
     const vet = read('components/VettingDashboard.jsx');
     expect(vet.match(/className="vp-actions" style=\{row\}/g)).toHaveLength(4);
-    expect(vet).toContain('className="vp-switch"');
-    expect(read('components/PanelHatButton.jsx')).toContain('className="vp-switch"');
-    expect(read('components/CommissionDashboard.jsx')).toContain('className="vp-switch"');
+    const hasSwitch = /className="vp-switch( [^"]*)?"/;   // may share the element with perf-btn
+    expect(vet).toMatch(hasSwitch);
+    expect(read('components/PanelHatButton.jsx')).toMatch(hasSwitch);
+    expect(read('components/CommissionDashboard.jsx')).toMatch(hasSwitch);
   });
 
   it('the classes do not start with bp- (default JS must carry no bp- strings)', () => {

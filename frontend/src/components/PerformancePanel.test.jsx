@@ -368,7 +368,7 @@ describe('PerformancePanel storage card', () => {
     withStorage({ mode: 'postgres', postgres_configured: true, migration: { status: 'failed', message: 'Stopped safely: timeout' } });
     render(<PerformancePanel />);
     expect(await screen.findByText('Stopped safely: timeout')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Run migration again' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Run migration again' })).toBeTruthy();
   });
 });
 

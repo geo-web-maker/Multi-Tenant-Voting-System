@@ -18,8 +18,11 @@ describe('D2a default date range', () => {
     serve(today);
     render(<AnalyticsPanel />);
     await waitFor(() => expect(screen.getByLabelText('Date range').value).toBe('1'));
-    const calls = mockGet.mock.calls.filter((c) => c[0] === '/superadmin/analytics/summary');
-    expect(calls[calls.length - 1][1].params.days).toBe(1);
+    // The re-fetch is issued by an effect after the select changes, so wait for it rather than racing it.
+    await waitFor(() => {
+      const calls = mockGet.mock.calls.filter((c) => c[0] === '/superadmin/analytics/summary');
+      expect(calls[calls.length - 1][1].params.days).toBe(1);
+    });
   });
 
   it('stays on 7 days when data started earlier', async () => {

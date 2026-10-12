@@ -3,7 +3,8 @@ import api, { getErrorMessage } from '../api';
 import usePolling from '../hooks/usePolling';
 import { useRevealReady } from './RevealGroup';
 import { BarRows } from './UsageCharts';
-import { PerfChart, ChartLegend, ORG_LINE_STYLES } from './PerfCharts';
+import { PerfChart, ChartLegend } from './PerfCharts';
+import { ORG_LINE_STYLES } from './perfLineStyles';
 import { fmtOps } from '../perfFormat';
 
 const POLL_MS = 15000;

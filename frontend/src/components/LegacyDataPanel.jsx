@@ -128,7 +128,6 @@ export default function LegacyDataPanel() {
 const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 16, background: 'var(--bg-color)' };
 const note = { fontSize: 12, opacity: 0.8, margin: '6px 0' };
 const inp = { padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, minWidth: 220 };
-const base = { padding: '9px 16px', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13, color: 'var(--bp-ai, var(--bg-color))' };
 
 
 

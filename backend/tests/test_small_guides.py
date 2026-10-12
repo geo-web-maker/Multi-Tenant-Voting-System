@@ -1,4 +1,5 @@
 """Guides 07 (analytics flush interval), 10 (revoked-token cache) and 11 step 3 (boot index marker)."""
+import time as _real_time
 import pytest
 
 import auth
@@ -9,6 +10,14 @@ from tests.test_analytics import FakeDb, ingest, pv
 from tests.test_flows import env  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.asyncio
+
+
+class _FrozenClock:
+    """Stand-in for analytics' `time` module with a controllable monotonic(). Patching `a.time.monotonic`
+    would change the process-wide clock, freezing asyncio's own timers and stalling the run."""
+    def __init__(self, now): self.now = now
+    def monotonic(self): return self.now
+    def __getattr__(self, name): return getattr(_real_time, name)
 
 
 # ======================= guide 10: revoked-token cache =======================
@@ -111,7 +120,7 @@ async def test_counters_wait_for_the_flush_interval_but_alerts_still_run(monkeyp
     monkeypatch.setattr(a, "_send_alerts", fake_alerts)
     monkeypatch.setattr(a, "_trim_minutes", lambda m: calls.__setitem__("trim", calls["trim"] + 1))
     t = [5000.0]
-    monkeypatch.setattr(a.time, "monotonic", lambda: t[0])
+    monkeypatch.setattr(a, "time", type("C", (_FrozenClock,), {"monotonic": lambda self: t[0]})(t[0]))
     monkeypatch.setattr(a, "_FLUSH_S", 150.0)
     monkeypatch.setattr(a, "_last_db_flush", t[0])             # a flush just happened
     db = FakeDb(); a._db = db
@@ -133,7 +142,7 @@ async def test_counters_wait_for_the_flush_interval_but_alerts_still_run(monkeyp
 async def test_default_interval_flushes_on_every_tick(monkeypatch):
     monkeypatch.setenv("ANALYTICS_ALERTS_ENABLED", "false")
     t = [9000.0]
-    monkeypatch.setattr(a.time, "monotonic", lambda: t[0])
+    monkeypatch.setattr(a, "time", type("C", (_FrozenClock,), {"monotonic": lambda self: t[0]})(t[0]))
     monkeypatch.setattr(a, "_FLUSH_S", 30.0)
     monkeypatch.setattr(a, "_last_db_flush", t[0])
     db = FakeDb(); a._db = db

@@ -1606,6 +1606,7 @@ const thStyle = { padding: '10px 12px', textAlign: 'left', fontSize: '11px', tex
 const tdStyle = { padding: '10px 12px', color: 'var(--text-color)', fontSize: '13px' };
 const rowStyle = { borderBottom: '1px solid var(--border-color)' };
 const emptyCell = { ...tdStyle, textAlign: 'center', opacity: 0.45, padding: '28px' };
+const statCard = { padding: '14px', border: '1px solid var(--border-color)', borderRadius: '10px', textAlign: 'center', color: 'var(--text-color)' };
 const barTrack = { width: '100%', height: '8px', background: 'var(--surface-2)', borderRadius: '4px', overflow: 'hidden', marginTop: '6px' };
 const statGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px', marginBottom: '14px' };
 
