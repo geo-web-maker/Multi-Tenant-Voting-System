@@ -15,50 +15,18 @@ backups the newest full is the base and later incr-* backups are applied on top;
 milestone/safety snapshots are self-contained.
 """
 import argparse
-import gzip
-import hashlib
-import json
 import os
 import sys
 
-from bson import ObjectId, json_util
+from bson import ObjectId
 from dotenv import load_dotenv
 from pymongo import MongoClient, ReplaceOne
 
 import backup
+from restore_core import (RestoreVerifyError, read_manifest, list_backups, ts_of,
+                          fetch_collection, plan_restore, restore_filter)
 
 load_dotenv()
-
-
-def read_manifest(client, cfg, prefix):
-    obj = client.get_object(Bucket=cfg["bucket"], Key=f"{prefix}/manifest.json")
-    return json.loads(obj["Body"].read())
-
-
-def list_backups(client, cfg, tenant, cls):
-    prefixes = []
-    pager = client.get_paginator("list_objects_v2")
-    for page in pager.paginate(Bucket=cfg["bucket"], Prefix=f"{cls}/{tenant}/", Delimiter="/"):
-        prefixes += [p["Prefix"].rstrip("/") for p in page.get("CommonPrefixes", [])]
-    return sorted(p for p in prefixes if not p.endswith("/assets") and not p.endswith("assets"))
-
-
-def ts_of(prefix):
-    return prefix.rsplit("-", 1)[-1]
-
-
-def fetch_collection(client, cfg, prefix, name, entry):
-    """Download one collection file and verify BOTH checksums and the record count."""
-    body = client.get_object(Bucket=cfg["bucket"], Key=f"{prefix}/{entry['file']}")["Body"].read()
-    if hashlib.sha256(body).hexdigest() != entry["sha256_gz"]:
-        raise SystemExit(f"CHECKSUM MISMATCH (compressed) {prefix}/{entry['file']} — do not restore from this backup.")
-    raw = gzip.decompress(body)
-    if hashlib.sha256(raw).hexdigest() != entry["sha256_uncompressed"]:
-        raise SystemExit(f"CHECKSUM MISMATCH (uncompressed) {prefix}/{entry['file']}")
-    docs = [json_util.loads(line) for line in raw.decode().splitlines() if line]
-    if len(docs) != entry["count"]:
-        raise SystemExit(f"COUNT MISMATCH {prefix}/{name}: manifest {entry['count']}, file {len(docs)}")
-    return docs
 
 
 def main():
@@ -85,28 +53,16 @@ def main():
 
     if not a.backup:
         sys.exit("--backup <prefix> is required")
-    base = read_manifest(s3, cfg, a.backup)
-    if base["tenant"] != a.tenant:
-        sys.exit(f"Manifest tenant {base['tenant']!r} != --tenant {a.tenant!r}")
-    org_id = base["org_id"]          # None for the legacy default tenant
-
-    steps = [(a.backup, base)]
-    if base["kind"] == "full" and base["lock_class"] == "routine":
-        for p in list_backups(s3, cfg, a.tenant, "routine"):
-            if "/incr-" in p and ts_of(p) >= ts_of(a.backup) and (not a.until or ts_of(p) <= a.until):
-                steps.append((p, read_manifest(s3, cfg, p)))
-
-    # Download + verify everything first. Nothing is written until all checksums pass.
-    merged: dict[str, dict] = {}
-    for prefix, man in steps:
-        for name, entry in man["collections"].items():
-            if name == "organizations" and not a.include_org:
-                fetch_collection(s3, cfg, prefix, name, entry)   # still verify
-                continue
-            for d in fetch_collection(s3, cfg, prefix, name, entry):
-                if name != "organizations" and d.get("org_id") != org_id:
-                    sys.exit(f"Refusing: {name} doc {d['_id']} has org_id {d.get('org_id')!r}, expected {org_id!r}")
-                merged.setdefault(name, {})[d["_id"]] = d       # later incr overwrites, idempotent
+    try:
+        org_id, merged = plan_restore(s3, cfg, a.tenant, a.backup, a.until, a.include_org)
+        base = read_manifest(s3, cfg, a.backup)
+        steps = [a.backup]
+        if base.get("kind") == "full" and base.get("lock_class") == "routine":
+            steps.extend(p for p in list_backups(s3, cfg, a.tenant, "routine")
+                         if "/incr-" in p and ts_of(p) >= ts_of(a.backup)
+                         and (not a.until or ts_of(p) <= a.until))
+    except RestoreVerifyError as exc:
+        sys.exit(str(exc))
     print(f"Verified {len(steps)} backup(s); checksums OK.")
     for name, docs in merged.items():
         print(f"  {name:<18} {len(docs)} records")
@@ -125,7 +81,7 @@ def main():
     db = MongoClient(os.getenv("MONGO_URL", "mongodb://localhost:27017"))[db_name]
 
     for name, docs in merged.items():
-        flt = {"_id": org_id and ObjectId(org_id)} if name == "organizations" else {"org_id": org_id}
+        flt = restore_filter(name, org_id)
         if a.replace:
             db[name].delete_many(flt)
         ops = [ReplaceOne({"_id": i}, d, upsert=True) for i, d in docs.items()]
@@ -135,7 +91,7 @@ def main():
     print("Restore written. Confirming counts against the backup:")
     bad = 0
     for name, docs in merged.items():
-        flt = {"_id": org_id and ObjectId(org_id)} if name == "organizations" else {"org_id": org_id}
+        flt = restore_filter(name, org_id)
         have = db[name].count_documents(flt)
         ok = have == len(docs) if a.replace else have >= len(docs)
         bad += 0 if ok else 1

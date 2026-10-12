@@ -544,6 +544,17 @@ html[data-template="blueprint"] {
   html[data-template="blueprint"] .ui-dialog input {
     background: var(--bp-sf2) !important; border: 1px solid var(--bp-line-ui) !important; border-radius: var(--bp-rs) !important; min-height: var(--bp-tap) !important;
   }
+  /* ===== BACKUPS / PERFORMANCE TABS (perf-*): Blueprint look for the shared control classes ===== */
+  /* Tap targets: 48 px (--bp-tap) for buttons and fields, like the other Blueprint controls. No !important. */
+  html[data-template="blueprint"] .perf-btn, html[data-template="blueprint"] .perf-actions button { min-height: var(--bp-tap); }
+  html[data-template="blueprint"] .perf-check { min-height: var(--bp-tap); }
+  html[data-template="blueprint"] .perf-field { min-height: var(--bp-tap); }
+  /* Selected / primary buttons: --bp-ai is the readable text colour on the accent in both themes (white on the dark-theme orange fails). */
+  html[data-template="blueprint"] .perf-btn[aria-selected="true"], html[data-template="blueprint"] .perf-btn[aria-pressed="true"],
+  html[data-template="blueprint"] .perf-btn-primary { background: var(--bp-ac); color: var(--bp-ai); border-color: var(--bp-ac); }
+  html[data-template="blueprint"] .perf-btn:not([aria-selected="true"]):not([aria-pressed="true"]):not(.perf-btn-primary) { border-color: var(--bp-line-ui); color: var(--bp-tx); }
+  /* Nested tiles: neutral raised surface (not .bp-alt, which is the red error block). */
+  html[data-template="blueprint"] .perf-tile { background: var(--bp-sf2); border: 1px solid var(--bp-line); border-radius: var(--bp-rs); padding: var(--bp-s3) var(--bp-s4); min-width: 0; overflow-wrap: anywhere; }
   /* ===== /NEUTRALISERS ===== */
 }
 

@@ -43,11 +43,31 @@ FORMAT_VERSION = 1
 FULL_COLLECTIONS = [
     "voters", "applications", "candidates", "settings", "positions",
     "student_changes", "exception_grants", "audit_checkpoints",
+    # Previously missed in the backup coverage audit (BK-1).
+    "panel_members", "contact_changes", "candidate_lists", "candidate_tokens",
+    "certificates", "nomination_uploads", "sms_usage",
 ]
-# Append-only: incremental on the 15-minute job.
-APPEND_ONLY = ["vote_events", "audit_log", "student_edit_audit"]
-# Deliberately NOT backed up: short-lived security state (otps, admin_otps,
-# otp_attempts, login_attempts, revoked_tokens, ip_rate_limits).
+# Append-only collections: incremental on the 15-minute job.
+APPEND_ONLY = ["vote_events", "audit_log", "student_edit_audit", "roster_ledger"]
+
+SECURITY_ONLY = {
+    "otps", "admin_otps", "otp_attempts", "login_attempts", "revoked_tokens",
+    "ip_rate_limits", "otp_send_state", "otp_guess_state", "ip_send_stats",
+}
+# One authoritative list for intentional omissions. A restore coverage audit compares live
+# collection names against the backed-up collections and these explicit exclusions.
+EXCLUDED_BY_DESIGN = {
+    "voter_import_previews": "Temporary import preview; deleted after import.",
+    "demo_inbox": "Demo-mode inbox; wiped by demo reset.",
+    "app_meta": "Application startup metadata and index schema marker are rebuilt.",
+    "backup_jobs": "Operational job history is rebuilt by subsequent runs.",
+    "backup_metrics": "Monitoring samples are rebuilt by subsequent probes.",
+    **{name: "Short-lived authentication or rate-limit state; users re-authenticate after cutover."
+       for name in SECURITY_ONLY},
+}
+# sms_usage is keyed by org_key rather than org_id. Never weaken the ownership filter to include
+# ownerless rows: those must be resolved in the legacy-data panel before the first full backup.
+FILTER_OVERRIDES = {"sms_usage": lambda org_id: {"org_key": org_id or "default"}}
 
 # Fields holding Cloudinary URLs (photos, receipts, branding files).
 ASSET_FIELDS = {
@@ -262,6 +282,18 @@ def _org_filter(org_id) -> dict:
     return {"org_id": org_id}   # org_id None matches legacy docs with null/missing org_id
 
 
+def collection_filter(name: str, org_id) -> dict:
+    """Per-collection tenant filter; sms_usage intentionally keys on org_key."""
+    override = FILTER_OVERRIDES.get(name)
+    return override(org_id) if override else _org_filter(org_id)
+
+
+def coverage_audit_names(live_names) -> list[str]:
+    """Return collection names not backed up and not explicitly excluded by design."""
+    covered = set(FULL_COLLECTIONS) | set(APPEND_ONLY) | set(EXCLUDED_BY_DESIGN) | {"organizations", "platform_settings"}
+    return sorted(n for n in set(live_names) if not n.startswith("system.") and n not in covered)
+
+
 def _is_cloudinary_url(url: str, cloud_name: str) -> bool:
     """Only Cloudinary https URLs are ever fetched. URLs come from user-submitted
     fields (public /apply), so anything else would be a server-side request forgery."""
@@ -382,7 +414,7 @@ async def backup_tenant(db, client, cfg, org: dict, kind: str, *, label: str | N
             new_wm, incr_any = dict(wm), False
             for name in APPEND_ONLY:
                 last = ObjectId(wm[name]) if wm.get(name) else None
-                q = dict(flt)
+                q = collection_filter(name, org_id)
                 if last:
                     q["_id"] = {"$gt": last}
                 if not await db[name].find_one(q, {"_id": 1}):
@@ -402,7 +434,7 @@ async def backup_tenant(db, client, cfg, org: dict, kind: str, *, label: str | N
             names = list(FULL_COLLECTIONS) + (
                 APPEND_ONLY if (FULL_INCLUDES_APPEND_ONLY or kind != "full") else [])
             for name in names:
-                ex = await export_collection(db, name, flt, collect)
+                ex = await export_collection(db, name, collection_filter(name, org_id), collect)
                 exports.append((name, ex))
                 files[name] = _manifest_entry(name, ex, False)
             if org_id:
@@ -457,6 +489,53 @@ async def backup_tenant(db, client, cfg, org: dict, kind: str, *, label: str | N
             "counts": {n: f["count"] for n, f in files.items()}}
 
 
+async def backup_global_settings(db, client, cfg, *, force: bool = False) -> dict:
+    """Daily locked snapshot of global platform_settings under routine/_global/."""
+    ts = _ts()
+    prefix = f"routine/_global/full-{ts}"
+    ex = await export_collection(db, "platform_settings", {})
+    try:
+        entry = _manifest_entry("platform_settings", ex, False)
+        await _upload_export(client, cfg, f"{prefix}/platform_settings.jsonl.gz", ex,
+                             "routine", _retain_until("routine"))
+        manifest = {
+            "format_version": FORMAT_VERSION, "kind": "global", "label": None,
+            "tenant": "_global", "org_id": None, "org_slug": None,
+            "created_at": _now().isoformat() + "Z",
+            "retain_until": _retain_until("routine").isoformat() + "Z",
+            "lock_class": "routine", "collections": {"platform_settings": entry},
+            "assets": [], "asset_failures": [], "asset_bytes": 0,
+        }
+        await _put(client, cfg, f"{prefix}/manifest.json", json.dumps(manifest, indent=2).encode(),
+                   "routine", _retain_until("routine"), "application/json")
+        result = {"status": "uploaded", "tenant": "_global", "kind": "global", "prefix": prefix,
+                  "bytes_gz": ex["gz_bytes"], "counts": {"platform_settings": ex["count"]}}
+        await db.backup_runs.insert_one({"tenant": "_global", "kind": "global", "ok": True,
+                                         "bytes": ex["gz_bytes"], "detail": result, "error": None, "at": _now()})
+        return result
+    finally:
+        ex["spool"].close()
+
+
+async def ownerless_preflight(db) -> dict:
+    """Count missing org_id values in all newly covered tenant collections; does not mutate data."""
+    names = sorted({"panel_members", "contact_changes", "roster_ledger", "candidate_lists",
+                    "candidate_tokens", "certificates", "nomination_uploads"})
+    out = {}
+    for name in names:
+        out[name] = await db[name].count_documents({"$or": [{"org_id": {"$exists": False}}, {"org_id": None}]})
+    return {"counts": out, "safe": not any(out.values())}
+
+
+async def coverage_audit(db) -> list[str]:
+    """Find live collections with tenant data that the backup engine neither exports nor excludes."""
+    uncovered = []
+    for name in coverage_audit_names(await db.list_collection_names()):
+        if await db[name].find_one({"org_id": {"$exists": True}}, {"_id": 1}):
+            uncovered.append(name)
+    return uncovered
+
+
 async def _hold_assets(db) -> bool:
     meta = await db.backup_meta.find_one({"_id": "size_report"}) or {}
     return bool(meta.get("hold_assets")) and not meta.get("assets_approved")
@@ -467,7 +546,10 @@ async def _hold_assets(db) -> bool:
 # --------------------------------------------------------------------------
 async def list_tenants(db) -> list[dict]:
     tenants = [{"org_id": str(o["_id"]), "slug": o.get("slug")} async for o in db.organizations.find({})]
-    if await db.voters.find_one({"org_id": None}, {"_id": 1}) or await db.settings.find_one({"org_id": None}, {"_id": 1}):
+    has_legacy = (await db.voters.find_one({"org_id": None}, {"_id": 1})
+                  or await db.settings.find_one({"org_id": None}, {"_id": 1})
+                  or await db.sms_usage.find_one({"org_key": "default"}, {"_id": 1}))
+    if has_legacy and not any(t.get("org_id") is None for t in tenants):
         tenants.append({"org_id": None, "slug": None})
     return tenants
 
@@ -557,9 +639,17 @@ async def run_scheduled(db, mode: str) -> dict:
         cfg = load_config()
         client = make_client(cfg)
         results: list = []
+        preflight = await ownerless_preflight(db)
+        if not preflight.get("safe"):
+            details = {k: v for k, v in preflight.get("counts", {}).items() if v}
+            await send_alert("[BallotBox] Backup ownerless-data preflight failed",
+                             "Newly covered collections have documents without org_id. Assign or remove them before cutover: " + json.dumps(details))
+            results.append({"status": "failed", "tenant": "_preflight", "kind": "coverage_preflight",
+                            "error": "Ownerless records must be assigned or removed before cutover.", "counts": details})
         await _missed_run_check(db, mode)
-        report = await first_run_report(db, client, cfg)
-        for org in await list_tenants(db):
+        report = await first_run_report(db, client, cfg) if preflight.get("safe") else {
+            "status": "blocked", "reason": "Ownerless legacy rows must be resolved before tenant backups run."}
+        for org in (await list_tenants(db) if preflight.get("safe") else []):
             tenant = tenant_key(org["org_id"])
             await _detect_milestones(db, client, cfg, org, results)
             flags = await _election_flags(db, org["org_id"])
@@ -579,9 +669,31 @@ async def run_scheduled(db, mode: str) -> dict:
             except Exception as e:  # noqa: BLE001 — recorded, alerted, surfaced in the response
                 await _fail(db, tenant, kind, e, results)
         await db.backup_meta.update_one({"_id": f"last_{mode}"}, {"$set": {"at": _now()}}, upsert=True)
+        if mode == "full":
+            try:
+                results.append(await backup_global_settings(db, client, cfg))
+            except Exception as e:  # global settings are important; surface as a normal failed run
+                await _fail(db, "_global", "global", e, results)
+        mirror_res = None
+        try:
+            import backup_mirror
+            mirror_res = await asyncio.wait_for(
+                backup_mirror.sync_mirror(db, "full" if mode in ("full", "weekly") else "incr"), timeout=120)
+        except Exception as e:  # mirror must never fail or delay a completed backup
+            logger.error("mirror sync skipped: %s", e)
+            mirror_res = {"status": "failed", "error": str(e)[:300]}
+        # Sample after the mirror attempt so mirror lag/health reflects this run's outcome.
+        try:
+            import backup_probes
+            probe_result = await backup_probes.probe_connections(db)
+            await backup_probes.write_probe_sample(db, probe_result)
+            from backup_admin_routes import emit_monitor_alerts
+            await emit_monitor_alerts(db, probe_result)
+        except Exception as e:  # monitoring must not fail an otherwise completed backup
+            logger.error("backup monitoring sample skipped: %s", str(e)[:250])
         failed = [r for r in results if r.get("status") == "failed"]
         return {"status": "failed" if failed else "ok", "mode": mode,
-                "first_run_report": report, "results": results}
+                "first_run_report": report, "ownerless_preflight": preflight, "results": results, "mirror": mirror_res}
 
 
 async def _missed_run_check(db, mode: str) -> None:
@@ -699,7 +811,7 @@ async def first_run_report(db, client, cfg) -> dict | None:
     for org in await list_tenants(db):
         flt, t = _org_filter(org["org_id"]), {"collections": {}}
         for name in FULL_COLLECTIONS + APPEND_ONLY:
-            m = await _measure(db, name, flt, urls)
+            m = await _measure(db, name, collection_filter(name, org["org_id"]), urls)
             t["collections"][name] = m
         t["raw_bytes"] = sum(m["raw_bytes"] for m in t["collections"].values())
         t["full_gz"] = sum(m["gz_bytes"] for m in t["collections"].values())
@@ -762,7 +874,7 @@ async def selftest(db) -> dict:
     out = {"driver_reads": {}, "b2": {}}
     org = (await list_tenants(db) or [{"org_id": None}])[0]
     for name in FULL_COLLECTIONS + APPEND_ONLY:
-        ex = await export_collection(db, name, {**_org_filter(org["org_id"])})
+        ex = await export_collection(db, name, collection_filter(name, org["org_id"]))
         out["driver_reads"][name] = {"count": ex["count"], "gz_bytes": ex["gz_bytes"]}
         ex["spool"].close()
     try:

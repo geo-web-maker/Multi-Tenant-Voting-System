@@ -134,11 +134,11 @@ export function editCap(form, patch, presets) {
 
 export const formChanged = (a, b) => JSON.stringify(a) !== JSON.stringify(b);
 
-/** Axis label for an epoch-seconds instant: HH:MM for the short ranges, D/M for the 7-day range. */
+/** Axis label for an epoch-seconds instant: HH:MM for short ranges, D/M for 7- and 30-day ranges. */
 export function clockLabel(tsSec, range = '15m', tz = 'Africa/Kampala') {
   const n = Number(tsSec);
   if (!Number.isFinite(n)) return '';
-  const opts = range === '7d'
+  const opts = range === '7d' || range === '30d'
     ? { timeZone: tz, day: 'numeric', month: 'numeric' }
     : { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
   return new Intl.DateTimeFormat('en-GB', opts).format(new Date(n * 1000));

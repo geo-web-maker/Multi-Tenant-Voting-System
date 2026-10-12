@@ -41,6 +41,7 @@ import LoginStatusBadge from './LoginStatusBadge.jsx';
 import RevealGroup from './RevealGroup';
 import AnalyticsPanel from './AnalyticsPanel';
 import PerformancePanel from './PerformancePanel';
+import BackupsPanel from './BackupsPanel';
 import ExportModeControl from './ExportModeControl';
 import { setItAdminExportMode } from '../registerExport';
 import { setBrand } from '../brandColors';
@@ -933,6 +934,7 @@ const handleSuperAdminRemoveStudent = async () => {
         { id: 'official_doc', label: <>Official Document</>, icon: 'file' },
         { id: 'usage_analytics', label: <>Site Usage</>, icon: 'chart' },
         { id: 'performance', label: <>Performance</>, icon: 'chart' },
+        { id: 'backups', label: <>Backups</>, icon: 'check' },
       ],
     },
   ];
@@ -2604,6 +2606,7 @@ const handleSuperAdminRemoveStudent = async () => {
         )}
         {activeTab === 'usage_analytics' && <AnalyticsPanel organizations={organizations} />}
         {activeTab === 'performance' && <PerformancePanel />}
+        {activeTab === 'backups' && <BackupsPanel />}
 
         </div>
       </div>

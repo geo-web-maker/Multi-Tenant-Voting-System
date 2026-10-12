@@ -37,6 +37,8 @@ import boto3
 from fastapi.concurrency import run_in_threadpool
 import backup
 from backup_routes import build_router as build_backup_router
+import backup_admin_routes
+import write_freeze
 from alerts import alert_critical, alert_warning, send_alert
 from name_utils import normalize_name
 from roster_utils import (
@@ -606,7 +608,7 @@ def _keepwarm_ping():
 ORG_EXEMPT_PREFIXES = ("/health", "/internal/backup", "/docs", "/redoc", "/openapi.json",
                        # /superadmin/legacy-data is a cross-tenant superadmin check (finds documents that
                        # belong to NO tenant), so it cannot require a tenant header itself.
-                       "/superadmin/orgs", "/superadmin/mfa", "/superadmin/legacy-data", "/verify-admin",
+                       "/superadmin/orgs", "/superadmin/mfa", "/superadmin/legacy-data", "/superadmin/backups", "/verify-admin",
                        # Token/id-scoped, not header-scoped (candidate-portal-spec §3.2/§3.4) —
                        # the token or certificate_id itself carries the org, so an
                        # X-Org-Slug header is neither required nor consulted.
@@ -655,12 +657,15 @@ PUBLIC_PATHS = {
     # Backup triggers: called by an external scheduler with a shared secret
     # (X-Backup-Token, checked in backup_routes.py), not by an admin session.
     "/internal/backup/run", "/internal/backup/status", "/internal/backup/report",
-    "/internal/backup/approve-assets", "/internal/backup/selftest",
+    "/internal/backup/approve-assets", "/internal/backup/selftest", "/internal/backup/probe",
+    "/internal/backup/mirror-sync", "/internal/backup/restore-test",
 }
 PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 
 
 def _is_public(path: str, method: str) -> bool:
+    if path.startswith("/internal/backup/restore-test/"):
+        return True  # token-protected scheduler status polling
     if path in PUBLIC_PATHS or path.startswith(PUBLIC_DOC_PREFIXES):
         return True
     # Public read-only endpoints voters/applicants need before they're
@@ -698,6 +703,19 @@ def _should_log_guard_401(ip: str) -> bool:
             return False
     _GUARD_401_LAST[ip] = now
     return True
+
+
+@app.middleware("http")
+async def write_freeze_middleware(request: Request, call_next):
+    # Registered before auth_guard_middleware so protected writes reach this check only after auth/role
+    # validation. Public voting writes also pass through here; the freeze must cover the entire system.
+    if (write_freeze.active() and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and not write_freeze.path_exempt(request.url.path)):
+        return JSONResponse(status_code=503, content={
+            "detail": "The system is briefly in maintenance. Please try again in a few minutes.",
+            "code": "write_freeze",
+        })
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1046,6 +1064,10 @@ app.middleware("http")(perf_metrics.perf_middleware)
 app.include_router(perf_routes.build_router(lambda: db, require_role, lambda action, actor, details, org_id=None: log_action(action, actor, details, org_id=org_id)))
 app.include_router(analytics.build_router(lambda: db, require_role, lambda action, actor, details, org_id=None: log_action(action, actor, details, org_id=org_id)))
 app.include_router(build_backup_router(lambda: db))
+app.include_router(backup_admin_routes.build_router(
+    lambda: db, require_role,
+    lambda action, actor, details, org_id=None: log_action(action, actor, details, org_id=org_id),
+))
 
 # =============================================================================
 # MODELS
@@ -1899,40 +1921,9 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
 
 
 async def verify_audit_chain(request: Request) -> dict:
-    """
-    Independent re-derivation of the entire chain straight from vote_events
-    — doesn't trust the stored chain_hash values, recomputes every one of
-    them and compares. This is what makes the chain actually auditable
-    rather than decorative: run this and the checkpoints either match the
-    raw event log or they don't.
-    """
-    checkpoints = await db.audit_checkpoints.find(
-        org_query(request)
-    ).sort("to_id", 1).to_list(length=None)
-
-    chain_hash = "GENESIS"
-    for cp in checkpoints:
-        match: dict = org_query(request, {
-            "_id": {"$gt": cp["from_id"], "$lte": cp["to_id"]} if cp["from_id"]
-                   else {"$lte": cp["to_id"]}
-        })
-        events = await tdb(request).vote_events.find(match).sort("_id", 1).to_list(length=None)
-
-        recomputed = chain_hash
-        for ev in events:
-            payload = f"{recomputed}|{ev['_id']}|{ev['candidate_id']}|{ev['cast_at'].isoformat()}"
-            recomputed = hashlib.sha256(payload.encode()).hexdigest()
-
-        if recomputed != cp["chain_hash"]:
-            return {
-                "valid": False,
-                "first_mismatch_checkpoint_id": str(cp["_id"]),
-                "expected": cp["chain_hash"],
-                "recomputed": recomputed,
-            }
-        chain_hash = cp["chain_hash"]
-
-    return {"valid": True, "checkpoints_verified": len(checkpoints), "head_hash": chain_hash}
+    """Verify the current request tenant using the same reusable verifier as restore tests."""
+    from chain_verify import chain_verify_db
+    return await chain_verify_db(db, getattr(request.state, "org_id", None))
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not hashed_password:

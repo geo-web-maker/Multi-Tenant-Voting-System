@@ -91,7 +91,7 @@ export function PerfChart({ lines = [], cap = null, label, unit = '/s', range = 
       {timed ? ticks.map((i) => (
         <text key={i} x={x(i)} y={h - 8} fontSize="11" fill="var(--text-muted)"
           textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}>
-          {i === n - 1 && range !== '7d' ? 'now' : clockLabel(startTs + i * stepS, range, tz)}
+          {i === n - 1 && !['7d', '30d'].includes(range) ? 'now' : clockLabel(startTs + i * stepS, range, tz)}
         </text>
       )) : (
         <text x={w - pad.r} y={h - 8} fontSize="11" fill="var(--text-muted)" textAnchor="end">now</text>

@@ -34,6 +34,8 @@ ALLOWED = {
     ("backup.py", "_results_release_hint", "settings", "find_one"): _BACKUP,
     ("backup.py", "backup_tenant", "<dynamic>", "find_one"): _BACKUP,
     ("backup.py", "export_collection", "<dynamic>", "find"): _BACKUP,
+    ("backup.py", "coverage_audit", "<dynamic>", "find_one"): _BACKUP,
+    ("backup.py", "ownerless_preflight", "<dynamic>", "count_documents"): _BACKUP,
     ("backup.py", "list_tenants", "settings", "find_one"): _BACKUP,
     ("backup.py", "list_tenants", "voters", "find_one"): _BACKUP,
     ("regno_audit.py", "audit_reg_numbers", "<dynamic>", "bulk_write"): _REGNO,
