@@ -55,6 +55,14 @@
   ],
   "rewrites": [
     {
+      "source": "/api",
+      "destination": "https://ballotbox-api.onrender.com/"
+    },
+    {
+      "source": "/api/",
+      "destination": "https://ballotbox-api.onrender.com/"
+    },
+    {
       "source": "/api/:path*",
       "destination": "https://ballotbox-api.onrender.com/:path*"
     },
