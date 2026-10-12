@@ -1037,3 +1037,8 @@ textarea.perf-field { min-height: 100px; resize: vertical; }
   .perf-btnbar.perf-btnbar-stack { flex-direction: column; align-items: stretch; }
   .vp-actions button, .perf-actions button { width: 100%; }
 }
+
+/* Heatmap button + popup (HeatmapOverlay, superadmin only). Bottom-left, so it never sits on the bottom-right Help / Demo inbox
+   buttons. Position lives here, not inline, so a template can move it (Blueprint lifts it above its fixed phone tab bar). */
+.heatmap-fab { left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+.heatmap-panel { left: 12px; bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }

@@ -94,7 +94,7 @@ export default function HeatmapOverlay({ page, embedded = false }) {
     <div data-no-track className="no-print">
       {open && <canvas ref={canvas} aria-hidden="true" style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: 9990 }} />}
       {open && !embedded && (
-        <div style={{ ...panel, right: 12, bottom: 'calc(68px + env(safe-area-inset-bottom))' }}>
+        <div className="heatmap-panel" style={panel}>
           <select aria-label="Heatmap type" value={kind} onChange={(e) => setKind(e.target.value)} style={field}>
             <option value="click">Clicks</option><option value="scroll">Scroll depth</option>
           </select>
@@ -105,7 +105,7 @@ export default function HeatmapOverlay({ page, embedded = false }) {
         </div>
       )}
       {!embedded && (
-        <button type="button" onClick={() => setOpen((v) => !v)} aria-pressed={open} style={toggle}>
+        <button type="button" onClick={() => setOpen((v) => !v)} aria-pressed={open} className="heatmap-fab" style={toggle}>
           {open ? 'Hide heatmap' : 'Heatmap'}
         </button>
       )}
@@ -115,7 +115,8 @@ export default function HeatmapOverlay({ page, embedded = false }) {
 }
 
 const toggle = {
-  position: 'fixed', right: 12, bottom: 'calc(12px + env(safe-area-inset-bottom))', zIndex: 9999, minWidth: 44, minHeight: 44,
+  // left/bottom live in index.css (.heatmap-fab) so each UI template can place the button; Blueprint lifts it above its phone bar.
+  position: 'fixed', zIndex: 9999, minWidth: 44, minHeight: 44,
   padding: '0 14px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)',
   color: 'var(--text-color)', fontWeight: 700, fontSize: 13, cursor: 'pointer',
 };
