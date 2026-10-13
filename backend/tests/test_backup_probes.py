@@ -50,3 +50,27 @@ async def test_unset_environment_reports_unconfigured_not_ok(monkeypatch):
     assert by["second_mirror"]["status"] == "unconfigured" and by["second_staging"]["status"] == "unconfigured"
     assert res["overall"] != "healthy"
     assert "://" not in str(res)
+
+
+async def test_timeout_env_and_message(monkeypatch):
+    monkeypatch.setattr(bp, "TIMEOUT_S", 0.05)
+    async def hang(): await asyncio.sleep(5)
+    out = await bp._probe(L, hang)
+    assert out["status"] == "down" and "0.05 seconds" in out["detail"]
+    assert bp._env_num("PROBE_TIMEOUT_S", "8") == 8.0
+    monkeypatch.setenv("PROBE_TIMEOUT_S", "bad")
+    assert bp._env_num("PROBE_TIMEOUT_S", "8") == 8.0
+
+
+async def test_concurrency_limit_serialises_probes(monkeypatch):
+    monkeypatch.setenv("PROBE_CONCURRENCY", "1")
+    bp._SEMS.clear()
+    running, peak = 0, 0
+    async def work():
+        nonlocal running, peak
+        running += 1; peak = max(peak, running)
+        await asyncio.sleep(0.01); running -= 1
+        return {}
+    await asyncio.gather(*(bp._probe((str(i), "x"), work) for i in range(4)))
+    assert peak == 1
+    bp._SEMS.clear()

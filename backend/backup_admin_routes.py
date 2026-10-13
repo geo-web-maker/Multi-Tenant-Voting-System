@@ -61,9 +61,13 @@ def _age_minutes(value):
     current = datetime.now(timezone.utc).replace(tzinfo=None)
     return max(0, int((current - value.replace(tzinfo=None)).total_seconds() / 60))
 
+def _probe_cache_s() -> float:
+    try: return max(5.0, float(os.getenv("PROBE_CACHE_S", "15")))
+    except ValueError: return 15.0
+
 async def _connections(live_db, *, refresh=False):
     import time
-    if not refresh and _PROBE_CACHE["data"] is not None and time.monotonic() - _PROBE_CACHE["at"] < 15:
+    if not refresh and _PROBE_CACHE["data"] is not None and time.monotonic() - _PROBE_CACHE["at"] < _probe_cache_s():
         return _PROBE_CACHE["data"]
     data = await backup_probes.probe_connections(live_db)
     _PROBE_CACHE.update(at=time.monotonic(), data=data)

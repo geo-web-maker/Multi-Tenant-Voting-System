@@ -4,12 +4,28 @@ import asyncio
 import os
 import re
 import time
+import weakref
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from motor.motor_asyncio import AsyncIOMotorClient
 import backup
 
-TIMEOUT_S = 8
+def _env_num(name, default, cast=float):
+    try: return cast(os.getenv(name, default))
+    except (TypeError, ValueError): return cast(default)
+
+# Free/tiny hosts (e.g. Render free, ~0.1 CPU) need longer timeouts and fewer simultaneous TLS handshakes.
+TIMEOUT_S = _env_num("PROBE_TIMEOUT_S", "8")
+_SEMS = weakref.WeakKeyDictionary()  # one semaphore per event loop
+
+def _sem():
+    loop = asyncio.get_running_loop()
+    if loop not in _SEMS: _SEMS[loop] = asyncio.Semaphore(max(1, _env_num("PROBE_CONCURRENCY", "8", int)))
+    return _SEMS[loop]
+
+def _ss_ms() -> int:
+    """Server-selection timeout, 1 s under the probe timeout so the real driver error (SSL/auth) surfaces."""
+    return max(500, int((TIMEOUT_S - 1) * 1000))
 
 
 def _safe_error(exc) -> str:
@@ -30,18 +46,20 @@ def host_label(uri: str | None) -> str | None:
         return None
 
 async def _probe(label, fn, *, slow_ms=500):
-    started = time.monotonic()
-    try:
-        detail = await asyncio.wait_for(fn(), timeout=TIMEOUT_S)
-        elapsed = int((time.monotonic() - started) * 1000)
-        status = "slow" if elapsed > slow_ms else "ok"
-        return {"id": label[0], "label": label[1], "status": status, "latency_ms": elapsed, "detail": detail}
-    except asyncio.TimeoutError:
-        return {"id": label[0], "label": label[1], "status": "down", "latency_ms": TIMEOUT_S * 1000, "detail": "Probe timed out after 8 seconds."}
-    except NotImplementedError as exc:
-        return {"id": label[0], "label": label[1], "status": "unconfigured", "latency_ms": None, "detail": _safe_error(exc)}
-    except Exception as exc:
-        return {"id": label[0], "label": label[1], "status": "down", "latency_ms": int((time.monotonic()-started)*1000), "detail": _safe_error(exc)}
+    async with _sem():
+        started = time.monotonic()
+        secs = f"{TIMEOUT_S:g}"
+        try:
+            detail = await asyncio.wait_for(fn(), timeout=TIMEOUT_S)
+            elapsed = int((time.monotonic() - started) * 1000)
+            status = "slow" if elapsed > slow_ms else "ok"
+            return {"id": label[0], "label": label[1], "status": status, "latency_ms": elapsed, "detail": detail}
+        except asyncio.TimeoutError:
+            return {"id": label[0], "label": label[1], "status": "down", "latency_ms": int(TIMEOUT_S * 1000), "detail": f"Probe timed out after {secs} seconds."}
+        except NotImplementedError as exc:
+            return {"id": label[0], "label": label[1], "status": "unconfigured", "latency_ms": None, "detail": _safe_error(exc)}
+        except Exception as exc:
+            return {"id": label[0], "label": label[1], "status": "down", "latency_ms": int((time.monotonic()-started)*1000), "detail": _safe_error(exc)}
 
 async def _mongo_probe(db, *, with_info=True):
     await db.client.admin.command("ping")
@@ -88,33 +106,32 @@ async def probe_connections(live_db) -> dict:
     mig_url = os.getenv("MIGRATION_TARGET_URL") or second_url
     db_name = os.getenv("MONGO_DB_NAME", live_db.name)
 
+    clients = {}
+    def shared(url):  # one TLS handshake per cluster URL instead of one per probe
+        if url not in clients: clients[url] = AsyncIOMotorClient(url, maxPoolSize=2, serverSelectionTimeoutMS=_ss_ms())
+        return clients[url]
+
     async def second_db(db_name_to_probe):
         if not second_url: raise NotImplementedError("SECOND_MONGO_URL is not set.")
-        client = AsyncIOMotorClient(second_url, maxPoolSize=2, serverSelectionTimeoutMS=TIMEOUT_S * 1000)
-        try:
-            meta = await live_db.backup_meta.find_one({"_id": "mirror_state"}) or {}
-            data = await _mongo_probe(client[db_name_to_probe], with_info=False)
-            data["last_sync_at"] = meta.get("last_ok_at")
-            return data
-        finally: client.close()
+        client = shared(second_url)
+        meta = await live_db.backup_meta.find_one({"_id": "mirror_state"}) or {}
+        data = await _mongo_probe(client[db_name_to_probe], with_info=False)
+        data["last_sync_at"] = meta.get("last_ok_at")
+        return data
 
     tasks.append(_probe(("second_mirror", "Second cluster mirror"), lambda: second_db(mirror_name), slow_ms=mongo_slow_ms))
     async def staging_db():
         if not second_url: raise NotImplementedError("SECOND_MONGO_URL is not set.")
-        client = AsyncIOMotorClient(second_url, maxPoolSize=2, serverSelectionTimeoutMS=TIMEOUT_S * 1000)
-        try:
-            await client.admin.command("ping")
-            db = client[scratch_name]
-            names = [n for n in await db.list_collection_names() if not n.startswith("system.")]
-            return {"database": scratch_name, "collections": len(names), "empty_is_normal": len(names) == 0}
-        finally: client.close()
+        client = shared(second_url)
+        await client.admin.command("ping")
+        db = client[scratch_name]
+        names = [n for n in await db.list_collection_names() if not n.startswith("system.")]
+        return {"database": scratch_name, "collections": len(names), "empty_is_normal": len(names) == 0}
     tasks.append(_probe(("second_staging", "Staging (restore test)"), staging_db))
 
     async def migration_db():
         if not mig_url: raise NotImplementedError("MIGRATION_TARGET_URL / SECOND_MONGO_URL is not set.")
-        client = AsyncIOMotorClient(mig_url, maxPoolSize=2, serverSelectionTimeoutMS=TIMEOUT_S * 1000)
-        try: return await _mongo_probe(client[db_name], with_info=False)
-        finally: client.close()
+        return await _mongo_probe(shared(mig_url)[db_name], with_info=False)
     tasks.append(_probe(("migration_target", "Migration target"), migration_db, slow_ms=mongo_slow_ms))
 
     async def postgres_probe():
@@ -170,18 +187,18 @@ async def probe_connections(live_db) -> dict:
     # Compare resolved replica-set members as well as hostnames to catch SRV aliases.
     try:
         if second_url:
-            second = AsyncIOMotorClient(second_url, maxPoolSize=1, serverSelectionTimeoutMS=TIMEOUT_S * 1000)
+            second = shared(second_url)
             await second.admin.command("ping")
             live_nodes, second_nodes = set(live_db.client.nodes or ()), set(second.nodes or ())
             common = live_nodes & second_nodes
             guard_checks.append({"name": "Live and second cluster nodes do not overlap",
                                  "ok": bool(live_nodes and second_nodes and not common),
                                  **({} if live_nodes and second_nodes else {"detail": "Unable to prove cluster separation from resolved nodes."})})
-            second.close()
         else:
             guard_checks.append({"name": "Live and second cluster nodes do not overlap", "ok": False})
     except Exception as exc:
         guard_checks.append({"name": "Live and second cluster nodes do not overlap", "ok": False, "detail": _safe_error(exc)})
+    for c in clients.values(): c.close()
     overall = "critical" if any(r["status"] == "down" for r in results) or any(not g["ok"] for g in guard_checks) else (
         "warning" if any(r["status"] in {"slow", "unconfigured"} for r in results) else "healthy")
     return {"checked_at": datetime.now(timezone.utc).isoformat(), "connections": results,
