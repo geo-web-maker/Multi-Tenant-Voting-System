@@ -186,6 +186,51 @@ async def test_it_admin_application_list_is_stage_only(env):
     assert set(row) <= allowed            # whitelist: no votes, progress, reasons or payment fields
 
 
+async def test_commission_application_list_is_the_same_stage_only_view(env):
+    await env.seed_panel()
+    aid = await _ready_application(env)
+    await _vote(env, aid, env.pan1, "approve", "com1")
+
+    r = await env.client.get("/commission/applications", headers=env.com1)
+    assert r.status_code == 200
+    row = [x for x in r.json() if x["_id"] == aid][0]
+    assert row["stage"] == "with_panel"
+    allowed = {"_id", "student_id", "full_name", "position_id", "position_title", "position_order",
+               "submitted_at", "status", "stage", "stage_label"}
+    assert set(row) <= allowed            # same whitelist as the IT admin: no votes, progress, reasons or payment fields
+    # identical content to what the IT admin sees
+    it_rows = (await env.client.get("/it-admin/applications", headers=env.it)).json()
+    assert r.json() == it_rows
+
+
+async def test_commission_list_adds_the_decision_for_decided_applications_only(env):
+    await env.seed_panel()
+    aid = await _ready_application(env)
+    pending = [x for x in (await env.client.get("/commission/applications", headers=env.com1)).json() if x["_id"] == aid][0]
+    assert "decision" not in pending                                  # undecided: stage only, nothing more
+
+    when = START
+    await env.db.applications.update_one({"_id": ObjectId(aid)}, {"$set": {
+        "status": "denied", "decided_at": when, "final_reason": "Receipt does not match",
+        "votes": {"x": "deny"}, "superadmin_override": True}})
+    row = [x for x in (await env.client.get("/commission/applications", headers=env.com1)).json() if x["_id"] == aid][0]
+    assert row["stage"] == "denied"
+    assert row["decision"] == {"decided_at": when.isoformat(), "final_reason": "Receipt does not match",
+                               "superadmin_override": True}
+    assert "votes" not in row and "final_split" not in row            # still no votes, tallies or split
+    # the IT admin's view of the same application never gets the reason
+    it_row = [x for x in (await env.client.get("/it-admin/applications", headers=env.it)).json() if x["_id"] == aid][0]
+    assert "decision" not in it_row and "final_reason" not in it_row
+
+
+async def test_only_commission_and_superadmin_may_open_the_commission_application_list(env):
+    await env.seed_panel()
+    assert (await env.client.get("/commission/applications", headers=env.sa)).status_code == 200
+    assert (await env.client.get("/commission/applications", headers=env.it)).status_code == 403
+    assert (await env.client.get("/commission/applications", headers=env.over)).status_code == 403
+    assert (await env.client.get("/commission/applications", headers=env.pan1)).status_code in (401, 403)
+
+
 async def test_finance_stage_shows_only_where_a_fee_applies(env):
     await env.seed_panel()
     pid = await _mk_position(env)

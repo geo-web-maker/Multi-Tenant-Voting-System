@@ -987,6 +987,19 @@ async def ip_limit_middleware(request: Request, call_next):
     return await call_next(request)  # shadow: counted and summarised, never blocked
 
 
+# An uncaught exception is turned into a 500 by Starlette's OUTERMOST handler, which sits above CORSMiddleware, so
+# that 500 carries no Access-Control-Allow-Origin and a cross-origin browser call (the direct upload endpoints)
+# reports it as a plain network failure. Catching it here, inside CORS, returns a normal readable 500 instead and
+# puts the traceback in the Render log.
+@app.middleware("http")
+async def catch_unhandled_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "Something went wrong on our side. Please try again."})
+
+
 # Compress JSON/text responses (big rosters, results, exports) — a real saving on 3G. Registered BEFORE
 # CORS so CORS stays the outermost layer and still stamps headers on every response.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -8800,9 +8813,13 @@ async def cancel_student_change(change_id: str, data: StudentChangeCancelRequest
     return {"status": "cancelled"}
 
 
-@app.get("/it-admin/applications")
-async def it_admin_applications(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
-    """Applicant list with stages for the people who answer applicants' questions. Stage only (tier 1)."""
+async def _stage_only_applications(request: Request, *, with_decision: bool = False) -> list[dict]:
+    """The applicant list shaped with the IT-admin whitelist: identity, position and STAGE only. No votes, reasons,
+    payment details or nomination data ever leave through this.
+
+    with_decision (Election Commission only) adds, to RESOLVED applications, exactly what /admin/vetting-outcomes
+    already gave that role: the decision date, the final stated reason and the superadmin-override flag. Still no
+    votes, tallies or split."""
     org_id = require_org(request.state.org_id)
     await _maybe_close_vetting(org_id)
     rows = []
@@ -8812,8 +8829,30 @@ async def it_admin_applications(request: Request, admin: dict = Depends(require_
         a["_id"] = str(a["_id"])
         if a.get("position_id"):
             a["position_title"], a["position_order"] = titles[a["position_id"]]
-        rows.append(shape_application_for_role(a, "it_admin"))
+        row = shape_application_for_role(a, "it_admin")
+        if with_decision and a.get("status") in RESOLVED_STATUSES:
+            decided_at = a.get("decided_at")
+            row["decision"] = {
+                "decided_at": decided_at.isoformat() if hasattr(decided_at, "isoformat") else decided_at,
+                "final_reason": a.get("final_reason"),
+                "superadmin_override": bool(a.get("superadmin_override")),
+            }
+        rows.append(row)
     return rows
+
+
+@app.get("/it-admin/applications")
+async def it_admin_applications(request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Applicant list with stages for the people who answer applicants' questions. Stage only (tier 1)."""
+    return await _stage_only_applications(request)
+
+
+@app.get("/commission/applications")
+async def commission_applications(request: Request, admin: dict = Depends(require_role("commission", "superadmin"))):
+    """The same stage-only applicant list for the Election Commission's Applications tab. Deliberately the SAME
+    whitelist as the IT admin's: seeing where every application stands needs no vote counts or payment details.
+    Decided applications also carry their decision date and final reason (what the old Outcomes tab showed)."""
+    return await _stage_only_applications(request, with_decision=True)
 
 
 @app.get("/it-admin/students/my-requests/{it_admin_id}")

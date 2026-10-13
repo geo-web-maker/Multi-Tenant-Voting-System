@@ -57,7 +57,7 @@ function routeGet(map) {
 
 describe('CommissionDashboard', () => {
   const base = {
-    '/admin/vetting-outcomes': [],
+    '/commission/applications': [],
     '/admin/commissioners': [{ student_id: 'u999/001', is_chief_commissioner: false }],
     '/admin/student-changes': [],
     '/commission/results/detailed': null,
@@ -66,14 +66,44 @@ describe('CommissionDashboard', () => {
   it('renders without throwing and shows the tab rail', async () => {
     routeGet({ ...base, '/admin/panel-link': { panel_linked: false } });
     render(<CommissionDashboard onLogout={() => {}} />);
-    await waitFor(() => expect(screen.getAllByText('Outcomes').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Applications').length).toBeGreaterThan(0));
     expect(screen.getAllByText('Live Results').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Outcomes')).toBeNull();                 // folded into Applications
+  });
+
+  it('lands on Applications and shows the final reason and date on decided ones', async () => {
+    routeGet({
+      ...base, '/admin/panel-link': { panel_linked: false },
+      '/commission/applications': [
+        { _id: 'a1', full_name: 'Amina Okello', student_id: 'u123/001', position_title: 'President',
+          stage: 'denied', stage_label: 'Denied',
+          decision: { decided_at: '2026-10-01T12:00:00', final_reason: 'Receipt does not match', superadmin_override: true } },
+        { _id: 'a2', full_name: 'Brian Opio', student_id: 'u123/002', position_title: 'Treasurer',
+          stage: 'with_panel', stage_label: 'With the Vetting Panel' },
+      ],
+    });
+    render(<CommissionDashboard onLogout={() => {}} />);
+    expect(await screen.findByText('Amina Okello')).toBeTruthy();       // no tab click: Applications is the landing tab
+    expect(screen.getByText('Brian Opio')).toBeTruthy();
+    expect(screen.getByText(/Receipt does not match/)).toBeTruthy();
+    expect(screen.getByText(/decided by the superadmin/)).toBeTruthy();
+    expect(screen.getAllByText(/Reason:/)).toHaveLength(1);             // only the decided application has one
+    expect(mockGet).toHaveBeenCalledWith('/commission/applications');
+    expect(mockGet).not.toHaveBeenCalledWith('/admin/vetting-outcomes');
+  });
+
+  it('a remembered Outcomes tab lands on Applications instead of a blank panel', async () => {
+    sessionStorage.setItem('tab:commission', JSON.stringify('outcomes'));
+    routeGet({ ...base, '/admin/panel-link': { panel_linked: false },
+      '/commission/applications': [{ _id: 'a1', full_name: 'Amina Okello', student_id: 'u1', stage: 'approved', stage_label: 'Approved' }] });
+    render(<CommissionDashboard onLogout={() => {}} />);
+    expect(await screen.findByText('Amina Okello')).toBeTruthy();
   });
 
   it('hides the Switch to Vetting Panel button for a commissioner not on the panel', async () => {
     routeGet({ ...base, '/admin/panel-link': { panel_linked: false } });
     render(<CommissionDashboard onLogout={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/No decisions yet/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/No applications yet/)).toBeTruthy());
     expect(screen.queryByText('Switch to Vetting Panel')).toBeNull();
   });
 
@@ -95,12 +125,12 @@ describe('CommissionDashboard', () => {
     expect(await screen.findByText(/Vetting closed on an application without a decision/)).toBeTruthy();
   });
 
-  it('says so when decisions fail to load instead of claiming there are none', async () => {
-    const { ['/admin/vetting-outcomes']: _omit, ...rest } = base;
+  it('says so when applications fail to load instead of claiming there are none', async () => {
+    const { ['/commission/applications']: _omit, ...rest } = base;
     routeGet({ ...rest, '/admin/panel-link': { panel_linked: false } });
     render(<CommissionDashboard onLogout={() => {}} />);
-    expect(await screen.findByText(/Could not load decisions/)).toBeTruthy();
-    expect(screen.queryByText(/No decisions yet/)).toBeNull();
+    expect(await screen.findByText(/Could not load applications/)).toBeTruthy();
+    expect(screen.queryByText(/No applications yet/)).toBeNull();
   });
 });
 

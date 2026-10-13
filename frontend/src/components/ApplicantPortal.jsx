@@ -25,21 +25,35 @@ import {
 // This is the one upload endpoint that has to stay public (applicants
 // aren't logged in), but the backend still validates file type/size and
 // rate-limits per IP, and the Cloudinary secret never touches the client.
-async function uploadToCloudinary(file, { signal, onProgress } = {}) {
+// Uploads go straight to the backend host (see api.js DIRECT_EXACT). Some networks, blockers or a cold backend make
+// that cross-origin call fail with NO response at all. When that happens, retry once through the default base (the same-origin /api
+// proxy in production), which the same networks reliably allow. Real HTTP errors (400/429/5xx) and cancels are never retried.
+async function postUploadWithFallback(path, formData, opts, onFallback) {
+  try {
+    return await api.post(path, formData, opts);
+  } catch (e) {
+    if (e?.response || e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') throw e;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw e;
+    if (onFallback) onFallback();
+    return api.post(path, formData, { ...opts, baseURL: api.defaults?.baseURL, __baseChosen: true });
+  }
+}
+
+async function uploadToCloudinary(file, { signal, onProgress, onFallback } = {}) {
   const formData = new FormData();
   formData.append('file', file);
-  const res = await api.post('/apply/upload-image', formData, {
+  const res = await postUploadWithFallback('/apply/upload-image', formData, {
     signal,
     onUploadProgress: onProgress ? (ev) => { if (ev.total) onProgress(Math.round((ev.loaded / ev.total) * 100)); } : undefined,
-  });
+  }, onFallback);
   return res.data.secure_url;
 }
 
-async function uploadNominationDocument(file, { signal, onProgress } = {}) {
+async function uploadNominationDocument(file, { signal, onProgress, onFallback } = {}) {
   const formData = new FormData(); formData.append('file', file);
-  const res = await api.post('/apply/upload-document', formData, { signal,
+  const res = await postUploadWithFallback('/apply/upload-document', formData, { signal,
     onUploadProgress: onProgress ? (ev) => { if (ev.total) onProgress(Math.round((ev.loaded / ev.total) * 100)); } : undefined,
-  });
+  }, onFallback);
   return res.data;
 }
 
@@ -233,6 +247,7 @@ const handleSubmit = async (e) => {
   const sid = regNo(form.student_id.trim());   // the server matches case-insensitively and stores its canonical form
   setUploading(true);
   setStep(1);
+  const noteFallback = () => trackStep('apply', 'upload_fallback');   // direct host gave no answer; trying the proxy
   try {
     // Gate: confirm this student_id + name is actually on the voter register
     // BEFORE spending any Cloudinary uploads on photo/payment proof.
@@ -245,7 +260,7 @@ const handleSubmit = async (e) => {
       if (cached) return cached;
       setStep(stepNo);
       setUploadPct(0);
-      const url = await uploadToCloudinary(await resizeImage(file), { signal: controller.signal, onProgress: setUploadPct });
+      const url = await uploadToCloudinary(await resizeImage(file), { signal: controller.signal, onProgress: setUploadPct, onFallback: noteFallback });
       uploadedRef.current.set(key, url);
       setUploadPct(null);
       return url;
@@ -261,7 +276,7 @@ const handleSubmit = async (e) => {
       if (cachedNom) { nomination_upload_id = cachedNom.upload_id; }
       else {
         setStep(hasPhoto ? 3 : 2); setUploadPct(0);
-        const uploaded = await uploadNominationDocument(nominationFile, { signal: controller.signal, onProgress: setUploadPct });
+        const uploaded = await uploadNominationDocument(nominationFile, { signal: controller.signal, onProgress: setUploadPct, onFallback: noteFallback });
         nomination_upload_id = uploaded.upload_id; uploadedRef.current.set(nk, uploaded); setNominationUploadId(nomination_upload_id); setUploadPct(null);
       }
     } else if (nominationUploadId) {
@@ -291,6 +306,7 @@ const handleSubmit = async (e) => {
     if (err.response?.status === 403 && /closed|not opened|has ended/i.test(String(err.response?.data?.detail || ''))) {
       api.get('/election-status').then(r => setElectionStatus(r.data)).catch(() => {});
     }
+    if (!err?.response && err?.code !== 'ERR_CANCELED' && err?.name !== 'CanceledError') trackStep('apply', 'submit_failed_net');   // no HTTP answer at all
     setError(mapApplyError(err, { online: typeof navigator === 'undefined' ? true : navigator.onLine !== false }));
   } finally {
     busyRef.current = false;

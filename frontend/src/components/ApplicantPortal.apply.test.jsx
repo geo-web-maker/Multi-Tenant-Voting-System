@@ -251,7 +251,38 @@ describe('B2: progress feedback', () => {
     const { container } = render(<ApplicantPortal />);
     await fillAll(container);
     fireEvent.submit(form(container));
-    expect(await screen.findByText(/Check your connection/)).toBeTruthy();
+    expect(await screen.findByText(/couldn't complete the upload/)).toBeTruthy();
+    expect(mockTrack).toHaveBeenCalledWith('apply', 'submit_failed_net');
+  });
+
+  it('an upload that gets no answer is retried once through the default base, then succeeds', async () => {
+    let first = true;
+    mockPost.mockImplementation((url, body, opts) => {
+      if (url === '/apply/upload-image') {
+        calls.push(opts?.__baseChosen ? 'proxy' : 'direct');
+        if (first) { first = false; return Promise.reject({ code: 'ERR_NETWORK' }); }
+        return Promise.resolve({ data: { secure_url: 'https://x/ok' } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const { container } = render(<ApplicantPortal />);
+    await fillAll(container);
+    fireEvent.submit(form(container));
+    await screen.findByText(/Application Submitted/);
+    expect(calls).toEqual(['direct', 'proxy']);
+    expect(mockTrack).toHaveBeenCalledWith('apply', 'upload_fallback');
+  });
+
+  it('a real HTTP error from an upload is not retried through the proxy', async () => {
+    mockPost.mockImplementation((url) => {
+      if (url === '/apply/upload-image') { calls.push(url); return Promise.reject({ response: { status: 502, data: { detail: 'x' } } }); }
+      return Promise.resolve({ data: {} });
+    });
+    const { container } = render(<ApplicantPortal />);
+    await fillAll(container);
+    fireEvent.submit(form(container));
+    expect(await screen.findByText(/upload service is busy/)).toBeTruthy();
+    expect(calls.length).toBe(1);
   });
 });
 

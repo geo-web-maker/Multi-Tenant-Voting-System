@@ -230,8 +230,14 @@ async def test_T17b_no_data_if_audit_write_fails(env, monkeypatch):
             raise RuntimeError("db down")
         return await real(action, *a, **k)
     monkeypatch.setattr(main, "log_action", boom)
-    with pytest.raises(Exception):                                       # RuntimeError, or an ExceptionGroup wrapping it
-        await export(env)                                                # the point: no 200 response carrying data
+    # The point: no 200 response carrying data. An uncaught crash now becomes a plain 500 (catch_unhandled_middleware,
+    # which keeps CORS headers on it); a raised exception from the test client would also satisfy the intent.
+    try:
+        r = await export(env)
+    except Exception:
+        return
+    assert r.status_code == 500
+    assert "content-disposition" not in r.headers and "went wrong" in r.json()["detail"]
 
 
 async def test_T18_headers_and_cors_expose(env):

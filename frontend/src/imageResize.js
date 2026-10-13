@@ -1,6 +1,6 @@
 // Shrinks big phone photos before upload (WP-6d). Any failure returns the ORIGINAL file: resizing is an
 // optimisation and must never block an application.
-const MIN_BYTES = 1024 * 1024;   // under 1 MB: leave it alone
+const MIN_BYTES = 300 * 1024;    // under 300 KB: leave it alone
 const RESIZABLE = new Set(['image/jpeg', 'image/png', 'image/webp']);   // GIF would lose its animation
 
 /** Scale (w, h) down so the longest side is at most `max`. Never scales up. */

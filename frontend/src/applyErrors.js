@@ -14,7 +14,7 @@ export function mapApplyError(err, { online = true } = {}) {
   if (!res) {
     if (!online) return "You're offline. Check your connection, then press Submit again. What you typed is kept.";
     if (err?.code === 'ECONNABORTED') return 'The server took too long to answer. Check your signal, then press Submit again.';
-    return "Couldn't reach the server. Check your connection, then press Submit again.";
+    return "We couldn't complete the upload. Refresh the page and try to submit again. If it keeps failing, contact IT support.";
   }
   const text = detailText(res.data?.detail);
   switch (res.status) {

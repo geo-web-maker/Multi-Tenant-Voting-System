@@ -56,3 +56,24 @@ async def test_preflight_is_cached_for_two_hours(env):
 async def test_disallowed_origin_gets_no_cors_header(env, big_route):
     r = await env.client.get("/__test_big", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in r.headers
+
+
+@pytest.fixture
+def boom_route(monkeypatch):
+    monkeypatch.setattr(main, "PUBLIC_PATHS", set(main.PUBLIC_PATHS) | {"/__test_boom"})
+    async def _boom():
+        raise RuntimeError("simulated crash (e.g. a database hiccup)")
+
+    before = len(main.app.router.routes)
+    main.app.add_api_route("/__test_boom", _boom)
+    yield
+    del main.app.router.routes[before:]
+
+
+async def test_uncaught_error_is_a_readable_500_that_still_carries_cors(env, boom_route):
+    # Without catch_unhandled_middleware the 500 is built OUTSIDE CORSMiddleware, has no CORS header, and a
+    # cross-origin browser call (the direct upload endpoints) reports it as a network failure.
+    r = await env.client.get("/__test_boom", headers={"Origin": ORIGIN})
+    assert r.status_code == 500
+    assert r.headers.get("access-control-allow-origin") == ORIGIN
+    assert "went wrong" in r.json()["detail"]

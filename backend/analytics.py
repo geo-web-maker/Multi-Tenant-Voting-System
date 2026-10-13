@@ -48,7 +48,8 @@ VOTE_ROUTES = {"/vote", "/vote-bulk"}
 FUNNEL_ROUTES = {"/verify-identity", "/verify-otp", "/apply/check-eligibility", "/apply/upload-image", "/apply"} | VOTE_ROUTES
 REASON_RE = re.compile(r"^[a-z0-9_]{2,32}$")
 # Client-reported funnel steps (fixed vocabulary; anything else is dropped).
-CLIENT_STEPS = {"apply": {"form_started", "proof_selected", "submit_clicked", "submit_blocked"}}
+CLIENT_STEPS = {"apply": {"form_started", "proof_selected", "submit_clicked", "submit_blocked",
+                          "upload_fallback", "submit_failed_net"}}
 STAFF_PREFIXES = ("/admin", "/superadmin", "/overseer", "/commission", "/verify-admin")
 STAFF_ROUTES = {"/election-results/voter-roll", "/election-results/turnout-breakdown"}
 MAX_SIDS = 50_000

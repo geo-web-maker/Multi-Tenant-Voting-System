@@ -5,7 +5,7 @@ const http = (status, detail) => ({ response: { status, data: { detail } } });
 
 describe('B1: mapApplyError (table)', () => {
   const cases = [
-    ['no response, online', {}, true, /Couldn't reach the server/],
+    ['no response, online', {}, true, /couldn't complete the upload/],
     ['no response, offline', {}, false, /offline/i],
     ['timeout', { code: 'ECONNABORTED' }, true, /took too long/],
     ['cancelled', { code: 'ERR_CANCELED' }, true, /^Cancelled/],

@@ -19,7 +19,7 @@ describe('B4: resizeImage fallbacks', () => {
     const f = big();
     expect(await resizeImage(f)).toBe(f);
   });
-  it('skips non-images, GIFs and files under 1 MB without decoding', async () => {
+  it('skips non-images, GIFs and files under 300 KB without decoding', async () => {
     const spy = vi.fn();
     vi.stubGlobal('createImageBitmap', spy);
     const small = new File([new Uint8Array(10)], 's.jpg', { type: 'image/jpeg' });

@@ -6,6 +6,7 @@ import { useToast, ScrollList } from './UIFeedback';
 import usePolling from '../hooks/usePolling';
 import { SHARED_TAB_DEFS, SharedTabPanels, OfficialCertificationBlock } from './SharedAdminPanels';
 import TabBar from './TabBar';
+import ApplicationStages from './ApplicationStages';
 import CandidateListBlock from './CandidateListBlock';
 import ContactChangesQueue from './ContactChangesQueue';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
@@ -14,27 +15,23 @@ import { regNo } from '../regNo';
 import AdminHeader, { useLastSynced } from './AdminHeader';
 import { LoadingBlock } from './Spinner.jsx';
 import { getTemplate } from '../template';
-import { useIdText } from '../idText';
 
 // Pre-P4 tab ids that may still be remembered in this tab's session.
-const LEGACY_TABS = ['pending', 'approved', 'denied', 'removed'];
+// 'outcomes' was folded into Applications, so it is remembered-and-bounced like the old pre-P4 ids.
+const LEGACY_TABS = ['pending', 'approved', 'denied', 'removed', 'outcomes'];
 
 export default function CommissionDashboard({ onLogout }) {
-  const idText = useIdText();
   const toast = useToast();
   const bp = getTemplate(); // render-time: null => the standard UI
 
-  const [activeTab, setActiveTab]       = usePersistedTab('commission', 'outcomes');
-  const [applications, setApplications] = useState([]);
+  const [activeTab, setActiveTab]       = usePersistedTab('commission', 'applications');
   const [loading, setLoading]           = useState(false);
-  const [outcomesFailed, setOutcomesFailed] = useState(false);
   const [panelLinked, setPanelLinked] = useState(false);
   const [tieWaiting, setTieWaiting] = useState(0);
   const [closeoutWaiting, setCloseoutWaiting] = useState(0);
   const [lastSynced, markSynced]        = useLastSynced();
   const [commissionerId, setCommissionerId] = useState('');
   const [studentChanges, setStudentChanges] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
   const [liveResults, setLiveResults] = useState(null);
   // Chairperson/Deputy-Chairperson-only controls (exception grants, certification)
   // render off this flag. It is a UI affordance, not the access boundary —
@@ -57,16 +54,12 @@ export default function CommissionDashboard({ onLogout }) {
   const fetchAll = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const [appsRes, commRes, scRes, resultsRes, linkRes] = await Promise.all([
-          api.get('/admin/vetting-outcomes').catch(() => ({ data: null })),
+      const [commRes, scRes, resultsRes, linkRes] = await Promise.all([
           api.get('/admin/commissioners').catch(() => ({ data: [] })),
           api.get('/admin/student-changes').catch(() => ({ data: [] })),
           api.get('/commission/results/detailed').catch(() => ({ data: null })),
           api.get('/admin/panel-link').catch(() => ({ data: null })),
         ]);
-        setOutcomesFailed(appsRes.data === null);
-        // Keep the last good list on a failed refresh instead of blanking it.
-        if (appsRes.data !== null) setApplications(appsRes.data);
         const me = (commRes.data || []).find(
           c => String(c.student_id || '').toLowerCase()
             === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
@@ -84,7 +77,7 @@ export default function CommissionDashboard({ onLogout }) {
         // land on a blank panel.
         setActiveTab(prev => (
           LEGACY_TABS.includes(prev) || (prev === 'reset_otp' && !chief && !deputyChief)
-            ? 'outcomes'
+            ? 'applications'
             : prev
         ));
         setStudentChanges(scRes.data);
@@ -116,23 +109,11 @@ export default function CommissionDashboard({ onLogout }) {
 
   // ── Helpers ──
 
-  const outcomeSubtitle = 'Final decisions of the Vetting Panel. Votes and progress are not shown here.';
-
-  const matchesSearch = (app) => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      (app.full_name || '').toLowerCase().includes(q) ||
-      (app.student_id || '').toLowerCase().includes(q) ||
-      (app.position_title || '').toLowerCase().includes(q)
-    );
-  };
-
-  const currentList = applications.filter(matchesSearch);
+  const outcomeSubtitle = 'Where every application stands, and the Vetting Panel\'s final decisions. Votes and progress are not shown here.';
 
   const tabGroups = [
     { label: 'Oversight', icon: 'eye', tabs: [
-      { id: 'outcomes', label: <>Outcomes</>, icon: 'award' },
+      { id: 'applications', label: <>Applications</>, icon: 'users' },
       { id: 'results',  label: <>Live Results</>, icon: 'chart' },
     ] },
     { label: 'Requests', icon: 'inbox', tabs: [
@@ -205,18 +186,6 @@ export default function CommissionDashboard({ onLogout }) {
           </div>
         )}
 
-        {/* ── Search ── */}
-        {activeTab === 'outcomes' && (
-          <div style={{ marginBottom: '16px' }}>
-            <input
-              style={inp}
-              placeholder={`Search by name, ${idText.noun}, or position…`}
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-            />
-          </div>
-        )}
-
         {/* ── Tabs ──
             TabBar renders a sticky rail on desktop and a group-pill row
             on mobile; .dash-body/.dash-main lay it out beside the content
@@ -228,45 +197,8 @@ export default function CommissionDashboard({ onLogout }) {
         <div style={container} className="dashboard-shell dash-main">
 
 
-        {/* ── Empty state ── */}
-        {activeTab === 'outcomes' && outcomesFailed && (
-          <div style={emptyState}>
-            <p style={{ opacity: 0.7 }}>Could not load decisions. Use Refresh to try again.</p>
-          </div>
-        )}
-        {activeTab === 'outcomes' && !outcomesFailed && currentList.length === 0 && !loading && (
-          <div style={emptyState}>
-            <p style={{ opacity: 0.5 }}>
-              No decisions yet.
-            </p>
-          </div>
-        )}
-
-        {/* ── Outcomes (guide 5.2): final decisions only; never pending, votes or tallies ── */}
-        {activeTab === 'outcomes' && (
-        <ScrollList>
-        {currentList.map(app => (
-          <div key={app.id} style={outcomeCard}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-              <b style={{ color: 'var(--text-color)', fontSize: '14px' }}>{app.full_name || 'Applicant'}</b>
-              <StatusBadge status={app.status}>{(app.status || '').toUpperCase()}</StatusBadge>
-            </div>
-            <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.7 }}>
-              {app.position_title}{app.student_id ? ` · ${regNo(app.student_id)}` : ''}
-            </p>
-            <p style={{ margin: '4px 0', fontSize: '12px', opacity: 0.6 }}>
-              Decided: {app.decided_at ? new Date(app.decided_at).toLocaleDateString() : 'date not recorded'}
-            </p>
-            <p style={{ margin: '8px 0 0', fontSize: '13px' }}>
-              Reason: {app.final_reason || 'No reason recorded'}
-            </p>
-            {app.superadmin_override && (
-              <div style={overrideNote}>This was decided by the superadmin. Panel voting was bypassed.</div>
-            )}
-          </div>
-        ))}
-        </ScrollList>
-        )}
+        {/* ── Applications: every application and where it stands; decided ones also carry the final reason ── */}
+        {activeTab === 'applications' && <ApplicationStages endpoint="/commission/applications" />}
 
         {/* ── Student Changes tab ── */}
         {activeTab === 'student_changes' && (
@@ -464,15 +396,12 @@ const outerWrap  = { width: '100%', minHeight: '100vh', display: 'flex', flexDir
 const container  = { width: '100%', backgroundColor: 'var(--card-bg)', borderRadius: '16px', padding: '30px', border: '1px solid var(--border-color)' };
 const appCard    = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '18px', marginBottom: '14px', backgroundColor: 'var(--bg-color)' };
 const tallyRow   = { display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', marginTop: '12px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' };
-const inp        = { padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-color)', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
 const promptBox  = { border: '1px dashed var(--border-color)', borderRadius: '12px', padding: '20px', marginBottom: '20px', backgroundColor: 'var(--bg-color)' };
 const chiefPill = { marginLeft: '10px', fontSize: '10px', fontWeight: 800, padding: '3px 9px', borderRadius: '10px', background: 'color-mix(in srgb, var(--warning) 22%, transparent)', color: 'var(--warning)' };
 const infoPill   = { fontSize: '13px', opacity: 0.7, marginBottom: '18px', padding: '8px 14px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center' };
-const overrideNote = { marginTop: '12px', fontSize: '12px', opacity: 0.55, fontStyle: 'italic' };
 const lockedNote = { padding: '10px 14px', backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)', fontSize: '12px', fontWeight: '600' };
 const emptyState = { textAlign: 'center', padding: '60px 20px', color: 'var(--text-color)' };
 
 const tieHint = { padding: '10px 14px', marginBottom: '16px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--warning) 40%, transparent)', color: 'var(--warning)' };
 
 
-const outcomeCard = { border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', marginBottom: '12px', backgroundColor: 'var(--bg-color)' };

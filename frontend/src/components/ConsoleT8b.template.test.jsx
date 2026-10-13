@@ -47,9 +47,9 @@ const RESULTS = {
   }],
 };
 const APPS = [
-  { id: 'a1', full_name: 'Amina Okello', status: 'approved', position_title: 'President', student_id: '22/U/001' },
-  { id: 'a2', full_name: 'Ben Kato', status: 'denied', position_title: 'Treasurer', student_id: '22/U/002' },
-  { id: 'a3', full_name: 'Cara Mugisha', status: 'removed', position_title: 'Secretary', student_id: '22/U/003' },
+  { _id: 'a1', full_name: 'Amina Okello', stage: 'approved', stage_label: 'Approved', position_title: 'President', student_id: '22/U/001' },
+  { _id: 'a2', full_name: 'Ben Kato', stage: 'denied', stage_label: 'Denied', position_title: 'Treasurer', student_id: '22/U/002' },
+  { _id: 'a3', full_name: 'Cara Mugisha', stage: 'removed', stage_label: 'Removed', position_title: 'Secretary', student_id: '22/U/003' },
 ];
 const OVERSEER = {
   election_status: { is_open: true, is_certified: true },
@@ -65,7 +65,7 @@ const OVERSEER = {
 let routes;
 beforeEach(() => {
   routes = {
-    '/admin/vetting-outcomes': APPS, '/admin/commissioners': [], '/admin/student-changes': [],
+    '/commission/applications': APPS, '/admin/commissioners': [], '/admin/student-changes': [],
     '/commission/results/detailed': RESULTS, '/admin/panel-link': null, '/overseer/dashboard': OVERSEER,
   };
   mockGet.mockReset();
@@ -76,12 +76,12 @@ beforeEach(() => {
 });
 afterEach(async () => { await restoreTemplate(); });
 
-describe('Commission: outcomes', () => {
+describe('Commission: applications', () => {
   it('default: plain badges, no blueprint markup', async () => {
     useDefault();
     const { container } = render(<CommissionDashboard onLogout={() => {}} />);
     await flush();
-    expect(screen.getByText('APPROVED')).toBeTruthy();
+    expect(screen.getByText('Approved', { selector: 'span' })).toBeTruthy();
     expect(hasBp(container)).toBeNull();
     expect(document.documentElement.dataset.template).toBeUndefined();
   });
@@ -90,9 +90,9 @@ describe('Commission: outcomes', () => {
     await useBlueprint();
     const { container } = render(<CommissionDashboard onLogout={() => {}} />);
     await flush();
-    expect(screen.getByText('APPROVED').className).toBe('bp-pill');
-    expect(screen.getByText('DENIED').className).toBe('bp-pill bp-neg');
-    expect(screen.getByText('REMOVED').className).toBe('bp-pill bp-mute');
+    expect(screen.getByText('Approved', { selector: '.bp-pill' }).className).toBe('bp-pill');
+    expect(screen.getByText('Denied', { selector: '.bp-pill' }).className).toBe('bp-pill bp-neg');
+    expect(screen.getByText('Removed', { selector: '.bp-pill' }).className).toBe('bp-pill bp-mute');
     expect(container.querySelectorAll('.bp-pill')).toHaveLength(3);
   });
 });
