@@ -24,7 +24,7 @@ describe('BK guide: Backups tab architecture and safety patterns', () => {
       expect(panel).toContain(title);
     }
     expect(panel).toContain('role="tablist"');
-    expect(panel).toContain('usePolling(load, 30000, auto)');
+    expect(panel).toContain('usePolling(load, 60000, auto)');
     expect(panel).toContain('usePolling(loadJobs, 3000, auto && hasRunning)');
     expect(panel).toContain('<RevealGroup');
     expect(panel).toContain("getErrorMessage(e, 'Unable to load Backups.')");
@@ -38,8 +38,14 @@ describe('BK guide: Backups tab architecture and safety patterns', () => {
   });
 
   it('wires read/write endpoints and marks keep-data as an environment-only value', () => {
-    for (const path of ['/summary', '/connections', '/b2', '/mirror', '/stats', '/jobs', '/migration', '/config']) {
+    // Render free: the poll asks for /summary (which already carries connections, b2, mirror and migration), the
+    // job list, and the extras a tab needs (stats on the overview tab, config once). It must not fan out to the
+    // individual endpoints on every refresh.
+    for (const path of ['/summary', '/stats', '/jobs', '/config']) {
       expect(panel).toContain(`\`${'${ROOT}'}${path}`);
+    }
+    for (const path of ['/connections`', '/b2`', '/mirror`', '/migration`']) {
+      expect(panel).not.toContain(`\`${'${ROOT}'}${path}`);
     }
     expect(read('src/components/BackupSettings.jsx')).toContain('RESTORE_TEST_KEEP_DATA');
     expect(read('src/components/BackupSettings.jsx')).not.toContain("set('restore_test_keep_data'");

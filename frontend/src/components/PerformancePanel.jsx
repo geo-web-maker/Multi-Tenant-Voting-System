@@ -20,8 +20,9 @@ export { PerfLine };
 const RANGES = [['15m', 'Last 15 min'], ['24h', 'Last 24 hours'], ['7d', 'Last 7 days']];
 const RANGE_TITLE = { '15m': 'Last 15 minutes', '24h': 'Last 24 hours', '7d': 'Last 7 days' };
 
-const POLL_MS = 5000;        // summary
-const SLOW_POLL_MS = 15000;  // series, breakdown, slow list
+// Render free (0.1 CPU): each open tab costs real CPU on the server, so poll gently.
+const POLL_MS = 15000;       // summary
+const SLOW_POLL_MS = 30000;  // series, breakdown, slow list
 const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
 const h3 = { margin: '0 0 10px', fontSize: 15 };
 const STATUS_TONE = { ok: 'ok', busy: 'warn', critical: 'neg', throttling: 'neg', nodata: 'mute', paused: 'mute', off: 'mute' };

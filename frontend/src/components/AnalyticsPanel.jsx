@@ -81,7 +81,7 @@ export default function AnalyticsPanel({ organizations = [] }) {
 
   useEffect(() => { setLoading(true); load(); }, [load]);
   useEffect(() => { api.get('/election-schedule').then((r) => setSchedule(r.data)).catch(() => {}); }, []);
-  usePolling(load, 30000, auto);
+  usePolling(load, 60000, auto);
 
   const apiRows = (data?.api || []).filter((a) => apiAud === 'all' || a.audience === apiAud);
   const tz = schedule?.timezone || DEFAULT_TZ;

@@ -7,7 +7,7 @@ import { PerfChart, ChartLegend } from './PerfCharts';
 import { ORG_LINE_STYLES } from './perfLineStyles';
 import { fmtOps } from '../perfFormat';
 
-const POLL_MS = 15000;
+const POLL_MS = 30000;
 const muted = { color: 'var(--text-muted)', fontSize: 13, margin: 0 };
 const pctText = (share) => `${Math.round((share || 0) * 100)}%`;
 

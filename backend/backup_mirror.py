@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 from bson import ObjectId
+from bson.codec_options import CodecOptions
+from bson.raw_bson import RawBSONDocument
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReplaceOne
 import backup
@@ -54,10 +56,30 @@ def assert_mirror_safe(live_url: str, live_db: str, mirror_db: str) -> None:
         raise RuntimeError(f"Mirror db name {mirror_db!r} is not allowed.")
 
 async def _digest(coll) -> str:
+    """Change-detection hash of a whole collection. Hashes the raw BSON the server sent instead of decoding every
+    document and re-encoding it as canonical JSON: same change detection, a fraction of the CPU (this runs for every
+    non-append-only collection on each incremental sync, on a 0.1 CPU instance)."""
     h = hashlib.sha256()
-    async for doc in coll.find({}).sort("_id", 1).batch_size(BATCH):
-        h.update(backup._dump_line(doc))
+    n = 0
+    try:
+        raw_coll = coll.with_options(codec_options=CodecOptions(document_class=RawBSONDocument))
+    except NotImplementedError:   # test doubles (mongomock) cannot return raw documents
+        raw_coll = coll
+    async for doc in raw_coll.find({}).sort("_id", 1).batch_size(BATCH):
+        raw = getattr(doc, "raw", None)
+        h.update(raw if raw is not None else backup._dump_line(doc))   # plain dicts only occur under test doubles
+        n += 1
+        if n % backup.CPU_SLICE == 0:
+            await asyncio.sleep(0)
     return h.hexdigest()
+
+
+async def _counts(src, dst) -> dict:
+    """Metadata counts first (O(1) each); a collection scan only where they disagree, so a real mismatch is exact."""
+    live, mirror = await src.estimated_document_count(), await dst.estimated_document_count()
+    if live != mirror:
+        live, mirror = await src.count_documents({}), await dst.count_documents({})
+    return {"live": live, "mirror": mirror}
 
 async def _upsert(src, dst, query: dict) -> int:
     count, ops = 0, []
@@ -135,7 +157,7 @@ async def sync_mirror(live_db, mode: str = "incr") -> dict:
                     newest = await src.find_one({}, {"_id": 1}, sort=[("_id", -1)])
                     if newest:
                         watermarks[name] = str(newest["_id"])
-                counts[name] = {"live": await src.count_documents({}), "mirror": await dst.count_documents({})}
+                counts[name] = await _counts(src, dst)
             try:
                 size = (await mdb.command("dbStats")).get("dataSize")
             except Exception:

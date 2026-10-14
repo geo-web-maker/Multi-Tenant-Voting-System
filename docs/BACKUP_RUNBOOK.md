@@ -28,6 +28,30 @@ Atlas M0 has no snapshots. These backups are the only protection. They are made 
    `<url>/internal/backup/run?mode=incr` every 15 min, `mode=full` daily, `mode=weekly` weekly, header
    `X-Backup-Token`, enable its failure notification.)
 
+## 1b. Running on Render's free web service
+
+Render free is ~0.1 CPU, 512 MB RAM, sleeps after 15 minutes without inbound traffic and restarts from scratch when
+woken. The backup stack is tuned for that:
+
+- **`POST /internal/backup/run` returns 202 immediately** and runs as a background job (cold start + a long request
+  would hit cron-job.org's 30 s limit). Poll `GET /internal/backup/run/{run_id}` or `GET /internal/backup/status`.
+  Failures are still logged and e-mailed by the backend. For a scheduler that can wait (GitHub Actions) use
+  `?wait=true` (or set `BACKUP_RUN_WAIT=true`) to get the old behaviour: 200 on success, 500 on failure.
+- While a job runs the service pings its own `RENDER_EXTERNAL_URL/health` every 4 minutes so Render does not sleep it
+  mid-upload. Jobs orphaned by a restart are marked failed at boot instead of blocking for 2 hours.
+- Exports/uploads/restores stream through temp files (about 2 MB of Python memory for 100k documents measured); the
+  restore test and "Verify backups" no longer load a whole backup into RAM.
+- Compression is gzip level 1 and work is sliced so voters are still served during a backup.
+- The mirror and monitoring probes run at most every ~30 minutes on the 15-minute incremental schedule (full/weekly
+  runs always do both). The Backups tab polls every 60 s, fetching only `/summary` and the job list.
+- Alert e-mail cooldowns are stored in MongoDB so a restart does not re-send the same alert.
+
+Tunables (all optional): `BACKUP_CPU_SLICE` (100), `BACKUP_BATCH_PAUSE_S` (0.05), `BACKUP_GZIP_LEVEL` (1),
+`BACKUP_SPOOL_MEM_BYTES` (1 MiB), `BACKUP_MIRROR_TIMEOUT_S` (300), `BACKUP_MIRROR_INCR_MIN_GAP_MIN` (30),
+`BACKUP_PROBE_INCR_MIN_GAP_MIN` (30), `BACKUP_KEEPALIVE_INTERVAL_S` (240), `PROBE_CACHE_S` (60),
+`PROBE_CONCURRENCY` (3), `B2_SUMMARY_CACHE_S` (1800), `BACKUP_READ_CACHE_S` (30). Raise the speed settings on a paid
+instance. Free instances also have a 750 hour/month limit: one always-on service fits, two do not.
+
 ## 2. First run
 
 Call `POST /internal/backup/selftest` (header `X-Backup-Token`) once: it reads every collection with the

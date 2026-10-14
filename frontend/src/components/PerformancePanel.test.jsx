@@ -118,12 +118,12 @@ describe('PerformancePanel polling (guide 7.1)', () => {
   beforeEach(() => { mockGet.mockReset(); setHidden(false); vi.useFakeTimers({ shouldAdvanceTime: false }); });
   afterEach(() => { cleanup(); vi.useRealTimers(); setHidden(false); });
 
-  it('polls summary about every 5 s while visible', async () => {
+  it('polls summary about every 15 s while visible', async () => {
     serve();
     render(<PerformancePanel />);
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     const first = summaryCalls();
-    await act(async () => { await vi.advanceTimersByTimeAsync(11000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(35000); });
     expect(summaryCalls()).toBeGreaterThan(first);
   });
 

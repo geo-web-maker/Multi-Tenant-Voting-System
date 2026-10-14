@@ -20,6 +20,7 @@ The manifest is uploaded LAST, so a backup without a manifest is incomplete and 
 """
 import asyncio
 import base64
+import contextlib
 import gzip
 import hashlib
 import json
@@ -34,6 +35,8 @@ import boto3
 import httpx
 from botocore.config import Config
 from bson import ObjectId, json_util, encode as bson_encode
+
+from backup_runtime import env_float, env_int, keep_awake
 
 logger = logging.getLogger("BallotBoxBackup")
 
@@ -88,8 +91,15 @@ INCR_OVERLAP_SECONDS = 120         # ObjectIds are only roughly time-ordered acr
 # depends on incrementals that the lifecycle rule has already deleted.
 FULL_INCLUDES_APPEND_ONLY = True
 MAX_ASSET_BYTES = 25 * 1024 * 1024
-BATCH_SIZE = 500
-BATCH_PAUSE_S = 0.05               # stay gentle on M0 throughput limits
+# --- Render free tier (about 0.1 CPU, 512 MB RAM): every value is overridable from the environment ---
+BATCH_SIZE = env_int("BACKUP_BATCH_SIZE", 500)          # documents per Mongo round trip
+CPU_SLICE = env_int("BACKUP_CPU_SLICE", 100)            # documents serialised/compressed before yielding the loop
+BATCH_PAUSE_S = env_float("BACKUP_BATCH_PAUSE_S", 0.05)  # stay gentle on M0 throughput limits and let voters through
+SPOOL_MEM_BYTES = env_int("BACKUP_SPOOL_MEM_BYTES", 1024 * 1024)   # larger exports spill to disk, not RAM
+GZIP_LEVEL = env_int("BACKUP_GZIP_LEVEL", 1)            # level 1 is ~4x cheaper than 6 for ~10% larger JSONL
+MIRROR_TIMEOUT_S = env_float("BACKUP_MIRROR_TIMEOUT_S", 300)
+MIRROR_INCR_MIN_GAP_MIN = env_float("BACKUP_MIRROR_INCR_MIN_GAP_MIN", 30)
+PROBE_INCR_MIN_GAP_MIN = env_float("BACKUP_PROBE_INCR_MIN_GAP_MIN", 30)
 FREE_TIER_BYTES = 10 * 10 ** 9
 M0_CAP_BYTES = 512 * 1024 * 1024
 
@@ -119,7 +129,19 @@ def load_config() -> dict:
     return cfg
 
 
+_CLIENT_CACHE: dict = {}
+
+
 def make_client(cfg: dict):
+    """boto3 clients are thread-safe and costly to build (tens of ms of CPU, several MB): build one per credential set."""
+    key = (cfg.get("endpoint"), cfg.get("key_id"), cfg.get("app_key"))
+    client = _CLIENT_CACHE.get(key)
+    if client is None:
+        client = _CLIENT_CACHE[key] = _build_client(cfg)
+    return client
+
+
+def _build_client(cfg: dict):
     kwargs = dict(
         endpoint_url=cfg["endpoint"],
         aws_access_key_id=cfg["key_id"],
@@ -131,9 +153,11 @@ def make_client(cfg: dict):
             request_checksum_calculation="when_required",
             response_checksum_validation="when_required",
             retries={"max_attempts": 5, "mode": "standard"},
+            connect_timeout=10, read_timeout=60, max_pool_connections=4,
         )
     except TypeError:
-        kwargs["config"] = Config(retries={"max_attempts": 5, "mode": "standard"})
+        kwargs["config"] = Config(retries={"max_attempts": 5, "mode": "standard"},
+                                  connect_timeout=10, read_timeout=60, max_pool_connections=4)
     return boto3.client("s3", **kwargs)
 
 
@@ -243,37 +267,64 @@ def _dump_line(doc: dict) -> bytes:
     return (json_util.dumps(doc, json_options=json_util.CANONICAL_JSON_OPTIONS) + "\n").encode()
 
 
+def _sha256_file(fh) -> str:
+    h = hashlib.sha256()
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        h.update(chunk)
+    return h.hexdigest()
+
+
 async def export_collection(db, name: str, query: dict, on_doc=None) -> dict:
     """Stream one filtered collection into a gzip spool. Deterministic (sorted by _id,
-    gzip mtime 0) so an unchanged collection hashes identically run to run."""
-    spool = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
+    gzip mtime 0) so an unchanged collection hashes identically run to run.
+
+    Render-free tuning: the spool only stays in RAM up to SPOOL_MEM_BYTES (then it is a temp file), documents are
+    serialised CPU_SLICE at a time and compressed/hashed in a worker thread (zlib and hashlib release the GIL), and
+    the loop is handed back between slices, so a backup cannot freeze request handling for seconds on 0.1 CPU."""
+    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MEM_BYTES)
     raw = hashlib.sha256()
     raw_bytes = count = 0
     first = last = None
-    with gzip.GzipFile(fileobj=spool, mode="wb", mtime=0, compresslevel=6) as gz:
-        n = 0
+    pending: list[bytes] = []
+    gz = gzip.GzipFile(fileobj=spool, mode="wb", mtime=0, compresslevel=GZIP_LEVEL)
+
+    def write_slice(chunk: bytes) -> None:
+        raw.update(chunk)
+        gz.write(chunk)
+
+    async def flush() -> None:
+        nonlocal pending
+        if pending:
+            chunk, pending = b"".join(pending), []
+            await asyncio.to_thread(write_slice, chunk)
+            await asyncio.sleep(BATCH_PAUSE_S)
+
+    try:
         async for doc in db[name].find(query).sort("_id", 1).batch_size(BATCH_SIZE):
             line = _dump_line(doc)
-            gz.write(line)
-            raw.update(line)
+            pending.append(line)
             raw_bytes += len(line)
             count += 1
             first = first or doc["_id"]
             last = doc["_id"]
             if on_doc:
                 on_doc(name, doc)
-            n += 1
-            if n % BATCH_SIZE == 0:
-                await asyncio.sleep(BATCH_PAUSE_S)
-    gz_bytes = spool.tell()
-    spool.seek(0)
-    gzh = hashlib.sha256()
-    for chunk in iter(lambda: spool.read(1024 * 1024), b""):
-        gzh.update(chunk)
-    spool.seek(0)
+            if len(pending) >= CPU_SLICE:
+                await flush()
+        await flush()
+        await asyncio.to_thread(gz.close)       # writes the gzip trailer into the spool (does not close it)
+        gz_bytes = spool.tell()
+        spool.seek(0)
+        gz_sha = await asyncio.to_thread(_sha256_file, spool)
+        spool.seek(0)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            gz.close()
+        spool.close()
+        raise
     return {
         "spool": spool, "count": count, "raw_sha256": raw.hexdigest(),
-        "gz_sha256": gzh.hexdigest(), "raw_bytes": raw_bytes, "gz_bytes": gz_bytes,
+        "gz_sha256": gz_sha, "raw_bytes": raw_bytes, "gz_bytes": gz_bytes,
         "first_id": str(first) if first else None, "last_id": str(last) if last else None,
     }
 
@@ -323,20 +374,27 @@ async def _ensure_routine_asset(client, cfg, tenant: str, url: str, existing: di
         head = await asyncio.to_thread(client.head_object, Bucket=cfg["bucket"], Key=key)
         meta = head.get("Metadata", {})
         return {"url": url, "key": key, "sha256": meta.get("sha256"), "bytes": entry["Size"], "copied": False}
-    async with httpx.AsyncClient(timeout=60, follow_redirects=False) as http:
-        async with http.stream("GET", url) as r:
-            if r.status_code != 200:
-                raise BackupError(f"asset fetch {r.status_code}")
-            buf, h = bytearray(), hashlib.sha256()
-            async for chunk in r.aiter_bytes():
-                buf.extend(chunk)
-                h.update(chunk)
-                if len(buf) > MAX_ASSET_BYTES:
-                    raise BackupError("asset larger than 25 MB")
-            ctype = r.headers.get("content-type", "application/octet-stream")
-    await _put(client, cfg, key, bytes(buf), "routine", _retain_until("routine"),
-               ctype, {"source-url": url[:1000], "sha256": h.hexdigest()})
-    return {"url": url, "key": key, "sha256": h.hexdigest(), "bytes": len(buf), "copied": True}
+    # Stream into a spool (RAM only up to SPOOL_MEM_BYTES) instead of a bytearray + bytes() copy of up to 25 MB.
+    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MEM_BYTES)
+    try:
+        h, size = hashlib.sha256(), 0
+        async with httpx.AsyncClient(timeout=60, follow_redirects=False) as http:
+            async with http.stream("GET", url) as r:
+                if r.status_code != 200:
+                    raise BackupError(f"asset fetch {r.status_code}")
+                async for chunk in r.aiter_bytes():
+                    size += len(chunk)
+                    if size > MAX_ASSET_BYTES:
+                        raise BackupError("asset larger than 25 MB")
+                    h.update(chunk)
+                    spool.write(chunk)
+                ctype = r.headers.get("content-type", "application/octet-stream")
+        spool.seek(0)
+        await _put(client, cfg, key, spool, "routine", _retain_until("routine"),
+                   ctype, {"source-url": url[:1000], "sha256": h.hexdigest()})
+    finally:
+        spool.close()
+    return {"url": url, "key": key, "sha256": h.hexdigest(), "bytes": size, "copied": True}
 
 
 async def _copy_assets(client, cfg, tenant: str, urls: set, cls: str, dest_prefix: str,
@@ -518,7 +576,9 @@ async def backup_global_settings(db, client, cfg, *, force: bool = False) -> dic
 
 
 async def ownerless_preflight(db) -> dict:
-    """Count missing org_id values in all newly covered tenant collections; does not mutate data."""
+    """Count missing org_id values in all newly covered tenant collections; does not mutate data.
+    Seven collection scans on a shared M0: always fresh here (backups gate on it); dashboards read it through
+    backup_runtime.cached instead."""
     names = sorted({"panel_members", "contact_changes", "roster_ledger", "candidate_lists",
                     "candidate_tokens", "certificates", "nomination_uploads"})
     out = {}
@@ -635,7 +695,7 @@ async def run_scheduled(db, mode: str) -> dict:
         raise BackupError("mode must be incr, full or weekly")
     if _run_lock.locked():
         return {"status": "busy", "results": []}
-    async with _run_lock:
+    async with _run_lock, keep_awake():   # keep_awake: a sleeping Render instance would kill the run mid-upload
         cfg = load_config()
         client = make_client(cfg)
         results: list = []
@@ -675,25 +735,52 @@ async def run_scheduled(db, mode: str) -> dict:
             except Exception as e:  # global settings are important; surface as a normal failed run
                 await _fail(db, "_global", "global", e, results)
         mirror_res = None
+        monitor_cfg = await _monitor_values(db)
         try:
             import backup_mirror
-            mirror_res = await asyncio.wait_for(
-                backup_mirror.sync_mirror(db, "full" if mode in ("full", "weekly") else "incr"), timeout=120)
+            # 15-minute incrementals copy new votes to B2 every run; the mirror (a full read of every small
+            # collection) only needs to stay inside its lag alert window, so on the free tier it runs less often.
+            gap = min(MIRROR_INCR_MIN_GAP_MIN, max(5.0, float(monitor_cfg.get("mirror_lag_active_minutes", 60)) / 2))
+            if mode == "incr" and await _recent(db.backup_meta, {"_id": "mirror_state"}, "last_ok_at", gap):
+                mirror_res = {"status": "skipped", "reason": f"mirror synced within the last {gap:g} minutes"}
+            else:
+                mirror_res = await asyncio.wait_for(
+                    backup_mirror.sync_mirror(db, "full" if mode in ("full", "weekly") else "incr"),
+                    timeout=MIRROR_TIMEOUT_S)
         except Exception as e:  # mirror must never fail or delay a completed backup
             logger.error("mirror sync skipped: %s", e)
             mirror_res = {"status": "failed", "error": str(e)[:300]}
         # Sample after the mirror attempt so mirror lag/health reflects this run's outcome.
         try:
             import backup_probes
-            probe_result = await backup_probes.probe_connections(db)
-            await backup_probes.write_probe_sample(db, probe_result)
-            from backup_admin_routes import emit_monitor_alerts
-            await emit_monitor_alerts(db, probe_result)
+            gap = min(PROBE_INCR_MIN_GAP_MIN, 40.0)   # the "monitor samples stopped" alert fires after 45 minutes
+            if mode == "incr" and await _recent(db.backup_metrics, {}, "at", gap, sort_desc=True):
+                logger.info("monitoring sample skipped: newest sample is under %g minutes old", gap)
+            else:
+                probe_result = await backup_probes.probe_connections(db)
+                await backup_probes.write_probe_sample(db, probe_result)
+                from backup_admin_routes import emit_monitor_alerts
+                await emit_monitor_alerts(db, probe_result)
         except Exception as e:  # monitoring must not fail an otherwise completed backup
             logger.error("backup monitoring sample skipped: %s", str(e)[:250])
         failed = [r for r in results if r.get("status") == "failed"]
         return {"status": "failed" if failed else "ok", "mode": mode,
                 "first_run_report": report, "ownerless_preflight": preflight, "results": results, "mirror": mirror_res}
+
+
+async def _monitor_values(db) -> dict:
+    try:
+        doc = await db.platform_settings.find_one({"name": "backup_monitor_config"}) or {}
+    except Exception:  # noqa: BLE001 - config is advisory here; defaults are safe
+        return {}
+    return doc.get("values") or {}
+
+
+async def _recent(coll, query: dict, field: str, gap_min: float, sort_desc: bool = False) -> bool:
+    """True when the newest `field` timestamp is younger than 80% of gap_min (jitter must not skip a whole cycle)."""
+    doc = await (coll.find_one(query, {field: 1}, sort=[(field, -1)]) if sort_desc else coll.find_one(query, {field: 1}))
+    at = (doc or {}).get(field)
+    return isinstance(at, datetime) and (_now() - at.replace(tzinfo=None)) < timedelta(minutes=gap_min * 0.8)
 
 
 async def _missed_run_check(db, mode: str) -> None:
@@ -748,7 +835,7 @@ async def snapshot_legacy_data(db, label: str) -> dict:
 # First-run size report (4.9)
 # --------------------------------------------------------------------------
 async def _measure(db, name: str, query: dict, urls: set | None = None) -> dict:
-    comp = zlib.compressobj(6, zlib.DEFLATED, 31)
+    comp = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, 31)
     raw = gz = count = 0
     n = 0
     async for doc in db[name].find(query).batch_size(BATCH_SIZE):

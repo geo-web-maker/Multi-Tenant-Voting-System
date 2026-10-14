@@ -739,7 +739,16 @@ async def measure_lag_once(interval: float = 0.25, sleep=None) -> float:
     return lag
 
 
-async def lag_probe(interval: float = 0.25):
+def _lag_probe_interval() -> float:
+    """Seconds between event-loop lag samples. 1 s default (was 0.25): four times fewer wake-ups on a 0.1 CPU host."""
+    try:
+        return max(0.1, float(os.getenv("PERF_LAG_PROBE_S") or "1"))
+    except ValueError:
+        return 1.0
+
+
+async def lag_probe(interval: float | None = None):
+    interval = interval if interval is not None else _lag_probe_interval()
     while True:
         try:
             await measure_lag_once(interval)
@@ -1492,9 +1501,9 @@ def _flush_interval(cfg: dict) -> int:
         return 0
     if _live_sink():
         try:
-            return max(1, int(os.getenv("PERF_POSTGRES_FLUSH_SECONDS") or "1"))
+            return max(1, int(os.getenv("PERF_POSTGRES_FLUSH_SECONDS") or "10"))
         except ValueError:
-            return 1
+            return 10
     return int(cfg["persist_s"])
 
 

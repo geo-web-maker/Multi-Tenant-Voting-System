@@ -56,7 +56,7 @@ These are the starting values. Anything marked **UI** can be overridden from the
 | `PERF_CRIT_PCT` | `90` | **UI.** Percentage of the ops cap that is critical. |
 | `PERF_SLOW_COMMAND_MS` | `250` | **UI.** A DB command slower than this goes into the slow-command list. |
 | `PERF_PERSIST_SECONDS` | `300` | **UI.** How often history is written (60 to 3600). `0` turns persistence off (memory only). |
-| `PERF_POSTGRES_FLUSH_SECONDS` | `1` | How often history is written **when `PERF_SINK=postgres`**. The minute in progress is upserted every tick (idempotent), so a restart loses about a second and the 24-hour and 7-day charts survive restarts. Ignored for every other sink, which keep the `PERF_PERSIST_SECONDS` cadence (default 5 minutes). Environment only. `PERF_PERSIST_SECONDS=0` still turns history off. Alerts keep the saved cadence (at least a minute). |
+| `PERF_POSTGRES_FLUSH_SECONDS` | `10` | How often history is written **when `PERF_SINK=postgres`** (default was 1; 10 suits Render free's 0.1 CPU). The minute in progress is upserted every tick (idempotent), so a restart loses up to that many seconds and the 24-hour and 7-day charts survive restarts. Ignored for every other sink, which keep the `PERF_PERSIST_SECONDS` cadence (default 5 minutes). Environment only. `PERF_PERSIST_SECONDS=0` still turns history off. Alerts keep the saved cadence (at least a minute). |
 | `PERF_SINK` | `mongo` | Where history is written: `mongo` (main cluster), `postgres` (**recommended**), `mongo_separate`, `b2`, or `none` (§5.7). Environment only. The default stays `mongo` so nothing breaks before a URL is set; set `postgres` for election day. |
 | `PERF_POSTGRES_URL` | *(unset)* | Connection string for the metrics database. Required when `PERF_SINK=postgres`. Use a **separate database** from any application data. Must require TLS (for example `?sslmode=require`). Environment only, never shown in the UI. |
 | `PERF_POSTGRES_POOLED` | `false` | Set `true` when the URL points at a pooler endpoint (PgBouncer, Neon's or Supabase's pooler). It turns off prepared-statement caching (`statement_cache_size=0`), which poolers do not support. |
@@ -980,7 +980,12 @@ async def save_config(db, values: dict, actor: str):
 ### Update, 11 Oct 2026: Postgres is written every second and read for 24 hours
 
 - **`mongo` (default):** unchanged. Finished minutes are written in a batch every `PERF_PERSIST_SECONDS`, and the 24-hour chart reads memory, so a restart empties it.
-- **`postgres`:** `build_live_batch` writes the finished minutes plus the minute in progress every `PERF_POSTGRES_FLUSH_SECONDS` (1). The 24-hour chart (`timeseries_filled`) and the organisations card fill every minute memory lacks from the database. A minute inside the process's life with no traffic is stored as 0; a minute nobody recorded (server down) stays a gap.
+- **`postgres`:** `build_live_batch` writes the finished minutes plus the minute in progress every `PERF_POSTGRES_FLUSH_SECONDS` (10). The 24-hour chart (`timeseries_filled`) and the organisations card fill every minute memory lacks from the database. A minute inside the process's life with no traffic is stored as 0; a minute nobody recorded (server down) stays a gap.
 - The retention `DELETE` runs at most every 10 minutes on this sink instead of after every write.
 - The first tick after a start writes only the minute in progress, so rows saved by the previous process are not overwritten.
 - The 15-minute view is still per second and in memory only. After a restart it refills from zero.
+
+
+### Render free tuning
+
+`PERF_LAG_PROBE_S` (default `1`) sets the event-loop lag sampling interval. The Performance tab polls every 15 s (summary) / 30 s (charts), Organisations every 30 s, Site Usage every 60 s.

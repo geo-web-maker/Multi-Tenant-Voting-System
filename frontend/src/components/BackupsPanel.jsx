@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import usePolling from '../hooks/usePolling';
 import { DEFAULT_TZ, fmtZoned } from '../tz';
@@ -34,9 +34,8 @@ export default function BackupsPanel() {
   const [auto, setAuto] = useState(true);
   const [includeRestoreTest, setIncludeRestoreTest] = useState(false);
   const [summary, setSummary] = useState(null);
-  const [connections, setConnections] = useState(null);
-  const [b2, setB2] = useState(null);
-  const [mirror, setMirror] = useState(null);
+  // connections / b2 / mirror / migration come from /summary (the components already fall back to it).
+  const connections = null, b2 = null, mirror = null;
   const [stats, setStats] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [migration, setMigration] = useState(null);
@@ -47,6 +46,9 @@ export default function BackupsPanel() {
   const toast = useToast();
   const confirm = useConfirm();
   const viewAs = typeof window !== 'undefined' && !!sessionStorage.getItem('view_as');
+  // The backend runs on a Render free instance (0.1 CPU). /summary already carries connections, b2, mirror and the
+  // migration checklist, so the poll asks for that, the job list, and only the extras the open tab actually draws.
+  const configLoaded = useRef(false);
 
   const loadJobs = useCallback(async ({ silent = true } = {}) => {
     try {
@@ -59,15 +61,13 @@ export default function BackupsPanel() {
 
   const load = useCallback(async ({ silent = true } = {}) => {
     try {
-      const paths = [
-        api.get(`${ROOT}/summary`), api.get(`${ROOT}/connections`), api.get(`${ROOT}/b2`),
-        api.get(`${ROOT}/mirror`), api.get(`${ROOT}/stats`, { params: { range } }),
-        api.get(`${ROOT}/jobs`, { params: { limit: 50 } }), api.get(`${ROOT}/migration`), api.get(`${ROOT}/config`),
-      ];
-      const names = ['summary', 'connections', 'b2', 'mirror', 'stats', 'jobs', 'migration', 'config'];
+      const names = ['summary', 'jobs'];
+      const paths = [api.get(`${ROOT}/summary`), api.get(`${ROOT}/jobs`, { params: { limit: 50 } })];
+      if (!configLoaded.current) { names.push('config'); paths.push(api.get(`${ROOT}/config`)); }
       const results = await Promise.allSettled(paths);
-      const stateSetters = { summary: setSummary, connections: setConnections, b2: setB2, mirror: setMirror,
-        stats: setStats, jobs: (v) => setJobs(v?.jobs || []), migration: setMigration, config: setConfig };
+      // summary.migration is authoritative; clear any optimistic freeze override once fresh data arrives.
+      const stateSetters = { summary: (v) => { setSummary(v); setMigration(null); }, jobs: (v) => setJobs(v?.jobs || []),
+        config: (v) => { configLoaded.current = true; setConfig(v); } };
       const errors = [];
       results.forEach((result, index) => {
         if (result.status === 'fulfilled') stateSetters[names[index]](result.value.data);
@@ -86,11 +86,18 @@ export default function BackupsPanel() {
     } finally {
       setLoading(false);
     }
-  }, [range, toast]);
+  }, [toast]);
 
-  // Initial load and range changes use the same quiet polling callback; manual refresh reports errors through useToast.
+  // Chart samples are written every 15-30 minutes, so they are fetched when the overview tab opens, the range
+  // changes, or Refresh is pressed - not on every poll.
+  const loadStats = useCallback(async () => {
+    try { setStats((await api.get(`${ROOT}/stats`, { params: { range } })).data); } catch { /* keep the previous chart */ }
+  }, [range]);
+
+  // Initial load uses the same quiet polling callback; manual refresh reports errors through useToast.
   useEffect(() => { load({ silent: false }); }, [load]);
-  usePolling(load, 30000, auto);
+  useEffect(() => { if (activeSubtab === 'overview') loadStats(); }, [activeSubtab, loadStats]);
+  usePolling(load, 60000, auto);
   const runningJobs = useMemo(() => jobs.filter((j) => ACTIVE_STATUSES.has(j.status)), [jobs]);
   const runningKinds = useMemo(() => runningJobs.map((j) => j.kind), [runningJobs]);
   const hasRunning = runningJobs.length > 0;
@@ -154,7 +161,7 @@ export default function BackupsPanel() {
     } catch (e) { toast(getErrorMessage(e, 'Unable to load job details.'), { kind: 'error' }); }
   }, [toast]);
 
-  const refresh = useCallback(() => load({ silent: false }), [load]);
+  const refresh = useCallback(() => { loadStats(); return load({ silent: false }); }, [load, loadStats]);
 
   if (loading && !summary) return <LoadingBlock text="Loading Backups…" />;
   if (!summary && loadError) return <BackupCard title="Backups unavailable"><p style={muted}>{loadError}</p><BackupButton primary onClick={refresh}>Retry</BackupButton></BackupCard>;
@@ -177,7 +184,7 @@ export default function BackupsPanel() {
           {[['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']].map(([v, label]) => <button key={v} type="button" className="perf-btn" aria-pressed={range === v} onClick={() => setRange(v)}>{label}</button>)}
         </div>
         <BackupButton primary onClick={refresh}>Refresh</BackupButton>
-        <label className="perf-check"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Auto-refresh (30 s)</label>
+        <label className="perf-check"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Auto-refresh (60 s)</label>
       </div>
       {loadError ? <p style={{ ...muted, color: 'var(--warning)' }}>{loadError}</p> : null}
       {viewAs ? <p style={muted}>Read-only view-as session. All backup, migration and settings actions are disabled.</p> : null}

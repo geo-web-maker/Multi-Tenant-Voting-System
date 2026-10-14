@@ -70,3 +70,13 @@ def _revocation_cache_reset():
     main._clear_revocation_cache()
     yield
     main._clear_revocation_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_backup_runtime_cache():
+    """backup_runtime.cached() memoises tenant/flag/preflight reads for a few seconds in-process; tests build a fresh
+    database each time and must never see another test's cached answer."""
+    import backup_runtime
+    backup_runtime.clear_cache()
+    yield
+    backup_runtime.clear_cache()

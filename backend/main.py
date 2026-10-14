@@ -36,6 +36,7 @@ import time
 import boto3
 from fastapi.concurrency import run_in_threadpool
 import backup
+import backup_jobs
 from backup_routes import build_router as build_backup_router
 import backup_admin_routes
 import write_freeze
@@ -370,6 +371,13 @@ async def lifespan(app: FastAPI):
     analytics.set_org_resolver(_resolve_org_id)
     await analytics.start(db, create_indexes=not indexes_current)
     await perf_metrics.start(db, b2_client=b2_client)
+    try:
+        # Render free restarts the process after every sleep/deploy/OOM, which orphans any in-process backup job.
+        interrupted = await backup_jobs.recover_interrupted(db)
+        if interrupted:
+            logger.warning("Marked %d backup job(s) interrupted by the restart as failed.", interrupted)
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never stop the app from booting
+        logger.warning("Backup job recovery skipped: %s", str(exc)[:200])
     closeout_task = None
     if VETTING_CLOSEOUT_SWEEP_SECONDS > 0:
         closeout_task = asyncio.create_task(_vetting_closeout_loop(VETTING_CLOSEOUT_SWEEP_SECONDS))
@@ -664,7 +672,7 @@ PUBLIC_DOC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 
 
 def _is_public(path: str, method: str) -> bool:
-    if path.startswith("/internal/backup/restore-test/"):
+    if path.startswith(("/internal/backup/restore-test/", "/internal/backup/run/")):
         return True  # token-protected scheduler status polling
     if path in PUBLIC_PATHS or path.startswith(PUBLIC_DOC_PREFIXES):
         return True

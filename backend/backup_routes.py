@@ -1,6 +1,11 @@
 """Token-protected backup trigger endpoints (Task 4.5). Called by an EXTERNAL scheduler
 (GitHub Actions / cron-job.org) because the Render instance sleeps when idle; the call
-itself wakes it. Auth is a shared secret, not an admin session."""
+itself wakes it. Auth is a shared secret, not an admin session.
+
+Render free: a cold start already costs the scheduler ~30-60 s and cron-job.org gives up after 30 s, so
+POST /run answers 202 straight away and runs the backup as a background job (poll GET /run/{run_id} or
+GET /status). Pass ?wait=true (or set BACKUP_RUN_WAIT=true) for the old hold-the-request-open behaviour
+that returns non-2xx when the backup fails, which suits GitHub Actions."""
 import logging
 import os
 import secrets
@@ -28,16 +33,47 @@ def build_router(get_db) -> APIRouter:
             raise HTTPException(401, "Invalid backup token.")
 
     @router.post("/run")
-    async def run(mode: str = "incr", x_backup_token: str | None = Header(default=None)):
+    async def run(mode: str = "incr", wait: bool | None = None, x_backup_token: str | None = Header(default=None)):
         check_token(x_backup_token)
+        if mode not in ("incr", "full", "weekly"):
+            return JSONResponse({"status": "failed", "error": "mode must be incr, full or weekly"}, status_code=400)
+        if wait is None:
+            wait = os.getenv("BACKUP_RUN_WAIT", "false").strip().lower() == "true"
+        db = get_db()
+        if wait:
+            try:
+                result = await backup.run_scheduled(db, mode)
+            except backup.BackupError as e:
+                await backup.send_alert("[BallotBox] Backup could not start", str(e))
+                return JSONResponse({"status": "failed", "error": str(e)}, status_code=500)
+            # Non-2xx on any failure so the scheduler's own failure alert fires too.
+            code = 500 if result["status"] == "failed" else (202 if result["status"] == "busy" else 200)
+            return JSONResponse(result, status_code=code)
+
+        async def worker(ctx):
+            await ctx["step"]("run", "running", f"mode={mode}")
+            try:
+                result = await backup.run_scheduled(db, mode)
+            except backup.BackupError as e:
+                await backup.send_alert("[BallotBox] Backup could not start", str(e))
+                raise
+            status = {"failed": "failed", "busy": "skipped"}.get(result.get("status"), "passed")
+            # Per-tenant failures were already logged and e-mailed by backup._fail; the job record keeps the outcome.
+            return {**result, "status": status}
         try:
-            result = await backup.run_scheduled(get_db(), mode)
-        except backup.BackupError as e:
-            await backup.send_alert("[BallotBox] Backup could not start", str(e))
-            return JSONResponse({"status": "failed", "error": str(e)}, status_code=500)
-        # Non-2xx on any failure so the scheduler's own failure alert fires too.
-        code = 500 if result["status"] == "failed" else (202 if result["status"] == "busy" else 200)
-        return JSONResponse(result, status_code=code)
+            job = await backup_jobs.start_job(db, "scheduled_backup", "schedule", "scheduler", {"mode": mode}, worker)
+        except backup_jobs.JobBusy as exc:
+            return JSONResponse({"status": "busy", "run_id": exc.run_id}, status_code=202)
+        return JSONResponse(job, status_code=202)
+
+    @router.get("/run/{run_id}")
+    async def run_status(run_id: str, x_backup_token: str | None = Header(default=None)):
+        check_token(x_backup_token)
+        result = await backup_jobs.get_job(get_db(), run_id)
+        if not result or result.get("kind") != "scheduled_backup":
+            raise HTTPException(404, "Backup job not found.")
+        result["run_id"] = run_id
+        return _jsonable(result)
 
     @router.get("/status")
     async def status(x_backup_token: str | None = Header(default=None)):

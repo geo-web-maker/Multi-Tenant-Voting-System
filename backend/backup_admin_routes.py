@@ -13,14 +13,21 @@ import backup
 import backup_jobs
 import backup_mirror
 import backup_probes
+import backup_runtime
 import migrate_core
 import restore_check
 import write_freeze
 from chain_verify import chain_verify_db
-from restore_core import plan_restore, list_backups, ts_of
+from restore_core import verify_restore, list_backups, ts_of
 
 log = logging.getLogger("BallotBoxBackupAdmin")
 _PROBE_CACHE = {"at": 0.0, "data": None}
+# Render free: the panel auto-refreshes, and each uncached refresh costs ~40 Atlas queries plus TLS handshakes to the
+# second cluster, B2 and Postgres. Short read-through caches keep that bounded; scheduler runs use ttl=0 elsewhere.
+_READ_TTL = backup_runtime.env_float("BACKUP_READ_CACHE_S", 30)
+_OWNERLESS_TTL = backup_runtime.env_float("BACKUP_OWNERLESS_CACHE_S", 300)
+_COVERAGE_TTL = backup_runtime.env_float("BACKUP_COVERAGE_CACHE_S", 600)
+_STATS_MAX_POINTS = 400
 _CONFIG_DEFAULTS = {
     "full_backup_active_hours": 36, "full_backup_idle_hours": 192,
     "mirror_lag_active_minutes": 60, "mirror_lag_idle_minutes": 2160,
@@ -62,8 +69,8 @@ def _age_minutes(value):
     return max(0, int((current - value.replace(tzinfo=None)).total_seconds() / 60))
 
 def _probe_cache_s() -> float:
-    try: return max(5.0, float(os.getenv("PROBE_CACHE_S", "15")))
-    except ValueError: return 15.0
+    try: return max(5.0, float(os.getenv("PROBE_CACHE_S", "60")))
+    except ValueError: return 60.0
 
 async def _connections(live_db, *, refresh=False):
     import time
@@ -83,7 +90,7 @@ async def _verify_backups(live_db):
             fulls = [p for p in prefixes if "/full-" in p]
             if not fulls: raise RuntimeError("No routine full backup found")
             prefix = max(fulls, key=ts_of)
-            org_id, merged = await asyncio.to_thread(plan_restore, s3, cfg, tenant, prefix, None, False)
+            org_id, merged = await asyncio.to_thread(verify_restore, s3, cfg, tenant, prefix, None, False)
             rows.append({"tenant": tenant, "prefix": prefix, "collections": len(merged), "status": "passed"})
         except Exception as exc:
             errors.append({"tenant": tenant, "error": _safe_error(exc)})
@@ -92,7 +99,7 @@ async def _verify_backups(live_db):
         glob = await asyncio.to_thread(list_backups, s3, cfg, "_global", "routine")
         fulls = [p for p in glob if "/full-" in p]
         if not fulls: raise RuntimeError("No global platform_settings backup found")
-        await asyncio.to_thread(plan_restore, s3, cfg, "_global", max(fulls, key=ts_of), None, True)
+        await asyncio.to_thread(verify_restore, s3, cfg, "_global", max(fulls, key=ts_of), None, True)
         rows.append({"tenant": "_global", "status": "passed"})
     except Exception as exc:
         errors.append({"tenant": "_global", "error": _safe_error(exc)})
@@ -186,7 +193,7 @@ async def _alerts(live_db, connections, b2, mirror, restore, cfg):
         full_at = row.get("last_full_at")
         age = _age_minutes(full_at)
         org_id = row.get("org_id")
-        active = backup._active(await backup._election_flags(live_db, org_id))
+        active = backup._active(await backup_runtime.election_flags(backup, live_db, org_id, _READ_TTL))
         threshold = cfg["full_backup_active_hours"] * 60 if active else cfg["full_backup_idle_hours"] * 60
         if age is None or age > threshold:
             add("full_backup_stale", "warning", "full_backup_age_min", age, threshold,
@@ -195,8 +202,8 @@ async def _alerts(live_db, connections, b2, mirror, restore, cfg):
     # NB: no `await` inside a generator expression handed to any()/all()/sum(): that makes it an async
     # generator, which sync consumers cannot iterate (TypeError -> plain-text 500 on /summary).
     open_any = False
-    for x in await backup.list_tenants(live_db):
-        if backup._active(await backup._election_flags(live_db, x.get("org_id"))):
+    for x in await backup_runtime.tenants(backup, live_db, _READ_TTL):
+        if backup._active(await backup_runtime.election_flags(backup, live_db, x.get("org_id"), _READ_TTL)):
             open_any = True
             break
     lag_threshold = cfg["mirror_lag_active_minutes"] if open_any else cfg["mirror_lag_idle_minutes"]
@@ -231,7 +238,7 @@ async def _alerts(live_db, connections, b2, mirror, restore, cfg):
         elif last.get("status") == "warning": add("restore_warning", "warning", "restore_status", "warning", "passed", "Latest restore test has warnings")
         if age_days > cfg["restore_test_warn_days"]:
             add("restore_stale", "warning", "restore_age_days", round(age_days, 1), cfg["restore_test_warn_days"], "Restore test has not run recently")
-    ownerless = await backup.ownerless_preflight(live_db)
+    ownerless = await backup_runtime.ownerless(backup, live_db, _OWNERLESS_TTL)
     orphan_total = sum(ownerless.get("counts", {}).values())
     if orphan_total:
         add("ownerless_backup_data", "critical", "ownerless_documents", orphan_total, 0,
@@ -246,6 +253,32 @@ async def _alerts(live_db, connections, b2, mirror, restore, cfg):
     return alerts
 
 
+async def _not_recently_sent(live_db, alerts):
+    """alerts.py keeps its per-subject cooldown in process memory, and a Render free instance restarts after every
+    sleep, so a persistent condition would e-mail again on every wake-up. Remember send times in Mongo instead."""
+    if not alerts:
+        return alerts
+    try:
+        from alerts import _DEFAULT_COOLDOWN_S
+        doc = await live_db.backup_meta.find_one({"_id": "alert_cooldowns"}) or {}
+        last = doc.get("sent") or {}
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        fresh, stamps = [], {}
+        for item in alerts:
+            at = last.get(item["kind"])
+            cooldown = _DEFAULT_COOLDOWN_S.get(item["level"], 1800)
+            if isinstance(at, datetime) and (now - at.replace(tzinfo=None)).total_seconds() < cooldown:
+                continue
+            fresh.append(item)
+            stamps[f"sent.{item['kind']}"] = now
+        if stamps:
+            await live_db.backup_meta.update_one({"_id": "alert_cooldowns"}, {"$set": stamps}, upsert=True)
+        return fresh
+    except Exception as exc:  # noqa: BLE001 - dedupe is an optimisation; never suppress alerts because it failed
+        log.warning("alert cooldown store unavailable: %s", _safe_error(exc))
+        return alerts
+
+
 async def emit_monitor_alerts(live_db, probe_data=None):
     """Send thresholded monitor alerts from scheduler/manual probes (not from GET requests)."""
     connections = probe_data or await backup_probes.probe_connections(live_db)
@@ -257,7 +290,7 @@ async def emit_monitor_alerts(live_db, probe_data=None):
     alerts = await _alerts(live_db, connections, b2, mirror, restore, cfg)
     try:
         from alerts import alert_critical, alert_warning
-        for item in alerts:
+        for item in await _not_recently_sent(live_db, alerts):
             subject = f"[BallotBox] {item['level'].upper()}: {item['kind']}"
             body = f"{item['message']}\nMetric: {item['metric']}\nValue: {item['value']}\nThreshold: {item['threshold']}"
             if item["level"] == "critical": await alert_critical(subject, body)
@@ -288,25 +321,28 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
     @router.get("/superadmin/backups/summary")
     async def summary(response: Response, admin: dict = guard):
         no_store(response); db = get_db(); errors = []
-        connections = await _section(errors, "connections", _connections(db), {"connections": [], "guards": [], "overall": "unknown"})
-        b2 = await _section(errors, "b2", backup_probes.b2_summary(db), {"totals": {}, "object_count": None, "last_failure": "unavailable", "asset_failures": 0, "tenants": []})
-        mirror = await _section(errors, "mirror", _mirror_info(db), {"enabled": False, "counts": [], "consecutive_failures": 0})
-        restore = await _section(errors, "restore", _restore_info(db), {"last": None, "running": None})
         async def _cfg():
             doc = await db.platform_settings.find_one({"name": "backup_monitor_config"}) or {}
             return {**_CONFIG_DEFAULTS, **(doc.get("values") or {})}
-        cfg = await _section(errors, "config", _cfg(), dict(_CONFIG_DEFAULTS))
-        alerts = await _section(errors, "alerts", _alerts(db, connections, b2, mirror, restore, cfg), [])
-        migration = await _section(errors, "migration", _migration_state(db, connections, b2, mirror, restore), None)
-        ownerless = await _section(errors, "ownerless_preflight", backup.ownerless_preflight(db), {"counts": {}, "safe": None})
-        levels = {a["level"] for a in alerts}
-        overall = "critical" if "critical" in levels else "warning" if levels or errors or connections.get("overall") != "healthy" else "healthy"
         async def _jobs():
             rows = await db.backup_jobs.find({"status": {"$in": ["queued", "running"]}},
-                {"_id": 1, "kind": 1, "status": 1, "steps": 1, "started_at": 1}).sort("started_at", -1).limit(8).to_list(8)
+                {"_id": 1, "kind": 1, "status": 1, "steps": {"$slice": -1}, "started_at": 1}).sort("started_at", -1).limit(8).to_list(8)
             for job in rows: job["run_id"] = str(job.pop("_id")); job["started_at"] = _iso(job.get("started_at"))
             return rows
-        jobs = await _section(errors, "jobs_running", _jobs(), [])
+        # The sections are independent, so overlap their Atlas/B2 round trips (latency-bound, not CPU-bound).
+        connections, b2, mirror, restore, cfg, ownerless, jobs = await asyncio.gather(
+            _section(errors, "connections", _connections(db), {"connections": [], "guards": [], "overall": "unknown"}),
+            _section(errors, "b2", backup_probes.b2_summary(db), {"totals": {}, "object_count": None, "last_failure": "unavailable", "asset_failures": 0, "tenants": []}),
+            _section(errors, "mirror", _mirror_info(db), {"enabled": False, "counts": [], "consecutive_failures": 0}),
+            _section(errors, "restore", _restore_info(db), {"last": None, "running": None}),
+            _section(errors, "config", _cfg(), dict(_CONFIG_DEFAULTS)),
+            _section(errors, "ownerless_preflight", backup_runtime.ownerless(backup, db, _OWNERLESS_TTL), {"counts": {}, "safe": None}),
+            _section(errors, "jobs_running", _jobs(), []))
+        alerts, migration = await asyncio.gather(
+            _section(errors, "alerts", _alerts(db, connections, b2, mirror, restore, cfg), []),
+            _section(errors, "migration", _migration_state(db, connections, b2, mirror, restore), None))
+        levels = {a["level"] for a in alerts}
+        overall = "critical" if "critical" in levels else "warning" if levels or errors or connections.get("overall") != "healthy" else "healthy"
         return {"overall": overall, "checked_at": datetime.now(timezone.utc).isoformat(), "alerts": alerts,
                 "connections": connections.get("connections", []), "guards": connections.get("guards", []),
                 "b2": b2, "mirror": mirror, "restore": {**restore, "next_scheduled": _next_restore_schedule(cfg.get("restore_test_weekly", True))},
@@ -337,8 +373,10 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
     @router.get("/superadmin/backups/jobs")
     async def jobs(response: Response, kind: str | None = None, limit: int = Query(20, ge=1, le=100), admin: dict = guard):
         no_store(response); q = {"kind": kind} if kind else {}
+        # The list view only shows the current step; full steps/result (restore tests carry large payloads) are
+        # served by /jobs/{run_id}. Sending them for 50 jobs on every poll is wasted bandwidth on a free instance.
         rows = await get_db().backup_jobs.find(q, {"_id": 1, "kind": 1, "status": 1, "trigger": 1,
-            "actor": 1, "params": 1, "progress": 1, "steps": 1, "result": 1, "error": 1,
+            "actor": 1, "params": 1, "progress": 1, "steps": {"$slice": -1}, "error": 1,
             "started_at": 1, "finished_at": 1}).sort("started_at", -1).limit(limit).to_list(limit)
         for row in rows: row["run_id"] = str(row.pop("_id"))
         return {"jobs": rows}
@@ -356,6 +394,9 @@ def build_router(get_db, require_role, log_action_fn=None) -> APIRouter:
         if range not in windows: raise HTTPException(400, "range must be 24h, 7d or 30d.")
         start = datetime.now(timezone.utc).replace(tzinfo=None) - windows[range]
         rows = await get_db().backup_metrics.find({"at": {"$gte": start}}, {"_id": 0}).sort("at", 1).limit(3000).to_list(3000)
+        if len(rows) > _STATS_MAX_POINTS:   # a 30-day range is ~2,900 samples; a chart cannot draw more than a few hundred
+            step = -(-len(rows) // _STATS_MAX_POINTS)
+            rows = rows[::step] + ([rows[-1]] if (len(rows) - 1) % step else [])
         for row in rows: row["at"] = _iso(row.get("at"))
         return {"range": range, "points": rows}
 
@@ -635,10 +676,10 @@ def _migration_target_client():
     return AsyncIOMotorClient(url, maxPoolSize=2, serverSelectionTimeoutMS=8000, connectTimeoutMS=8000), url
 
 async def _migration_state(db, connections, b2, mirror, restore):
-    tenants = await backup.list_tenants(db)
+    tenants = await backup_runtime.tenants(backup, db, _READ_TTL)
     open_tenants = []
     for org in tenants:
-        if backup._active(await backup._election_flags(db, org.get("org_id"))): open_tenants.append(org)
+        if backup._active(await backup_runtime.election_flags(backup, db, org.get("org_id"), _READ_TTL)): open_tenants.append(org)
     jobs = {}
     for kind in ("b2_verify", "restore_test", "migration_final", "migration_verify"):
         jobs[kind] = await db.backup_jobs.find_one({"kind": kind}, {"_id": 1, "status": 1, "started_at": 1,
@@ -653,7 +694,7 @@ async def _migration_state(db, connections, b2, mirror, restore):
     full_fresh = True
     for org in tenants:
         st = await db.backup_state.find_one({"_id": backup.tenant_key(org.get("org_id"))}) or {}
-        age = _age_minutes(st.get("last_full_at")); maxage = 36 * 60 if backup._active(await backup._election_flags(db, org.get("org_id"))) else 8 * 24 * 60
+        age = _age_minutes(st.get("last_full_at")); maxage = 36 * 60 if backup._active(await backup_runtime.election_flags(backup, db, org.get("org_id"), _READ_TTL)) else 8 * 24 * 60
         full_fresh &= age is not None and age <= maxage
     verify_job = jobs.get("b2_verify")
     verify_recent = bool(verify_job and verify_job.get("status") == "passed" and verify_job.get("finished_at") and verify_job["finished_at"] >= datetime.utcnow() - timedelta(hours=24))
@@ -675,9 +716,9 @@ async def _migration_state(db, connections, b2, mirror, restore):
     verify_after = bool(final_finished and jobs.get("migration_verify") and jobs["migration_verify"].get("status") == "passed"
                         and jobs["migration_verify"].get("started_at") and jobs["migration_verify"]["started_at"] > final_finished)
     checks.append({"name": "Migration counts, digests and target Chain Verify passed after final pass", "ok": verify_after})
-    uncovered = await backup.coverage_audit(db)
+    uncovered = await backup_runtime.cached(("coverage", id(db)), _COVERAGE_TTL, lambda: backup.coverage_audit(db))
     checks.append({"name": "No uncovered tenant-data collections", "ok": not uncovered, "detail": uncovered})
-    ownerless = await backup.ownerless_preflight(db)
+    ownerless = await backup_runtime.ownerless(backup, db, _OWNERLESS_TTL)
     checks.append({"name": "No ownerless records in newly covered collections", "ok": ownerless.get("safe", False), "detail": ownerless.get("counts", {})})
     # After cutover, the role swap checklist can be checked separately; it is not a pre-cutover gate.
     target_url = os.getenv("MIGRATION_TARGET_URL") or os.getenv("SECOND_MONGO_URL") or ""

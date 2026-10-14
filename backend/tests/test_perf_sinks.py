@@ -270,7 +270,7 @@ async def test_mongo_cadence_is_unchanged():
     pm._manager.sink.name = "mongo"
     assert pm._flush_interval({"persist_s": 300}) == 300
     pm._manager.sink.name = "postgres"
-    assert pm._flush_interval({"persist_s": 300}) == 1 and pm._flush_interval({"persist_s": 0}) == 0
+    assert pm._flush_interval({"persist_s": 300}) == 10 and pm._flush_interval({"persist_s": 0}) == 0   # Render-free default
 
 
 async def test_postgres_24h_chart_fills_gaps_from_the_database():

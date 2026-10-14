@@ -9,18 +9,20 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from motor.motor_asyncio import AsyncIOMotorClient
 import backup
+import backup_runtime
 
 def _env_num(name, default, cast=float):
     try: return cast(os.getenv(name, default))
     except (TypeError, ValueError): return cast(default)
 
-# Free/tiny hosts (e.g. Render free, ~0.1 CPU) need longer timeouts and fewer simultaneous TLS handshakes.
+# Free/tiny hosts (e.g. Render free, ~0.1 CPU) need longer timeouts and fewer simultaneous TLS handshakes
+# (default concurrency 3: six probes each opening a TLS connection at once saturate 0.1 CPU).
 TIMEOUT_S = _env_num("PROBE_TIMEOUT_S", "8")
 _SEMS = weakref.WeakKeyDictionary()  # one semaphore per event loop
 
 def _sem():
     loop = asyncio.get_running_loop()
-    if loop not in _SEMS: _SEMS[loop] = asyncio.Semaphore(max(1, _env_num("PROBE_CONCURRENCY", "8", int)))
+    if loop not in _SEMS: _SEMS[loop] = asyncio.Semaphore(max(1, _env_num("PROBE_CONCURRENCY", "3", int)))
     return _SEMS[loop]
 
 def _ss_ms() -> int:
@@ -85,6 +87,22 @@ async def _mongo_probe(db, *, with_info=True):
     return {"database": db.name, "server_version": version, "collections": len(names),
             "collection_counts": counts, "size_bytes": size, "limit_bytes": 512 * 1024 * 1024,
             "temporary_databases": temporary_databases}
+
+_NOMINATION_CLIENTS: dict = {}
+
+
+def _nomination_client(cfg):
+    """One cached boto3 client per credential set; building one per probe costs CPU and memory on a free instance."""
+    key = (cfg["NOMINATION_B2_ENDPOINT"], cfg["NOMINATION_B2_KEY_ID"], cfg["NOMINATION_B2_APPLICATION_KEY"])
+    if key not in _NOMINATION_CLIENTS:
+        import boto3
+        from botocore.config import Config
+        _NOMINATION_CLIENTS[key] = boto3.client(
+            "s3", endpoint_url=cfg["NOMINATION_B2_ENDPOINT"], aws_access_key_id=cfg["NOMINATION_B2_KEY_ID"],
+            aws_secret_access_key=cfg["NOMINATION_B2_APPLICATION_KEY"],
+            config=Config(connect_timeout=4, read_timeout=4, retries={"max_attempts": 1}, max_pool_connections=2))
+    return _NOMINATION_CLIENTS[key]
+
 
 async def probe_connections(live_db) -> dict:
     """Probe all configured services concurrently; a stuck connection cannot block other probes."""
@@ -163,12 +181,7 @@ async def probe_connections(live_db) -> dict:
         import nomination_storage
         if not nomination_storage.is_configured(): raise NotImplementedError("Nomination bucket is not configured.")
         cfg = {k: os.getenv(k, "") for k in nomination_storage.ENV_NAMES}
-        import boto3
-        from botocore.config import Config
-        client = boto3.client("s3", endpoint_url=cfg["NOMINATION_B2_ENDPOINT"],
-                              aws_access_key_id=cfg["NOMINATION_B2_KEY_ID"],
-                              aws_secret_access_key=cfg["NOMINATION_B2_APPLICATION_KEY"],
-                              config=Config(connect_timeout=4, read_timeout=4, retries={"max_attempts": 1}))
+        client = _nomination_client(cfg)
         def run():
             client.head_bucket(Bucket=cfg["NOMINATION_B2_BUCKET_NAME"])
             versioning = client.get_bucket_versioning(Bucket=cfg["NOMINATION_B2_BUCKET_NAME"])
@@ -205,11 +218,18 @@ async def probe_connections(live_db) -> dict:
             "guards": guard_checks, "overall": overall}
 
 _B2_CACHE = {"at": 0.0, "data": None}
+_SAMPLE_INDEXED: set = set()
+
+
+def _b2_cache_s() -> float:
+    try: return max(60.0, float(os.getenv("B2_SUMMARY_CACHE_S", "1800")))
+    except ValueError: return 1800.0
 
 async def b2_summary(live_db, *, refresh=False) -> dict:
-    """Cached 10 minutes because a bucket-wide object listing incurs billed calls."""
+    """Cached 30 minutes (B2_SUMMARY_CACHE_S) because a bucket-wide object listing incurs billed calls and walks
+    every key; the cache is lost whenever Render restarts the process, which is the natural refresh point."""
     now = time.monotonic()
-    if not refresh and _B2_CACHE["data"] is not None and now - _B2_CACHE["at"] < 600:
+    if not refresh and _B2_CACHE["data"] is not None and now - _B2_CACHE["at"] < _b2_cache_s():
         data = _B2_CACHE["data"]
     else:
         try:
@@ -228,7 +248,7 @@ async def b2_summary(live_db, *, refresh=False) -> dict:
             data = {"totals": {"routine_bytes": 0, "safety_bytes": 0, "milestone_bytes": 0,
                               "cap_bytes": int(os.getenv("B2_BACKUP_CAP_BYTES", str(10 * 10**9)))},
                     "object_count": None, "last_failure": _safe_error(exc), "asset_failures": 0}
-    tenants = await backup.list_tenants(live_db)
+    tenants = await backup_runtime.tenants(backup, live_db, 30)
     rows = []
     if not isinstance(data.get("last_failure"), str):
         # Report a failure only while it remains the latest run for that tenant.
@@ -286,5 +306,7 @@ async def write_probe_sample(live_db, probe_data=None) -> dict:
               "nomination_status": by.get("b2_nomination_bucket", {}).get("status", "unconfigured"),
               "status": probes.get("overall", "unknown")}
     await live_db.backup_metrics.insert_one(sample)
-    await live_db.backup_metrics.create_index("at", expireAfterSeconds=30 * 86400, name="backup_metrics_ttl")
+    if id(live_db) not in _SAMPLE_INDEXED:   # was a create_index round trip on every sample
+        _SAMPLE_INDEXED.add(id(live_db))
+        await live_db.backup_metrics.create_index("at", expireAfterSeconds=30 * 86400, name="backup_metrics_ttl")
     return sample

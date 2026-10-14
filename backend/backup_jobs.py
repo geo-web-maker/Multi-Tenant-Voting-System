@@ -7,6 +7,8 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Awaitable, Callable
 
+from backup_runtime import keep_awake
+
 log = logging.getLogger("BallotBoxBackupJobs")
 
 def _safe_error(value) -> str:
@@ -27,9 +29,27 @@ class JobBusy(RuntimeError):
 def now_utc():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+_indexed: set = set()
+
+
 async def ensure_indexes(db):
+    # Two index round trips per job start were pure overhead after the first; once per process and database is enough.
+    if id(db) in _indexed:
+        return
+    _indexed.add(id(db))
     await db.backup_jobs.create_index("finished_at", expireAfterSeconds=180 * 86400, name="backup_jobs_ttl")
     await db.backup_jobs.create_index([("kind", 1), ("status", 1), ("started_at", -1)], name="backup_jobs_kind_status")
+
+async def recover_interrupted(db) -> int:
+    """Call once at boot. Jobs run as in-process tasks, and a Render free instance restarts whenever it has slept,
+    deployed or run out of memory, so any queued/running record found at boot belongs to a process that no longer
+    exists. Fail them now instead of blocking that job kind for the 2-hour stale timeout."""
+    res = await db.backup_jobs.update_many(
+        {"status": {"$in": ["queued", "running"]}},
+        {"$set": {"status": "failed", "finished_at": now_utc(),
+                  "error": "Interrupted: the server restarted (Render free instances sleep and restart). Run it again."}})
+    return int(getattr(res, "modified_count", 0) or 0)
+
 
 async def find_running(db, kind: str):
     doc = await db.backup_jobs.find_one({"kind": kind, "status": {"$in": ["queued", "running"]}}, sort=[("started_at", -1)])
@@ -64,18 +84,18 @@ async def start_job(db, kind: str, trigger: str, actor: str | None, params: dict
             await db.backup_jobs.update_one({"_id": run_id}, {"$set": fields})
         async def step(name: str, status: str, detail=None, *, done=None, total=None):
             record = {"name": name, "status": status, "detail": detail, "at": now_utc()}
-            await db.backup_jobs.update_one({"_id": run_id}, {"$push": {"steps": record}})
-            if done is not None or total is not None:
-                cur = await db.backup_jobs.find_one({"_id": run_id}, {"progress": 1}) or {}
-                prog = dict(cur.get("progress") or {})
-                if done is not None: prog["done"] = done
-                if total is not None: prog["total"] = total
-                await update(progress=prog)
+            op = {"$push": {"steps": record}}
+            sets = {}
+            if done is not None: sets["progress.done"] = done
+            if total is not None: sets["progress.total"] = total
+            if sets: op["$set"] = sets
+            await db.backup_jobs.update_one({"_id": run_id}, op)   # was push + find + set: three Atlas round trips
         context = {"run_id": run_id, "update": update, "step": step}
         async def execute():
             await update(status="running")
             try:
-                result = await worker(context)
+                async with keep_awake():   # no inbound request is open once 202 is returned; stop Render sleeping
+                    result = await worker(context)
                 status = result.get("status", "passed") if isinstance(result, dict) else "passed"
                 if status not in _TERMINAL: status = "passed"
                 await update(status=status, result=result if isinstance(result, dict) else {"value": str(result)},

@@ -9,7 +9,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import backup
 from backup_jobs import now_utc
 from chain_verify import chain_verify_db, count_uncheckpointed_events
-from restore_core import plan_restore, read_manifest, list_backups, ts_of, fetch_collection, apply_restore, restore_filter
+from restore_core import (plan_restore, read_manifest, list_backups, ts_of, fetch_collection, apply_restore, restore_filter,
+                          open_restore_stream, stream_apply)
 from alerts import alert_critical, alert_warning
 
 SCRATCH_NAME = "restore_test"
@@ -141,10 +142,14 @@ async def run_restore_test(live_db, trigger="manual", *, override_election_guard
                     max_age = float(os.getenv("BACKUP_MAX_FULL_AGE_HOURS", "36" if active else "192"))
                     if age_hours is None or age_hours > max_age:
                         raise RuntimeError(f"Newest full backup age {age_hours if age_hours is not None else 'unknown'} h exceeds {max_age:g} h.")
-                    org_id, merged = await asyncio.to_thread(plan_restore, s3, cfg, tenant, full_prefix, None, False)
+                    # Streamed: documents flow S3 -> scratch DB a batch at a time. Only the _ids are kept (the old
+                    # plan_restore held every document of every tenant at once, which a 512 MB instance cannot).
+                    org_id, stream = await asyncio.to_thread(open_restore_stream, s3, cfg, tenant, full_prefix, None, False)
                     if org_id != org.get("org_id"):
+                        stream.close()
                         raise RuntimeError(f"Manifest org_id {org_id!r} does not match live tenant {org.get('org_id')!r}.")
-                    counts = await apply_restore(client[scratch_name], org_id, merged, replace=True, tenant=tenant)
+                    merged = await stream_apply(client[scratch_name], org_id, stream, replace=True, tenant=tenant)
+                    counts = {name: len(found) for name, found in merged.items()}
                     restored_ids[tenant] = merged
                     count_errors = []
                     for collection, docs in merged.items():
@@ -155,7 +160,11 @@ async def run_restore_test(live_db, trigger="manual", *, override_election_guard
                     await record(f"restore_{tenant}", "passed", f"{len(merged)} collections restored and counts matched; backup age {age_hours:.1f} h")
                     manifests_by_tenant[tenant] = manifest
                     per_tenant.append({"tenant": tenant, "org_id": org_id, "full_prefix": full_prefix,
-                                       "age_hours": round(age_hours, 2), "counts": counts, "manifest": manifest})
+                                       "age_hours": round(age_hours, 2), "counts": counts,
+                                       # asset lists can run to hundreds of entries; they bloat the job document
+                                       # and every /summary response, so keep only the summary fields.
+                                       "manifest": {**{k: v for k, v in manifest.items() if k not in ("assets", "asset_failures", "collections")},
+                                                    "asset_count": len(manifest.get("assets", []))}})
                 except Exception as exc:
                     failures.append({"tenant": tenant, "error": safe_detail(exc)})
                     await record(f"restore_{tenant}", "failed", exc)
@@ -166,8 +175,8 @@ async def run_restore_test(live_db, trigger="manual", *, override_election_guard
                 global_fulls = [p for p in global_prefixes if "/full-" in p]
                 if not global_fulls: raise RuntimeError("No global platform_settings full backup exists.")
                 global_prefix = max(global_fulls, key=ts_of)
-                _, global_docs = await asyncio.to_thread(plan_restore, s3, cfg, "_global", global_prefix, None, True)
-                await apply_restore(client[scratch_name], None, global_docs, replace=True, tenant="_global")
+                _, global_stream = await asyncio.to_thread(open_restore_stream, s3, cfg, "_global", global_prefix, None, True)
+                global_docs = await stream_apply(client[scratch_name], None, global_stream, replace=True, tenant="_global")
                 for name, docs in global_docs.items():
                     have = await client[scratch_name][name].count_documents({})
                     if have != len(docs): raise RuntimeError(f"{name} expected {len(docs)}, found {have}")
@@ -192,8 +201,7 @@ async def run_restore_test(live_db, trigger="manual", *, override_election_guard
                     await record(f"chain_{tenant}", "passed", f"{chain.get('checkpoints_verified', 0)} checkpoints; {uncheckpointed} uncheckpointed events")
                     if uncheckpointed:
                         warnings.append({"tenant": tenant, "uncheckpointed_events": uncheckpointed})
-                vote_docs = list(merged.get("vote_events", {}).values())
-                vote_ids = [d["_id"] for d in vote_docs]
+                vote_ids = list(merged.get("vote_events", ()))
                 if vote_ids:
                     live_ids = await _live_ids(live_db.vote_events, vote_ids, {"org_id": org_id})
                     missing = [str(i) for i in vote_ids if i not in live_ids]
@@ -203,7 +211,7 @@ async def run_restore_test(live_db, trigger="manual", *, override_election_guard
                 # Other collections missing a backup row from live are warnings, not hard failures.
                 for name, doc_map in merged.items():
                     if name in {"vote_events", "organizations", "platform_settings"} or not doc_map: continue
-                    ids = list(doc_map.keys())
+                    ids = list(doc_map)
                     owner = {"org_key": tenant} if name == "sms_usage" else {"org_id": org_id}
                     live_ids = await _live_ids(live_db[name], ids, owner)
                     missing_n = sum(1 for i in ids if i not in live_ids)

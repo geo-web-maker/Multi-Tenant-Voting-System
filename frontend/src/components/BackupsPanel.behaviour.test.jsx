@@ -107,11 +107,11 @@ describe('Migration sub-tab behaviour', () => {
 });
 
 describe('Polling lifecycle', () => {
-  it('polls the summary every 30 s and the job list every 3 s only while a job runs', async () => {
+  it('polls the summary every 60 s and the job list every 3 s only while a job runs', async () => {
     build({ jobs: [{ run_id: 'r1', kind: 'migration_copy', status: 'running', started_at: '2026-10-12T00:00:00Z' }] });
     render(<BackupsPanel />);
     await screen.findByRole('heading', { name: 'Backup infrastructure' });
-    expect(pollCalls).toContainEqual([30000, true]);
+    expect(pollCalls).toContainEqual([60000, true]);
     expect(pollCalls).toContainEqual([3000, true]);
   });
 
@@ -127,6 +127,6 @@ describe('Polling lifecycle', () => {
     await screen.findByRole('heading', { name: 'Backup infrastructure' });
     pollCalls.length = 0;
     fireEvent.click(screen.getByLabelText(/Auto-refresh/));
-    await waitFor(() => expect(pollCalls).toContainEqual([30000, false]));
+    await waitFor(() => expect(pollCalls).toContainEqual([60000, false]));
   });
 });
