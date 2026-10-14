@@ -546,6 +546,8 @@ html[data-template="blueprint"] {
   html[data-template="blueprint"] .perf-card { background: var(--bp-sf); border-color: var(--bp-line); border-radius: var(--bp-rs); }
   /* Tap targets: 48 px (--bp-tap) for buttons, fields and tick rows. No priority overrides. */
   html[data-template="blueprint"] .perf-btn, html[data-template="blueprint"] .perf-actions button { min-height: var(--bp-tap); padding-left: var(--bp-s4); padding-right: var(--bp-s4); border-radius: 99px; }
+  /* Multi-line card buttons (job rows, clickable stat tiles) are rows inside a .perf-card, not pills: use the small radius like the mockup's bordered rows. Longer selector so it beats the 99px rule above. */
+  html[data-template="blueprint"] .perf-btn.perf-btn-card { border-radius: var(--bp-rs); }
   html[data-template="blueprint"] .perf-field { min-height: var(--bp-tap); font-size: 16px; }
   html[data-template="blueprint"] .perf-check { min-height: var(--bp-tap); }
   /* Selected / primary buttons: --bp-ai is the readable ink on the accent in both themes (white on the dark-theme orange fails). */
