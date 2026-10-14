@@ -49,6 +49,8 @@ FULL_COLLECTIONS = [
     # Previously missed in the backup coverage audit (BK-1).
     "panel_members", "contact_changes", "candidate_lists", "candidate_tokens",
     "certificates", "nomination_uploads", "sms_usage",
+    # Soft-deleted applications (superadmin archive; restorable).
+    "deleted_applications",
 ]
 # Append-only collections: incremental on the 15-minute job.
 APPEND_ONLY = ["vote_events", "audit_log", "student_edit_audit", "roster_ledger"]
@@ -75,6 +77,7 @@ FILTER_OVERRIDES = {"sms_usage": lambda org_id: {"org_key": org_id or "default"}
 # Fields holding Cloudinary URLs (photos, receipts, branding files).
 ASSET_FIELDS = {
     "applications": ("image_url", "payment_proof_url"),
+    "deleted_applications": ("image_url", "payment_proof_url"),
     "candidates": ("image_url",),
     "student_changes": ("payment_proof_url",),
     "settings": ("logo_url", "university_logo_url"),

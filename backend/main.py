@@ -7608,7 +7608,7 @@ async def list_organizations():
 LEGACY_TENANT_COLLECTIONS = [
     "voters", "applications", "candidates", "positions", "settings", "student_changes", "contact_changes",
     "exception_grants", "student_edit_audit", "audit_log", "candidate_tokens", "certificates",
-    "panel_members", "otps", "admin_otps", "nomination_uploads",
+    "panel_members", "otps", "admin_otps", "nomination_uploads", "deleted_applications",
     # Hash-chained / anchored with the org id: removable, but NEVER re-assigned (that would break verification).
     "vote_events", "audit_checkpoints", "roster_ledger",
 ]
@@ -8435,6 +8435,194 @@ async def superadmin_edit_application(app_id: str, data: ApplicationEditRequest,
     logger.info(f"Superadmin corrected application {app_id}: {sorted(changes)}.")
     return {"status": "edited", "fields": sorted(changes), "status_links_revoked": links_revoked,
             "ballot_updated": bool(cand)}
+
+
+class ApplicationDeleteRequest(BaseModel):
+    mode: str                      # "soft" (archive, restorable) or "hard" (permanent)
+    reason: str
+    confirm: str | None = None     # a hard delete must carry the typed phrase below
+
+
+class DeletedApplicationRequest(BaseModel):
+    reason: str
+    confirm: str | None = None     # required for a permanent purge, ignored for a restore
+
+
+APPLICATION_DELETE_CONFIRM = "DELETE"
+# Bookkeeping a soft delete adds to the archived copy; removed again on restore.
+_ARCHIVE_ONLY_FIELDS = ("deleted_at", "deleted_by", "delete_reason", "deleted_from_status",
+                        "had_candidate", "candidate_snapshot")
+
+
+def _application_audit_snapshot(doc: dict) -> dict:
+    """The few identifying fields kept in the audit log, so a permanent delete still says what was removed."""
+    sub = doc.get("submitted_at")
+    return {"student_id": doc.get("student_id"), "full_name": doc.get("full_name"),
+            "position_id": doc.get("position_id"), "status": doc.get("deleted_from_status") or doc.get("status"),
+            "submitted_at": sub.isoformat() if hasattr(sub, "isoformat") else sub}
+
+
+async def _remove_application_nomination_file(dbs, app_doc: dict) -> int:
+    """Hard delete only: the signed nomination form belongs to the application, so it goes with it."""
+    upload_id = (app_doc.get("nomination_form") or {}).get("upload_id")
+    if not upload_id:
+        return 0
+    rows = [r async for r in dbs.nomination_uploads.find({"upload_id": upload_id})]
+    removed = await _delete_nomination_objects(rows)
+    await dbs.nomination_uploads.delete_many({"upload_id": upload_id})
+    return removed
+
+
+@app.post("/superadmin/applications/{app_id}/delete")
+async def superadmin_delete_application(app_id: str, data: ApplicationDeleteRequest, request: Request):
+    """Delete an application, two ways.
+
+    soft: the application is moved to the `deleted_applications` archive. It disappears from every list, count,
+          vetting and finance screen, and can be restored (as pending) from the archive.
+    hard: the application is removed permanently (and its signed nomination form with it). Only the audit-log
+          entry remains. Needs the typed phrase DELETE.
+
+    Both need a reason (audit log). Both take an approved candidate off the ballot and revoke the certificate,
+    and both are refused once votes were cast for that candidate (those votes would be orphaned)."""
+    mode = (data.mode or "").strip().lower()
+    if mode not in ("soft", "hard"):
+        raise HTTPException(400, "Choose soft delete (restorable) or hard delete (permanent).")
+    reason = _clean_reason(data.reason)
+    if mode == "hard" and (data.confirm or "").strip() != APPLICATION_DELETE_CONFIRM:
+        raise HTTPException(400, f"Type {APPLICATION_DELETE_CONFIRM} to confirm a permanent deletion.")
+    oid = parse_oid(app_id, "application id")
+    org_id = require_org(request.state.org_id)
+    dbs = tdb(request)
+    app_doc = await dbs.applications.find_one({"_id": oid})
+    if not app_doc:
+        raise HTTPException(404, "Application not found.")
+
+    cand = await dbs.candidates.find_one({"application_id": app_id})
+    if cand:
+        votes_cast = await dbs.vote_events.count_documents({"candidate_id": cand["_id"]})
+        if votes_cast:
+            raise HTTPException(409, f"{votes_cast} vote(s) have already been cast for this candidate, so the "
+                                     "application can't be deleted. Use Remove from Ballot instead.")
+
+    now = datetime.utcnow()
+    actor = current_actor(request)
+    if mode == "soft":
+        archived = {**app_doc, "deleted_at": now, "deleted_by": actor, "delete_reason": reason,
+                    "deleted_from_status": app_doc.get("status"), "had_candidate": bool(cand),
+                    "candidate_snapshot": ({k: cand.get(k) for k in ("name", "position", "order", "image_url")}
+                                           if cand else None)}
+        try:
+            await dbs.deleted_applications.insert_one(archived)
+        except DuplicateKeyError:
+            raise HTTPException(409, "This application is already in the deleted archive.")
+
+    # Atomic claim on the exact state we inspected, so a racing vote / second click can't double-apply.
+    result = await dbs.applications.delete_one({"_id": oid, "status": app_doc.get("status"),
+                                                "student_id": app_doc.get("student_id")})
+    if result.deleted_count == 0:
+        if mode == "soft":
+            await dbs.deleted_applications.delete_one({"_id": oid})
+        raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
+
+    if cand:
+        await dbs.candidates.delete_one({"_id": cand["_id"]})
+        await _candidates_changed(org_id, "Application deleted")
+    await _revoke_certificate_for_application(app_doc, org_id)
+    links_revoked = 0
+    if not await dbs.applications.count_documents({"student_id": app_doc.get("student_id")}):
+        res = await dbs.candidate_tokens.update_many(
+            {"org_id": org_id, "student_id": app_doc.get("student_id")}, {"$set": {"revoked": True}})
+        links_revoked = res.modified_count
+    files_removed = await _remove_application_nomination_file(dbs, app_doc) if mode == "hard" else 0
+
+    await log_action("application_soft_deleted" if mode == "soft" else "application_hard_deleted", actor, {
+        "app_id": app_id, "reason": reason, **_application_audit_snapshot(app_doc),
+        "candidate_removed_from_ballot": bool(cand), "certificate_revoked": bool(app_doc.get("certificate_id")),
+        "status_links_revoked": links_revoked, "nomination_files_removed": files_removed,
+    }, org_id=org_id)
+    logger.info(f"Superadmin {mode}-deleted application {app_id}.")
+    return {"status": f"{mode}_deleted", "candidate_removed": bool(cand),
+            "certificate_revoked": bool(app_doc.get("certificate_id")), "status_links_revoked": links_revoked}
+
+
+@app.get("/superadmin/deleted-applications")
+async def superadmin_list_deleted_applications(request: Request):
+    """The soft-delete archive, newest first. Only the fields the archive screen needs."""
+    org_id = require_org(request.state.org_id)
+    rows = await tdb(request).deleted_applications.find({}).sort("deleted_at", -1).to_list(length=500)
+    titles = await _resolve_position_titles([r.get("position_id") for r in rows], org_id)
+    return [{
+        "_id": str(r["_id"]), "student_id": r.get("student_id"), "full_name": r.get("full_name"),
+        "position_title": (titles.get(r.get("position_id")) or ("Position no longer exists", 0))[0],
+        "status": r.get("deleted_from_status"), "submitted_at": r.get("submitted_at"),
+        "deleted_at": r.get("deleted_at"), "deleted_by": r.get("deleted_by"),
+        "delete_reason": r.get("delete_reason"), "had_candidate": bool(r.get("had_candidate")),
+    } for r in rows]
+
+
+@app.post("/superadmin/deleted-applications/{app_id}/restore")
+async def superadmin_restore_application(app_id: str, data: DeletedApplicationRequest, request: Request):
+    """Bring a soft-deleted application back as `pending`, so the commission decides it afresh. Votes, any earlier
+    decision, the certificate and the ballot entry are not restored."""
+    reason = _clean_reason(data.reason)
+    oid = parse_oid(app_id, "application id")
+    org_id = require_org(request.state.org_id)
+    dbs = tdb(request)
+    doc = await dbs.deleted_applications.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(404, "Deleted application not found.")
+    if await dbs.applications.find_one({"student_id": doc.get("student_id"), "position_id": doc.get("position_id")}):
+        raise HTTPException(409, "That student already has an application for this position, so this one "
+                                 "can't be restored.")
+    try:
+        pos = await dbs.positions.find_one({"_id": ObjectId(doc.get("position_id") or ""), "org_id": org_id})
+    except Exception:
+        pos = None
+    if not pos:
+        raise HTTPException(400, "The position this application was for no longer exists.")
+
+    now = datetime.utcnow()
+    restored = {k: v for k, v in doc.items() if k not in _ARCHIVE_ONLY_FIELDS}
+    for k in ("superadmin_override", "decided_at", "tied_pending_chief"):
+        restored.pop(k, None)
+    restored.update({"status": "pending", "votes": {}, "removal_votes": {}, "denial_snapshot": None,
+                     "certificate_id": None, "certificate_issued_at": None})
+    restored["restore_history"] = [*(doc.get("restore_history") or []),
+                                   {"at": now, "by": current_actor(request), "reason": reason,
+                                    "from_status": doc.get("deleted_from_status")}]
+    try:
+        await dbs.applications.insert_one(restored)
+    except DuplicateKeyError:
+        raise HTTPException(409, "This application was just restored by someone else. Please refresh.")
+    await dbs.deleted_applications.delete_one({"_id": oid})
+    await log_action("application_restored", current_actor(request), {
+        "app_id": app_id, "reason": reason, **_application_audit_snapshot(doc),
+        "candidate_was_on_ballot": bool(doc.get("had_candidate"))}, org_id=org_id)
+    logger.info(f"Superadmin restored application {app_id}.")
+    return {"status": "restored", "candidate_was_on_ballot": bool(doc.get("had_candidate"))}
+
+
+@app.post("/superadmin/deleted-applications/{app_id}/purge")
+async def superadmin_purge_deleted_application(app_id: str, data: DeletedApplicationRequest, request: Request):
+    """Permanently remove a soft-deleted application (and its signed nomination form). Cannot be undone."""
+    reason = _clean_reason(data.reason)
+    if (data.confirm or "").strip() != APPLICATION_DELETE_CONFIRM:
+        raise HTTPException(400, f"Type {APPLICATION_DELETE_CONFIRM} to confirm a permanent deletion.")
+    oid = parse_oid(app_id, "application id")
+    org_id = require_org(request.state.org_id)
+    dbs = tdb(request)
+    doc = await dbs.deleted_applications.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(404, "Deleted application not found.")
+    result = await dbs.deleted_applications.delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(409, "This application was just changed by someone else. Please refresh.")
+    files_removed = await _remove_application_nomination_file(dbs, doc)
+    await log_action("application_purged", current_actor(request), {
+        "app_id": app_id, "reason": reason, **_application_audit_snapshot(doc),
+        "nomination_files_removed": files_removed}, org_id=org_id)
+    logger.info(f"Superadmin permanently deleted archived application {app_id}.")
+    return {"status": "purged"}
 
 
 class ReconcileEditsRequest(BaseModel):
@@ -10532,7 +10720,8 @@ async def _demo_restore_snapshot(org_id: str, snapshot: dict) -> None:
 
 
 DEMO_TAGGED_COLLECTIONS = ("voters", "positions", "panel_members", "applications", "candidates", "vote_events",
-                           "candidate_tokens", "certificates", "exception_grants", "nomination_uploads")
+                           "candidate_tokens", "certificates", "exception_grants", "nomination_uploads",
+                           "deleted_applications")
 async def _demo_fenced_reset(org_id: str, snapshot: dict) -> dict:
     """Delete only synthetic demo principals/data; activity collections were empty at enable time."""
     deleted = {}

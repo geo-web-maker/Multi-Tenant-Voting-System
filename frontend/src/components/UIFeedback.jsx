@@ -101,7 +101,11 @@ export function UIFeedbackProvider({ children }) {
     });
   }, []);
 
-  // prompt(message, { placeholder, defaultValue }) -> Promise<string|null>
+  // prompt(message, { placeholder, defaultValue, minLength, options }) -> Promise<string|null>
+  // minLength: the confirm button stays disabled until the text has at least this many characters.
+  // options: [{ value, label, hint, confirmText, danger }] adds a radio choice above the field; the promise then
+  // resolves { option, text } instead of a string (still null on Cancel), and the confirm button takes the chosen
+  // option's confirmText / danger style. Used where one dialog must pick a mode and collect a reason.
   // Free-text input, resolves with the typed value (possibly empty string)
   // on confirm, or null on cancel — same contract as window.prompt(), used
   // for optional free-text like "why are you withdrawing this request?"
@@ -118,6 +122,9 @@ export function UIFeedbackProvider({ children }) {
         cancelText: opts.cancelText || 'Cancel',
         placeholder: opts.placeholder || '',
         inputValue: opts.defaultValue || '',
+        minLength: opts.minLength || 0,
+        options: opts.options || null,
+        option: opts.options ? (opts.defaultOption ?? opts.options[0].value) : null,
       });
     });
   }, []);
@@ -162,8 +169,10 @@ export function UIFeedbackProvider({ children }) {
   }, [dialogOpen, dialogMode, dialogDanger, hasField, resolveDialog]);
 
   const canConfirm = dialog?.mode === 'prompt'
-    ? true
+    ? (dialog.inputValue.trim().length >= (dialog.minLength || 0))
     : (!dialog?.requireText || dialog.inputValue === dialog.requireText);
+  const activeOption = dialog?.options?.find((o) => o.value === dialog.option) || null;
+  const promptResult = dialog?.options ? { option: dialog.option, text: dialog.inputValue } : dialog?.inputValue;
 
   return (
     <UIFeedbackContext.Provider value={{ toast, confirm, prompt }}>
@@ -197,6 +206,25 @@ export function UIFeedbackProvider({ children }) {
             <div id={bodyId} style={{ whiteSpace: 'pre-wrap', marginBottom: (dialog.requireText || dialog.mode === 'prompt') ? '16px' : '24px', color: 'var(--text-color)', fontSize: '15px', lineHeight: 1.5 }}>
               {dialog.message}
             </div>
+            {dialog.mode === 'prompt' && dialog.options && (
+              <div role="radiogroup" aria-labelledby={bodyId} style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
+                {dialog.options.map((o) => (
+                  <label key={o.value} className="perf-check" style={{ alignItems: 'flex-start' }}>
+                    <input
+                      type="radio"
+                      name={`${bodyId}-option`}
+                      value={o.value}
+                      checked={dialog.option === o.value}
+                      onChange={() => setDialog(d => ({ ...d, option: o.value }))}
+                    />
+                    <span>
+                      <strong>{o.label}</strong>
+                      {o.hint && <span style={{ display: 'block', fontSize: '13px', color: 'var(--text-muted)' }}>{o.hint}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
             {dialog.mode === 'prompt' && (
               <div style={{ marginBottom: '20px' }}>
                 <input
@@ -205,7 +233,7 @@ export function UIFeedbackProvider({ children }) {
                   value={dialog.inputValue}
                   placeholder={dialog.placeholder}
                   onChange={(e) => setDialog(d => ({ ...d, inputValue: e.target.value }))}
-                  onKeyDown={(e) => { if (e.key === 'Enter') resolveDialog(dialog.inputValue); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) resolveDialog(promptResult); }}
                   style={dialogInputStyle}
                 />
               </div>
@@ -232,11 +260,11 @@ export function UIFeedbackProvider({ children }) {
                 ref={confirmRef}
                 type="button"
                 className="ui-dialog-confirm"
-                style={{ ...confirmBtnStyle, ...(dialog.danger ? dangerBtnStyle : {}), opacity: canConfirm ? 1 : 0.5, cursor: canConfirm ? 'pointer' : 'not-allowed' }}
+                style={{ ...confirmBtnStyle, ...((dialog.danger || activeOption?.danger) ? dangerBtnStyle : {}), opacity: canConfirm ? 1 : 0.5, cursor: canConfirm ? 'pointer' : 'not-allowed' }}
                 disabled={!canConfirm}
-                onClick={() => canConfirm && resolveDialog(dialog.mode === 'prompt' ? dialog.inputValue : true)}
+                onClick={() => canConfirm && resolveDialog(dialog.mode === 'prompt' ? promptResult : true)}
               >
-                {dialog.confirmText}
+                {activeOption?.confirmText || dialog.confirmText}
               </button>
             </div>
           </div>

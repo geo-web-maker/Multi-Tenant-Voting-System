@@ -8,6 +8,7 @@ import {
 import TabBar from './TabBar';
 import CandidateListBlock from './CandidateListBlock';
 import { Icon } from './icons.jsx';
+import DeletedApplicationsPanel from './DeletedApplicationsPanel';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
 import VoterList from './VoterList';
@@ -80,6 +81,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const prompt = usePrompt();
   const [editApp, setEditApp] = useState(null);           // { app, form } while the edit-application dialog is open
   const [editAppSaving, setEditAppSaving] = useState(false);
+  const [deletedRefresh, setDeletedRefresh] = useState(0);   // bumped to reload the Deleted applications archive
   const [printingApp, setPrintingApp] = useState(null);   // application being viewed as the printable PDF
 
   const [activeTab, setActiveTab] = useState('candidates');
@@ -521,6 +523,34 @@ const refetchAll = () => {
       fetchApplications();
       fetchCandidates();
     } catch (e) { toast(getErrorMessage(e, 'Failed to revert application.'), { kind: 'error' }); }
+  };
+
+  // Delete an application: soft (archived, restorable) or hard (permanent). One dialog picks the mode and takes the
+  // reason; a hard delete then asks for the typed phrase. The server records everything in the audit log.
+  const handleDeleteApplication = async (app) => {
+    const warn = app.status === 'approved' ? 'The candidate comes off the ballot and the certificate is revoked. ' : '';
+    const picked = await prompt(
+      `Delete the application from ${app.full_name}? ${warn}Choose how to delete it and enter the reason (recorded in the audit log):`,
+      {
+        title: 'Delete application', placeholder: 'Reason', minLength: 3,
+        options: [
+          { value: 'soft', label: 'Soft delete', hint: 'Moves it to Deleted applications. It can be restored later.', confirmText: 'Soft delete' },
+          { value: 'hard', label: 'Hard delete', hint: 'Removes it permanently, with its signed nomination form. It cannot be restored.', confirmText: 'Continue', danger: true },
+        ],
+      },
+    );
+    if (!picked) return;
+    const hard = picked.option === 'hard';
+    if (hard && !(await confirm(`Permanently delete the application from ${app.full_name}? This cannot be undone.`,
+      { title: 'Delete permanently', danger: true, requireText: 'DELETE', confirmText: 'Delete permanently' }))) return;
+    try {
+      await api.post(`/superadmin/applications/${app._id}/delete`,
+        { mode: picked.option, reason: picked.text.trim(), ...(hard ? { confirm: 'DELETE' } : {}) });
+      toast(hard ? 'Application deleted permanently.' : 'Application moved to Deleted applications.', { kind: 'success' });
+      fetchApplications();
+      fetchCandidates();
+      setDeletedRefresh((n) => n + 1);
+    } catch (e) { toast(getErrorMessage(e, 'Failed to delete the application.'), { kind: 'error' }); }
   };
 
   // Edit any field of an application. Reason is mandatory; the server records every change in the
@@ -1358,10 +1388,15 @@ const handleSuperAdminRemoveStudent = async () => {
                   <button  onClick={() => handleRevokeStatusLink(app.student_id)} className="perf-btn">
                     Revoke status link
                   </button>
+                  <button  onClick={() => handleDeleteApplication(app)} className="perf-btn perf-btn-danger">
+                    Delete application
+                  </button>
                 </div>
               </div>
             ))}
             </ScrollList>
+
+            <DeletedApplicationsPanel refreshKey={deletedRefresh} onChanged={() => fetchApplications({ silent: true })} />
           </div>
         )}
 

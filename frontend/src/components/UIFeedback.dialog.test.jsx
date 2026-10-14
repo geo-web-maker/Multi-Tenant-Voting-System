@@ -81,6 +81,37 @@ describe.each([['default', useDefault], ['blueprint', useBlueprint]])('in-app di
   });
 });
 
+describe.each([['default', useDefault], ['blueprint', useBlueprint]])('prompt with a choice (%s template)', (_name, use) => {
+  const OPTIONS = [
+    { value: 'soft', label: 'Soft delete', confirmText: 'Soft delete' },
+    { value: 'hard', label: 'Hard delete', confirmText: 'Continue', danger: true },
+  ];
+
+  it('resolves { option, text } and keeps the confirm button off until the reason is long enough', async () => {
+    await use();
+    mount();
+    let result; act(() => { result = askPrompt('Delete it?', { placeholder: 'Reason', minLength: 3, options: OPTIONS }); });
+    const field = await screen.findByPlaceholderText('Reason');
+    expect(screen.getByRole('radio', { name: /Soft delete/ })).toBeChecked();      // first option is the default
+    expect(screen.getByRole('button', { name: 'Soft delete' })).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'ab' } });
+    expect(screen.getByRole('button', { name: 'Soft delete' })).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'Duplicate' } });
+    fireEvent.click(screen.getByRole('radio', { name: /Hard delete/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));              // button follows the chosen option
+    await expect(result).resolves.toEqual({ option: 'hard', text: 'Duplicate' });
+  });
+
+  it('Cancel still resolves null', async () => {
+    await use();
+    mount();
+    let result; act(() => { result = askPrompt('Delete it?', { options: OPTIONS }); });
+    await screen.findByRole('radiogroup');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await expect(result).resolves.toBeNull();
+  });
+});
+
 describe('no native browser dialogs anywhere in the app', () => {
   it('window.confirm / alert / prompt are only referenced by the provider-less fallback', () => {
     const files = import.meta.glob('/src/**/*.{js,jsx}', { query: '?raw', import: 'default', eager: true });

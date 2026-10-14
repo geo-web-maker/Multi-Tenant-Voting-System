@@ -641,8 +641,8 @@ html[data-template="blueprint"] {
   }
   /* N13 UIFeedback.jsx:286 cancelBtnStyle - inline border uses --border-color (1.5:1); control boundaries need line-ui (D2) */
   html[data-template="blueprint"] .ui-dialog-cancel { border-color: var(--bp-line-ui) !important; }
-  /* N14 UIFeedback.jsx:280 dialogInputStyle - inline 6px radius, page-colour fill and --border-color boundary on the prompt / type-to-confirm field */
-  html[data-template="blueprint"] .ui-dialog input {
+  /* N14 UIFeedback.jsx:280 dialogInputStyle - inline 6px radius, page-colour fill and --border-color boundary on the prompt / type-to-confirm field (text fields only: the radio choice in a prompt keeps its native control) */
+  html[data-template="blueprint"] .ui-dialog input:not([type="radio"]) {
     background: var(--bp-sf2) !important; border: 1px solid var(--bp-line-ui) !important; border-radius: var(--bp-rs) !important; min-height: var(--bp-tap) !important;
   }
   /* N16 TitleBlockHeader.jsx:38 - the header carries .no-print, and index.css:244 gives .no-print a 10px padding and gap on phones; the compact header row owns its own spacing */

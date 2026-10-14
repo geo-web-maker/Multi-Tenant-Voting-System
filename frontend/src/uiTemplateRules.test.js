@@ -12,7 +12,7 @@ const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =
 
 // Panels built on the shared kit (manual section 3). These must stay kit-only.
 const KIT_PANELS = [
-  'AlertPanel', 'FunnelPanels', 'NominationFormPanel', 'DemoControlsPanel', 'PerformancePanel', 'PerformanceSettings', 'PerfStorage', 'PerfOrgs',
+  'AlertPanel', 'FunnelPanels', 'DeletedApplicationsPanel', 'NominationFormPanel', 'DemoControlsPanel', 'PerformancePanel', 'PerformanceSettings', 'PerfStorage', 'PerfOrgs',
   'BackupsPanel', 'BackupJobProgress', 'BackupOverview', 'BackupConnections', 'BackupB2', 'BackupMirror', 'BackupRestoreTest', 'BackupMigration', 'BackupSettings',
 ].map((n) => `components/${n}.jsx`);
 

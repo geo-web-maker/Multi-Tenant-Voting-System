@@ -34,6 +34,7 @@ from fastapi import HTTPException
 TENANT_COLLECTIONS = frozenset({
     "voters",
     "applications",
+    "deleted_applications",
     "settings",
     "panel_members",
     "candidates",
