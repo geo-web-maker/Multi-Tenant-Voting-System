@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import api from '../api';
+import { warmUp, isIdle } from '../warmUp';
 import { Icon } from './icons.jsx';
 import { loadBallot, saveBallot, clearBallot } from '../session';
 import { faceCropUrl } from '../cloudinaryImage';
@@ -141,6 +142,7 @@ export default function BallotBox({ studentId, onVoteSuccess, onSessionExpired, 
     setSlowCast(false);
     const slowTimer = setTimeout(() => setSlowCast(true), 6000);
     try {
+      if (isIdle()) await warmUp();   // a ballot left open a while: wake the server / replace a dead connection before the (never auto-retried) vote POST
       const outcome = await castBallot(api, studentId, Object.values(ballot));
       if (outcome.kind === 'success' || outcome.kind === 'already_recorded') { finishVote(); return; }
 

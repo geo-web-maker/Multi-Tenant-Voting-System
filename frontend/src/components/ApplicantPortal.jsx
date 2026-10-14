@@ -13,6 +13,7 @@ import { useNominationForm } from '../nominationForm';
 import { LoadingBlock } from './Spinner.jsx';
 import { trackStep } from '../analytics';
 import { validateImageFile, ACCEPT_IMAGES, snapshotFile } from '../imageFile';
+import { warmUp, isIdle } from '../warmUp';
 import { regNo } from '../regNo';
 import { getTemplate } from '../template';
 import { resizeImage } from '../imageResize';
@@ -267,7 +268,13 @@ const handleSubmit = async (e) => {
   try {
     // Gate: confirm this student_id + name is actually on the voter register
     // BEFORE spending any Cloudinary uploads on photo/payment proof.
-    await api.post('/apply/check-eligibility', { student_id: sid, full_name: form.full_name.trim(), ...(nominationForm.collect_phone ? { phone: form.phone.trim() } : {}) }, { signal: controller.signal });
+    if (isIdle()) await warmUp();   // after a long idle the first request can hit a dead connection or a sleeping server
+    const eligibility = () => api.post('/apply/check-eligibility', { student_id: sid, full_name: form.full_name.trim(), ...(nominationForm.collect_phone ? { phone: form.phone.trim() } : {}) }, { signal: controller.signal });
+    // Read-only, so it is safe to ask once more when the first try got no answer at all.
+    try { await eligibility(); } catch (e) {
+      if (e?.response || e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError' || (typeof navigator !== 'undefined' && navigator.onLine === false)) throw e;
+      await eligibility();
+    }
 
     // A file that already uploaded on an earlier attempt is not sent again.
     const upload = async (file, stepNo) => {

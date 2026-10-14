@@ -73,6 +73,12 @@ export function ApplyFunnelPanel({ funnel }) {
       <p style={muted}>Session steps count distinct visitors; attempt steps count requests, so retries add up.</p>
       <FunnelSteps steps={funnel.steps} />
       <p style={{ ...muted, marginTop: 10 }}>Submit pressed but blocked by an unfilled field: {funnel.blocked_by_form || 0} time(s).</p>
+      <h4 style={{ ...h3, fontSize: 14, marginTop: 14 }}>Submissions the server never answered</h4>
+      <p style={muted}>
+        {funnel.no_answer_sessions || 0} session(s) got no answer at all; {funnel.proxy_retry_sessions || 0} needed the upload retry through the proxy.
+        These are network or sleeping-server failures, not form mistakes. Below: the step each one was on.
+      </p>
+      <BarRows items={funnel.failed_at || []} empty="None recorded." />
       <OutcomeBlock title="Eligibility check (ID and name)" outcome={funnel.eligibility} />
       <OutcomeBlock title="Image and proof uploads" outcome={funnel.upload} />
       <OutcomeBlock title="Final submission" outcome={funnel.submit} />

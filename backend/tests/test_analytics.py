@@ -534,7 +534,8 @@ def test_summary_builds_voting_and_apply_funnels():
     a._record_api("org1", "/verify-otp", 200, 80, None)
     a._record_api("org1", "/verify-otp", 400, 80, "wrong_code")
     a._record_api("org1", "/vote", 200, 80, None)
-    ingest([pv("apply", u=True), fs("form_started"), fs("proof_selected"), fs("submit_clicked"), fs("submit_blocked", u=False)])
+    ingest([pv("apply", u=True), fs("form_started"), fs("proof_selected"), fs("submit_clicked"), fs("submit_blocked", u=False),
+            fs("submit_failed_net"), fs("failed_at_receipt")])
     a._record_api("org1", "/apply/check-eligibility", 400, 80, "name_mismatch")
     a._record_api("org1", "/apply", 200, 80, None)
     f = a.build_summary(docs_from_deltas(), 1, datetime.now(timezone.utc))["funnels"]
@@ -548,6 +549,8 @@ def test_summary_builds_voting_and_apply_funnels():
     ap = {s["key"]: s["value"] for s in f["apply"]["steps"]}
     assert ap == {"form_page": 1, "form_started": 1, "proof_selected": 1, "submit_clicked": 1, "eligible": 0, "submitted": 1}
     assert f["apply"]["blocked_by_form"] == 1
+    assert f["apply"]["failed_at"] == [{"label": "Payment receipt upload", "value": 1}]
+    assert f["apply"]["no_answer_sessions"] == 1
     assert f["apply"]["eligibility"]["reasons"] == [{"label": "name_mismatch", "value": 1}]
 
 

@@ -845,6 +845,13 @@ def build_funnels(pages_u: dict, fsteps: dict, fout: dict) -> dict[str, Any]:
                 {"key": "submitted", "label": "Application submitted", "value": submit["ok"], "unit": "attempts"},
             ],
             "eligibility": elig, "submit": submit, "upload": upload, "blocked_by_form": blocked,
+            # Failures where the server never answered, by the step the applicant was on (distinct sessions).
+            "failed_at": [{"label": lbl, "value": step("apply", f"failed_at_{k}")}
+                          for k, lbl in (("check", "Eligibility check"), ("photo", "Photo upload"), ("nomination", "Nomination form upload"),
+                                         ("receipt", "Payment receipt upload"), ("submit", "Final submit"))
+                          if step("apply", f"failed_at_{k}")],
+            "no_answer_sessions": step("apply", "submit_failed_net"),
+            "proxy_retry_sessions": step("apply", "upload_fallback"),
         },
     }
 
