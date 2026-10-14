@@ -569,6 +569,14 @@ html[data-template="blueprint"] {
   html[data-template="blueprint"] .perf-checkicon[data-ok="false"], html[data-template="blueprint"] .perf-kv dd[data-status="failed"] { color: var(--bp-no); }
   html[data-template="blueprint"] .perf-kv dd[data-status="warning"] { color: var(--bp-wn); }
   html[data-template="blueprint"] .perf-chips li { border-color: var(--bp-line-ui); background: var(--bp-sf2); color: var(--bp-tx); }
+  /* Live job progress (BackupJobProgress): same bordered-row look as .perf-row; the bar uses the single accent. */
+  html[data-template="blueprint"] .perf-jobprog { border-color: var(--bp-line); border-radius: var(--bp-rs); padding: var(--bp-s3) var(--bp-s4); }
+  html[data-template="blueprint"] .perf-jobprog-bar { background: var(--bp-line); }
+  html[data-template="blueprint"] .perf-jobprog-bar > span { background: var(--bp-ac); }
+  html[data-template="blueprint"] .perf-jobprog-steps em { color: var(--bp-mu); }
+  html[data-template="blueprint"] .perf-jobprog-steps li[data-s="passed"] > span:first-child { color: var(--bp-ok); }
+  html[data-template="blueprint"] .perf-jobprog-steps li[data-s="warning"] > span:first-child { color: var(--bp-wn); }
+  html[data-template="blueprint"] .perf-jobprog-steps li[data-s="failed"] > span:first-child { color: var(--bp-no); }
   @media (max-width: 768px) {
     html[data-template="blueprint"] .perf-actions, html[data-template="blueprint"] .perf-btnbar.perf-btnbar-stack { flex-direction: column; }
     html[data-template="blueprint"] .perf-actions button { width: 100%; }

@@ -52,6 +52,8 @@ async function fillAll(c, { photo = false } = {}) {
   fireEvent.click(screen.getByText('Bank Transfer'));
   fireEvent.change(fileInputs(c)[0], { target: { files: [file('receipt.jpg')] } });
   if (photo) fireEvent.change(fileInputs(c)[1], { target: { files: [file('face.jpg')] } });
+  // Picked files are copied into memory asynchronously (snapshotFile); let that settle before the test submits.
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 }
 URL.createObjectURL = URL.createObjectURL || (() => 'blob:x');
 

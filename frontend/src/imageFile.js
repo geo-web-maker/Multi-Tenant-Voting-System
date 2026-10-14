@@ -16,3 +16,28 @@ export function validateImageFile(file) {
   }
   return '';
 }
+
+/** Copy a picked file into memory right away. On Android a picked file is only a handle to the original, which can go
+ *  dead after the browser is backgrounded (camera, WhatsApp, mobile-money app) and then every upload fails with no
+ *  response. An in-memory copy keeps name, type, size and lastModified, so fileKey() and the upload cache still match.
+ *  @returns {Promise<File|null>} null when the file cannot be read; the original when this browser cannot read files at all */
+const readBytes = (file) => {
+  if (typeof file.arrayBuffer === 'function') return file.arrayBuffer();
+  if (typeof FileReader === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsArrayBuffer(file);
+  });
+};
+export async function snapshotFile(file) {
+  try {
+    const buf = await readBytes(file);
+    if (!buf) return file;
+    if (!buf.byteLength && file.size) return null;
+    return new File([buf], file.name, { type: file.type, lastModified: file.lastModified });
+  } catch {
+    return null;
+  }
+}

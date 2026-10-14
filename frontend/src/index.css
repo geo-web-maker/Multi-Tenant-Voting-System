@@ -1042,3 +1042,15 @@ textarea.perf-field { min-height: 100px; resize: vertical; }
    buttons. Position lives here, not inline, so a template can move it (Blueprint lifts it above its fixed phone tab bar). */
 .heatmap-fab { left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
 .heatmap-panel { left: 12px; bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
+
+/* Backups: live job progress card */
+.perf-jobprog { border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; min-width: 0; }
+.perf-jobprog-bar { height: 6px; border-radius: 999px; background: var(--border-color); overflow: hidden; margin-top: 10px; }
+.perf-jobprog-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--perf-line, var(--brand-primary)); transition: width .4s ease; }
+.perf-jobprog-bar > span.indeterminate { width: 35%; animation: perf-jobprog-slide 1.3s ease-in-out infinite; }
+@keyframes perf-jobprog-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+.perf-jobprog-steps { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.perf-jobprog-steps li { display: grid; grid-template-columns: 16px 1fr auto; gap: 8px; align-items: start; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.perf-jobprog-steps li[data-s="pending"] { opacity: .6; }
+.perf-jobprog-steps em { color: var(--text-muted); font-style: normal; }
+@media (prefers-reduced-motion: reduce) { .perf-jobprog-bar > span.indeterminate { animation: none; width: 100%; opacity: .5; } }

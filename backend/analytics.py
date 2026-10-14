@@ -49,7 +49,9 @@ FUNNEL_ROUTES = {"/verify-identity", "/verify-otp", "/apply/check-eligibility", 
 REASON_RE = re.compile(r"^[a-z0-9_]{2,32}$")
 # Client-reported funnel steps (fixed vocabulary; anything else is dropped).
 CLIENT_STEPS = {"apply": {"form_started", "proof_selected", "submit_clicked", "submit_blocked",
-                          "upload_fallback", "submit_failed_net"}}
+                          "upload_fallback", "submit_failed_net",
+                          # which step a no-response failure happened at (check / photo / nomination / receipt / submit)
+                          "failed_at_check", "failed_at_photo", "failed_at_nomination", "failed_at_receipt", "failed_at_submit"}}
 STAFF_PREFIXES = ("/admin", "/superadmin", "/overseer", "/commission", "/verify-admin")
 STAFF_ROUTES = {"/election-results/voter-roll", "/election-results/turnout-breakdown"}
 MAX_SIDS = 50_000

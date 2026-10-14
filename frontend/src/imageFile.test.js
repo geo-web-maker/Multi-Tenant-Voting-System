@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateImageFile, MAX_IMAGE_BYTES } from './imageFile';
+import { validateImageFile, snapshotFile, MAX_IMAGE_BYTES } from './imageFile';
 
 const f = (name, type, size = 1000) => ({ name, type, size });
 
@@ -20,4 +20,17 @@ describe('validateImageFile', () => {
     expect(validateImageFile(f('scan.pdf', ''))).toMatch(/not supported/);
   });
   it('treats no file as fine', () => { expect(validateImageFile(undefined)).toBe(''); });
+});
+
+describe('snapshotFile', () => {
+  it('copies the bytes into an in-memory file with the same identity', async () => {
+    const src = new File(['hello'], 'receipt.jpg', { type: 'image/jpeg', lastModified: 42 });
+    const copy = await snapshotFile(src);
+    expect(copy).not.toBe(src);
+    expect([copy.name, copy.type, copy.size, copy.lastModified]).toEqual(['receipt.jpg', 'image/jpeg', 5, 42]);
+  });
+  it('returns null when the picked file can no longer be read', async () => {
+    const dead = { name: 'x.jpg', type: 'image/jpeg', size: 10, arrayBuffer: () => Promise.reject(new Error('NotReadableError')) };
+    expect(await snapshotFile(dead)).toBeNull();
+  });
 });

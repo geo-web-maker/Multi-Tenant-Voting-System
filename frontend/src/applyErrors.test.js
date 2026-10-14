@@ -64,3 +64,14 @@ describe('B2: stepLabel / B3: fileKey', () => {
     expect(fileKey(f)).not.toBe(fileKey({ ...f, size: 6 }));
   });
 });
+
+describe('mapApplyError names the file that failed and no longer says to refresh', () => {
+  it('names the receipt, photo and nomination form', () => {
+    expect(mapApplyError({}, { stage: 'receipt' })).toMatch(/upload of your payment receipt/);
+    expect(mapApplyError({}, { stage: 'photo' })).toMatch(/upload of your photo/);
+    expect(mapApplyError({}, { stage: 'nomination' })).toMatch(/nomination form/);
+  });
+  it('never tells the applicant to refresh (that wipes the form and the picked files)', () => {
+    for (const stage of ['', 'photo', 'receipt', 'nomination', 'submit', 'check']) expect(mapApplyError({}, { stage })).not.toMatch(/refresh/i);
+  });
+});

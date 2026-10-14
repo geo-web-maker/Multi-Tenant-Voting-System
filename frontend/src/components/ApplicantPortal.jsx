@@ -12,7 +12,7 @@ import { usePaymentInfo } from '../paymentInfo';
 import { useNominationForm } from '../nominationForm';
 import { LoadingBlock } from './Spinner.jsx';
 import { trackStep } from '../analytics';
-import { validateImageFile, ACCEPT_IMAGES } from '../imageFile';
+import { validateImageFile, ACCEPT_IMAGES, snapshotFile } from '../imageFile';
 import { regNo } from '../regNo';
 import { getTemplate } from '../template';
 import { resizeImage } from '../imageResize';
@@ -182,32 +182,47 @@ export default function ApplicantPortal() {
     return true;
   };
 
-  const handlePhotoChange = (e) => {
-    const file = e.target.files[0];
+  // Copy a picked file into memory now (see snapshotFile); a file that cannot be read is reported at once, not at submit.
+  const readPicked = async (e, picked) => {
+    const input = e.target;
+    const copy = await snapshotFile(picked);
+    if (!copy) { setError("We couldn't read that file. Please choose it again."); trackStep('apply', 'submit_blocked', 'bad_file_type'); input.value = ''; }
+    return copy;
+  };
+
+  const handlePhotoChange = async (e) => {
+    const picked = e.target.files[0];
+    if (!picked) return;
+    if (rejectBadImage(e, picked)) return;
+    const file = await readPicked(e, picked);
     if (!file) return;
-    if (rejectBadImage(e, file)) return;
     setError('');
     setForm(prev => ({ ...prev, image: file }));
     setPreview(URL.createObjectURL(file));
   };
 
-  const handlePaymentProofChange = (e) => {
-  const file = e.target.files[0];
+  const handlePaymentProofChange = async (e) => {
+  const picked = e.target.files[0];
+  if (!picked) return;
+  if (rejectBadImage(e, picked)) return;
+  const file = await readPicked(e, picked);
   if (!file) return;
-  if (rejectBadImage(e, file)) return;
   setError('');
   setPaymentProof(file);
   setPaymentProofPreview(URL.createObjectURL(file));
   trackStep('apply', 'proof_selected');
   };
   
-const handleNominationChange = (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
+const handleNominationChange = async (e) => {
+  const picked = e.target.files?.[0];
+  if (!picked) return;
+  const file = picked;
   const ext = file.name?.toLowerCase().endsWith('.docx') ? 'docx' : (file.name?.toLowerCase().endsWith('.pdf') ? 'pdf' : '');
   if (!ext || !(nominationForm.accepted_types || ['pdf']).includes(ext)) { setError('That nomination-form file type is not supported.'); e.target.value=''; return; }
   if (file.size > Number(nominationForm.max_mb || 5) * 1024 * 1024) { setError(`That nomination form is over ${nominationForm.max_mb || 5} MB.`); e.target.value=''; return; }
-  clearField('nomination_form'); setError(''); setNominationFile(file); setNominationUploadId('');
+  const copy = await readPicked(e, picked);
+  if (!copy) return;
+  clearField('nomination_form'); setError(''); setNominationFile(copy); setNominationUploadId('');
   uploadedRef.current.forEach((_, key) => { if (key.startsWith('nomination|')) uploadedRef.current.delete(key); });
 };
 
@@ -247,6 +262,7 @@ const handleSubmit = async (e) => {
   const sid = regNo(form.student_id.trim());   // the server matches case-insensitively and stores its canonical form
   setUploading(true);
   setStep(1);
+  let stage = 'check';   // which step a failure belongs to, so the message can name the file
   const noteFallback = () => trackStep('apply', 'upload_fallback');   // direct host gave no answer; trying the proxy
   try {
     // Gate: confirm this student_id + name is actually on the voter register
@@ -260,6 +276,7 @@ const handleSubmit = async (e) => {
       if (cached) return cached;
       setStep(stepNo);
       setUploadPct(0);
+      stage = file === paymentProof ? 'receipt' : 'photo';
       const url = await uploadToCloudinary(await resizeImage(file), { signal: controller.signal, onProgress: setUploadPct, onFallback: noteFallback });
       uploadedRef.current.set(key, url);
       setUploadPct(null);
@@ -275,7 +292,7 @@ const handleSubmit = async (e) => {
       const cachedNom = uploadedRef.current.get(nk);
       if (cachedNom) { nomination_upload_id = cachedNom.upload_id; }
       else {
-        setStep(hasPhoto ? 3 : 2); setUploadPct(0);
+        setStep(hasPhoto ? 3 : 2); setUploadPct(0); stage = 'nomination';
         const uploaded = await uploadNominationDocument(nominationFile, { signal: controller.signal, onProgress: setUploadPct, onFallback: noteFallback });
         nomination_upload_id = uploaded.upload_id; uploadedRef.current.set(nk, uploaded); setNominationUploadId(nomination_upload_id); setUploadPct(null);
       }
@@ -287,7 +304,7 @@ const handleSubmit = async (e) => {
     const submitStep = hasPhoto ? (nominationForm.enabled ? 5 : 4) : (nominationForm.enabled ? 4 : 3);
     const payment_proof_url = await upload(paymentProof, paymentStep);
 
-    setStep(submitStep);
+    setStep(submitStep); stage = 'submit';
     await api.post(`/apply`, {
       student_id:        sid,
       full_name:         form.full_name.trim(),
@@ -306,8 +323,8 @@ const handleSubmit = async (e) => {
     if (err.response?.status === 403 && /closed|not opened|has ended/i.test(String(err.response?.data?.detail || ''))) {
       api.get('/election-status').then(r => setElectionStatus(r.data)).catch(() => {});
     }
-    if (!err?.response && err?.code !== 'ERR_CANCELED' && err?.name !== 'CanceledError') trackStep('apply', 'submit_failed_net');   // no HTTP answer at all
-    setError(mapApplyError(err, { online: typeof navigator === 'undefined' ? true : navigator.onLine !== false }));
+    if (!err?.response && err?.code !== 'ERR_CANCELED' && err?.name !== 'CanceledError') { trackStep('apply', 'submit_failed_net'); trackStep('apply', `failed_at_${stage}`); }   // no HTTP answer at all
+    setError(mapApplyError(err, { online: typeof navigator === 'undefined' ? true : navigator.onLine !== false, stage }));
   } finally {
     busyRef.current = false;
     abortRef.current = null;

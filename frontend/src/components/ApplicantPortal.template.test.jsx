@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { useBlueprint, useDefault, restoreTemplate } from '../test/template';
 
 const mockGet = vi.fn();
@@ -51,6 +51,7 @@ async function fillAll(c, { photo = false } = {}) {
   fireEvent.click(screen.getByText('Bank Transfer'));
   fireEvent.change(fileInputs(c)[0], { target: { files: [file('receipt.jpg')] } });
   if (photo) fireEvent.change(fileInputs(c)[1], { target: { files: [file('face.jpg')] } });
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });   // picked files are copied into memory asynchronously
 }
 
 describe('ApplicantPortal template seam (BP-T6)', () => {

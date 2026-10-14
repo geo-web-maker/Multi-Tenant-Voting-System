@@ -6,15 +6,19 @@ import { MAX_IMAGE_BYTES, ACCEPT_IMAGES } from './imageFile';
 const detailText = (d) => (typeof d === 'string' ? d
   : Array.isArray(d) ? d.map(x => x?.msg).filter(Boolean).join(' ') : '');
 
+const STAGE_NAMES = { photo: 'photo', nomination: 'nomination form', receipt: 'payment receipt' };
+
 /** Error from an apply request -> one message an applicant can act on. Server wording is kept where it already
  *  tells the person what to do (student not found, name mismatch, window closed). */
-export function mapApplyError(err, { online = true } = {}) {
+export function mapApplyError(err, { online = true, stage = '' } = {}) {
   if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return 'Cancelled. Nothing was submitted.';
   const res = err?.response;
   if (!res) {
     if (!online) return "You're offline. Check your connection, then press Submit again. What you typed is kept.";
     if (err?.code === 'ECONNABORTED') return 'The server took too long to answer. Check your signal, then press Submit again.';
-    return "We couldn't complete the upload. Refresh the page and try to submit again. If it keeps failing, contact IT support.";
+    const what = STAGE_NAMES[stage];
+    if (what) return `We couldn't complete the upload of your ${what}. Press Submit again; your details and files are kept. If it keeps failing, choose that file again, or contact IT support.`;
+    return "We couldn't complete the upload. Press Submit again; your details and files are kept. If it keeps failing, choose your files again, or contact IT support.";
   }
   const text = detailText(res.data?.detail);
   switch (res.status) {

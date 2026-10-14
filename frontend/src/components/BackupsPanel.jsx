@@ -12,6 +12,7 @@ import BackupMirror from './BackupMirror';
 import BackupRestoreTest from './BackupRestoreTest';
 import BackupMigration from './BackupMigration';
 import BackupSettings from './BackupSettings';
+import BackupJobProgress from './BackupJobProgress';
 import { BackupButton, BackupCard, BackupPill } from './BackupUI';
 import { muted, cardClass } from './BackupUtils';
 
@@ -43,6 +44,7 @@ export default function BackupsPanel() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [jobDetail, setJobDetail] = useState(null);
+  const [liveSteps, setLiveSteps] = useState({});
   const toast = useToast();
   const confirm = useConfirm();
   const viewAs = typeof window !== 'undefined' && !!sessionStorage.getItem('view_as');
@@ -102,6 +104,19 @@ export default function BackupsPanel() {
   const runningKinds = useMemo(() => runningJobs.map((j) => j.kind), [runningJobs]);
   const hasRunning = runningJobs.length > 0;
   usePolling(loadJobs, 3000, auto && hasRunning);
+  // The list only carries each job's latest step; fetch the full step log for jobs that are still active.
+  const runningIds = useMemo(() => runningJobs.map((j) => j.run_id).join(','), [runningJobs]);
+  const loadLive = useCallback(async () => {
+    const ids = runningIds ? runningIds.split(',') : [];
+    if (!ids.length) { setLiveSteps({}); return; }
+    const out = {};
+    await Promise.all(ids.map(async (id) => {
+      try { out[id] = (await api.get(`${ROOT}/jobs/${encodeURIComponent(id)}`)).data?.steps || []; } catch { /* keep list data */ }
+    }));
+    setLiveSteps(out);
+  }, [runningIds]);
+  useEffect(() => { loadLive(); }, [loadLive]);
+  usePolling(loadLive, 3000, auto && hasRunning);
 
   const run = useCallback(async (path, body = {}, options = {}) => {
     const method = String(options.method || 'post').toLowerCase();
@@ -193,6 +208,8 @@ export default function BackupsPanel() {
     <div role="tablist" aria-label="Backup sections" className="perf-seg" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
       {SUBTABS.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={activeSubtab === id} className="perf-btn" onClick={() => setActiveSubtab(id)}>{label}</button>)}
     </div>
+
+    <BackupJobProgress jobs={jobs} liveSteps={liveSteps} onSelectJob={showJob} />
 
     <RevealGroup text="Loading backup monitoring…">
       <BackupRevealReady ready={!loading}>{activeContent}</BackupRevealReady>
