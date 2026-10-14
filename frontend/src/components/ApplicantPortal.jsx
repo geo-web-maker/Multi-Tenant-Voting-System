@@ -13,7 +13,7 @@ import { useNominationForm } from '../nominationForm';
 import { LoadingBlock } from './Spinner.jsx';
 import { trackStep } from '../analytics';
 import { validateImageFile, ACCEPT_IMAGES, snapshotFile } from '../imageFile';
-import { warmUp, isIdle } from '../warmUp';
+import { wakeServer } from '../warmUp';
 import { regNo } from '../regNo';
 import { getTemplate } from '../template';
 import { resizeImage } from '../imageResize';
@@ -29,14 +29,22 @@ import {
 // Uploads go straight to the backend host (see api.js DIRECT_EXACT). Some networks, blockers or a cold backend make
 // that cross-origin call fail with NO response at all. When that happens, retry once through the default base (the same-origin /api
 // proxy in production), which the same networks reliably allow. Real HTTP errors (400/429/5xx) and cancels are never retried.
+const gotNoAnswer = (e) => !(e?.response || e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError'
+  || (typeof navigator !== 'undefined' && navigator.onLine === false));
+// Order: direct host -> wake the server (a sleeping backend is the usual cause) -> same-origin proxy -> direct once more.
 async function postUploadWithFallback(path, formData, opts, onFallback) {
   try {
     return await api.post(path, formData, opts);
   } catch (e) {
-    if (e?.response || e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') throw e;
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw e;
+    if (!gotNoAnswer(e)) throw e;
     if (onFallback) onFallback();
-    return api.post(path, formData, { ...opts, baseURL: api.defaults?.baseURL, __baseChosen: true });
+    await wakeServer();
+    try {
+      return await api.post(path, formData, { ...opts, baseURL: api.defaults?.baseURL, __baseChosen: true });
+    } catch (e2) {
+      if (!gotNoAnswer(e2)) throw e2;
+      return api.post(path, formData, opts);   // the server is awake by now, so the direct host may answer this time
+    }
   }
 }
 
@@ -268,7 +276,7 @@ const handleSubmit = async (e) => {
   try {
     // Gate: confirm this student_id + name is actually on the voter register
     // BEFORE spending any Cloudinary uploads on photo/payment proof.
-    if (isIdle()) await warmUp();   // after a long idle the first request can hit a dead connection or a sleeping server
+    await wakeServer();   // a form left open for a while: wake a sleeping server / replace a dead connection (skipped if the API answered in the last 15 s)
     const eligibility = () => api.post('/apply/check-eligibility', { student_id: sid, full_name: form.full_name.trim(), ...(nominationForm.collect_phone ? { phone: form.phone.trim() } : {}) }, { signal: controller.signal });
     // Read-only, so it is safe to ask once more when the first try got no answer at all.
     try { await eligibility(); } catch (e) {
@@ -312,7 +320,7 @@ const handleSubmit = async (e) => {
     const payment_proof_url = await upload(paymentProof, paymentStep);
 
     setStep(submitStep); stage = 'submit';
-    await api.post(`/apply`, {
+    const applyPayload = {
       student_id:        sid,
       full_name:         form.full_name.trim(),
       position_id:       form.position_id,
@@ -322,7 +330,22 @@ const handleSubmit = async (e) => {
       payment_proof_url,
       nomination_upload_id,
       ...(nominationForm.collect_phone ? { phone: form.phone.trim() } : {}),
-    }, { signal: controller.signal });
+    };
+
+    // The final POST is retried once when the server never answered. The reply may simply have been lost after the
+    // application was saved; the server rejects a second application for the same position, so "already applied" on the
+    // retry means the first one landed.
+    try { await api.post('/apply', applyPayload, { signal: controller.signal }); }
+    catch (e1) {
+      if (!gotNoAnswer(e1)) throw e1;
+      trackStep('apply', 'submit_retry');
+      await wakeServer();
+      try { await api.post('/apply', applyPayload, { signal: controller.signal }); }
+      catch (e2) {
+        if (e2?.response?.status === 400 && /already applied/i.test(String(e2.response.data?.detail || ''))) trackStep('apply', 'submit_recovered');
+        else throw e2;
+      }
+    }
 
     setSubmittedName(form.full_name.trim());
     setSubmitted(true);

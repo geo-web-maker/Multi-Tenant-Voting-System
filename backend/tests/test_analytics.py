@@ -535,7 +535,7 @@ def test_summary_builds_voting_and_apply_funnels():
     a._record_api("org1", "/verify-otp", 400, 80, "wrong_code")
     a._record_api("org1", "/vote", 200, 80, None)
     ingest([pv("apply", u=True), fs("form_started"), fs("proof_selected"), fs("submit_clicked"), fs("submit_blocked", u=False),
-            fs("submit_failed_net"), fs("failed_at_receipt")])
+            fs("submit_failed_net"), fs("failed_at_receipt"), fs("submit_retry"), fs("submit_recovered")])
     a._record_api("org1", "/apply/check-eligibility", 400, 80, "name_mismatch")
     a._record_api("org1", "/apply", 200, 80, None)
     f = a.build_summary(docs_from_deltas(), 1, datetime.now(timezone.utc))["funnels"]
@@ -551,6 +551,7 @@ def test_summary_builds_voting_and_apply_funnels():
     assert f["apply"]["blocked_by_form"] == 1
     assert f["apply"]["failed_at"] == [{"label": "Payment receipt upload", "value": 1}]
     assert f["apply"]["no_answer_sessions"] == 1
+    assert (f["apply"]["submit_retry_sessions"], f["apply"]["submit_recovered_sessions"]) == (1, 1)
     assert f["apply"]["eligibility"]["reasons"] == [{"label": "name_mismatch", "value": 1}]
 
 

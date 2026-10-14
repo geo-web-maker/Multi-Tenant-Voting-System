@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./api', () => ({ default: { get: vi.fn() } }));
 import api from './api';
-import { warmUp, _setLastOkForTests } from './warmUp';
+import { warmUp, wakeServer, _setLastOkForTests } from './warmUp';
 
 describe('warmUp', () => {
   beforeEach(() => { api.get.mockReset(); });
@@ -21,5 +21,22 @@ describe('warmUp', () => {
     _setLastOkForTests(0);
     api.get.mockRejectedValue(new Error('Network Error'));
     await expect(warmUp()).resolves.toBe(true);
+  });
+  it('wakeServer keeps asking until /health answers', async () => {
+    _setLastOkForTests(0);
+    api.get.mockRejectedValueOnce(new Error('x')).mockRejectedValueOnce(new Error('x')).mockResolvedValue({});
+    expect(await wakeServer({ gapMs: 0 })).toBe(true);
+    expect(api.get).toHaveBeenCalledTimes(3);
+  });
+  it('wakeServer gives up quietly after its attempts', async () => {
+    _setLastOkForTests(0);
+    api.get.mockRejectedValue(new Error('x'));
+    await expect(wakeServer({ gapMs: 0 })).resolves.toBe(true);
+    expect(api.get).toHaveBeenCalledTimes(3);
+  });
+  it('wakeServer skips when the API answered moments ago', async () => {
+    _setLastOkForTests(Date.now());
+    expect(await wakeServer()).toBe(false);
+    expect(api.get).not.toHaveBeenCalled();
   });
 });

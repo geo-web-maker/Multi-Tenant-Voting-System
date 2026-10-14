@@ -49,7 +49,7 @@ FUNNEL_ROUTES = {"/verify-identity", "/verify-otp", "/apply/check-eligibility", 
 REASON_RE = re.compile(r"^[a-z0-9_]{2,32}$")
 # Client-reported funnel steps (fixed vocabulary; anything else is dropped).
 CLIENT_STEPS = {"apply": {"form_started", "proof_selected", "submit_clicked", "submit_blocked",
-                          "upload_fallback", "submit_failed_net",
+                          "upload_fallback", "submit_failed_net", "submit_retry", "submit_recovered",
                           # which step a no-response failure happened at (check / photo / nomination / receipt / submit)
                           "failed_at_check", "failed_at_photo", "failed_at_nomination", "failed_at_receipt", "failed_at_submit"}}
 STAFF_PREFIXES = ("/admin", "/superadmin", "/overseer", "/commission", "/verify-admin")
@@ -852,6 +852,8 @@ def build_funnels(pages_u: dict, fsteps: dict, fout: dict) -> dict[str, Any]:
                           if step("apply", f"failed_at_{k}")],
             "no_answer_sessions": step("apply", "submit_failed_net"),
             "proxy_retry_sessions": step("apply", "upload_fallback"),
+            "submit_retry_sessions": step("apply", "submit_retry"),
+            "submit_recovered_sessions": step("apply", "submit_recovered"),
         },
     }
 
