@@ -3603,6 +3603,11 @@ _SEC_DEFAULTS = {
     "otp_target_risk": ol.TARGET_RISK,
     "turnstile_mode": os.getenv("TURNSTILE_MODE", "off").strip().lower(),
     "public_results_mode": os.getenv("PUBLIC_RESULTS_MODE", "live").strip().lower(),
+    # Minimum valid votes a candidate running unopposed needs to be declared elected ("mandate").
+    "unopposed_rule": os.getenv("UNOPPOSED_RULE", "votes").strip().lower(),   # votes | pct_voted | pct_registered
+    "unopposed_min_votes": ol.env_int("UNOPPOSED_MIN_VOTES", 100),
+    "unopposed_pct_voted": ol.env_float("UNOPPOSED_PCT_VOTED", 50.0),         # % of voters who voted
+    "unopposed_pct_registered": ol.env_float("UNOPPOSED_PCT_REGISTERED", 10.0),  # % of registered voters
     "sms_fallback_on_timeout": ol.env_bool("SMS_FALLBACK_ON_TIMEOUT", False),
     # Which provider(s) carry voter OTPs vs everything else (see SMS_ROUTES). Env vars only set the default.
     "sms_route_otp": _env_sms_route("SMS_ROUTE_OTP"),
@@ -3634,6 +3639,8 @@ _SEC_DEFAULTS = {
 }
 
 VALID_APPROVAL_POLICIES = {"unanimous", "majority_total", "majority_cast"}
+_UNOPPOSED_RULES = ("votes", "pct_voted", "pct_registered")
+_UNOPPOSED_KEYS = ("unopposed_rule", "unopposed_min_votes", "unopposed_pct_voted", "unopposed_pct_registered")
 
 
 # -----------------------------------------------------------------------------------------------
@@ -8724,7 +8731,8 @@ async def get_election_results(request: Request):
     # gets a 200 with results_released=false and an empty results list, not
     # a 403 — so the turnout figure and voter-roll section on the public page
     # keep working even while the breakdown itself stays hidden.
-    results_mode = (await get_security_settings(request))["public_results_mode"]
+    sec_now = await get_security_settings(request)
+    results_mode = sec_now["public_results_mode"]
     results_released = True
     if results_mode != "live":
         try:
@@ -8752,7 +8760,9 @@ async def get_election_results(request: Request):
                 "votes": vote_counts.get(str(cand["_id"]), 0),
                 "order": cand.get("order", 0)
             })
-    payload = {"voter_turnout": voter_turnout, "results": results, "results_released": results_released}
+    payload = {"voter_turnout": voter_turnout, "results": results, "results_released": results_released,
+               "registered_voters": await tdb(request).voters.count_documents({}),
+               **{k: sec_now[k] for k in _UNOPPOSED_KEYS}}
     if _RESULTS_TTL > 0:
         _RESULTS_CACHE[cache_key] = (time.monotonic() + _RESULTS_TTL, copy.deepcopy(payload))
     return payload
@@ -11727,6 +11737,8 @@ async def get_official_report(request: Request):
 
     return {
         "is_certified": is_certified,
+        **{k: v for k, v in (await get_security_settings(request)).items() if k in _UNOPPOSED_KEYS},
+        "registered_voters": await tdb(request).voters.count_documents({}),
         "org_name": org_name,
         "university_name": branding.get("university_name", ""),
         "logo_url": branding.get("logo_url", ""),
@@ -11877,6 +11889,10 @@ class SecuritySettingsUpdate(BaseModel):
     otp_target_risk: float | None = None
     turnstile_mode: str | None = None
     public_results_mode: str | None = None
+    unopposed_rule: str | None = None
+    unopposed_min_votes: int | None = None
+    unopposed_pct_voted: float | None = None
+    unopposed_pct_registered: float | None = None
     contact_change_ttl_hours: int | None = None
     contact_change_max_per_voter: int | None = None
     approver_daily_cap: int | None = None
@@ -11908,6 +11924,7 @@ _SEC_RANGES = {
     "approver_daily_cap": (1, 1000), "quota_alert_pct": (0, 100), "quota_hard_cap_pct": (0, 100),
     "reset_admin_hourly_alert": (1, 10000), "reset_admin_hourly_hard_cap": (1, 10000),
     "reset_per_voter_daily": (1, 50), "reset_per_voter_election": (1, 200),
+    "unopposed_min_votes": (1, 1_000_000), "unopposed_pct_voted": (0.1, 100), "unopposed_pct_registered": (0.1, 100),
 }
 
 
@@ -13059,6 +13076,14 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
             if not lo <= v <= hi:
                 raise HTTPException(400, f"{f.replace('_', ' ').capitalize()} must be between {lo} and {hi}.")
             updates[f] = v
+    if data.unopposed_rule is not None:
+        if data.unopposed_rule not in _UNOPPOSED_RULES:
+            raise HTTPException(400, "Unopposed rule must be 'votes', 'pct_voted' or 'pct_registered'.")
+        updates["unopposed_rule"] = data.unopposed_rule
+    if any(k in updates and updates[k] != sec.get(k) for k in _UNOPPOSED_KEYS):
+        cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
+        if cfg.get("is_certified"):
+            raise HTTPException(409, "Results are certified, so the unopposed-candidate rule can no longer be changed.")
     if data.turnstile_mode is not None:
         if data.turnstile_mode not in ("off", "adaptive", "on"):
             raise HTTPException(400, "Bot check mode must be 'off', 'adaptive' or 'on'.")

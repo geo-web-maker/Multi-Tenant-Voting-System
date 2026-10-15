@@ -107,6 +107,8 @@ export default function SecurityPanel() {
       'reset_admin_hourly_alert', 'reset_admin_hourly_hard_cap', 'reset_per_voter_daily', 'reset_per_voter_election'].forEach(k => { body[k] = Number(f[k]); });
     body.turnstile_mode = f.turnstile_mode;
     body.public_results_mode = f.public_results_mode;
+    body.unopposed_rule = f.unopposed_rule;
+    ['unopposed_min_votes', 'unopposed_pct_voted', 'unopposed_pct_registered'].forEach(k => { body[k] = Number(f[k]); });
     body.approval_policy = f.approval_policy;
     if (f.roster_freeze_at) body.roster_freeze_at = zonedInputToUtcISO(f.roster_freeze_at, tz);
     else body.clear_roster_freeze_at = true;
@@ -183,6 +185,21 @@ export default function SecurityPanel() {
           <option value="closed">Hidden until voting closes</option>
           <option value="certified">Hidden until a commissioner certifies results (recommended)</option>
         </select>
+      </div>
+
+      <div style={box}>
+        <b style={{ fontSize: 14 }}>Unopposed candidates: minimum to be elected</b>
+        <select style={inp} value={f.unopposed_rule || 'votes'} onChange={e => setF({ ...f, unopposed_rule: e.target.value })}>
+          <option value="votes">A fixed number of votes</option>
+          <option value="pct_voted">A percentage of the voters who voted</option>
+          <option value="pct_registered">A percentage of registered voters</option>
+        </select>
+        <div style={grid}>
+          {(f.unopposed_rule || 'votes') === 'votes' && num('unopposed_min_votes', 'Valid votes needed')}
+          {f.unopposed_rule === 'pct_voted' && num('unopposed_pct_voted', '% of voters who voted', 0.5)}
+          {f.unopposed_rule === 'pct_registered' && num('unopposed_pct_registered', '% of registered voters', 0.5)}
+        </div>
+        <p style={note}>A candidate running alone is declared elected (&ldquo;Mandate gained&rdquo;) only when their votes reach this minimum; otherwise the result shows &ldquo;Undermandated&rdquo;. Percentages are worked out from the live turnout or roster size and rounded up to a whole vote. It applies to the public results page and to the printed and signed reports, and cannot be changed once results are certified. Every change is logged with your reason.</p>
       </div>
 
       <div style={box}>

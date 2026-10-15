@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import api from '../api';
 import usePolling from '../hooks/usePolling';
 import FinalReport from './FinalReport';
+import { unopposedRule } from '../mandate';
 import { Icon } from './icons.jsx';
 import { PublicTurnoutBreakdown } from './TurnoutBreakdown';
 import { LoadingBlock } from './Spinner.jsx';
@@ -262,7 +263,7 @@ const fetchData = async ({ force = false } = {}) => {
         ) : (
           orderedPositions.map(position => {
               const isSolo = position.candidates.length === 1;
-              const MANDATE_THRESHOLD = 100;
+              const MANDATE_THRESHOLD = unopposedRule(electionData).required;
               
               // 1. Calculate the highest vote count in this position
               const categoryMax = Math.max(...position.candidates.map(c => c.votes || 0));
@@ -442,6 +443,8 @@ const fetchData = async ({ force = false } = {}) => {
         isElectionOpen={isElectionOpen}
         isCertified={isCertified}
         resultsReleased={electionData.results_released}
+        unopposedRequired={unopposedRule(electionData).required}
+        unopposedText={unopposedRule(electionData).text}
         logoUrl={logoUrl}
         orgName={orgName}
         universityName={universityName}

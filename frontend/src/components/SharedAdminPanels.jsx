@@ -3,6 +3,7 @@ import { getIdText, useIdText } from '../idText';
 import api from '../api';
 import { startPolling } from '../hooks/usePolling';
 import FinalReport from './FinalReport';
+import { unopposedRule } from '../mandate';
 import { useToast, useConfirm, usePrompt } from './UIFeedback';
 import { askEarlyReason } from '../electionControls';
 import { Icon } from './icons.jsx';
@@ -1523,6 +1524,8 @@ export function OfficialCertificationBlock() {
               path never passes; they add the signed instrument. */}
           <FinalReport
             data={{ results: report.results }}
+            unopposedRequired={unopposedRule(report).required}
+            unopposedText={unopposedRule(report).text}
             totalVotes={report.voter_turnout}
             isElectionOpen={report.is_open}
             isCertified={report.is_certified}

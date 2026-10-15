@@ -79,6 +79,9 @@ export default function FinalReport({
   declaration = null, signatories = null, ccList = [],
   // Signed document only: contact-change appendix + roster-ledger integrity (design Appendix I).
   contactChanges = null, rosterLedger = null,
+  // Votes an unopposed candidate needs, already worked out from the server rule (see ../mandate.js),
+  // and that rule in words for the footnote. 100 was the old fixed value.
+  unopposedRequired = 100, unopposedText = '100 valid votes',
 }) {
   // Pick the active config
   const activeStage = isElectionOpen ? 'open' : (isCertified ? 'certified' : 'provisional');
@@ -260,7 +263,7 @@ export default function FinalReport({
                 const isTie = !isSolo && topCandidate?.votes > 0 && topCandidate?.votes === secondCandidate?.votes;
                 
                 // LOGIC CHANGE HERE:
-                const hasMandate = isSolo && topCandidate?.votes >= 100;
+                const hasMandate = isSolo && topCandidate?.votes >= unopposedRequired;
                 const isElected = !isTie && (isSolo ? hasMandate : (topCandidate?.votes > 0));
               
                 let resultText = topCandidate?.name || "N/A";
@@ -331,7 +334,7 @@ export default function FinalReport({
                   const isPartOfTie = !isSolo && c.votes === maxVotes && maxVotes > 0 && pos.candidates.filter(can => can.votes === maxVotes).length > 1;
                   
                   // LOGIC CHANGE HERE:
-                  const hasMandate = isSolo && c.votes >= 100;
+                  const hasMandate = isSolo && c.votes >= unopposedRequired;
                   const isWinner = !isElectionOpen && c.votes === maxVotes && maxVotes > 0 && !isPartOfTie && (!isSolo || hasMandate);
                 
                   return (
@@ -364,7 +367,7 @@ export default function FinalReport({
         <div style={{ marginTop: '-15px', marginBottom: '30px', padding: '10px', border: '1px solid #ddd', backgroundColor: '#f9f9f9', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
           <p style={{ margin: 0, fontSize: '9px', color: '#444', lineHeight: '1.4' }}>
             <strong>Note on Minimum Mandate:</strong> Under the Election Guidelines, a candidate
-            running unopposed must receive at least <strong>100 valid votes</strong> to be
+            running unopposed must receive at least <strong>{unopposedText}</strong> to be
             declared elected. A candidate who falls short is marked &lsquo;Undermandated&rsquo;,
             and the position is filled by a by-election or appointment under the union bylaws.
           </p>
