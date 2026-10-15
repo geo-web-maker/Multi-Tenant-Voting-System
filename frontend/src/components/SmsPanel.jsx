@@ -20,6 +20,7 @@ const PROVIDER_LABEL = { egosms: 'EgoSMS', mambosms: 'MamboSMS' };
 const fieldBox = { display: 'grid', gap: 4, marginTop: 10 };
 const lblStyle = { fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' };
 const H3 = { margin: '0 0 6px', fontSize: 15 };
+const TILE_VALUE = { fontSize: 20, lineHeight: 1.2, overflowWrap: 'anywhere' };
 const ACTIVE = ['queued', 'running'];
 const splitList = (t) => t.split(/[,\n;]+/).map((x) => x.trim()).filter(Boolean);
 
@@ -38,6 +39,7 @@ export default function SmsPanel() {
   const [planBusy, setPlanBusy] = useState(false);
   const [planError, setPlanError] = useState('');
   const [reason, setReason] = useState('');
+  const [whatIf, setWhatIf] = useState('');       // optional: cost for a number of people typed by hand
   const [campaign, setCampaign] = useState(null);
   const [failedRows, setFailedRows] = useState(null);
   const [sending, setSending] = useState(false);
@@ -108,6 +110,8 @@ export default function SmsPanel() {
   const perSms = costPerSms(tcount.parts, unit);
   const balanceNum = Number(balances?.[provider]?.balance);
   const overBalance = plan?.total_cost != null && Number.isFinite(balanceNum) && plan.total_cost > balanceNum;
+  const whatIfN = whatIf === '' ? null : Math.max(0, Math.floor(Number(whatIf)) || 0);
+  const whatIfCost = whatIfN == null || perSms == null ? null : perSms * whatIfN;
   const campaignRunning = Boolean(campaignActive);
   const canSend = Boolean(plan) && !planBusy && !planError && template.trim() && plan.recipients > 0 && plan.pricing_set
     && bad.length === 0 && reason.trim().length >= 3 && !campaignRunning && !sending;
@@ -203,20 +207,43 @@ export default function SmsPanel() {
         <h3 style={H3}>Calculator {planBusy && <small className="perf-note"> updating…</small>}</h3>
         <p className="perf-lead">Estimate using {PROVIDER_LABEL[provider]} rates. A fallback provider may bill differently.</p>
         {planError && <p className="perf-msg" data-kind="error">{planError}</p>}
-        <dl className="perf-kv">
-          <dt>Characters (template)</dt><dd>{tcount.chars}</dd>
+        <div className="perf-tiles" style={{ marginTop: 10 }}>
+          <div className="perf-card card-pad perf-tile">
+            <span className="perf-tile-label">Cost per SMS</span>
+            <b style={TILE_VALUE}>{perSms == null ? 'Not set' : ugx(perSms)}</b>
+            <span className="perf-tile-sub">{tcount.parts} part{tcount.parts === 1 ? '' : 's'} · {tcount.chars} characters</span>
+          </div>
+          <div className="perf-card card-pad perf-tile">
+            <span className="perf-tile-label">Recipients</span>
+            <b style={TILE_VALUE}>{plan ? plan.recipients : '—'}</b>
+            <span className="perf-tile-sub">{plan ? `${plan.no_phone} skipped (no phone)` : 'working out…'}</span>
+          </div>
+          <div className="perf-card card-pad perf-tile">
+            <span className="perf-tile-label">Total SMS parts</span>
+            <b style={TILE_VALUE}>{plan ? plan.total_parts : '—'}</b>
+            <span className="perf-tile-sub">{plan ? (breakdownLabel(plan.by_parts) || '—') : ' '}</span>
+          </div>
+          <div className="perf-card card-pad perf-tile">
+            <span className="perf-tile-label">Total estimated cost</span>
+            <b style={TILE_VALUE}>{!plan ? '—' : plan.total_cost == null ? 'Not set' : ugx(plan.total_cost)}</b>
+            <span className="perf-tile-sub">{PROVIDER_LABEL[provider]} rates · estimate</span>
+          </div>
+        </div>
+        <label style={fieldBox}><span style={lblStyle}>What if: cost for a number of people (optional)</span>
+          <input className="perf-field" type="number" min="0" inputMode="numeric" value={whatIf} onChange={(e) => setWhatIf(e.target.value)} placeholder="e.g. 500" /></label>
+        {whatIfN != null && (
+          <div className="perf-tiles" style={{ marginTop: 10 }}>
+            <div className="perf-card card-pad perf-tile">
+              <span className="perf-tile-label">Cost for {whatIfN} people</span>
+              <b style={TILE_VALUE}>{whatIfCost == null ? 'Not set' : ugx(whatIfCost)}</b>
+              <span className="perf-tile-sub">{whatIfN} × {perSms == null ? '—' : ugx(perSms)} (template length; variables may change it)</span>
+            </div>
+          </div>
+        )}
+        <dl className="perf-kv" style={{ marginTop: 12 }}>
           <dt>Encoding</dt><dd>{tcount.encoding}{tcount.encoding === 'UCS-2' ? ' (smaller limits, can double the cost)' : ''}</dd>
-          <dt>Parts per SMS (template)</dt><dd>{tcount.parts} ({tcount.remaining} characters left in this part)</dd>
-          <dt>Provider used for the estimate</dt><dd>{PROVIDER_LABEL[provider]}</dd>
-          <dt>Cost per SMS</dt><dd>{perSms == null ? 'Set the cost per SMS in settings' : ugx(perSms)}</dd>
-          {plan && (<>
-            <dt>Recipients</dt><dd>{plan.recipients}</dd>
-            <dt>Students skipped (no phone)</dt><dd>{plan.no_phone}</dd>
-            <dt>Length after variables</dt><dd>{plan.min_len == null ? '—' : `${plan.min_len} to ${plan.max_len} characters`}</dd>
-            <dt>Breakdown by parts</dt><dd>{breakdownLabel(plan.by_parts) || '—'}</dd>
-            <dt>Total SMS parts</dt><dd>{plan.total_parts}</dd>
-            <dt>Total estimated cost</dt><dd>{plan.total_cost == null ? 'Set the cost per SMS in settings' : ugx(plan.total_cost)}</dd>
-          </>)}
+          <dt>Characters left in this part</dt><dd>{tcount.remaining}</dd>
+          <dt>Length after variables</dt><dd>{plan?.min_len == null ? '—' : `${plan.min_len} to ${plan.max_len} characters`}</dd>
         </dl>
         {plan && !plan.pricing_set && <p className="perf-msg" data-kind="error">Set the cost per SMS in settings (below) before sending.</p>}
         {overBalance && <p className="perf-msg" data-kind="error">The estimated total is more than the {PROVIDER_LABEL[provider]} balance ({balances[provider].balance}).</p>}
