@@ -31,7 +31,7 @@ export function SmsUsageTile({ initial = null, hideBudgetLeft = false }) {
   const modeColor = { normal: 'var(--success)', conservation: 'var(--bp-wn, #e67e22)', under_attack: 'var(--danger)' }[u.mode];
   const low = u.budget_pct_left != null && u.budget_pct_left <= 25;
   return (
-    <div style={box}>
+    <div className="perf-card card-pad">
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <b style={{ fontSize: 14 }}>SMS budget &amp; delivery</b>
         <span style={{ fontSize: 12, fontWeight: 700, color: modeColor }}>{u.mode.replace('_', ' ').toUpperCase()}</span>
@@ -44,16 +44,16 @@ export function SmsUsageTile({ initial = null, hideBudgetLeft = false }) {
         {!hideBudgetLeft && <Stat label="Budget left" value={u.budget_total ? `${u.budget_left} / ${u.budget_total}` : 'not set'} color={low ? 'var(--danger)' : undefined} />}
       </div>
       {u.sms_route_otp && (
-        <p style={note}>Routing — OTP: <b>{ROUTE_SHORT[u.sms_route_otp] || u.sms_route_otp}</b> · Other messages: <b>{ROUTE_SHORT[u.sms_route_other] || u.sms_route_other}</b></p>
+        <p className="perf-note">Routing — OTP: <b>{ROUTE_SHORT[u.sms_route_otp] || u.sms_route_otp}</b> · Other messages: <b>{ROUTE_SHORT[u.sms_route_other] || u.sms_route_other}</b></p>
       )}
-      {u.mode === 'under_attack' && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> Send-to-verify ratio is very low: possible SMS pumping. The bot check is mandatory until it recovers.</p>}
-      {u.budget_total && !u.budget_enforced && <p style={note}>Budget is in monitor-only mode (counted and alerted, not enforced).</p>}
-      {low && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> Credit is running low — top up the provider account.</p>}
+      {u.mode === 'under_attack' && <p className="perf-note" style={{ color: 'var(--danger)' }}><Icon name="warning" /> Send-to-verify ratio is very low: possible SMS pumping. The bot check is mandatory until it recovers.</p>}
+      {u.budget_total && !u.budget_enforced && <p className="perf-note">Budget is in monitor-only mode (counted and alerted, not enforced).</p>}
+      {low && <p className="perf-note" style={{ color: 'var(--danger)' }}><Icon name="warning" /> Credit is running low — top up the provider account.</p>}
     </div>
   );
 }
 const Stat = ({ label, value, color }) => (
-  <div><small style={{ opacity: 0.6 }}>{label}</small><div style={{ fontWeight: 700, color }}>{value}</div></div>
+  <div><small className="perf-tile-label">{label}</small><div style={{ fontWeight: 700, color }}>{value}</div></div>
 );
 
 /** Superadmin: freeze time, target risk, Turnstile, contact-change quotas, break-glass. SMS settings live in the SMS tab. */
@@ -120,7 +120,7 @@ export default function SecurityPanel() {
   };
   const num = (k, label, step = 1) => (
     <label style={fld}><span style={lbl}>{label}</span>
-      <input style={inp} type="number" step={step} value={f[k] ?? ''} onChange={e => setF({ ...f, [k]: e.target.value })} /></label>
+      <input className="perf-field" style={full} type="number" step={step} value={f[k] ?? ''} onChange={e => setF({ ...f, [k]: e.target.value })} /></label>
   );
   const chk = (k, label) => (
     <label style={{ ...fld, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -131,23 +131,23 @@ export default function SecurityPanel() {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: 16, alignItems: 'start' }}>
       <LegacyDataPanel />
-      {d.banner && <div style={{ ...box, borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
+      {d.banner && <div className="perf-card card-pad" style={{ borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Lock strength (derived from the voting window)</b>
-        <p style={note}>
+        <p className="perf-note">
           Each voter gets {dv.free_guesses} free wrong guesses, then one more every <b>{Math.round(dv.refill_interval_seconds / 60)} min</b>
           {' '}(total budget ≈ {dv.guess_budget} guesses over the window). Changing the window recomputes this automatically.
         </p>
         <div style={grid}>{num('otp_target_risk', 'Target risk ε (per voter)', 0.00001)}</div>
       </div>
 
-      <div style={{ ...box, gridColumn: '1 / -1' }}>
+      <div className="perf-card card-pad" style={{ gridColumn: '1 / -1' }}>
         <b style={{ fontSize: 14 }}>Roster freeze &amp; contact changes</b>
-        <p style={note}>Current phase: <b>{d.roster.phase.replace('_', ' ')}</b>. Freeze moment: <b>{fmtZoned(d.roster.freeze_at, tz)}</b> (default = voting start).</p>
+        <p className="perf-note">Current phase: <b>{d.roster.phase.replace('_', ' ')}</b>. Freeze moment: <b>{fmtZoned(d.roster.freeze_at, tz)}</b> (default = voting start).</p>
         <div style={grid}>
           <label style={fld}><span style={lbl}>Freeze at, in {tz} ({utcOffsetLabel(tz)}) — blank = voting start</span>
-            <input style={inp} type="datetime-local" value={f.roster_freeze_at || ''} onChange={e => setF({ ...f, roster_freeze_at: e.target.value })} /></label>
+            <input className="perf-field" style={full} type="datetime-local" value={f.roster_freeze_at || ''} onChange={e => setF({ ...f, roster_freeze_at: e.target.value })} /></label>
           {num('contact_change_ttl_hours', 'Request expiry (hours)')}
           {num('contact_change_max_per_voter', 'Max approved per voter')}
           {num('approver_daily_cap', 'Approvals per commissioner / day')}
@@ -159,7 +159,7 @@ export default function SecurityPanel() {
         {chk('superadmin_breakglass', 'Allow superadmin break-glass approval (flagged red in the ledger)')}
       </div>
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Admin “Reset OTP limits” caps</b>
         <div style={grid}>
           {num('reset_per_voter_daily', 'Per voter / day')}{num('reset_per_voter_election', 'Per voter / election')}
@@ -167,29 +167,29 @@ export default function SecurityPanel() {
         </div>
       </div>
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Candidate approval policy</b>
-        <p style={note}>How the Vetting Panel's votes on candidate applications resolve. Changing this immediately re-checks every pending application against the new rule — it can flip an outcome without a new vote being cast.</p>
-        <select style={inp} value={f.approval_policy} onChange={e => setF({ ...f, approval_policy: e.target.value })}>
+        <p className="perf-note">How the Vetting Panel's votes on candidate applications resolve. Changing this immediately re-checks every pending application against the new rule — it can flip an outcome without a new vote being cast.</p>
+        <select className="perf-field" style={full} value={f.approval_policy} onChange={e => setF({ ...f, approval_policy: e.target.value })}>
           <option value="majority_total">Majority of total panel size (original behaviour)</option>
           <option value="unanimous">Unanimous — every panelist must agree</option>
           <option value="majority_cast">Majority of votes cast — resolves once everyone has voted</option>
         </select>
       </div>
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Public results visibility</b>
-        <p style={note}>Controls when the public, unauthenticated results page shows numbers. This is per-org — it does not affect other organisations on this deployment.</p>
-        <select style={inp} value={f.public_results_mode} onChange={e => setF({ ...f, public_results_mode: e.target.value })}>
+        <p className="perf-note">Controls when the public, unauthenticated results page shows numbers. This is per-org — it does not affect other organisations on this deployment.</p>
+        <select className="perf-field" style={full} value={f.public_results_mode} onChange={e => setF({ ...f, public_results_mode: e.target.value })}>
           <option value="live">Live (visible while voting is open — original behaviour)</option>
           <option value="closed">Hidden until voting closes</option>
           <option value="certified">Hidden until a commissioner certifies results (recommended)</option>
         </select>
       </div>
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Unopposed candidates: minimum to be elected</b>
-        <select style={inp} value={f.unopposed_rule || 'votes'} onChange={e => setF({ ...f, unopposed_rule: e.target.value })}>
+        <select className="perf-field" style={full} value={f.unopposed_rule || 'votes'} onChange={e => setF({ ...f, unopposed_rule: e.target.value })}>
           <option value="votes">A fixed number of votes</option>
           <option value="pct_voted">A percentage of the voters who voted</option>
           <option value="pct_registered">A percentage of registered voters</option>
@@ -199,22 +199,23 @@ export default function SecurityPanel() {
           {f.unopposed_rule === 'pct_voted' && num('unopposed_pct_voted', '% of voters who voted', 0.5)}
           {f.unopposed_rule === 'pct_registered' && num('unopposed_pct_registered', '% of registered voters', 0.5)}
         </div>
-        <p style={note}>A candidate running alone is declared elected (&ldquo;Mandate gained&rdquo;) only when their votes reach this minimum; otherwise the result shows &ldquo;Undermandated&rdquo;. Percentages are worked out from the live turnout or roster size and rounded up to a whole vote. It applies to the public results page and to the printed and signed reports, and cannot be changed once results are certified. Every change is logged with your reason.</p>
+        <p className="perf-note">A candidate running alone is declared elected (&ldquo;Mandate gained&rdquo;) only when their votes reach this minimum; otherwise the result shows &ldquo;Undermandated&rdquo;. Percentages are worked out from the live turnout or roster size and rounded up to a whole vote. It applies to the public results page and to the printed and signed reports, and cannot be changed once results are certified. Every change is logged with your reason.</p>
       </div>
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Bot check (Cloudflare Turnstile)</b>
-        <select style={inp} value={f.turnstile_mode} onChange={e => setF({ ...f, turnstile_mode: e.target.value })}>
+        <select className="perf-field" style={full} value={f.turnstile_mode} onChange={e => setF({ ...f, turnstile_mode: e.target.value })}>
           <option value="off">Off</option><option value="adaptive">Adaptive (suspicious IPs / under attack)</option><option value="on">On (recommended for election day)</option>
         </select>
-        {!dv.turnstile_secret_configured && f.turnstile_mode !== 'off' && <p style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> TURNSTILE_SECRET is not set on the server, so the check cannot be enforced.</p>}
-        {f.turnstile_mode !== 'off' && !turnstileConfigured && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> VITE_TURNSTILE_SITE_KEY is not set in this frontend build, so voters cannot see the check. Keep this Off until it is set and the site is redeployed.</p>}
+        {!dv.turnstile_secret_configured && f.turnstile_mode !== 'off' && <p className="perf-note" style={{ color: 'var(--warning)' }}><Icon name="warning" /> TURNSTILE_SECRET is not set on the server, so the check cannot be enforced.</p>}
+        {f.turnstile_mode !== 'off' && !turnstileConfigured && <p className="perf-note" style={{ color: 'var(--danger)' }}><Icon name="warning" /> VITE_TURNSTILE_SITE_KEY is not set in this frontend build, so voters cannot see the check. Keep this Off until it is set and the site is redeployed.</p>}
       </div>
 
       <CaptchaHealthTile />
+      <VoterProblemsTile />
 
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
-        <input style={inp} value={reasonSec} onChange={e => setReasonSec(e.target.value)} placeholder="e.g. election-day hardening" /></label>
+        <input className="perf-field" style={full} value={reasonSec} onChange={e => setReasonSec(e.target.value)} placeholder="e.g. election-day hardening" /></label>
       <button  onClick={saveSecurity} className="perf-btn perf-btn-primary">Save security settings</button>
 
       <NameNormalizerTile />
@@ -222,10 +223,10 @@ export default function SecurityPanel() {
       <RegNumberCheckTile />
       <ApplicationEditReconcileTile />
 
-      <div style={box}>
+      <div className="perf-card card-pad">
         <b style={{ fontSize: 14 }}>Roster ledger integrity</b>
         <button  onClick={verifyLedger} className="perf-btn" style={{ cursor: 'pointer', marginLeft: 10 }}>Verify chain</button>
-        {ledger && <p style={{ ...note, color: ledger.valid ? 'var(--success)' : 'var(--danger)' }}>
+        {ledger && <p className="perf-note" style={{ color: ledger.valid ? 'var(--success)' : 'var(--danger)' }}>
           {ledger.valid ? `VERIFIED — ${ledger.entries} entries` : `MISMATCH at entry #${ledger.first_bad_seq}`}</p>}
       </div>
     </div>
@@ -257,9 +258,9 @@ function NameNormalizerTile() {
   };
 
   return (
-    <div style={box}>
+    <div className="perf-card card-pad">
       <b style={{ fontSize: 14 }}>Name formatting clean-up</b>
-      <p style={note}>New names are capitalised automatically when saved. This fixes names that were stored before that (voter register, applications, candidates, change requests). It changes letter case and spacing only. IDs, phone numbers, votes and the audit history are not touched.</p>
+      <p className="perf-note">New names are capitalised automatically when saved. This fixes names that were stored before that (voter register, applications, candidates, change requests). It changes letter case and spacing only. IDs, phone numbers, votes and the audit history are not touched.</p>
       <button  disabled={busy} onClick={() => run(true)} className="perf-btn" style={{ cursor: 'pointer' }}>Preview changes</button>
       <button  disabled={busy || !report || !report.dry_run || report.total_changed === 0} onClick={() => run(false)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginLeft: 10 }}>Apply</button>
       {report && (
@@ -267,7 +268,7 @@ function NameNormalizerTile() {
           <div style={{ fontWeight: 700, color: report.dry_run ? 'inherit' : 'var(--success)' }}>
             {report.dry_run ? `Preview: ${report.total_changed} name(s) would change` : `Done: ${report.total_changed} name(s) updated`}
           </div>
-          <div style={note}>{Object.entries(report.collections).map(([k, v]) => `${k}: ${v.changed}/${v.scanned}`).join('  ·  ')}</div>
+          <div className="perf-note">{Object.entries(report.collections).map(([k, v]) => `${k}: ${v.changed}/${v.scanned}`).join('  ·  ')}</div>
           {report.samples.length > 0 && (
             <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
               {report.samples.map((x, i) => <li key={i}>{x.old} &rarr; <b>{x.new}</b></li>)}
@@ -306,9 +307,9 @@ function RegNumberCheckTile() {
 
   const fixable = r ? r.voters.fixable + Object.values(r.other).reduce((n, c) => n + c.non_canonical, 0) : 0;
   return (
-    <div style={box}>
+    <div className="perf-card card-pad">
       <b style={{ fontSize: 14 }}>{idText.nounCap} check</b>
-      <p style={note}>{idText.nounCap}s are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
+      <p className="perf-note">{idText.nounCap}s are shown in capitals, but stored in one standard form (lowercase, no spaces) so that login and search can find them. This checks the database for any that are stored differently. Those students are on the register but cannot be found. Audit history is never rewritten.</p>
       <button  disabled={busy} onClick={() => run(false)} className="perf-btn" style={{ cursor: 'pointer' }}>Check database</button>
       <button  disabled={busy || !r || r.fix || fixable === 0} onClick={() => run(true)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginLeft: 10 }}>Fix</button>
       {r && (
@@ -317,7 +318,7 @@ function RegNumberCheckTile() {
             {r.fix ? `Fixed ${r.total_fixed} record(s)` : r.issues_found === 0 ? 'No problems found' : `${r.issues_found} record(s) stored incorrectly`}
             {r.needs_review > 0 && ` · ${r.needs_review} need manual review`}
           </div>
-          <div style={note}>
+          <div className="perf-note">
             Voters: {r.voters.scanned} checked, {r.voters.non_canonical} wrong, {r.voters.conflicts} conflicts, {r.voters.voted_review} already voted.
             {Object.entries(r.other).map(([k, c]) => `  ·  ${k}: ${c.non_canonical}/${c.scanned}`).join('')}
           </div>
@@ -357,9 +358,9 @@ function ApplicationEditReconcileTile() {
   };
 
   return (
-    <div style={box}>
+    <div className="perf-card card-pad">
       <b style={{ fontSize: 14 }}>Unrecorded application edits</b>
-      <p style={note}>Finds applications whose details were changed before the Edit application button existed, so they never showed as edited. Preview lists them; Apply records each change in its history. The edit time shown will be today, because the real time was never saved.</p>
+      <p className="perf-note">Finds applications whose details were changed before the Edit application button existed, so they never showed as edited. Preview lists them; Apply records each change in its history. The edit time shown will be today, because the real time was never saved.</p>
       <button  disabled={busy} onClick={() => run(true)} className="perf-btn" style={{ cursor: 'pointer' }}>Preview</button>
       <button  disabled={busy || !report || !report.dry_run || report.items.length === 0} onClick={() => run(false)} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginLeft: 10 }}>Apply</button>
       {report && (
@@ -373,6 +374,72 @@ function ApplicationEditReconcileTile() {
             </ul>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+const PROBLEM_LABEL = {
+  captcha_script_failed: 'Bot check script blocked', captcha_error: 'Bot check widget error',
+  captcha_stuck: 'Bot check stuck (no token after 20 seconds)', js_error: 'JavaScript error',
+  unhandled_rejection: 'Unhandled request error', blank_screen: 'Blank screen (the app did not start)',
+};
+
+/** Problems reported by voters' own browsers (clientReport.js): what the server cannot see by itself. */
+function VoterProblemsTile() {
+  const [d, setD] = useState(null);
+  const [minutes, setMinutes] = useState(30);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const load = () => api.get('/superadmin/client-reports', { params: { minutes } })
+      .then(r => { if (live) { setD(r.data); setFailed(false); } }).catch(() => { if (live) setFailed(true); });
+    load();
+    const stop = startPolling(load, 30000);
+    return () => { live = false; stop(); };
+  }, [minutes]);
+
+  return (
+    <div className="perf-card card-pad">
+      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <b style={{ fontSize: 14 }}>Voter-side problems</b>
+        <select className="perf-field" aria-label="Time range" style={{ width: 'auto' }} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>
+          <option value={30}>Last 30 minutes</option><option value={60}>Last hour</option>
+          <option value={180}>Last 3 hours</option><option value={360}>Last 6 hours</option>
+        </select>
+      </div>
+      <p className="perf-note">Problems that happen inside a voter's own browser, which the server cannot see: a blocked bot check, a crash or a blank screen. Reports contain no names, student numbers, phone numbers or codes. An email alert is sent when a problem type crosses its threshold.</p>
+      {failed && !d && <p className="perf-msg" data-kind="error">Could not load the reports. They will be tried again shortly.</p>}
+      {d && d.total === 0 && <p className="perf-msg" data-kind="ok">No problems reported in this period.</p>}
+      {d && d.total > 0 && (
+        <>
+          <p className="perf-msg" data-kind="error"><Icon name="warning" /> {d.total} problem report{d.total === 1 ? '' : 's'} in this period.</p>
+          {d.by_kind.map(k => (
+            <div className="perf-row" key={k.kind}>
+              <span className="perf-row-title">{PROBLEM_LABEL[k.kind] || k.kind}</span>
+              <span className="perf-row-text">{k.count} report{k.count === 1 ? '' : 's'}{k.alert_at ? ` (alert at ${k.alert_at} in 10 minutes)` : ''}</span>
+            </div>
+          ))}
+          <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>Most affected browsers</b>
+          <ul className="perf-chips" style={{ marginTop: 6 }}>
+            {d.top_browsers.map(b => <li key={b.browser + b.kind}>{b.browser}: {PROBLEM_LABEL[b.kind] || b.kind} ({b.count})</li>)}
+          </ul>
+          <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>Latest reports</b>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}><th style={cell}>Time</th><th style={cell}>Problem</th><th style={cell}>Page</th><th style={cell}>Browser</th><th style={cell}>Detail</th></tr></thead>
+              <tbody>
+                {d.recent.map((r, i) => (
+                  <tr key={i}>
+                    <td style={cell}>{new Date(r.at).toLocaleTimeString()}</td><td style={cell}>{PROBLEM_LABEL[r.kind] || r.kind}</td>
+                    <td style={cell}>{r.step}</td><td style={cell}>{r.browser}</td><td style={cell}>{r.detail || r.code || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="perf-note">If voters are stuck on the bot check, set it to Adaptive or Off above and save. Ask them to try mobile data or another browser.</p>
+        </>
       )}
     </div>
   );
@@ -431,12 +498,12 @@ function CaptchaHealthTile() {
   const c = st?.your_ip?.counts_30m;
   const ok = (v) => <b style={{ color: v ? 'var(--success)' : 'var(--danger)' }}>{v ? 'Yes' : 'No'}</b>;
   return (
-    <div style={box}>
+    <div className="perf-card card-pad">
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <b style={{ fontSize: 14 }}>Bot check health</b>
         <button onClick={loadStatus} className="perf-btn" style={{ cursor: 'pointer' }}>Refresh</button>
       </div>
-      {!st ? <p style={note}>Loading…</p> : (
+      {!st ? <p className="perf-note">Loading…</p> : (
         <>
           <div style={grid}>
             <Stat label="Mode" value={st.mode} />
@@ -444,13 +511,13 @@ function CaptchaHealthTile() {
             <Stat label="Site key in this build" value={ok(turnstileConfigured)} />
             <Stat label="Cloudflare test keys" value={st.secret_is_cloudflare_test_key ? 'Yes (not real protection)' : 'No'} color={st.secret_is_cloudflare_test_key ? 'var(--warning)' : undefined} />
           </div>
-          {st.secret_is_cloudflare_test_key && <p style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> The secret looks like a Cloudflare dummy key. Replace it with the real secret before election day.</p>}
+          {st.secret_is_cloudflare_test_key && <p className="perf-note" style={{ color: 'var(--warning)' }}><Icon name="warning" /> The secret looks like a Cloudflare dummy key. Replace it with the real secret before election day.</p>}
 
           <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>Proxy hops: which address does the server treat as the voter?</b>
-          <p style={note}>Path: voter's phone → {st.proxy.forwarded_for.length > 1 ? 'Vercel → ' : ''}Render (this server). The server reads the client address from the <code>X-Forwarded-For</code> header, counting <code>TRUSTED_PROXY_HOPS</code> entries from the right. Currently set to <b>{st.proxy.trusted_hops}</b>, which picks <code>{st.your_ip.detected}</code>.</p>
+          <p className="perf-note">Path: voter's phone → {st.proxy.forwarded_for.length > 1 ? 'Vercel → ' : ''}Render (this server). The server reads the client address from the <code>X-Forwarded-For</code> header, counting <code>TRUSTED_PROXY_HOPS</code> entries from the right. Currently set to <b>{st.proxy.trusted_hops}</b>, which picks <code>{st.your_ip.detected}</code>.</p>
           <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead><tr style={{ textAlign: 'left', opacity: 0.65 }}><th style={cell}>TRUSTED_PROXY_HOPS</th><th style={cell}>Address the server would use</th><th style={cell}>Matches your public IP</th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}><th style={cell}>TRUSTED_PROXY_HOPS</th><th style={cell}>Address the server would use</th><th style={cell}>Matches your public IP</th></tr></thead>
             <tbody>
               {st.proxy.candidates.map(cd => {
                 const match = pubIp && cd.ip === pubIp;
@@ -468,17 +535,17 @@ function CaptchaHealthTile() {
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
             <button disabled={busy === 'pubip'} onClick={detectPublicIp} className="perf-btn" style={{ cursor: 'pointer' }}>{busy === 'pubip' ? 'Looking up…' : 'Detect my public IP'}</button>
-            <input style={{ ...inp, width: 220 }} value={pubIp} onChange={e => setPubIp(e.target.value.trim())} placeholder="or type your public IP" />
+            <input className="perf-field" style={{ width: 220, maxWidth: '100%' }} value={pubIp} onChange={e => setPubIp(e.target.value.trim())} placeholder="or type your public IP" />
           </div>
-          {pubIpErr && <p style={{ ...note, color: 'var(--warning)' }}>{pubIpErr}</p>}
+          {pubIpErr && <p className="perf-note" style={{ color: 'var(--warning)' }}>{pubIpErr}</p>}
           {(() => {
             const hit = pubIp ? st.proxy.candidates.find(cd => cd.ip === pubIp) : null;
-            if (!pubIp) return <p style={note}>Click <b>Detect my public IP</b> (uses api.ipify.org from your browser) so the panel can tell you the right value. Do this from the same network and the same site address voters use.</p>;
-            if (!hit) return <p style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> None of the options gives <code>{pubIp}</code>. If your connection uses IPv6, a VPN or a different network path than the one this page just used, try another network and refresh. Do not change the setting until one row matches.</p>;
-            if (hit.hops === st.proxy.trusted_hops) return <p style={{ ...note, color: 'var(--success)' }}>Correct: <code>TRUSTED_PROXY_HOPS={hit.hops}</code> already gives the real voter IP.</p>;
-            return <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> Set <code>TRUSTED_PROXY_HOPS={hit.hops}</code> on the backend (Render → Environment), redeploy, then click Refresh. Until then every voter is counted as <code>{st.your_ip.detected}</code>.</p>;
+            if (!pubIp) return <p className="perf-note">Click <b>Detect my public IP</b> (uses api.ipify.org from your browser) so the panel can tell you the right value. Do this from the same network and the same site address voters use.</p>;
+            if (!hit) return <p className="perf-note" style={{ color: 'var(--warning)' }}><Icon name="warning" /> None of the options gives <code>{pubIp}</code>. If your connection uses IPv6, a VPN or a different network path than the one this page just used, try another network and refresh. Do not change the setting until one row matches.</p>;
+            if (hit.hops === st.proxy.trusted_hops) return <p className="perf-note" style={{ color: 'var(--success)' }}>Correct: <code>TRUSTED_PROXY_HOPS={hit.hops}</code> already gives the real voter IP.</p>;
+            return <p className="perf-note" style={{ color: 'var(--danger)' }}><Icon name="warning" /> Set <code>TRUSTED_PROXY_HOPS={hit.hops}</code> on the backend (Render → Environment), redeploy, then click Refresh. Until then every voter is counted as <code>{st.your_ip.detected}</code>.</p>;
           })()}
-          <p style={note}>Why it matters: if all voters share one address, adaptive mode challenges everyone and the per-IP limits are shared across the whole election.</p>
+          <p className="perf-note">Why it matters: if all voters share one address, adaptive mode challenges everyone and the per-IP limits are shared across the whole election.</p>
 
           <div style={grid}>
             <Stat label="Sends (30 min)" value={`${c.sends} / ${st.thresholds.min_sends}`} />
@@ -486,15 +553,15 @@ function CaptchaHealthTile() {
             <Stat label="Failures (30 min)" value={`${c.fails} / ${st.thresholds.max_fails}`} />
             <Stat label="Flagged for challenge" value={c.flagged ? 'Yes' : 'No'} color={c.flagged ? 'var(--warning)' : undefined} />
           </div>
-          <p style={note}>An IP is challenged in adaptive mode at {st.thresholds.min_sends}+ sends with under {Math.round(st.thresholds.max_verify_ratio * 100)}% verified, or {st.thresholds.max_fails}+ failures, within {st.thresholds.window_minutes} minutes.</p>
+          <p className="perf-note">An IP is challenged in adaptive mode at {st.thresholds.min_sends}+ sends with under {Math.round(st.thresholds.max_verify_ratio * 100)}% verified, or {st.thresholds.max_fails}+ failures, within {st.thresholds.window_minutes} minutes.</p>
           <button disabled={busy === 'ip'} onClick={clearIp} className="perf-btn" style={{ cursor: 'pointer' }}>Clear counters for my IP</button>
 
           <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '14px 0' }} />
           <b style={{ fontSize: 13 }}>Cloudflare connection</b>
-          <p style={note}>Sends a dummy token from the server to confirm Cloudflare is reachable and the secret is accepted. No SMS is sent.</p>
+          <p className="perf-note">Sends a dummy token from the server to confirm Cloudflare is reachable and the secret is accepted. No SMS is sent.</p>
           <button disabled={busy === 'ping'} onClick={runPing} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer' }}>{busy === 'ping' ? 'Testing…' : 'Test connection'}</button>
           {ping && (
-            <p style={{ ...note, opacity: 1 }}>
+            <p className="perf-note">
               {!ping.configured ? <span style={{ color: 'var(--warning)' }}>{ping.detail}</span>
                 : !ping.reachable ? <span style={{ color: 'var(--danger)' }}>Cloudflare is unreachable from the server{ping.error ? ` (${ping.error})` : ''}.</span>
                 : ping.secret_valid ? <span style={{ color: 'var(--success)' }}>Reachable ({ping.latency_ms} ms) and the secret is accepted.</span>
@@ -504,18 +571,18 @@ function CaptchaHealthTile() {
 
           <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '14px 0' }} />
           <b style={{ fontSize: 13 }}>Live widget test</b>
-          <p style={note}>Loads the real widget in this browser, then verifies its token on the server. Use it from a phone on mobile data to see what voters will see.</p>
-          {!turnstileConfigured ? <p style={{ ...note, color: 'var(--danger)' }}>No site key in this build, so there is nothing to test.</p>
+          <p className="perf-note">Loads the real widget in this browser, then verifies its token on the server. Use it from a phone on mobile data to see what voters will see.</p>
+          {!turnstileConfigured ? <p className="perf-note" style={{ color: 'var(--danger)' }}>No site key in this build, so there is nothing to test.</p>
             : !showWidget ? <button onClick={() => setShowWidget(true)} className="perf-btn" style={{ cursor: 'pointer' }}>Load widget</button>
             : (
               <>
-                <TurnstileWidget onToken={setTok} resetKey={wKey} onStatus={setWStatus} />
-                <p style={note}>Widget: <b>{wStatus === 'ready' ? 'token received' : wStatus === 'failed' ? 'failed to load' : 'loading…'}</b></p>
+                <TurnstileWidget onToken={setTok} resetKey={wKey} onStatus={setWStatus} report={false} />
+                <p className="perf-note">Widget: <b>{wStatus === 'ready' ? 'token received' : wStatus === 'failed' ? 'failed to load' : 'loading…'}</b></p>
                 <button disabled={!tok || busy === 'verify'} onClick={verify} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer' }}>Verify token on server</button>
               </>
             )}
           {vres && (
-            <p style={{ ...note, opacity: 1 }}>
+            <p className="perf-note">
               {vres.passed ? <span style={{ color: 'var(--success)' }}>Passed{vres.hostname ? ` for ${vres.hostname}` : ''} ({vres.latency_ms} ms).</span>
                 : <span style={{ color: 'var(--danger)' }}>Failed: {vres.error_codes.join(', ') || vres.error || 'unknown reason'}.</span>}
             </p>
@@ -526,11 +593,9 @@ function CaptchaHealthTile() {
   );
 }
 
-const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 16, background: 'var(--bg-color)' };
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginTop: 10 };
 const cell = { padding: '6px 8px', borderBottom: '1px solid var(--border-color)' };
-const note = { fontSize: 12, opacity: 0.75, margin: '6px 0' };
 const fld = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 };
-const lbl = { fontSize: 12, opacity: 0.65, fontWeight: 600 };
-const inp = { padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--text-color)', fontSize: 13, width: '100%', boxSizing: 'border-box' };
+const lbl = { fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 };
+const full = { width: '100%', boxSizing: 'border-box' };   // look comes from perf-field (both templates)
 

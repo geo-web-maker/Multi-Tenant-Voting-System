@@ -13,7 +13,7 @@ const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =
 // Panels built on the shared kit (manual section 3). These must stay kit-only.
 const KIT_PANELS = [
   'AlertPanel', 'FunnelPanels', 'DeletedApplicationsPanel', 'NominationFormPanel', 'DemoControlsPanel', 'PerformancePanel', 'PerformanceSettings', 'PerfStorage', 'PerfOrgs',
-  'SmsPanel', 'SmsSettings', 'BackupsPanel', 'BackupJobProgress', 'BackupOverview', 'BackupConnections', 'BackupB2', 'BackupMirror', 'BackupRestoreTest', 'BackupMigration', 'BackupSettings',
+  'SecurityPanel', 'SmsPanel', 'SmsSettings', 'BackupsPanel', 'BackupJobProgress', 'BackupOverview', 'BackupConnections', 'BackupB2', 'BackupMirror', 'BackupRestoreTest', 'BackupMigration', 'BackupSettings',
 ].map((n) => `components/${n}.jsx`);
 
 // Files that may use the Blueprint card/button classes: the voter/applicant flow (Tier A) and the public turnout block.
@@ -63,6 +63,12 @@ describe('UI template rules (docs/UI_TEMPLATE_MANUAL.md)', () => {
       expect(src, f).not.toMatch(/^const [a-zA-Z]*([bB]tn|[bB]utton)[a-zA-Z]* *= *\{/m);
       expect(src, f).not.toMatch(/backgroundColor: ?'var\(--(success|danger|info)\)'/);
     }
+  });
+
+  it('Security panel tiles use perf-card / perf-note / perf-field, not the old inline surfaces that ignore Blueprint', () => {
+    const src = read('components/SecurityPanel.jsx');
+    expect(src).not.toMatch(/^const (box|note|inp) *= *\{/m);
+    expect(src).not.toMatch(/style=\{(box|note|inp)\}|\.\.\.(box|note|inp)\b/);
   });
 
   it('only Tier A files use the Blueprint card class', () => {

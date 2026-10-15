@@ -9,7 +9,7 @@ _expires_monotonic: float | None = None
 _started_at: datetime | None = None
 
 EXEMPT_PREFIXES = ("/superadmin/backups", "/internal/backup", "/verify-admin", "/superadmin/mfa",
-                   "/admin/logout", "/health", "/analytics/collect")
+                   "/admin/logout", "/health", "/analytics/collect", "/client-report")
 
 def max_minutes() -> int:
     try: return max(1, min(30, int(os.getenv("WRITE_FREEZE_MAX_MINUTES", "30"))))

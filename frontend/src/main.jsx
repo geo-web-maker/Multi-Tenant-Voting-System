@@ -6,6 +6,7 @@ import { UIFeedbackProvider } from './components/UIFeedback.jsx'
 import ViewAsBanner from './components/ViewAsBanner.jsx'
 import { consumeViewAsHandoff } from './session.js'
 import { setTemplateImpl } from './template.js'
+import { initClientReporting } from './clientReport.js'
 
 // After a redeploy, a tab (or cached index.html) can point at hashed chunks that no longer exist. Reload once to pick up
 // the new build; the 10 s guard stops a reload loop if the failure is a real outage rather than a stale build.
@@ -18,6 +19,8 @@ window.addEventListener('vite:preloadError', (event) => {
   } catch { /* storage blocked: reload once anyway */ }
   window.location.reload()
 })
+
+initClientReporting()
 
 async function start() {
   // Must run before <App/> reads the session: a superadmin's "View as" tab starts here.

@@ -24,6 +24,17 @@
           '<li>Switch between Wi-Fi and mobile data.</li></ol>' +
           '<button id="bb-reload" style="padding:8px 14px;font-size:14px">Reload</button>';
         root.appendChild(box);
+        // Tell the server once (no personal data) so a blank-screen problem shows up in Superadmin > Security. Vite fills in the
+        // two values at build time; an unfilled placeholder (plain dev server) starts with "%" and sends nothing.
+        try {
+          var api = '%VITE_API_URL%', org = '%VITE_ORG_SLUG%';
+          if (api.charAt(0) !== '%' && org.charAt(0) !== '%' && org) {
+            var feat = [];
+            if (!window.Promise) feat.push('Promise'); if (!window.fetch) feat.push('fetch'); if (!window.URLSearchParams) feat.push('URLSearchParams');
+            fetch(api + '/client-report', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', 'X-Org-Slug': org },
+              body: JSON.stringify({ kind: 'blank_screen', code: 'root_empty_20s', step: 'boot', detail: feat.length ? 'missing: ' + feat.join(',') : '' }) });
+          }
+        } catch (e) {}
         document.getElementById('bb-reload').onclick = function () { location.reload(); };
       }, 20000);
     </script>

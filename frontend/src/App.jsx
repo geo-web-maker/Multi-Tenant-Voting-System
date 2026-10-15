@@ -10,6 +10,7 @@ import { HelpMenuProvider } from './context/HelpMenuContext';
 import LoginErrorActions from './components/LoginErrorActions';
 import HelpPanel from './components/HelpPanel';
 import { initAnalytics, trackPage, pageName } from './analytics';
+import { setReportStep } from './clientReport';
 import { getTemplate } from './template';
 import { logoNeedsInvertFromPixels } from './logoInvert';
 import { prefetchNominationForm } from './nominationForm';
@@ -152,7 +153,7 @@ function App() {
   const [isAdminPath, setIsAdminPath] = useState(false);
   useEffect(() => {
     const name = pageName(view, step, isAdminPath);
-    if (name) trackPage(name);
+    if (name) { trackPage(name); setReportStep(name); }
   }, [view, step, isAdminPath]);
   const [totpCode, setTotpCode] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);

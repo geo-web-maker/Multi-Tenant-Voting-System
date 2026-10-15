@@ -295,6 +295,9 @@ async def _create_startup_indexes() -> None:
     await db.sms_usage.create_index("org_key", unique=True)
     await db.ip_send_stats.create_index("key", unique=True)
     await db.ip_send_stats.create_index("updated_at", expireAfterSeconds=2 * 3600)
+    # Voter-side problem reports (browser beacon). Kept a few hours: only the last 30 min is shown and alerted on.
+    await db.client_reports.create_index([("org_id", 1), ("kind", 1), ("created_at", -1)])
+    await db.client_reports.create_index("created_at", expireAfterSeconds=6 * 3600)
     await db.contact_changes.create_index([("org_id", 1), ("status", 1)])
     await db.contact_changes.create_index("student_id")
     await db.contact_changes.create_index("change.new_value")     # duplicate-number warning
@@ -672,7 +675,7 @@ PUBLIC_PATHS = {
     "/verify-admin", "/election-results", "/election-results/voter-roll",
     "/election-results/turnout-breakdown",
     "/voter-register", "/voter-register/check-number",
-    "/analytics/collect", "/demo/inbox",
+    "/analytics/collect", "/client-report", "/demo/inbox",
     # Backup triggers: called by an external scheduler with a shared secret
     # (X-Backup-Token, checked in backup_routes.py), not by an admin session.
     "/internal/backup/run", "/internal/backup/status", "/internal/backup/report",
@@ -13037,6 +13040,110 @@ async def superadmin_captcha_reset_ip(data: CaptchaIpReset, request: Request):
                      {"ip": ip, "reason": data.reason.strip()[:300], "had_record": bool(r.deleted_count)},
                      org_id=getattr(request.state, "org_id", None))
     return {"ip": ip, "cleared": bool(r.deleted_count)}
+
+
+# ── Voter-side problem reports ────────────────────────────────────────────────
+# A tiny beacon in the voter's browser reports what the server cannot see: a blocked Cloudflare script, a widget
+# error, a captcha that never returns a token, a JavaScript crash or a blank screen. Nothing personal is accepted:
+# only the problem type, a short error code, the voter's step and a browser family taken from the User-Agent.
+CLIENT_REPORT_KINDS = {"captcha_script_failed", "captcha_error", "captcha_stuck", "js_error", "unhandled_rejection", "blank_screen"}
+# kind -> (reports within the window that raise an email alert, window minutes)
+CLIENT_REPORT_ALERTS = {"captcha_script_failed": (10, 10), "captcha_error": (10, 10), "captcha_stuck": (10, 10),
+                        "blank_screen": (1, 10), "js_error": (15, 10), "unhandled_rejection": (15, 10)}
+_CLIENT_REPORT_IP_MAX, _CLIENT_REPORT_IP_WINDOW_S, _CLIENT_REPORT_IP_TRACKED = 20, 600.0, 5000
+_CLIENT_REPORT_IP_HITS: dict[str, list[float]] = {}
+
+
+class ClientReport(BaseModel):
+    kind: str = Field(max_length=40)
+    code: str = Field(default="", max_length=60)
+    step: str = Field(default="other", max_length=30)   # the page name the app already uses for analytics, e.g. voter_identity
+    detail: str = Field(default="", max_length=200)
+
+
+def _browser_family(ua: str) -> str:
+    """'Chrome 120', 'Safari 17', 'Samsung 23' ... from a User-Agent. Family and major version only."""
+    ua = ua or ""
+    for name, pat in (("Samsung", r"SamsungBrowser/(\d+)"), ("UC Browser", r"UCBrowser/(\d+)"), ("Opera", r"(?:OPR|Opera Mini)/(\d+)"),
+                      ("Edge", r"Edg(?:e|A|iOS)?/(\d+)"), ("Firefox", r"(?:Firefox|FxiOS)/(\d+)"),
+                      ("Chrome", r"(?:Chrome|CriOS)/(\d+)"), ("Safari", r"Version/(\d+)[\d.]* .*Safari/")):
+        m = re.search(pat, ua)
+        if m:
+            return f"{name} {m.group(1)}"
+    return "Android WebView" if "; wv)" in ua else "Other"
+
+
+def _scrub_report_text(text: str, limit: int) -> str:
+    """Printable characters only; long digit runs (could be an ID or phone number) are masked."""
+    t = "".join(ch for ch in (text or "") if ch.isprintable()).strip()
+    return re.sub(r"\d{5,}", "#", t)[:limit]
+
+
+def _client_report_rate_ok(ip: str) -> bool:
+    now = time.monotonic()
+    if len(_CLIENT_REPORT_IP_HITS) >= _CLIENT_REPORT_IP_TRACKED:
+        for k in [k for k, v in _CLIENT_REPORT_IP_HITS.items() if not v or now - v[-1] > _CLIENT_REPORT_IP_WINDOW_S]:
+            _CLIENT_REPORT_IP_HITS.pop(k, None)
+        if len(_CLIENT_REPORT_IP_HITS) >= _CLIENT_REPORT_IP_TRACKED:
+            return False
+    hits = [t for t in _CLIENT_REPORT_IP_HITS.get(ip, []) if now - t <= _CLIENT_REPORT_IP_WINDOW_S]
+    if len(hits) >= _CLIENT_REPORT_IP_MAX:
+        _CLIENT_REPORT_IP_HITS[ip] = hits
+        return False
+    hits.append(now)
+    _CLIENT_REPORT_IP_HITS[ip] = hits
+    return True
+
+
+@app.post("/client-report", status_code=202)
+async def client_report(data: ClientReport, request: Request):
+    """Public and best-effort: never an error to the browser, so a failed report cannot disturb the voter."""
+    try:
+        org_id = getattr(request.state, "org_id", None)
+        if not org_id or data.kind not in CLIENT_REPORT_KINDS or not _client_report_rate_ok(_client_ip(request)):
+            return {"ok": True}
+        now = datetime.utcnow()
+        await db.client_reports.insert_one({
+            "org_id": org_id, "kind": data.kind, "created_at": now,
+            "code": _scrub_report_text(data.code, 60),
+            "step": data.step if re.fullmatch(r"[a-z0-9_:]{1,30}", data.step or "") else "other",
+            "detail": _scrub_report_text(data.detail, 120),
+            "browser": _browser_family(request.headers.get("user-agent", "")),
+        })
+        limit = CLIENT_REPORT_ALERTS.get(data.kind)
+        if limit:
+            n = await db.client_reports.count_documents({"org_id": org_id, "kind": data.kind, "created_at": {"$gte": now - timedelta(minutes=limit[1])}})
+            if n == limit[0]:   # fires when the threshold is crossed; the alert helper adds its own cooldown
+                label = data.kind.replace("_", " ")
+                await alert_warning(
+                    f"Voters are reporting problems in their browser: {label}",
+                    f"{n} '{label}' report(s) in {limit[1]} minutes for organisation {org_id}. Open Superadmin, Security, "
+                    "Voter-side problems to see the browsers and steps affected. If voters are stuck on the bot check, "
+                    "set the bot check to Adaptive or Off.", cooldown_s=900)
+    except Exception:
+        logger.debug("client report dropped", exc_info=True)
+    return {"ok": True}
+
+
+@app.get("/superadmin/client-reports")
+async def superadmin_client_reports(request: Request, minutes: int = 30):
+    org_id = require_org(getattr(request.state, "org_id", None))
+    minutes = max(5, min(int(minutes), 360))
+    since = datetime.utcnow() - timedelta(minutes=minutes)
+    docs = await db.client_reports.find({"org_id": org_id, "created_at": {"$gte": since}}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    by_kind: dict[str, int] = {}
+    by_browser: dict[tuple, int] = {}
+    for d in docs:
+        by_kind[d["kind"]] = by_kind.get(d["kind"], 0) + 1
+        k = (d.get("browser", "Other"), d["kind"])
+        by_browser[k] = by_browser.get(k, 0) + 1
+    return {
+        "minutes": minutes, "total": len(docs),
+        "by_kind": [{"kind": k, "count": v, "alert_at": (CLIENT_REPORT_ALERTS.get(k) or (None,))[0]} for k, v in sorted(by_kind.items(), key=lambda x: -x[1])],
+        "top_browsers": [{"browser": b, "kind": k, "count": v} for (b, k), v in sorted(by_browser.items(), key=lambda x: -x[1])[:8]],
+        "recent": [{"kind": d["kind"], "code": d.get("code", ""), "step": d.get("step", ""), "browser": d.get("browser", ""),
+                    "detail": d.get("detail", ""), "at": d["created_at"].isoformat() + "Z"} for d in docs[:10]],
+    }
 
 
 @app.get("/superadmin/security-settings")
