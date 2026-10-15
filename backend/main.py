@@ -1580,7 +1580,7 @@ async def _sms_try_provider(provider: str, to_number: str, message_text: str) ->
     return "ok" if await send_sms_via_mambosms(to_number, message_text) else "failed"
 
 
-async def _send_sms_routed(to_number: str, message_text: str, org, kind: str, route_override: str | None = None) -> str:
+async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) -> str:
     """Send following the org's routing setting for this kind of message.
 
     Every attempt that was accepted OR may have been accepted (ambiguous) is counted toward the SMS
@@ -1593,7 +1593,7 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str, ro
     except Exception as e:                      # settings read must never block a voter's code
         logger.error(f"sms routing settings read failed, using defaults: {e}")
         sec = dict(_SEC_DEFAULTS)
-    route = route_override or sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
+    route = sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
     order = sms_provider_order(route, kind)
 
     last = "failed"
@@ -1628,7 +1628,7 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str, ro
 
 
 async def send_sms_status(to_number: str, message_text: str, request: Request | None = None,
-                          kind: str = "otp", org_id: str | None = None, route: str | None = None) -> str:
+                          kind: str = "otp", org_id: str | None = None) -> str:
     """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
 
     Provider order comes from the org's SMS routing setting (see SMS_ROUTES / sms_provider_order),
@@ -1644,7 +1644,7 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
         await _safe_count_sms(org, kind)
         return "ok"
 
-    return await _send_sms_routed(to_number, message_text, org, kind, route)
+    return await _send_sms_routed(to_number, message_text, org, kind)
 
 
 async def send_sms(to_number: str, message_text: str, request: Request | None = None,
@@ -12608,8 +12608,6 @@ class SmsAudienceRequest(BaseModel):
     voted: str = "any"
     attrs: dict[str, list[str]] = {}
     reg_numbers: list[str] | str = []
-    route: str = "default"      # default | egosms | mambosms | split (bulk only)
-    ego_pct: int = 50           # share sent through EgoSMS when route == "split"
 
 
 class SmsSendRequest(SmsAudienceRequest):
@@ -12628,12 +12626,8 @@ async def _sms_bulk_plan(request: Request, data: SmsAudienceRequest) -> dict:
     field_keys = [f["key"] for f in cfg["fields"] if f["enabled"]]
     sec = await get_security_settings(request)
     order = sms_provider_order(sec["sms_route_other"], "notice")
-    try:
-        mode, ego_pct = sms_bulk.validate_route(data.route, data.ego_pct)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    default_provider = order[0]
-    pricing_all = {p: sms_bulk.pricing_for(sec.get("sms_pricing"), p) for p in sms_bulk.PROVIDERS}
+    provider = order[0]
+    pricing = sms_bulk.pricing_for(sec.get("sms_pricing"), provider)
     try:
         query = sms_bulk.build_voter_query(
             {"voted": data.voted, "attrs": data.attrs, "reg_numbers": data.reg_numbers}, field_keys, normalize_student_id)
@@ -12646,20 +12640,12 @@ async def _sms_bulk_plan(request: Request, data: SmsAudienceRequest) -> dict:
         if len(voters) > SMS_BULK_MAX_AUDIENCE:
             raise HTTPException(400, f"That audience is larger than {SMS_BULK_MAX_AUDIENCE}. Narrow the filters.")
     variables = sms_bulk.variable_names(field_keys)
-    est = sms_bulk.estimate_split(voters, data.template, field_keys, pricing_all, mode, ego_pct,
-                                  normalize_phone_number, default_provider)
-    used = est["providers_used"]
-    provider = "split" if len(used) > 1 else (used[0] if used else (mode if mode in sms_bulk.PROVIDERS else default_provider))
-    count_for = lambda p: sms_bulk.count_parts(data.template, {k: pricing_all[p][k] for k in sms_bulk.LIMIT_KEYS})
-    shown = list(sms_bulk.PROVIDERS) if provider == "split" else [provider]
-    return {**{k: v for k, v in est.items() if k != "assignments"},
-            "provider": provider, "provider_order": order, "route": mode, "ego_pct": ego_pct,
-            "pricing_set": (not est["unpriced_providers"]) if used else pricing_all[provider]["cost_per_part_ugx"] is not None,
+    limits = {k: pricing[k] for k in sms_bulk.LIMIT_KEYS}
+    est = sms_bulk.estimate(voters, data.template, field_keys, limits, pricing["cost_per_part_ugx"], normalize_phone_number)
+    return {**est, "provider": provider, "provider_order": order, "pricing_set": pricing["cost_per_part_ugx"] is not None,
             "variables": variables, "unknown_tokens": sms_bulk.unknown_tokens(data.template, variables),
-            "template_count": count_for(provider if provider != "split" else default_provider),
-            "template_count_by_provider": {p: count_for(p) for p in shown},
-            "_voters": voters, "_field_keys": field_keys, "_limits_by_provider": {p: {k: pricing_all[p][k] for k in sms_bulk.LIMIT_KEYS} for p in sms_bulk.PROVIDERS},
-            "_assignments": est["assignments"], "_query_filters":
+            "template_count": sms_bulk.count_parts(data.template, limits),
+            "_voters": voters, "_field_keys": field_keys, "_limits": limits, "_query_filters":
                 {"voted": data.voted, "attrs": data.attrs, "reg_numbers": data.reg_numbers}}
 
 
@@ -12720,7 +12706,6 @@ def _campaign_view(c: dict) -> dict:
     return {
         "id": c["campaign_id"], "status": c["status"], "recipients": c["recipients"], "total_parts": c["total_parts"],
         "estimated_cost": c.get("estimated_cost"), "provider": c.get("provider"),
-        "route": c.get("route"), "ego_pct": c.get("ego_pct"),
         "sent": c.get("sent", 0), "failed": c.get("failed", 0), "ambiguous": c.get("ambiguous", 0),
         "pending": max(c["recipients"] - done, 0), "created_by": c.get("created_by"),
         "created_at": c.get("created_at"), "finished_at": c.get("finished_at"), "reason": c.get("reason"),
@@ -12777,8 +12762,7 @@ async def _run_sms_campaign(org_id, cid: str):
             inc = {"sent": 0, "failed": 0, "ambiguous": 0}
             for r in batch:
                 try:
-                    outcome = await send_sms_status(r["phone"], r["text"], None, kind="notice", org_id=org_id,
-                                                    route=(f"{r['provider']}_first" if r.get("provider") else None))
+                    outcome = await send_sms_status(r["phone"], r["text"], None, kind="notice", org_id=org_id)
                 except Exception as e:                   # never lose the loop to one bad send
                     logger.error(f"bulk sms send error: {e}")
                     outcome = "failed"
@@ -12833,8 +12817,7 @@ async def sms_bulk_send(data: SmsSendRequest, request: Request, admin: dict = De
     if plan["recipients"] == 0:
         raise HTTPException(400, "No students with a usable phone number match these filters.")
     if not plan["pricing_set"]:
-        miss = plan["unpriced_providers"] or [plan["provider"]]
-        raise HTTPException(400, "Set the cost per SMS for " + " and ".join(_SMS_PROVIDER_LABEL[p] for p in miss) + " in the SMS settings first.")
+        raise HTTPException(400, "Set the cost per SMS for " + _SMS_PROVIDER_LABEL[plan["provider"]] + " in the SMS settings first.")
     sec = await get_security_settings(request)
     if sec.get("sms_mode") == "conservation":
         raise HTTPException(409, "SMS is in conservation mode (credit reserved for voter codes). Switch to normal mode to send a bulk message.")
@@ -12846,23 +12829,20 @@ async def sms_bulk_send(data: SmsSendRequest, request: Request, admin: dict = De
     cid = uuid.uuid4().hex
     now = datetime.utcnow()
     camp = {"campaign_id": cid, "status": "queued", "template": data.template, "filters": plan["_query_filters"],
-            "provider": plan["provider"], "provider_order": plan["provider_order"], "route": plan["route"],
-            "ego_pct": plan["ego_pct"], "by_provider": plan["by_provider"], "recipients": plan["recipients"],
+            "provider": plan["provider"], "provider_order": plan["provider_order"], "recipients": plan["recipients"],
             "no_phone": plan["no_phone"], "total_parts": plan["total_parts"], "by_parts": plan["by_parts"],
             "unit_cost": plan["unit_cost"], "estimated_cost": plan["total_cost"], "reason": reason,
             "sent": 0, "failed": 0, "ambiguous": 0, "created_by": current_actor(request), "created_at": now}
     rows = []
-    assign = iter(plan["_assignments"])
     for v in plan["_voters"]:
         phone = sms_bulk.first_phone(v, normalize_phone_number)
         if not phone:
             continue
-        prov = next(assign)
         vals = sms_bulk.voter_values(v, plan["_field_keys"])
         text = sms_bulk.render(data.template, vals)
         rows.append({"campaign_id": cid, "student_id": v.get("student_id"), "name": vals["name"], "phone": phone,
-                     "text": text, "parts": sms_bulk.count_parts(text, plan["_limits_by_provider"][prov])["parts"],
-                     "provider": prov, "status": "pending", "created_at": now})
+                     "text": text, "parts": sms_bulk.count_parts(text, plan["_limits"])["parts"],
+                     "status": "pending", "created_at": now})
     await t.sms_campaigns.insert_one(camp)
     for i in range(0, len(rows), 500):
         await t.sms_campaign_recipients.insert_many(rows[i:i + 500])
@@ -12932,6 +12912,114 @@ async def sms_bulk_retry_failed(campaign_id: str, data: SmsCampaignReason, reque
                           {"retry_reason": data.reason.strip(), "retried": r.modified_count})
     _start_campaign_task(request.state.org_id, campaign_id)
     return _campaign_view(c)
+
+
+# ── Captcha health (superadmin diagnostics for the Turnstile bot check) ─────────────────────
+# All routes sit under /superadmin, so the auth middleware already restricts them to the superadmin.
+
+_TURNSTILE_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+class CaptchaTokenTest(BaseModel):
+    token: str = Field(min_length=1, max_length=4096)
+
+
+class CaptchaIpReset(BaseModel):
+    ip: str | None = Field(default=None, max_length=64)   # omitted = the caller's own IP
+    reason: str = Field(default="", max_length=300)
+
+
+async def _siteverify_raw(token: str, ip: str | None = None) -> dict:
+    """Raw Cloudflare siteverify call for diagnostics. Never echoes the secret."""
+    started = time.monotonic()
+    out = {"reachable": False, "latency_ms": None, "http_status": None, "result": None, "error": None}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(_TURNSTILE_URL, data={"secret": TURNSTILE_SECRET, "response": token,
+                                                         **({"remoteip": ip} if ip else {})})
+        out["http_status"] = r.status_code
+        out["reachable"] = True
+        try:
+            out["result"] = r.json()
+        except Exception:
+            out["error"] = "Cloudflare answered with something that is not JSON."
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    out["latency_ms"] = round((time.monotonic() - started) * 1000)
+    return out
+
+
+def _ip_counts(d: dict) -> dict:
+    cutoff = datetime.utcnow() - timedelta(seconds=ol.GUARD_WINDOW_S)
+    c = {k: sum(1 for t in d.get(k, []) if t > cutoff) for k in ("sends", "verifies", "fails")}
+    c["flagged"] = ol.ip_needs_captcha(d.get("sends", []), d.get("verifies", []), d.get("fails", []), datetime.utcnow())
+    return c
+
+
+@app.get("/superadmin/captcha/status")
+async def superadmin_captcha_status(request: Request):
+    sec = await get_security_settings(request)
+    ip = _client_ip(request)
+    d = await db.ip_send_stats.find_one({"key": ip}) or {}
+    xff = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    return {
+        "mode": sec["turnstile_mode"],
+        "secret_configured": bool(TURNSTILE_SECRET),
+        "secret_is_cloudflare_test_key": bool(TURNSTILE_SECRET) and TURNSTILE_SECRET[:2] in ("1x", "2x", "3x"),
+        "thresholds": {"window_minutes": ol.GUARD_WINDOW_S // 60, "min_sends": ol.IP_MIN_SENDS,
+                       "max_verify_ratio": ol.IP_RATIO, "max_fails": ol.IP_MAX_FAILS},
+        "your_ip": {"detected": ip, "counts_30m": _ip_counts(d)},
+        # Lets you spot a wrong TRUSTED_PROXY_HOPS: if "detected" is a proxy address rather than your
+        # own, every voter shares one counter and adaptive mode behaves like "on".
+        "proxy": {
+            "trusted_hops": TRUSTED_PROXY_HOPS, "forwarded_for": xff,
+            "socket_peer": request.client.host if request.client else None,
+            # What each possible TRUSTED_PROXY_HOPS value would make the server treat as the client IP.
+            # 0 = the direct connection; N = the Nth entry from the right of X-Forwarded-For.
+            "candidates": [{"hops": n, "ip": (request.client.host if request.client else None) if n == 0 else xff[-n]}
+                           for n in range(0, len(xff) + 1)],
+            # Vercel overwrites X-Forwarded-For with the real visitor IP and each later proxy appends the
+            # address it saw, so the visitor is the leftmost entry: hops = number of entries. The panel
+            # confirms this against the browser's real public IP before you rely on it.
+            "suggested_hops": len(xff),
+        },
+    }
+
+
+@app.post("/superadmin/captcha/ping")
+async def superadmin_captcha_ping(request: Request):
+    """Reachability + secret check: sends a dummy token. 'invalid-input-response' means Cloudflare is
+    reachable and the secret was accepted; 'invalid-input-secret' means the secret is wrong."""
+    if not TURNSTILE_SECRET:
+        return {"configured": False, "reachable": None, "secret_valid": None,
+                "detail": "TURNSTILE_SECRET is not set on the server."}
+    r = await _siteverify_raw("diagnostic-ping")
+    codes = (r["result"] or {}).get("error-codes") or []
+    return {"configured": True, "reachable": r["reachable"], "latency_ms": r["latency_ms"],
+            "http_status": r["http_status"], "error": r["error"], "error_codes": codes,
+            "secret_valid": (None if not r["reachable"] else "invalid-input-secret" not in codes and "missing-input-secret" not in codes)}
+
+
+@app.post("/superadmin/captcha/verify-token")
+async def superadmin_captcha_verify_token(data: CaptchaTokenTest, request: Request):
+    """Verifies a token produced by the live widget in the Security panel (consumes it: tokens are single-use)."""
+    if not TURNSTILE_SECRET:
+        raise HTTPException(400, "TURNSTILE_SECRET is not set on the server.")
+    r = await _siteverify_raw(data.token, _client_ip(request))
+    res = r["result"] or {}
+    return {"passed": bool(res.get("success")), "error_codes": res.get("error-codes") or [],
+            "hostname": res.get("hostname"), "challenge_ts": res.get("challenge_ts"),
+            "reachable": r["reachable"], "latency_ms": r["latency_ms"], "error": r["error"]}
+
+
+@app.delete("/superadmin/captcha/ip-stats")
+async def superadmin_captcha_reset_ip(data: CaptchaIpReset, request: Request):
+    ip = (data.ip or "").strip() or _client_ip(request)
+    r = await db.ip_send_stats.delete_one({"key": ip})
+    await log_action("captcha_ip_stats_reset", current_actor(request),
+                     {"ip": ip, "reason": data.reason.strip()[:300], "had_record": bool(r.deleted_count)},
+                     org_id=getattr(request.state, "org_id", None))
+    return {"ip": ip, "cleared": bool(r.deleted_count)}
 
 
 @app.get("/superadmin/security-settings")

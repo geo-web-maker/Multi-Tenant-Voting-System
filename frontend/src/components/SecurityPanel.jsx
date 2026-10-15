@@ -8,6 +8,7 @@ import { errMsg } from '../studentEdit';
 import { turnstileConfigured } from '../supportLink';
 import { useRevealReady } from './RevealGroup';
 import LegacyDataPanel from './LegacyDataPanel';
+import TurnstileWidget from './TurnstileWidget';
 import { DEFAULT_TZ, utcToZonedInput, zonedInputToUtcISO, utcOffsetLabel, fmtZoned } from '../tz';
 
 const ROUTE_SHORT = {
@@ -193,6 +194,8 @@ export default function SecurityPanel() {
         {f.turnstile_mode !== 'off' && !turnstileConfigured && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> VITE_TURNSTILE_SITE_KEY is not set in this frontend build, so voters cannot see the check. Keep this Off until it is set and the site is redeployed.</p>}
       </div>
 
+      <CaptchaHealthTile />
+
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
         <input style={inp} value={reasonSec} onChange={e => setReasonSec(e.target.value)} placeholder="e.g. election-day hardening" /></label>
       <button  onClick={saveSecurity} className="perf-btn perf-btn-primary">Save security settings</button>
@@ -358,8 +361,155 @@ function ApplicationEditReconcileTile() {
   );
 }
 
+/** Superadmin diagnostics for the bot check: config, Cloudflare reachability, live widget test, per-IP counters. */
+function CaptchaHealthTile() {
+  const toast = useToast();
+  const [st, setSt] = useState(null);
+  const [ping, setPing] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [showWidget, setShowWidget] = useState(false);
+  const [tok, setTok] = useState('');
+  const [wKey, setWKey] = useState(0);
+  const [wStatus, setWStatus] = useState('');
+  const [vres, setVres] = useState(null);
+  const [pubIp, setPubIp] = useState('');       // this browser's real public IP, from an outside lookup
+  const [pubIpErr, setPubIpErr] = useState('');
+
+  const loadStatus = useCallback(async () => {
+    try { setSt((await api.get('/superadmin/captcha/status')).data); }
+    catch (e) { toast(errMsg(e, 'Could not load bot check status.'), { kind: 'error' }); }
+  }, [toast]);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const runPing = async () => {
+    setBusy('ping');
+    try { setPing((await api.post('/superadmin/captcha/ping')).data); }
+    catch (e) { toast(errMsg(e, 'Reachability test failed.'), { kind: 'error' }); }
+    finally { setBusy(''); }
+  };
+  const verify = async () => {
+    setBusy('verify');
+    try { setVres((await api.post('/superadmin/captcha/verify-token', { token: tok })).data); }
+    catch (e) { toast(errMsg(e, 'Verification request failed.'), { kind: 'error' }); }
+    finally { setBusy(''); setTok(''); setWKey(k => k + 1); }   // tokens are single-use
+  };
+  const detectPublicIp = async () => {
+    setBusy('pubip'); setPubIpErr('');
+    try {
+      const r = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
+      setPubIp(String((await r.json()).ip || '').trim());
+    } catch { setPubIpErr('Could not look up your public IP (blocked or offline). Type it in from any "what is my IP" site instead.'); }
+    finally { setBusy(''); }
+  };
+  const clearIp = async () => {
+    setBusy('ip');
+    try {
+      await api.delete('/superadmin/captcha/ip-stats', { data: { reason: 'superadmin captcha test' } });
+      toast('Counters for your IP were cleared.', { kind: 'success' });
+      await loadStatus();
+    } catch (e) { toast(errMsg(e, 'Could not clear counters.'), { kind: 'error' }); }
+    finally { setBusy(''); }
+  };
+
+  const c = st?.your_ip?.counts_30m;
+  const ok = (v) => <b style={{ color: v ? 'var(--success)' : 'var(--danger)' }}>{v ? 'Yes' : 'No'}</b>;
+  return (
+    <div style={box}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <b style={{ fontSize: 14 }}>Bot check health</b>
+        <button onClick={loadStatus} className="perf-btn" style={{ cursor: 'pointer' }}>Refresh</button>
+      </div>
+      {!st ? <p style={note}>Loading…</p> : (
+        <>
+          <div style={grid}>
+            <Stat label="Mode" value={st.mode} />
+            <Stat label="Server secret set" value={ok(st.secret_configured)} />
+            <Stat label="Site key in this build" value={ok(turnstileConfigured)} />
+            <Stat label="Cloudflare test keys" value={st.secret_is_cloudflare_test_key ? 'Yes (not real protection)' : 'No'} color={st.secret_is_cloudflare_test_key ? 'var(--warning)' : undefined} />
+          </div>
+          {st.secret_is_cloudflare_test_key && <p style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> The secret looks like a Cloudflare dummy key. Replace it with the real secret before election day.</p>}
+
+          <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>Proxy hops: which address does the server treat as the voter?</b>
+          <p style={note}>Path: voter's phone → {st.proxy.forwarded_for.length > 1 ? 'Vercel → ' : ''}Render (this server). The server reads the client address from the <code>X-Forwarded-For</code> header, counting <code>TRUSTED_PROXY_HOPS</code> entries from the right. Currently set to <b>{st.proxy.trusted_hops}</b>, which picks <code>{st.your_ip.detected}</code>.</p>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr style={{ textAlign: 'left', opacity: 0.65 }}><th style={cell}>TRUSTED_PROXY_HOPS</th><th style={cell}>Address the server would use</th><th style={cell}>Matches your public IP</th></tr></thead>
+            <tbody>
+              {st.proxy.candidates.map(cd => {
+                const match = pubIp && cd.ip === pubIp;
+                const current = cd.hops === st.proxy.trusted_hops;
+                return (
+                  <tr key={cd.hops} style={{ background: current ? 'var(--card-bg)' : 'transparent', fontWeight: current ? 700 : 400 }}>
+                    <td style={cell}>{cd.hops}{current ? ' (current)' : ''}</td>
+                    <td style={cell}><code>{cd.ip || '—'}</code></td>
+                    <td style={cell}>{!pubIp ? '—' : match ? <span style={{ color: 'var(--success)' }}>Yes</span> : 'No'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+            <button disabled={busy === 'pubip'} onClick={detectPublicIp} className="perf-btn" style={{ cursor: 'pointer' }}>{busy === 'pubip' ? 'Looking up…' : 'Detect my public IP'}</button>
+            <input style={{ ...inp, width: 220 }} value={pubIp} onChange={e => setPubIp(e.target.value.trim())} placeholder="or type your public IP" />
+          </div>
+          {pubIpErr && <p style={{ ...note, color: 'var(--warning)' }}>{pubIpErr}</p>}
+          {(() => {
+            const hit = pubIp ? st.proxy.candidates.find(cd => cd.ip === pubIp) : null;
+            if (!pubIp) return <p style={note}>Click <b>Detect my public IP</b> (uses api.ipify.org from your browser) so the panel can tell you the right value. Do this from the same network and the same site address voters use.</p>;
+            if (!hit) return <p style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> None of the options gives <code>{pubIp}</code>. If your connection uses IPv6, a VPN or a different network path than the one this page just used, try another network and refresh. Do not change the setting until one row matches.</p>;
+            if (hit.hops === st.proxy.trusted_hops) return <p style={{ ...note, color: 'var(--success)' }}>Correct: <code>TRUSTED_PROXY_HOPS={hit.hops}</code> already gives the real voter IP.</p>;
+            return <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> Set <code>TRUSTED_PROXY_HOPS={hit.hops}</code> on the backend (Render → Environment), redeploy, then click Refresh. Until then every voter is counted as <code>{st.your_ip.detected}</code>.</p>;
+          })()}
+          <p style={note}>Why it matters: if all voters share one address, adaptive mode challenges everyone and the per-IP limits are shared across the whole election.</p>
+
+          <div style={grid}>
+            <Stat label="Sends (30 min)" value={`${c.sends} / ${st.thresholds.min_sends}`} />
+            <Stat label="Verifies (30 min)" value={c.verifies} />
+            <Stat label="Failures (30 min)" value={`${c.fails} / ${st.thresholds.max_fails}`} />
+            <Stat label="Flagged for challenge" value={c.flagged ? 'Yes' : 'No'} color={c.flagged ? 'var(--warning)' : undefined} />
+          </div>
+          <p style={note}>An IP is challenged in adaptive mode at {st.thresholds.min_sends}+ sends with under {Math.round(st.thresholds.max_verify_ratio * 100)}% verified, or {st.thresholds.max_fails}+ failures, within {st.thresholds.window_minutes} minutes.</p>
+          <button disabled={busy === 'ip'} onClick={clearIp} className="perf-btn" style={{ cursor: 'pointer' }}>Clear counters for my IP</button>
+
+          <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '14px 0' }} />
+          <b style={{ fontSize: 13 }}>Cloudflare connection</b>
+          <p style={note}>Sends a dummy token from the server to confirm Cloudflare is reachable and the secret is accepted. No SMS is sent.</p>
+          <button disabled={busy === 'ping'} onClick={runPing} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer' }}>{busy === 'ping' ? 'Testing…' : 'Test connection'}</button>
+          {ping && (
+            <p style={{ ...note, opacity: 1 }}>
+              {!ping.configured ? <span style={{ color: 'var(--warning)' }}>{ping.detail}</span>
+                : !ping.reachable ? <span style={{ color: 'var(--danger)' }}>Cloudflare is unreachable from the server{ping.error ? ` (${ping.error})` : ''}.</span>
+                : ping.secret_valid ? <span style={{ color: 'var(--success)' }}>Reachable ({ping.latency_ms} ms) and the secret is accepted.</span>
+                : <span style={{ color: 'var(--danger)' }}>Reachable ({ping.latency_ms} ms) but Cloudflare rejected the secret: {ping.error_codes.join(', ') || 'unknown'}.</span>}
+            </p>
+          )}
+
+          <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '14px 0' }} />
+          <b style={{ fontSize: 13 }}>Live widget test</b>
+          <p style={note}>Loads the real widget in this browser, then verifies its token on the server. Use it from a phone on mobile data to see what voters will see.</p>
+          {!turnstileConfigured ? <p style={{ ...note, color: 'var(--danger)' }}>No site key in this build, so there is nothing to test.</p>
+            : !showWidget ? <button onClick={() => setShowWidget(true)} className="perf-btn" style={{ cursor: 'pointer' }}>Load widget</button>
+            : (
+              <>
+                <TurnstileWidget onToken={setTok} resetKey={wKey} onStatus={setWStatus} />
+                <p style={note}>Widget: <b>{wStatus === 'ready' ? 'token received' : wStatus === 'failed' ? 'failed to load' : 'loading…'}</b></p>
+                <button disabled={!tok || busy === 'verify'} onClick={verify} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer' }}>Verify token on server</button>
+              </>
+            )}
+          {vres && (
+            <p style={{ ...note, opacity: 1 }}>
+              {vres.passed ? <span style={{ color: 'var(--success)' }}>Passed{vres.hostname ? ` for ${vres.hostname}` : ''} ({vres.latency_ms} ms).</span>
+                : <span style={{ color: 'var(--danger)' }}>Failed: {vres.error_codes.join(', ') || vres.error || 'unknown reason'}.</span>}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 const box = { border: '1px solid var(--border-color)', borderRadius: 12, padding: 16, background: 'var(--bg-color)' };
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginTop: 10 };
+const cell = { padding: '6px 8px', borderBottom: '1px solid var(--border-color)' };
 const note = { fontSize: 12, opacity: 0.75, margin: '6px 0' };
 const fld = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 };
 const lbl = { fontSize: 12, opacity: 0.65, fontWeight: 600 };
