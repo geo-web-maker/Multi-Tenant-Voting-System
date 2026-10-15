@@ -33,3 +33,18 @@
 - `npx vitest run` in both templates, both `vite build`s, eslint.
 - Any real SMS send, and any visual check (Default/Blueprint, light/dark, 1100 px / 390 px). The variable chips are `perf-btn` buttons inside `perf-chips` items: check they look right in both templates.
 - Open: confirm each provider's real per-part billing and limits before trusting totals; consent/opt-out rules for bulk messages.
+
+## Update: system-message calculator and balance boxes
+**Backend**
+- `backend/sms_templates.py` (new, pure): every automatic SMS in one catalog (OTP, staff login code, 9 applicant/Finance wordings, status link, 4 contact-change notices, connection test). `main.py` now renders them through `sms_templates.render(...)` at each send site, so the calculator prices exactly what is sent. Wording is unchanged (pinned by `tests/test_sms_templates.py`).
+- `GET /admin/sms/templates` (superadmin): each message rendered with this organisation's name, longest real position title, highest fee and support contact, counted with the provider that kind really routes to (OTP follows the OTP route, everything else the other route) and priced from `sms_pricing`. Unset price is `null`, never 0.
+
+**Frontend**
+- `SmsPanel.jsx`: Balances and usage are now boxes (EgoSMS balance, MamboSMS balance, SMS budget left; red when 25% or less). The Calculator has a System messages section: enter how many of each you expect, see per-message and total cost, "Everything together" (with the campaign above), and each provider's balance after sending (red if negative). OTP has a "Use the voter count" shortcut.
+- `smsCalc.js`: `systemTotals`, `toCount`, `balanceNumber`, `partsAffordable` (+ tests). A used message with no price makes the total "Not set", never a smaller number.
+- `SecurityPanel.jsx`: `SmsUsageTile` takes `hideBudgetLeft` (the SMS tab shows the budget as a box instead).
+
+**Finding:** with a long organisation name the OTP is 161 characters, which is 2 parts, so it bills double. Shorten the org name in the code or the wording if that matters.
+
+**Run:** `test_sms_templates.py` (9 cases) and the new `smsCalc.test.js` cases pass under the same kind of stand-in as before; `py_compile` on `main.py`; TypeScript parse of the changed JSX.
+**Not run:** pytest/vitest proper, eslint, vite build, the new endpoint against mongomock, any visual check (both templates, light/dark, 390 px).

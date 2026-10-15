@@ -15,7 +15,8 @@ const ROUTE_SHORT = {
   egosms_only: 'EgoSMS only', mambosms_only: 'MamboSMS only',
 };
 /** SMS usage tile (read-only; superadmin / overseer / commission). */
-export function SmsUsageTile({ initial = null }) {
+// hideBudgetLeft: the SMS tab shows the budget as its own box, so the tile there leaves it out.
+export function SmsUsageTile({ initial = null, hideBudgetLeft = false }) {
   const [u, setU] = useState(initial);
   useEffect(() => {
     let live = true;
@@ -39,7 +40,7 @@ export function SmsUsageTile({ initial = null }) {
         <Stat label="Verified" value={u.verified_total} />
         <Stat label="Send→verify" value={u.send_to_verify_ratio == null ? '—' : `${Math.round(u.send_to_verify_ratio * 100)}%`} />
         <Stat label="Last 30 min" value={u.recent.ratio_30m == null ? '—' : `${Math.round(u.recent.ratio_30m * 100)}% of ${u.recent.sends_30m}`} />
-        <Stat label="Budget left" value={u.budget_total ? `${u.budget_left} / ${u.budget_total}` : 'not set'} color={low ? 'var(--danger)' : undefined} />
+        {!hideBudgetLeft && <Stat label="Budget left" value={u.budget_total ? `${u.budget_left} / ${u.budget_total}` : 'not set'} color={low ? 'var(--danger)' : undefined} />}
       </div>
       {u.sms_route_otp && (
         <p style={note}>Routing — OTP: <b>{ROUTE_SHORT[u.sms_route_otp] || u.sms_route_otp}</b> · Other messages: <b>{ROUTE_SHORT[u.sms_route_other] || u.sms_route_other}</b></p>

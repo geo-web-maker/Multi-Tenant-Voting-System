@@ -223,3 +223,74 @@ def estimate(voters, template: str, field_keys, limits: dict, unit_cost, normali
         "min_len": min_len, "max_len": max_len, "samples": samples,
         "missing": {k: n for k, n in missing.items() if k in used},
     }
+
+
+# ── provider choice for a bulk send ──────────────────────────────────────────
+ROUTE_MODES = ("default", "egosms", "mambosms", "split")
+
+
+def validate_route(mode, ego_pct):
+    """-> (mode, ego_pct). Raises ValueError with a message fit to show the admin."""
+    mode = (mode or "default").strip().lower()
+    if mode not in ROUTE_MODES:
+        raise ValueError("Choose how to send: the usual route, one provider, or a split between both.")
+    try:
+        pct = int(50 if ego_pct is None else ego_pct)
+    except (TypeError, ValueError):
+        raise ValueError("The split must be a whole number from 0 to 100.")
+    if not 0 <= pct <= 100:
+        raise ValueError("The split must be a whole number from 0 to 100.")
+    return mode, pct
+
+
+def assign_providers(n: int, mode: str, ego_pct: int, default_provider: str = "mambosms") -> list[str]:
+    """Provider for each of n recipients, in order. 'split' spreads EgoSMS evenly through the list
+    (e.g. 30% = about every third), so the share is exact to within one message at any point and an
+    interrupted campaign has still used the ratio so far."""
+    if mode in PROVIDERS:
+        return [mode] * n
+    if mode == "split":
+        return ["egosms" if (i + 1) * ego_pct // 100 > i * ego_pct // 100 else "mambosms" for i in range(n)]
+    return [default_provider] * n
+
+
+def estimate_split(voters, template, field_keys, pricing: dict, mode, ego_pct, normalize_phone,
+                   default_provider: str = "mambosms") -> dict:
+    """Like estimate(), but each provider counts parts with its own limits and price.
+    `pricing` maps provider -> pricing_for(...). Adds by_provider and the per-recipient `assignments`
+    (providers, in the order of the voters that have a usable phone)."""
+    with_phone = [v for v in voters if first_phone(v, normalize_phone)]
+    assign = assign_providers(len(with_phone), mode, ego_pct, default_provider)
+    groups = {p: [] for p in PROVIDERS}
+    for v, p in zip(with_phone, assign):
+        groups[p].append(v)
+    by_provider, parts_by, samples, missing = {}, {}, [], {}
+    total_parts = 0
+    min_len = max_len = None
+    unpriced = False
+    for p, vs in groups.items():
+        if not vs:
+            continue
+        e = estimate(vs, template, field_keys, {k: pricing[p][k] for k in LIMIT_KEYS},
+                     pricing[p]["cost_per_part_ugx"], normalize_phone)
+        by_provider[p] = {"recipients": e["recipients"], "total_parts": e["total_parts"], "unit_cost": e["unit_cost"],
+                          "total_cost": e["total_cost"], "by_parts": e["by_parts"]}
+        unpriced = unpriced or e["unit_cost"] is None
+        total_parts += e["total_parts"]
+        for k, n in e["by_parts"].items():
+            parts_by[k] = parts_by.get(k, 0) + n
+        for k, n in e["missing"].items():
+            missing[k] = max(missing.get(k, 0), n)
+        samples += [{**x, "provider": p} for x in e["samples"]][: 3 - len(samples)]
+        min_len = e["min_len"] if min_len is None else min(min_len, e["min_len"])
+        max_len = e["max_len"] if max_len is None else max(max_len, e["max_len"])
+    total_cost = None if unpriced or not by_provider else round(sum(b["total_cost"] for b in by_provider.values()), 2)
+    unit = next(iter(by_provider.values()))["unit_cost"] if len(by_provider) == 1 else None
+    return {
+        "recipients": len(with_phone), "no_phone": len(voters) - len(with_phone), "total_parts": total_parts,
+        "by_parts": dict(sorted(parts_by.items(), key=lambda kv: int(kv[0]))), "unit_cost": unit, "total_cost": total_cost,
+        "min_len": min_len, "max_len": max_len, "samples": samples, "missing": missing,
+        "by_provider": by_provider, "providers_used": list(by_provider),
+        "unpriced_providers": [p for p, b in by_provider.items() if b["unit_cost"] is None],
+        "assignments": assign,
+    }

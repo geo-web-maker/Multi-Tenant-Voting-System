@@ -144,3 +144,76 @@ def test_estimate_reports_missing_only_for_used_vars():
     voters = [{"full_name": "Al", "student_id": "a", "phone_numbers": ["0772000001"], "attrs": {}}]
     est = sb.estimate(voters, "Hi {programme}", ["programme", "hostel"], sb.DEFAULT_LIMITS, 1, norm_phone)
     assert est["missing"] == {"programme": 1}
+
+
+# ── provider choice (route / ratio) ──────────────────────────────────────────
+def _pricing(ego=35, mambo=30, ego_single=160, mambo_single=160):
+    P = sb.default_pricing()
+    P["egosms"].update(cost_per_part_ugx=ego, single_limit=ego_single)
+    P["mambosms"].update(cost_per_part_ugx=mambo, single_limit=mambo_single)
+    return {p: sb.pricing_for(P, p) for p in sb.PROVIDERS}
+
+
+def _voters(n):
+    return [{"full_name": f"Voter {i}", "student_id": f"21/U/{i}", "phone_numbers": [f"0770000{i:03d}"]} for i in range(n)]
+
+
+def test_validate_route():
+    assert sb.validate_route(None, None) == ("default", 50)
+    assert sb.validate_route("SPLIT", "30") == ("split", 30)
+    for bad in (("nope", 50), ("split", -1), ("split", 101), ("split", "x")):
+        with pytest.raises(ValueError):
+            sb.validate_route(*bad)
+
+
+def test_assign_single_and_default():
+    assert sb.assign_providers(3, "egosms", 50) == ["egosms"] * 3
+    assert sb.assign_providers(3, "mambosms", 50) == ["mambosms"] * 3
+    assert sb.assign_providers(2, "default", 50, "egosms") == ["egosms"] * 2
+
+
+@pytest.mark.parametrize("pct", [0, 10, 30, 50, 70, 100])
+def test_split_ratio_is_exact_and_even(pct):
+    a = sb.assign_providers(100, "split", pct)
+    assert a.count("egosms") == pct
+    for k in (10, 20, 50):                         # any prefix is within one message of the ratio
+        assert abs(a[:k].count("egosms") - k * pct / 100) <= 1
+
+
+def test_split_odd_total_rounds_down_for_ego():
+    a = sb.assign_providers(7, "split", 50)
+    assert a.count("egosms") == 3 and len(a) == 7
+
+
+def test_estimate_split_prices_each_provider():
+    e = sb.estimate_split(_voters(10), "Hello", [], _pricing(), "split", 30, norm_phone)
+    assert e["by_provider"]["egosms"]["recipients"] == 3 and e["by_provider"]["mambosms"]["recipients"] == 7
+    assert e["total_parts"] == 10 and e["total_cost"] == 3 * 35 + 7 * 30
+    assert e["unit_cost"] is None and e["providers_used"] == ["egosms", "mambosms"]
+
+
+def test_estimate_split_uses_each_providers_part_limit():
+    long = "a" * 120                                  # 1 part on a 160 limit, 2 parts on a 100 limit
+    P = _pricing(ego_single=100)
+    P["egosms"]["multi_limit"] = 60
+    e = sb.estimate_split(_voters(4), long, [], P, "split", 50, norm_phone)
+    assert e["by_provider"]["egosms"]["total_parts"] == 2 * 2 and e["by_provider"]["mambosms"]["total_parts"] == 2
+    assert e["total_cost"] == 4 * 35 + 2 * 30
+
+
+def test_estimate_split_single_provider_has_unit_cost():
+    e = sb.estimate_split(_voters(5), "Hi", [], _pricing(), "egosms", 50, norm_phone)
+    assert e["providers_used"] == ["egosms"] and e["unit_cost"] == 35 and e["total_cost"] == 175
+
+
+def test_estimate_split_unpriced_provider_gives_no_total():
+    P = _pricing(ego=None)
+    e = sb.estimate_split(_voters(4), "Hi", [], P, "split", 50, norm_phone)
+    assert e["total_cost"] is None and e["unpriced_providers"] == ["egosms"]
+    assert sb.estimate_split(_voters(4), "Hi", [], P, "mambosms", 50, norm_phone)["total_cost"] == 120
+
+
+def test_estimate_split_skips_no_phone():
+    v = _voters(3) + [{"full_name": "No Phone", "student_id": "x", "phone_numbers": []}]
+    e = sb.estimate_split(v, "Hi", [], _pricing(), "split", 50, norm_phone)
+    assert e["recipients"] == 3 and e["no_phone"] == 1 and len(e["assignments"]) == 3

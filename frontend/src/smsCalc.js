@@ -63,3 +63,62 @@ export const ugx = (n) => (n == null ? '—' : `UGX ${Math.round(n * 100) / 100 
 
 /** Cost of one SMS of `parts` parts, or null when the price is not set (never 0). */
 export const costPerSms = (parts, costPerPart) => (costPerPart == null || costPerPart === '' ? null : parts * Number(costPerPart));
+
+/** A typed quantity as a whole number >= 0 (blank, negative or junk is 0). */
+export const toCount = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0; };
+
+/** A provider balance as a number, or null when it is missing or not numeric ("12,500.50" is fine). */
+export const balanceNumber = (b) => {
+  if (b == null || b === '') return null;
+  const n = Number(String(b).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Whole SMS parts a balance still pays for at `costPerPart`, or null when either is unknown. */
+export const partsAffordable = (balance, costPerPart) => {
+  const bal = balanceNumber(balance);
+  const unit = costPerPart == null || costPerPart === '' ? null : Number(costPerPart);
+  return bal == null || unit == null || !(unit > 0) ? null : Math.max(0, Math.floor(bal / unit));
+};
+
+/**
+ * Totals for the system messages (/admin/sms/templates) given how many of each the person expects to send.
+ * `qty` is { [key]: typed text }. A send whose price is not set makes the total null (never a lower number),
+ * and `byProvider` lets the caller compare each provider's need with its balance.
+ * Returns { rows: {key: {n, parts, cost}}, count, parts, cost, unpriced, byProvider: {p: {parts, cost, unpriced}} }.
+ */
+export function systemTotals(templates, qty) {
+  const rows = {};
+  const byProvider = {};
+  let count = 0; let parts = 0; let cost = 0; let unpriced = false;
+  for (const t of templates || []) {
+    const n = toCount(qty?.[t.key]);
+    const rowCost = t.cost_per_sms == null ? null : t.cost_per_sms * n;
+    rows[t.key] = { n, parts: n * t.parts, cost: n ? rowCost : 0 };
+    if (!n) continue;
+    count += n; parts += n * t.parts;
+    const b = byProvider[t.provider] || (byProvider[t.provider] = { parts: 0, cost: 0, unpriced: false });
+    b.parts += n * t.parts;
+    if (rowCost == null) { b.unpriced = true; unpriced = true; } else { b.cost += rowCost; cost += rowCost; }
+  }
+  return { rows, count, parts, cost: unpriced ? null : cost, unpriced, byProvider };
+}
+
+/** The share of a bulk send that goes through EgoSMS, as a whole number from 0 to 100 (blank or junk gives `fallback`). */
+export const normalizePct = (v, fallback = 50) => {
+  const n = Math.floor(Number(v));
+  return v === '' || v == null || !Number.isFinite(n) ? fallback : Math.min(100, Math.max(0, n));
+};
+
+/** "EgoSMS 30% · MamboSMS 70%" */
+export const splitLabel = (egoPct) => `EgoSMS ${egoPct}% · MamboSMS ${100 - egoPct}%`;
+
+/**
+ * Providers whose balance is lower than what a send would cost them.
+ * `byProvider` is the server's { egosms: {total_cost}, mambosms: {total_cost} }; a provider whose cost or balance
+ * is unknown is never reported (we cannot say it falls short).
+ */
+export const shortfalls = (byProvider, balances) => Object.entries(byProvider || {}).filter(([p, b]) => {
+  const bal = balanceNumber(balances?.[p]?.balance);
+  return b && b.total_cost != null && bal != null && b.total_cost > bal;
+}).map(([p]) => p);

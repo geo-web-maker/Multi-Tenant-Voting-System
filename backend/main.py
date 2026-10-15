@@ -492,6 +492,7 @@ if DOCS_ENABLED:
 import perf_metrics
 import perf_routes
 import sms_bulk
+import sms_templates
 # motor_kwargs() is exactly the historical pool settings, plus the command/pool listeners when PERF_ENABLED.
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL, **perf_metrics.motor_kwargs())
 db = client[os.getenv("MONGO_DB_NAME", "electiondbaccounting")]
@@ -1579,7 +1580,7 @@ async def _sms_try_provider(provider: str, to_number: str, message_text: str) ->
     return "ok" if await send_sms_via_mambosms(to_number, message_text) else "failed"
 
 
-async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) -> str:
+async def _send_sms_routed(to_number: str, message_text: str, org, kind: str, route_override: str | None = None) -> str:
     """Send following the org's routing setting for this kind of message.
 
     Every attempt that was accepted OR may have been accepted (ambiguous) is counted toward the SMS
@@ -1592,7 +1593,7 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) ->
     except Exception as e:                      # settings read must never block a voter's code
         logger.error(f"sms routing settings read failed, using defaults: {e}")
         sec = dict(_SEC_DEFAULTS)
-    route = sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
+    route = route_override or sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
     order = sms_provider_order(route, kind)
 
     last = "failed"
@@ -1627,7 +1628,7 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) ->
 
 
 async def send_sms_status(to_number: str, message_text: str, request: Request | None = None,
-                          kind: str = "otp", org_id: str | None = None) -> str:
+                          kind: str = "otp", org_id: str | None = None, route: str | None = None) -> str:
     """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
 
     Provider order comes from the org's SMS routing setting (see SMS_ROUTES / sms_provider_order),
@@ -1643,7 +1644,7 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
         await _safe_count_sms(org, kind)
         return "ok"
 
-    return await _send_sms_routed(to_number, message_text, org, kind)
+    return await _send_sms_routed(to_number, message_text, org, kind, route)
 
 
 async def send_sms(to_number: str, message_text: str, request: Request | None = None,
@@ -1999,12 +2000,8 @@ async def send_temp_password_sms(voter: dict, role_label: str, temp_password: st
                     if voter.get("org_id") else None)
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
 
-    message = (
-        f"Hello {voter.get('full_name', 'User')}, your temporary {role_label} login code "
-        f"for the {sms_org_name} Election Portal is {temp_password}. "
-        f"You will be asked to set a new password on first login. "
-        f"Do not share this code with anyone."
-    )
+    message = sms_templates.render("temp_password", full_name=voter.get("full_name", "User"), role=role_label,
+                                   org=sms_org_name, temp_password=temp_password)
     return await send_sms(phone_list[0], message, kind="admin", org_id=voter.get("org_id"))
 
 # --- Application consensus helpers ---
@@ -2620,14 +2617,11 @@ async def _apply_application_outcome(app_id: str, app_doc: dict, org_id: str, ou
                 {"$set": {"status": app_doc.get("status") or "pending"}})
             raise
         await log_action("application_approved", actor, {"app_id": app_id, **details}, org_id=org_id)
-        await _notify_applicant(app_doc, org_id, lambda org, pos: (
-            f"{org}: Congratulations! Your nomination for {pos} has been approved. "
-            f"Your name will appear on the ballot."))
+        await _notify_applicant(app_doc, org_id, lambda org, pos: sms_templates.render("approved", org=org, position=pos))
     else:
         await _record_denial_snapshot(app_doc, org_id)
         await log_action("application_denied", actor, {"app_id": app_id, **details}, org_id=org_id)
-        await _notify_applicant(app_doc, org_id, lambda org, pos: (
-            f"{org}: Your nomination for {pos} was not approved by the Electoral Commission."))
+        await _notify_applicant(app_doc, org_id, lambda org, pos: sms_templates.render("denied", org=org, position=pos))
     return True
 
 
@@ -4411,10 +4405,7 @@ async def verify_identity(data: IdentityCheck, request: Request):
     branding_doc = await cached_setting(request.state.org_id, "branding")
     sms_org_name = (branding_doc or {}).get("org_name", "Election")
 
-    message = (
-        f"Hello {first_name}, your {sms_org_name} voting code is {otp}. "
-        f"Your vote is secret. Do not share this code with anyone. Your voice, your power!"
-    )
+    message = sms_templates.render("otp", first_name=first_name, org=sms_org_name, code=otp)
 
     outcome = await send_sms_status(raw_phone, message, request)
     if outcome == "failed":
@@ -5283,7 +5274,7 @@ async def submit_application(data: ApplicationSubmit, request: Request):
             # staring at their phone waiting for it the way an OTP recipient is.
             await send_sms(
                 phones[0],
-                f"Application received. Check status: {await frontend_url_for(request)}/status/{token_doc['token']}",
+                sms_templates.render("status_link", link=f"{await frontend_url_for(request)}/status/{token_doc['token']}"),
                 request, kind="candidate_status_link",
             )
     return {"status": "submitted"}
@@ -5543,7 +5534,7 @@ async def resend_candidate_status_link(student_id: str, request: Request):
         {"$set": {"expires_at": datetime.utcnow() + timedelta(days=STATUS_LINK_TTL_DAYS)}})
     await send_sms(
         phones[0],
-        f"Application received. Check status: {await frontend_url_for(request)}/status/{token_doc['token']}",
+        sms_templates.render("status_link", link=f"{await frontend_url_for(request)}/status/{token_doc['token']}"),
         request, kind="candidate_status_link",
     )
     await log_action("candidate_status_link_resent", current_actor(request),
@@ -6079,7 +6070,7 @@ async def test_sms_connection(data: AdminTestSMS, request: Request, admin: dict 
         raise HTTPException(status_code=400, detail="Provider must be 'egosms' or 'mambosms'.")
     await log_action("sms_test_sent", current_actor(request),
                      {"phone": _mask_phone(data.phone), "provider": data.provider or "routing"}, org_id=request.state.org_id)
-    text = "SMS Connection Verified for BallotBox!"
+    text = sms_templates.render("connection_test")
     if data.provider:
         label = _SMS_PROVIDER_LABEL[data.provider]
         if DEBUG_MODE:
@@ -7238,9 +7229,8 @@ async def _finance_clear_application_core(app_id: str, data: FinanceClear, reque
             z = ZoneInfo("UTC")
         local = vetting_start.replace(tzinfo=timezone.utc).astimezone(z)
         when = f"{local.day} {local:%b %Y}"
-    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
-        f"{org}: Your payment has been confirmed. You are invited for nomination/vetting for {pos}"
-        + (f" on {when}." if when else " — the date will be communicated once the timeline is set.")))
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: sms_templates.render(
+        "finance_cleared" if when else "finance_cleared_undated", org=org, position=pos, when=when))
     logger.info(f"Application {app_id} finance-cleared by {fc_id}.")
     await _maybe_close_vetting(request.state.org_id)
     return {"status": "finance_cleared"}
@@ -7307,10 +7297,9 @@ async def finance_reject_application(app_id: str, data: FinanceReject, request: 
                       org_id=request.state.org_id)
     fee = app_doc.get("fee_required") or 0
     reason = data.reason.strip()[:80]
-    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
-        f"{org}: Your nomination for {pos} was rejected because of your payment: {reason}."
-        + (f" The required amount is {fmt_ugx(fee)}; incomplete payments are not accepted." if fee else "")
-        + " If you think this is a mistake, contact the Finance office."))
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: sms_templates.render(
+        "finance_rejected" if fee else "finance_rejected_no_fee", org=org, position=pos, reason=reason,
+        fee=fmt_ugx(fee) if fee else ""))
     logger.info(f"Application {app_id} finance-rejected by {fc_id}.")
     return {"status": "denied"}
 
@@ -7364,9 +7353,7 @@ async def finance_reverse_clearance(app_id: str, data: FinanceReverse, request: 
                      {"app_id": app_id, "reason": reason, "votes_set_aside": len(prior_votes),
                       **_payment_audit(app_doc, fc)},
                      org_id=request.state.org_id)
-    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
-        f"{org}: The payment confirmation for your {pos} nomination has been withdrawn while Finance "
-        f"reviews it. Please contact the Finance office."))
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: sms_templates.render("finance_reversed", org=org, position=pos))
     logger.info(f"Application {app_id} finance clearance reversed by {fc_id}.")
     return {"status": "pending", "votes_set_aside": len(prior_votes)}
 
@@ -7420,12 +7407,9 @@ async def finance_reinstate_application(app_id: str, data: FinanceReinstate, req
                       **_payment_audit(app_doc, fc)},
                      org_id=request.state.org_id)
     if cleared:
-        await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
-            f"{org}: Your payment issue is resolved and your nomination for {pos} is back under review."))
+        await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: sms_templates.render("reinstated_cleared", org=org, position=pos))
     else:
-        await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
-            f"{org}: Your nomination for {pos} has been reopened and is awaiting payment confirmation "
-            f"from Finance."))
+        await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: sms_templates.render("reinstated_reopened", org=org, position=pos))
     logger.info(f"Application {app_id} reinstated to {data.target} by {fc_id}.")
     if cleared:
         # Same rule as a normal clearance: if the vetting window has already ended, close it out now
@@ -8174,9 +8158,7 @@ async def superadmin_force_approve(app_id: str, request: Request):
         raise HTTPException(409, "This application was just approved by someone else. Please refresh.")
     await _create_candidate_from_application(app_doc, request.state.org_id)
     await _issue_certificate(app_doc, request.state.org_id)
-    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: (
-        f"{org}: Congratulations! Your nomination for {pos} has been approved. "
-        f"Your name will appear on the ballot."))
+    await _notify_applicant(app_doc, request.state.org_id, lambda org, pos: sms_templates.render("approved", org=org, position=pos))
     await log_action("application_force_approved", current_actor(request), {"app_id": app_id}, org_id=request.state.org_id)
     logger.info(f" Superadmin force-approved application {app_id}.")
     return {"status": "force_approved"}
@@ -12293,15 +12275,9 @@ async def _notify_old_number(request: Request, c: dict, old_phones: list[str], n
     b = await _branding(request)
     org = b.get("org_name", "the election")
     when = datetime.utcnow().strftime("%H:%M UTC")
-    what = {"phone_change": "The phone number on", "phone_remove": "A phone number on",
-            "phone_add": "A phone number was added to", "registration_number_change": f"The {_id_noun_from(b)} on"}[ch["type"]]
-    tail = " was changed" if ch["type"] in ("phone_change", "registration_number_change") else (
-        " was removed" if ch["type"] == "phone_remove" else "")
     reach = b.get("support_phone") or next(
         (c.get("link") for g in (b.get("support_contacts") or []) for c in (g.get("contacts") or []) if c.get("link")), "")
-    contact = f" If this was not you, contact {reach}." if reach else " If this was not you, contact the Electoral Commission."
-    text = f"{what} the {org} voting register{tail} at {when}.{contact}" if ch["type"] != "phone_add" else \
-           f"{what} the {org} voting register at {when}.{contact}"
+    text = sms_templates.contact_change_text(ch["type"], org, when, _id_noun_from(b), reach)
     return "sent" if await send_sms(old, text, request, kind="notice") else "failed"
 
 
@@ -12632,6 +12608,8 @@ class SmsAudienceRequest(BaseModel):
     voted: str = "any"
     attrs: dict[str, list[str]] = {}
     reg_numbers: list[str] | str = []
+    route: str = "default"      # default | egosms | mambosms | split (bulk only)
+    ego_pct: int = 50           # share sent through EgoSMS when route == "split"
 
 
 class SmsSendRequest(SmsAudienceRequest):
@@ -12650,8 +12628,12 @@ async def _sms_bulk_plan(request: Request, data: SmsAudienceRequest) -> dict:
     field_keys = [f["key"] for f in cfg["fields"] if f["enabled"]]
     sec = await get_security_settings(request)
     order = sms_provider_order(sec["sms_route_other"], "notice")
-    provider = order[0]
-    pricing = sms_bulk.pricing_for(sec.get("sms_pricing"), provider)
+    try:
+        mode, ego_pct = sms_bulk.validate_route(data.route, data.ego_pct)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    default_provider = order[0]
+    pricing_all = {p: sms_bulk.pricing_for(sec.get("sms_pricing"), p) for p in sms_bulk.PROVIDERS}
     try:
         query = sms_bulk.build_voter_query(
             {"voted": data.voted, "attrs": data.attrs, "reg_numbers": data.reg_numbers}, field_keys, normalize_student_id)
@@ -12664,12 +12646,20 @@ async def _sms_bulk_plan(request: Request, data: SmsAudienceRequest) -> dict:
         if len(voters) > SMS_BULK_MAX_AUDIENCE:
             raise HTTPException(400, f"That audience is larger than {SMS_BULK_MAX_AUDIENCE}. Narrow the filters.")
     variables = sms_bulk.variable_names(field_keys)
-    limits = {k: pricing[k] for k in sms_bulk.LIMIT_KEYS}
-    est = sms_bulk.estimate(voters, data.template, field_keys, limits, pricing["cost_per_part_ugx"], normalize_phone_number)
-    return {**est, "provider": provider, "provider_order": order, "pricing_set": pricing["cost_per_part_ugx"] is not None,
+    est = sms_bulk.estimate_split(voters, data.template, field_keys, pricing_all, mode, ego_pct,
+                                  normalize_phone_number, default_provider)
+    used = est["providers_used"]
+    provider = "split" if len(used) > 1 else (used[0] if used else (mode if mode in sms_bulk.PROVIDERS else default_provider))
+    count_for = lambda p: sms_bulk.count_parts(data.template, {k: pricing_all[p][k] for k in sms_bulk.LIMIT_KEYS})
+    shown = list(sms_bulk.PROVIDERS) if provider == "split" else [provider]
+    return {**{k: v for k, v in est.items() if k != "assignments"},
+            "provider": provider, "provider_order": order, "route": mode, "ego_pct": ego_pct,
+            "pricing_set": (not est["unpriced_providers"]) if used else pricing_all[provider]["cost_per_part_ugx"] is not None,
             "variables": variables, "unknown_tokens": sms_bulk.unknown_tokens(data.template, variables),
-            "template_count": sms_bulk.count_parts(data.template, limits),
-            "_voters": voters, "_field_keys": field_keys, "_limits": limits, "_query_filters":
+            "template_count": count_for(provider if provider != "split" else default_provider),
+            "template_count_by_provider": {p: count_for(p) for p in shown},
+            "_voters": voters, "_field_keys": field_keys, "_limits_by_provider": {p: {k: pricing_all[p][k] for k in sms_bulk.LIMIT_KEYS} for p in sms_bulk.PROVIDERS},
+            "_assignments": est["assignments"], "_query_filters":
                 {"voted": data.voted, "attrs": data.attrs, "reg_numbers": data.reg_numbers}}
 
 
@@ -12679,11 +12669,58 @@ async def sms_bulk_audience(data: SmsAudienceRequest, request: Request, admin: d
     return {k: v for k, v in plan.items() if not k.startswith("_")}
 
 
+@app.get("/admin/sms/templates")
+async def sms_system_templates(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    """Every automatic SMS the system sends (sms_templates.CATALOG), rendered with this organisation's real wording
+    values and priced with the provider that kind would really use. Feeds the calculator on the SMS tab."""
+    sec = await get_security_settings(request)
+    b = await _branding(request)
+    org = (b.get("org_name") or "Election").strip()
+    titles, fees = [], []
+    async for pos in tdb(request).positions.find({}, {"title": 1, "application_fee": 1}):
+        if pos.get("title"):
+            titles.append(str(pos["title"]))
+        fees.append(int(pos.get("application_fee") or 0))
+    position = max(titles, key=len) if titles else "Guild President"       # longest real title = worst case
+    fee = fmt_ugx(max(fees)) if fees and max(fees) else fmt_ugx(50000)
+    reach = b.get("support_phone") or next(
+        (c.get("link") for g in (b.get("support_contacts") or []) for c in (g.get("contacts") or []) if c.get("link")), "")
+    base = (await frontend_url_for(request)) or "https://example.org"
+    sample = {
+        "first_name": "Namugerwa", "org": org, "code": "123456", "position": position, "fee": fee,
+        "when": "15 Oct 2026", "reason": "x" * 80,          # the app trims a rejection reason to 80 characters
+        "full_name": "Namugerwa Sarah Nakato", "role": "Financial Controller", "temp_password": "A" * 12,
+        "link": f"{base}{sms_templates.STATUS_LINK_PATH}{'x' * 43}", "id_noun": _id_noun_from(b), "reach": reach,
+    }
+    # Contact-change notices carry a time of day, not a date.
+    contact_when = "14:05 UTC"
+    rows = []
+    for key, entry in sms_templates.CATALOG.items():
+        kind = entry["kind"]
+        route = sec["sms_route_otp"] if sms_route_group(kind) == "otp" else sec["sms_route_other"]
+        provider = sms_provider_order(route, kind)[0]
+        pricing = sms_bulk.pricing_for(sec.get("sms_pricing"), provider)
+        values = {**sample, "when": contact_when} if key.startswith("contact_") else sample
+        # Only the variables this wording declares: the "no fee" / "no date" variants must not see a fee or date.
+        text = sms_templates.render(key, **{k: v for k, v in values.items() if k in entry["vars"]})
+        count = sms_bulk.count_parts(text, {k: pricing[k] for k in sms_bulk.LIMIT_KEYS})
+        unit = pricing["cost_per_part_ugx"]
+        rows.append({
+            "key": key, "label": entry["label"], "when": entry["when"], "kind": kind, "group": entry["group"],
+            "variants": entry.get("variants"), "provider": provider, "pattern": sms_templates.pattern(key), "sample": text,
+            "chars": count["chars"], "encoding": count["encoding"], "parts": count["parts"],
+            "unit_cost": unit, "cost_per_sms": None if unit is None else count["parts"] * unit,
+        })
+    return {"templates": rows,
+            "assumptions": {"org_name": org, "position": position, "required_fee": fee, "has_support_contact": bool(reach)}}
+
+
 def _campaign_view(c: dict) -> dict:
     done = c.get("sent", 0) + c.get("failed", 0) + c.get("ambiguous", 0)
     return {
         "id": c["campaign_id"], "status": c["status"], "recipients": c["recipients"], "total_parts": c["total_parts"],
         "estimated_cost": c.get("estimated_cost"), "provider": c.get("provider"),
+        "route": c.get("route"), "ego_pct": c.get("ego_pct"),
         "sent": c.get("sent", 0), "failed": c.get("failed", 0), "ambiguous": c.get("ambiguous", 0),
         "pending": max(c["recipients"] - done, 0), "created_by": c.get("created_by"),
         "created_at": c.get("created_at"), "finished_at": c.get("finished_at"), "reason": c.get("reason"),
@@ -12740,7 +12777,8 @@ async def _run_sms_campaign(org_id, cid: str):
             inc = {"sent": 0, "failed": 0, "ambiguous": 0}
             for r in batch:
                 try:
-                    outcome = await send_sms_status(r["phone"], r["text"], None, kind="notice", org_id=org_id)
+                    outcome = await send_sms_status(r["phone"], r["text"], None, kind="notice", org_id=org_id,
+                                                    route=(f"{r['provider']}_first" if r.get("provider") else None))
                 except Exception as e:                   # never lose the loop to one bad send
                     logger.error(f"bulk sms send error: {e}")
                     outcome = "failed"
@@ -12795,7 +12833,8 @@ async def sms_bulk_send(data: SmsSendRequest, request: Request, admin: dict = De
     if plan["recipients"] == 0:
         raise HTTPException(400, "No students with a usable phone number match these filters.")
     if not plan["pricing_set"]:
-        raise HTTPException(400, "Set the cost per SMS for " + _SMS_PROVIDER_LABEL[plan["provider"]] + " in the SMS settings first.")
+        miss = plan["unpriced_providers"] or [plan["provider"]]
+        raise HTTPException(400, "Set the cost per SMS for " + " and ".join(_SMS_PROVIDER_LABEL[p] for p in miss) + " in the SMS settings first.")
     sec = await get_security_settings(request)
     if sec.get("sms_mode") == "conservation":
         raise HTTPException(409, "SMS is in conservation mode (credit reserved for voter codes). Switch to normal mode to send a bulk message.")
@@ -12807,20 +12846,23 @@ async def sms_bulk_send(data: SmsSendRequest, request: Request, admin: dict = De
     cid = uuid.uuid4().hex
     now = datetime.utcnow()
     camp = {"campaign_id": cid, "status": "queued", "template": data.template, "filters": plan["_query_filters"],
-            "provider": plan["provider"], "provider_order": plan["provider_order"], "recipients": plan["recipients"],
+            "provider": plan["provider"], "provider_order": plan["provider_order"], "route": plan["route"],
+            "ego_pct": plan["ego_pct"], "by_provider": plan["by_provider"], "recipients": plan["recipients"],
             "no_phone": plan["no_phone"], "total_parts": plan["total_parts"], "by_parts": plan["by_parts"],
             "unit_cost": plan["unit_cost"], "estimated_cost": plan["total_cost"], "reason": reason,
             "sent": 0, "failed": 0, "ambiguous": 0, "created_by": current_actor(request), "created_at": now}
     rows = []
+    assign = iter(plan["_assignments"])
     for v in plan["_voters"]:
         phone = sms_bulk.first_phone(v, normalize_phone_number)
         if not phone:
             continue
+        prov = next(assign)
         vals = sms_bulk.voter_values(v, plan["_field_keys"])
         text = sms_bulk.render(data.template, vals)
         rows.append({"campaign_id": cid, "student_id": v.get("student_id"), "name": vals["name"], "phone": phone,
-                     "text": text, "parts": sms_bulk.count_parts(text, plan["_limits"])["parts"],
-                     "status": "pending", "created_at": now})
+                     "text": text, "parts": sms_bulk.count_parts(text, plan["_limits_by_provider"][prov])["parts"],
+                     "provider": prov, "status": "pending", "created_at": now})
     await t.sms_campaigns.insert_one(camp)
     for i in range(0, len(rows), 500):
         await t.sms_campaign_recipients.insert_many(rows[i:i + 500])
