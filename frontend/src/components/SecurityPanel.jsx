@@ -10,20 +10,10 @@ import { useRevealReady } from './RevealGroup';
 import LegacyDataPanel from './LegacyDataPanel';
 import { DEFAULT_TZ, utcToZonedInput, zonedInputToUtcISO, utcOffsetLabel, fmtZoned } from '../tz';
 
-const ROUTE_LABELS = {
-  default: 'Automatic (original behaviour)',
-  egosms_first: 'EgoSMS first, MamboSMS as fallback',
-  mambosms_first: 'MamboSMS first, EgoSMS as fallback',
-  egosms_only: 'EgoSMS only (no fallback)',
-  mambosms_only: 'MamboSMS only (no fallback)',
-};
 const ROUTE_SHORT = {
   default: 'Automatic', egosms_first: 'EgoSMS → MamboSMS', mambosms_first: 'MamboSMS → EgoSMS',
   egosms_only: 'EgoSMS only', mambosms_only: 'MamboSMS only',
 };
-/** What "Automatic" actually does, so nobody has to guess. */
-const AUTO_ORDER = { otp: 'EgoSMS, then MamboSMS if it fails', other: 'MamboSMS, then EgoSMS if it fails' };
-
 /** SMS usage tile (read-only; superadmin / overseer / commission). */
 export function SmsUsageTile({ initial = null }) {
   const [u, setU] = useState(initial);
@@ -64,42 +54,30 @@ const Stat = ({ label, value, color }) => (
   <div><small style={{ opacity: 0.6 }}>{label}</small><div style={{ fontWeight: 700, color }}>{value}</div></div>
 );
 
-/** Superadmin: freeze time, target risk, Turnstile, SMS budget, contact-change quotas, break-glass. */
+/** Superadmin: freeze time, target risk, Turnstile, contact-change quotas, break-glass. SMS settings live in the SMS tab. */
 export default function SecurityPanel() {
   const toast = useToast();
   const confirm = useConfirm();
   const [d, setD] = useState(null);
   const [f, setF] = useState({});
-  const [budget, setBudget] = useState({ total: '', mode: 'normal', enforce: false, floor: '' });
   // One reason box per form: they used to share a single value, so text typed for one save appeared in the others.
   const [reasonSec, setReasonSec] = useState('');
-  const [reasonSms, setReasonSms] = useState('');
-  const [reasonBudget, setReasonBudget] = useState('');
   const [ledger, setLedger] = useState(null);
   const [tz, setTz] = useState(DEFAULT_TZ);   // election timezone (set on the Timeline tab)
-  const [testPhone, setTestPhone] = useState('');
-  const [testing, setTesting] = useState('');
-  const [balances, setBalances] = useState(null);
-  const [smsUsage, setSmsUsage] = useState(null);
   const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      // One parallel round-trip; the panel (including the SMS usage tile) renders only once all are in.
-      const [rr, uu, sched, usage] = await Promise.all([
+      // One parallel round-trip. SMS settings, budget and usage now live in the SMS tab (SmsPanel).
+      const [rr, sched] = await Promise.all([
         api.get('/superadmin/security-settings'),
-        api.get('/superadmin/sms-budget'),
         api.get('/admin/schedule'),
-        api.get('/admin/sms-usage').catch(() => ({ data: null })),
       ]);
       const r = rr.data;
-      const u = uu.data;
       const zone = sched.data.timezone || DEFAULT_TZ;
       setTz(zone);
-      setSmsUsage(usage.data);
       setD(r);
       setF({ ...r.settings, roster_freeze_at: utcToZonedInput(r.settings.roster_freeze_at, zone) });
-      setBudget({ total: u.budget_total ?? '', mode: u.mode === 'conservation' ? 'conservation' : 'normal', enforce: u.budget_enforced, floor: u.balance_floor_ugx ?? '' });
     } catch (e) { setFailed(true); toast(errMsg(e, 'Could not load security settings.'), { kind: 'error' }); }
   }, [toast]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
@@ -133,47 +111,6 @@ export default function SecurityPanel() {
     try { const r = await api.put('/superadmin/security-settings', body); setReasonSec(''); savedOk('Security settings saved.', r); }
     catch (e) { saveFailed(e); }
   };
-  const saveSms = async () => {
-    if (!need(reasonSms)) return;
-    const warn = [f.sms_route_otp, f.sms_route_other].some(r => r === 'egosms_only' || r === 'mambosms_only');
-    const msg = warn
-      ? 'Save SMS routing? A provider set to "only" has NO fallback: if that provider is down or out of credit, those messages will not be delivered. Send a test first.'
-      : 'Save SMS routing? It takes effect immediately for every new message.';
-    if (!(await confirm(msg, { confirmText: 'Save routing' }))) return;
-    try {
-      const r = await api.put('/superadmin/security-settings', {
-        reason: reasonSms.trim(), sms_route_otp: f.sms_route_otp, sms_route_other: f.sms_route_other,
-        sms_fallback_on_timeout: Boolean(f.sms_fallback_on_timeout),
-      });
-      setReasonSms(''); savedOk('SMS routing saved.', r);
-    } catch (e) { saveFailed(e); }
-  };
-  const sendTest = async (provider) => {
-    if (!testPhone.trim()) { toast('Enter a phone number to send the test to.', { kind: 'error' }); return; }
-    setTesting(provider || 'routing');
-    try {
-      const r = (await api.post('/admin/test-connection', { phone: testPhone.trim(), ...(provider ? { provider } : {}) })).data;
-      toast(r.message || 'Test sent.', { kind: 'success' });
-    } catch (e) { toast(errMsg(e, 'Test failed.'), { kind: 'error' }); }
-    finally { setTesting(''); }
-  };
-  const checkBalances = async () => {
-    setTesting('balances');
-    try { setBalances((await api.get('/admin/sms-balance')).data); }
-    catch (e) { toast(errMsg(e, 'Could not read provider balances.'), { kind: 'error' }); }
-    finally { setTesting(''); }
-  };
-  const saveBudget = async () => {
-    if (!need(reasonBudget)) return;
-    try {
-      const r = await api.put('/superadmin/sms-budget', {
-        reason: reasonBudget.trim(), sms_budget_total: budget.total === '' ? undefined : Number(budget.total),
-        sms_mode: budget.mode, sms_budget_enforce: budget.enforce,
-        sms_balance_floor_ugx: budget.floor === '' ? 0 : Number(budget.floor),
-      });
-      setReasonBudget(''); savedOk('SMS budget saved.', r);
-    } catch (e) { saveFailed(e); }
-  };
   const verifyLedger = async () => {
     try { setLedger((await api.get('/admin/roster-ledger/verify')).data); } catch (e) { toast(errMsg(e, 'Verify failed.'), { kind: 'error' }); }
   };
@@ -189,7 +126,6 @@ export default function SecurityPanel() {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
-      <SmsUsageTile initial={smsUsage} />
       <LegacyDataPanel />
       {d.banner && <div style={{ ...box, borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
 
@@ -227,48 +163,6 @@ export default function SecurityPanel() {
         </div>
       </div>
 
-      <div style={{ ...box, gridColumn: '1 / -1' }}>
-        <b style={{ fontSize: 14 }}>SMS delivery &amp; routing</b>
-        <p style={note}>Choose which provider carries each kind of message. Use “MamboSMS first” (or “only”) to send everything through the fallback provider, or “EgoSMS only” to stop using MamboSMS altogether. Changes apply immediately to new messages.</p>
-        <div style={grid}>
-          <label style={fld}><span style={lbl}>Voter OTP codes</span>
-            <select style={inp} value={f.sms_route_otp || 'default'} onChange={e => setF({ ...f, sms_route_otp: e.target.value })}>
-              {(dv.sms_routes || Object.keys(ROUTE_LABELS)).map(r => <option key={r} value={r}>{ROUTE_LABELS[r] || r}</option>)}
-            </select></label>
-          <label style={fld}><span style={lbl}>Everything else (admin passwords, notices, candidate links)</span>
-            <select style={inp} value={f.sms_route_other || 'default'} onChange={e => setF({ ...f, sms_route_other: e.target.value })}>
-              {(dv.sms_routes || Object.keys(ROUTE_LABELS)).map(r => <option key={r} value={r}>{ROUTE_LABELS[r] || r}</option>)}
-            </select></label>
-        </div>
-        <p style={note}>“Automatic” means: OTP codes → {AUTO_ORDER.otp}; everything else → {AUTO_ORDER.other}.</p>
-        {['egosms', 'mambosms'].filter(p => dv.sms_providers_configured && !dv.sms_providers_configured[p]).map(p => (
-          <p key={p} style={{ ...note, color: 'var(--warning)' }}><Icon name="warning" /> {p === 'egosms' ? 'EgoSMS' : 'MamboSMS'} credentials are not set on the server, so this provider cannot send.</p>
-        ))}
-        {[f.sms_route_otp, f.sms_route_other].includes('egosms_only') && dv.sms_providers_configured && !dv.sms_providers_configured.egosms && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> A route is set to EgoSMS only but EgoSMS is not configured — those messages will fail.</p>}
-        {[f.sms_route_otp, f.sms_route_other].includes('mambosms_only') && dv.sms_providers_configured && !dv.sms_providers_configured.mambosms && <p style={{ ...note, color: 'var(--danger)' }}><Icon name="warning" /> A route is set to MamboSMS only but MamboSMS is not configured — those messages will fail.</p>}
-        {chk('sms_fallback_on_timeout', 'Also switch provider when the first one times out (result unknown). Risk: the voter may receive the code twice.')}
-
-        <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
-          <input style={inp} value={reasonSms} onChange={e => setReasonSms(e.target.value)} placeholder="e.g. EgoSMS credit low, routing OTPs via MamboSMS" /></label>
-        <button  onClick={saveSms} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: 8 }}>Save SMS routing</button>
-
-        <hr style={{ border: 0, borderTop: '1px solid var(--border-color)', margin: '16px 0 8px' }} />
-        <b style={{ fontSize: 13 }}>Test &amp; check providers</b>
-        <p style={note}>Sends a real (billable) test message. “Current routing” behaves exactly like a voter OTP; the provider buttons test one account directly, ignoring routing.</p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input style={{ ...inp, maxWidth: 220 }} value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="Phone, e.g. 2567XXXXXXXX" />
-          <button  disabled={!!testing} onClick={() => sendTest()} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'routing' ? 'Sending…' : 'Current routing'}</button>
-          <button  disabled={!!testing} onClick={() => sendTest('egosms')} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'egosms' ? 'Sending…' : 'EgoSMS'}</button>
-          <button  disabled={!!testing} onClick={() => sendTest('mambosms')} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'mambosms' ? 'Sending…' : 'MamboSMS'}</button>
-          <button  disabled={!!testing} onClick={checkBalances} className="perf-btn" style={{ cursor: 'pointer' }}>{testing === 'balances' ? 'Checking…' : 'Check balances'}</button>
-        </div>
-        {balances && (
-          <p style={note}>
-            EgoSMS: <b>{balances.egosms?.balance ?? '—'}</b>{balances.egosms?.error ? ` (${balances.egosms.error})` : ''} · MamboSMS: <b>{balances.mambosms?.balance ?? '—'}</b>{balances.mambosms?.error ? ` (${balances.mambosms.error})` : ''}
-          </p>
-        )}
-      </div>
-
       <div style={box}>
         <b style={{ fontSize: 14 }}>Candidate approval policy</b>
         <p style={note}>How the Vetting Panel's votes on candidate applications resolve. Changing this immediately re-checks every pending application against the new rule — it can flip an outcome without a new vote being cast.</p>
@@ -301,26 +195,6 @@ export default function SecurityPanel() {
       <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
         <input style={inp} value={reasonSec} onChange={e => setReasonSec(e.target.value)} placeholder="e.g. election-day hardening" /></label>
       <button  onClick={saveSecurity} className="perf-btn perf-btn-primary">Save security settings</button>
-
-      <div style={{ ...box, gridColumn: '1 / -1' }}>
-        <b style={{ fontSize: 14 }}>SMS budget</b>
-        <p style={note}>Suggested: <b>{dv.suggested_sms_budget}</b> (voters × 2.5). Raising the budget re-arms the 50/25/10% alerts.</p>
-        <div style={grid}>
-          <label style={fld}><span style={lbl}>Budget (SMS)</span><input style={inp} type="number" value={budget.total} onChange={e => setBudget({ ...budget, total: e.target.value })} /></label>
-          <label style={fld}><span style={lbl}>Mode</span>
-            <select style={inp} value={budget.mode} onChange={e => setBudget({ ...budget, mode: e.target.value })}>
-              <option value="normal">Normal</option><option value="conservation">Conservation (last resort: first codes only)</option></select></label>
-          <label style={fld}><span style={lbl}>Live balance floor (UGX, blank = off)</span>
-            <input style={inp} type="number" value={budget.floor} onChange={e => setBudget({ ...budget, floor: e.target.value })} /></label>
-        </div>
-        <p style={note}>If set, periodically checks EgoSMS + MamboSMS combined live balance and alerts if it drops below this — a safety net in case the SMS count above is stale or wrong.</p>
-        <label style={{ ...fld, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={budget.enforce} onChange={e => setBudget({ ...budget, enforce: e.target.checked })} />
-          <span style={{ fontSize: 13 }}>Enforce (leave off / monitor-only until the dry run passes)</span></label>
-        <label style={fld}><span style={lbl}>Reason for this change (required, logged)</span>
-          <input style={inp} value={reasonBudget} onChange={e => setReasonBudget(e.target.value)} placeholder="e.g. topped up 5,000 credits" /></label>
-        <button  onClick={saveBudget} className="perf-btn perf-btn-primary" style={{ cursor: 'pointer', marginTop: 8 }}>Save SMS budget</button>
-      </div>
 
       <NameNormalizerTile />
 

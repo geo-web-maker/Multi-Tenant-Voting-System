@@ -48,7 +48,7 @@ FULL_COLLECTIONS = [
     "student_changes", "exception_grants", "audit_checkpoints",
     # Previously missed in the backup coverage audit (BK-1).
     "panel_members", "contact_changes", "candidate_lists", "candidate_tokens",
-    "certificates", "nomination_uploads", "sms_usage",
+    "certificates", "nomination_uploads", "sms_usage", "sms_campaigns",
     # Soft-deleted applications (superadmin archive; restorable).
     "deleted_applications",
 ]
@@ -64,6 +64,7 @@ SECURITY_ONLY = {
 EXCLUDED_BY_DESIGN = {
     "voter_import_previews": "Temporary import preview; deleted after import.",
     "demo_inbox": "Demo-mode inbox; wiped by demo reset.",
+    "sms_campaign_recipients": "Per-message send queue (expires after 90 days); the campaign summary is backed up.",
     "app_meta": "Application startup metadata and index schema marker are rebuilt.",
     "backup_jobs": "Operational job history is rebuilt by subsequent runs.",
     "backup_metrics": "Monitoring samples are rebuilt by subsequent probes.",

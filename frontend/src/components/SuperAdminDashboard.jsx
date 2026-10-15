@@ -17,8 +17,8 @@ import { PrintStyles, ApplicationSnapshotDoc, SampleCertificateDoc } from './Can
 import SampleCandidateListDoc from './CandidateListSample';
 import { DOCUMENT_TEMPLATES, resolveDocTemplate } from '../documentTemplates';
 import VoterStats from './VoterStats';
-import { SmsUsageTile } from './SecurityPanel';
 import SecurityPanel from './SecurityPanel';
+import SmsPanel from './SmsPanel';
 import VoterFieldsPanel from './VoterFieldsPanel';
 import VettingPanelManager from './VettingPanelManager';
 import usePolling from '../hooks/usePolling';
@@ -123,10 +123,6 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
   // --- Ported from AdminDashboard ---
-  const [smsBalance, setSmsBalance] = useState({
-    egosms: { balance: null, currency: 'UGX' },
-    mambosms: { balance: null, currency: 'UGX' },
-  });
   
   // --- Applications state ---
   const [applications, setApplications] = useState([]);
@@ -145,7 +141,6 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [isCertified, setIsCertified]       = useState(false);
   const [loading, setLoading]               = useState(false);
   const [, setElectionLoaded]         = useState(false);
-  const [, setSmsLoaded]                = useState(false);
   const [lastRefreshed, setLastRefreshed]   = useState(new Date());
 
   //---IT Admin and auditlog---
@@ -301,18 +296,6 @@ const fetchVotersList = async () => {
     } catch { /* non-critical: ignore */ }
   };
 
-  const fetchSmsBalance = async () => {
-    try {
-      const res = await api.get('/admin/sms-balance');
-      setSmsBalance(res.data);
-    } catch {
-      setSmsBalance({
-        egosms: { balance: 'N/A', currency: '', error: 'Could not load' },
-        mambosms: { balance: 'N/A', currency: '', error: 'Could not load' },
-      });
-    } finally { setSmsLoaded(true); }
-  };
-
 const refetchAll = () => {
     fetchBranding();
     fetchPositions();
@@ -326,7 +309,6 @@ const refetchAll = () => {
     fetchStudentChanges();
     fetchFinancialControllers();
     fetchOverseers();
-    fetchSmsBalance();
   };
 
   const handleSwitchOrg = (slug) => {
@@ -951,7 +933,8 @@ const handleSuperAdminRemoveStudent = async () => {
       label: 'Security',
       icon: 'shield',
       tabs: [
-        { id: 'security', label: <>Security &amp; SMS</>, icon: 'secure' },
+        { id: 'security', label: <>Security</>, icon: 'secure' },
+        { id: 'sms', label: <>SMS</>, icon: 'phone' },
         sharedChain,
       ],
     },
@@ -1559,7 +1542,7 @@ const handleSuperAdminRemoveStudent = async () => {
           <>
             {/* CUSTOM-1: voter statistics restored as sub-tabs (see DEVIATIONS.md / progress/CUSTOM-1.md) */}
             <div role="tablist" aria-label="Voters sections" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
-              {[['register', 'Register'], ['stats', 'Statistics'], ['sms', 'SMS']].map(([id, label]) => (
+              {[['register', 'Register'], ['stats', 'Statistics']].map(([id, label]) => (
                 <button key={id} role="tab" aria-selected={voterSubTab === id} onClick={() => setVoterSubTab(id)}
                   style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: 13,
                     background: voterSubTab === id ? 'var(--info)' : 'transparent', color: voterSubTab === id ? 'var(--bp-ai, #fff)' : 'inherit' }}>
@@ -1579,16 +1562,6 @@ const handleSuperAdminRemoveStudent = async () => {
               </>
             )}
             {voterSubTab === 'stats' && <VoterStats />}
-            {voterSubTab === 'sms' && (
-              <>
-                {/* Live provider balances: GET /admin/sms-balance (already fetched by fetchSmsBalance on load) */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 14 }}>
-                  <SmsProviderCard label="EgoSMS" sub="primary" data={smsBalance.egosms} />
-                  <SmsProviderCard label="MamboSMS" sub="fallback" data={smsBalance.mambosms} />
-                </div>
-                <SmsUsageTile />
-              </>
-            )}
           </>
         )}
 
@@ -2130,6 +2103,8 @@ const handleSuperAdminRemoveStudent = async () => {
             <UploadBypassPanel /><SecurityPanel /><VoterFieldsPanel />
           </RevealGroup>
         )}
+
+        {activeTab === 'sms' && <SmsPanel />}
 
         {activeTab === 'it_admins' && (
           <div style={twoCol}>
@@ -2699,13 +2674,6 @@ const statCard    = { padding: '14px', border: '1px solid var(--border-color)', 
 // Two SMS providers (EgoSMS = primary, MamboSMS = fallback) each get their
 // own card, clearly labeled, instead of one ambiguous "SMS Balance" number —
 // admins topping up need to know which account to actually fund.
-const SmsProviderCard = ({ label, sub, data }) => (
-  <div style={statCard}>
-    <small>{label}<span style={{ opacity: 0.55 }}> ({sub})</span></small>
-    <h3>{data?.error ? '—' : `${data?.balance ?? '—'} ${data?.currency || ''}`}</h3>
-    {data?.error && <small style={{ opacity: 0.6 }}>{data.error}</small>}
-  </div>
-);
 const modalOverlay = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 };
 const modalContent = { backgroundColor: 'var(--card-bg)', padding: '30px', borderRadius: '16px', width: '90%', maxWidth: '700px', maxHeight: '85vh', overflowY: 'auto' };
 

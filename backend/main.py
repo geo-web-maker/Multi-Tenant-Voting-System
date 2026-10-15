@@ -32,6 +32,7 @@ import pyotp
 import hashlib
 import json
 import math
+import uuid
 import time
 import boto3
 from fastapi.concurrency import run_in_threadpool
@@ -341,6 +342,10 @@ async def _create_startup_indexes() -> None:
     except Exception:
         pass
     await db.demo_inbox.create_index([("org_id", 1), ("created_at", -1)])
+    await db.sms_campaigns.create_index([("org_id", 1), ("campaign_id", 1)], unique=True)
+    await db.sms_campaigns.create_index([("org_id", 1), ("created_at", -1)])
+    await db.sms_campaign_recipients.create_index([("org_id", 1), ("campaign_id", 1), ("status", 1)])
+    await db.sms_campaign_recipients.create_index("created_at", expireAfterSeconds=90 * 24 * 3600)
     await db.demo_inbox.create_index("created_at", expireAfterSeconds=14 * 24 * 3600)
     # The activity log is read by every admin role now, filtered and sorted.
     await db.student_edit_audit.create_index([("org_id", 1), ("student_key", 1), ("at", -1)])
@@ -378,6 +383,10 @@ async def lifespan(app: FastAPI):
             logger.warning("Marked %d backup job(s) interrupted by the restart as failed.", interrupted)
     except Exception as exc:  # noqa: BLE001 - housekeeping must never stop the app from booting
         logger.warning("Backup job recovery skipped: %s", str(exc)[:200])
+    try:
+        await _resume_sms_campaigns()
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never stop the app from booting
+        logger.warning("SMS campaign resume skipped: %s", str(exc)[:200])
     closeout_task = None
     if VETTING_CLOSEOUT_SWEEP_SECONDS > 0:
         closeout_task = asyncio.create_task(_vetting_closeout_loop(VETTING_CLOSEOUT_SWEEP_SECONDS))
@@ -482,6 +491,7 @@ if DOCS_ENABLED:
 
 import perf_metrics
 import perf_routes
+import sms_bulk
 # motor_kwargs() is exactly the historical pool settings, plus the command/pool listeners when PERF_ENABLED.
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL, **perf_metrics.motor_kwargs())
 db = client[os.getenv("MONGO_DB_NAME", "electiondbaccounting")]
@@ -3607,6 +3617,10 @@ _SEC_DEFAULTS = {
     "sms_budget_enforce": ol.env_bool("SMS_BUDGET_ENFORCE", False),  # monitor-only until the dry run passes
     "sms_balance_floor_ugx": ol.env_int("SMS_BALANCE_FLOOR_UGX", 0) or None,
     "sms_mode": "normal",                                             # normal | conservation
+    # Bulk SMS tab: per-provider price and message-length limits, and the send rate (messages per second).
+    # cost_per_part_ugx is None until the superadmin sets it: an unset price must never look like 0.
+    "sms_pricing": sms_bulk.default_pricing(),
+    "sms_bulk_per_second": 3,
     "contact_change_ttl_hours": ol.env_int("CONTACT_CHANGE_TTL_HOURS", 6),
     "contact_change_max_per_voter": ol.env_int("CONTACT_CHANGE_MAX_PER_VOTER", 2),
     "approver_daily_cap": ol.env_int("CONTACT_CHANGE_APPROVER_DAILY_CAP", 30),
@@ -3988,10 +4002,11 @@ async def _budget_alerts(org_id, usage: dict):
     await _cross_check_live_balance(org_id, sec, usage)
 
 
-async def count_sms(org_id, kind: str = "otp"):
-    """Count one billable SMS toward the election budget (OTP, notice, or a provider fallback)."""
+async def count_sms(org_id, kind: str = "otp", n: int = 1):
+    """Count billable SMS toward the election budget (OTP, notice, or a provider fallback).
+    `n` > 1 is used by bulk sends so a multi-part message counts as its parts."""
     now = datetime.utcnow()
-    upd: dict = {"$inc": {"sent_total": 1, f"sent_{kind}": 1}, "$set": {"updated_at": now}}
+    upd: dict = {"$inc": {"sent_total": n, f"sent_{kind}": n}, "$set": {"updated_at": now}}
     if kind == "otp":
         upd["$push"] = {"recent_sends": {"$each": [now], "$slice": -300}}
     key = org_id or "default"
@@ -11902,6 +11917,8 @@ class SmsBudgetUpdate(BaseModel):
     sms_mode: str | None = None
     sms_budget_enforce: bool | None = None
     sms_balance_floor_ugx: int | None = None
+    sms_pricing: dict | None = None           # {provider: {cost_per_part_ugx, single_limit, multi_limit, ...}}
+    sms_bulk_per_second: int | None = None
 
 
 _SEC_RANGES = {
@@ -12549,6 +12566,8 @@ async def _sms_usage_payload(request: Request, voters: int | None = None) -> dic
         "voters": voters, "suggested_budget": math.ceil(voters * SMS_BUDGET_DEFAULT_MULTIPLIER),
         "turnstile_mode": sec["turnstile_mode"],
         "sms_route_otp": sec["sms_route_otp"], "sms_route_other": sec["sms_route_other"],
+        "sms_pricing": {p: sms_bulk.pricing_for(sec.get("sms_pricing"), p) for p in sms_bulk.PROVIDERS},
+        "sms_bulk_per_second": sec.get("sms_bulk_per_second") or 3,
     }
 
 
@@ -12576,6 +12595,15 @@ async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
         if data.sms_balance_floor_ugx < 0:
             raise HTTPException(400, "Balance floor cannot be negative.")
         updates["sms_balance_floor_ugx"] = data.sms_balance_floor_ugx or None
+    if data.sms_pricing is not None:
+        try:
+            updates["sms_pricing"] = sms_bulk.validate_pricing(data.sms_pricing, sec.get("sms_pricing"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    if data.sms_bulk_per_second is not None:
+        if not 1 <= data.sms_bulk_per_second <= 20:
+            raise HTTPException(400, "Bulk send rate must be between 1 and 20 messages per second.")
+        updates["sms_bulk_per_second"] = data.sms_bulk_per_second
     if not updates:
         raise HTTPException(400, "Nothing to change.")
     await _save_security(request, updates)
@@ -12586,6 +12614,282 @@ async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
     await append_ledger(request.state.org_id, "sms_budget_changed", "election", current_actor(request), "superadmin",
                         {"reason": data.reason.strip(), **{k: str(v["new"]) for k, v in diff.items()}})
     return await get_sms_usage(request, {})
+
+
+# =============================================================================
+# BULK SMS (superadmin): audience + exact estimate, resumable campaign job
+# =============================================================================
+# Every message goes through send_sms_status(kind="notice"), so routing, fallback, DEBUG_MODE, demo mode and
+# usage counting behave like every other notice. Messages are pre-rendered into one recipient row each, so a
+# restart can resume without re-querying and a student is never sent the same campaign twice.
+SMS_BULK_MAX_TEMPLATE = 1000
+SMS_BULK_MAX_AUDIENCE = 50000
+_SMS_CAMPAIGN_TASKS: dict[str, "asyncio.Task"] = {}
+
+
+class SmsAudienceRequest(BaseModel):
+    template: str = ""
+    voted: str = "any"
+    attrs: dict[str, list[str]] = {}
+    reg_numbers: list[str] | str = []
+
+
+class SmsSendRequest(SmsAudienceRequest):
+    reason: str
+
+
+class SmsCampaignReason(BaseModel):
+    reason: str
+
+
+async def _sms_bulk_plan(request: Request, data: SmsAudienceRequest) -> dict:
+    """Resolve filters + template into an exact estimate. One voters query, projected; nothing per student."""
+    if len(data.template) > SMS_BULK_MAX_TEMPLATE:
+        raise HTTPException(400, f"The message is too long (maximum {SMS_BULK_MAX_TEMPLATE} characters).")
+    cfg = await get_voter_fields(request)
+    field_keys = [f["key"] for f in cfg["fields"] if f["enabled"]]
+    sec = await get_security_settings(request)
+    order = sms_provider_order(sec["sms_route_other"], "notice")
+    provider = order[0]
+    pricing = sms_bulk.pricing_for(sec.get("sms_pricing"), provider)
+    try:
+        query = sms_bulk.build_voter_query(
+            {"voted": data.voted, "attrs": data.attrs, "reg_numbers": data.reg_numbers}, field_keys, normalize_student_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    proj = {"full_name": 1, "student_id": 1, "phone_numbers": 1, **{f"attrs.{k}": 1 for k in field_keys}}
+    voters = []
+    async for v in tdb(request).voters.find(query, proj).limit(SMS_BULK_MAX_AUDIENCE + 1):
+        voters.append(v)
+        if len(voters) > SMS_BULK_MAX_AUDIENCE:
+            raise HTTPException(400, f"That audience is larger than {SMS_BULK_MAX_AUDIENCE}. Narrow the filters.")
+    variables = sms_bulk.variable_names(field_keys)
+    limits = {k: pricing[k] for k in sms_bulk.LIMIT_KEYS}
+    est = sms_bulk.estimate(voters, data.template, field_keys, limits, pricing["cost_per_part_ugx"], normalize_phone_number)
+    return {**est, "provider": provider, "provider_order": order, "pricing_set": pricing["cost_per_part_ugx"] is not None,
+            "variables": variables, "unknown_tokens": sms_bulk.unknown_tokens(data.template, variables),
+            "template_count": sms_bulk.count_parts(data.template, limits),
+            "_voters": voters, "_field_keys": field_keys, "_limits": limits, "_query_filters":
+                {"voted": data.voted, "attrs": data.attrs, "reg_numbers": data.reg_numbers}}
+
+
+@app.post("/admin/sms/audience")
+async def sms_bulk_audience(data: SmsAudienceRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    plan = await _sms_bulk_plan(request, data)
+    return {k: v for k, v in plan.items() if not k.startswith("_")}
+
+
+def _campaign_view(c: dict) -> dict:
+    done = c.get("sent", 0) + c.get("failed", 0) + c.get("ambiguous", 0)
+    return {
+        "id": c["campaign_id"], "status": c["status"], "recipients": c["recipients"], "total_parts": c["total_parts"],
+        "estimated_cost": c.get("estimated_cost"), "provider": c.get("provider"),
+        "sent": c.get("sent", 0), "failed": c.get("failed", 0), "ambiguous": c.get("ambiguous", 0),
+        "pending": max(c["recipients"] - done, 0), "created_by": c.get("created_by"),
+        "created_at": c.get("created_at"), "finished_at": c.get("finished_at"), "reason": c.get("reason"),
+    }
+
+
+async def _campaign_event(org_id, campaign: dict, event: str, actor: str, extra: dict | None = None):
+    details = {"campaign_id": campaign["campaign_id"], "recipients": campaign["recipients"],
+               "total_parts": campaign["total_parts"], "estimated_cost": campaign.get("estimated_cost"),
+               "provider": campaign.get("provider"), "reason": campaign.get("reason"), **(extra or {})}
+    await log_action(event, actor, details, org_id=org_id)
+    await append_ledger(org_id, event, campaign["campaign_id"], actor, "superadmin" if actor != "system" else "system",
+                        {k: str(v) for k, v in details.items() if v is not None})
+
+
+def _start_campaign_task(org_id, cid: str):
+    t = _SMS_CAMPAIGN_TASKS.get(cid)
+    if t and not t.done():
+        return
+    task = asyncio.create_task(_run_sms_campaign(org_id, cid))
+    _SMS_CAMPAIGN_TASKS[cid] = task
+    task.add_done_callback(lambda _t, k=cid: _SMS_CAMPAIGN_TASKS.pop(k, None))
+
+
+async def _run_sms_campaign(org_id, cid: str):
+    """Send pending recipients at the configured rate. Safe to run again after a restart: a row is claimed
+    (pending -> sending) before the send, and a row left in 'sending' by a crash is never re-sent."""
+    t = tdb_for(org_id)
+    try:
+        await t.sms_campaigns.update_one({"campaign_id": cid, "status": "queued"},
+                                         {"$set": {"status": "running", "started_at": datetime.utcnow()}})
+        while True:
+            camp = await t.sms_campaigns.find_one({"campaign_id": cid})
+            if not camp or camp["status"] != "running":
+                return                                   # cancelled (or gone): stop, pending rows stay pending
+            sec = await security_settings_for(org_id)
+            rate = max(1, min(20, int(sec.get("sms_bulk_per_second") or 3)))
+            batch = []
+            for _ in range(rate):
+                r = await t.sms_campaign_recipients.find_one_and_update(
+                    {"campaign_id": cid, "status": "pending"}, {"$set": {"status": "sending", "claimed_at": datetime.utcnow()}})
+                if not r:
+                    break
+                batch.append(r)
+            if not batch:
+                final = await t.sms_campaigns.find_one_and_update(
+                    {"campaign_id": cid, "status": "running"},
+                    {"$set": {"status": "done", "finished_at": datetime.utcnow()}}, return_document=True)
+                if final:
+                    await _campaign_event(org_id, final, "sms_campaign_finished", "system",
+                                          {"sent": final.get("sent", 0), "failed": final.get("failed", 0),
+                                           "ambiguous": final.get("ambiguous", 0)})
+                return
+            inc = {"sent": 0, "failed": 0, "ambiguous": 0}
+            for r in batch:
+                try:
+                    outcome = await send_sms_status(r["phone"], r["text"], None, kind="notice", org_id=org_id)
+                except Exception as e:                   # never lose the loop to one bad send
+                    logger.error(f"bulk sms send error: {e}")
+                    outcome = "failed"
+                key = {"ok": "sent", "ambiguous": "ambiguous"}.get(outcome, "failed")
+                inc[key] += 1
+                await t.sms_campaign_recipients.update_one(
+                    {"_id": r["_id"]}, {"$set": {"status": key, "done_at": datetime.utcnow()}})
+                if key != "failed" and r.get("parts", 1) > 1:   # send_sms already counted 1; count the other parts
+                    try:
+                        await count_sms(org_id, "notice", n=r["parts"] - 1)
+                    except Exception as e:
+                        logger.error(f"bulk sms part count failed: {e}")
+            await t.sms_campaigns.update_one({"campaign_id": cid}, {"$inc": inc})
+            await asyncio.sleep(1.0)
+    except Exception as e:
+        logger.error(f"sms campaign {cid} crashed: {e}")
+        try:
+            await t.sms_campaigns.update_one({"campaign_id": cid, "status": {"$in": ["queued", "running"]}},
+                                             {"$set": {"status": "failed", "finished_at": datetime.utcnow()}})
+        except Exception:
+            pass
+
+
+async def _resume_sms_campaigns():
+    """After a restart: rows stuck in 'sending' may or may not have gone out, so they become 'ambiguous'
+    (never re-sent); then every unfinished campaign carries on."""
+    async for org in db.organizations.find({}, {"_id": 1}):
+        org_id = str(org["_id"])
+        t = tdb_for(org_id)
+        live = [c async for c in t.sms_campaigns.find({"status": {"$in": ["queued", "running"]}})]
+        for c in live:
+            r = await t.sms_campaign_recipients.update_many(
+                {"campaign_id": c["campaign_id"], "status": "sending"}, {"$set": {"status": "ambiguous"}})
+            if r.modified_count:
+                await t.sms_campaigns.update_one({"campaign_id": c["campaign_id"]}, {"$inc": {"ambiguous": r.modified_count}})
+            _start_campaign_task(org_id, c["campaign_id"])
+
+
+@app.post("/admin/sms/send")
+async def sms_bulk_send(data: SmsSendRequest, request: Request, admin: dict = Depends(require_role("superadmin"))):
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A reason is required.")
+    if not data.template.strip():
+        raise HTTPException(400, "Write a message first.")
+    org_id, t = request.state.org_id, tdb(request)
+    if await t.sms_campaigns.find_one({"status": {"$in": ["queued", "running"]}}, {"_id": 1}):
+        raise HTTPException(409, "Another bulk SMS is still sending. Wait for it to finish or cancel it.")
+    plan = await _sms_bulk_plan(request, data)
+    if plan["unknown_tokens"]:
+        raise HTTPException(400, "Unknown variable: {" + plan["unknown_tokens"][0] + "}. Fix or remove it before sending.")
+    if plan["recipients"] == 0:
+        raise HTTPException(400, "No students with a usable phone number match these filters.")
+    if not plan["pricing_set"]:
+        raise HTTPException(400, "Set the cost per SMS for " + _SMS_PROVIDER_LABEL[plan["provider"]] + " in the SMS settings first.")
+    sec = await get_security_settings(request)
+    if sec.get("sms_mode") == "conservation":
+        raise HTTPException(409, "SMS is in conservation mode (credit reserved for voter codes). Switch to normal mode to send a bulk message.")
+    if sec.get("sms_budget_total") and sec.get("sms_budget_enforce"):
+        usage = await sms_usage_doc(org_id)
+        left = sec["sms_budget_total"] - usage.get("sent_total", 0)
+        if plan["total_parts"] > left:
+            raise HTTPException(409, f"This needs {plan['total_parts']} SMS but only {max(left, 0)} remain in the enforced budget.")
+    cid = uuid.uuid4().hex
+    now = datetime.utcnow()
+    camp = {"campaign_id": cid, "status": "queued", "template": data.template, "filters": plan["_query_filters"],
+            "provider": plan["provider"], "provider_order": plan["provider_order"], "recipients": plan["recipients"],
+            "no_phone": plan["no_phone"], "total_parts": plan["total_parts"], "by_parts": plan["by_parts"],
+            "unit_cost": plan["unit_cost"], "estimated_cost": plan["total_cost"], "reason": reason,
+            "sent": 0, "failed": 0, "ambiguous": 0, "created_by": current_actor(request), "created_at": now}
+    rows = []
+    for v in plan["_voters"]:
+        phone = sms_bulk.first_phone(v, normalize_phone_number)
+        if not phone:
+            continue
+        vals = sms_bulk.voter_values(v, plan["_field_keys"])
+        text = sms_bulk.render(data.template, vals)
+        rows.append({"campaign_id": cid, "student_id": v.get("student_id"), "name": vals["name"], "phone": phone,
+                     "text": text, "parts": sms_bulk.count_parts(text, plan["_limits"])["parts"],
+                     "status": "pending", "created_at": now})
+    await t.sms_campaigns.insert_one(camp)
+    for i in range(0, len(rows), 500):
+        await t.sms_campaign_recipients.insert_many(rows[i:i + 500])
+    await _campaign_event(org_id, camp, "sms_campaign_started", current_actor(request),
+                          {"filters": str(plan["_query_filters"])[:300]})
+    _start_campaign_task(org_id, cid)
+    return _campaign_view(camp)
+
+
+@app.get("/admin/sms/campaigns")
+async def sms_bulk_campaigns(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    rows = [_campaign_view(c) async for c in tdb(request).sms_campaigns.find({}).sort("created_at", -1).limit(5)]
+    return {"campaigns": rows}
+
+
+@app.get("/admin/sms/campaigns/{campaign_id}")
+async def sms_bulk_campaign(campaign_id: str, request: Request, failed: bool = False,
+                            admin: dict = Depends(require_role("superadmin"))):
+    t = tdb(request)
+    c = await t.sms_campaigns.find_one({"campaign_id": campaign_id})
+    if not c:
+        raise HTTPException(404, "Campaign not found.")
+    out = _campaign_view(c)
+    if failed:
+        out["failed_recipients"] = [
+            {"student_id": r.get("student_id"), "name": r.get("name"), "phone": _mask_phone(r.get("phone"))}
+            async for r in t.sms_campaign_recipients.find(
+                {"campaign_id": campaign_id, "status": "failed"}, {"student_id": 1, "name": 1, "phone": 1}).limit(100)]
+    return out
+
+
+@app.post("/admin/sms/campaigns/{campaign_id}/cancel")
+async def sms_bulk_cancel(campaign_id: str, data: SmsCampaignReason, request: Request,
+                          admin: dict = Depends(require_role("superadmin"))):
+    if len(data.reason.strip()) < 3:
+        raise HTTPException(400, "A reason is required.")
+    t = tdb(request)
+    c = await t.sms_campaigns.find_one_and_update(
+        {"campaign_id": campaign_id, "status": {"$in": ["queued", "running"]}},
+        {"$set": {"status": "cancelled", "finished_at": datetime.utcnow()}}, return_document=True)
+    if not c:
+        raise HTTPException(409, "This campaign is not running.")
+    await _campaign_event(request.state.org_id, c, "sms_campaign_cancelled", current_actor(request),
+                          {"cancel_reason": data.reason.strip(), "sent": c.get("sent", 0)})
+    return _campaign_view(c)
+
+
+@app.post("/admin/sms/campaigns/{campaign_id}/retry-failed")
+async def sms_bulk_retry_failed(campaign_id: str, data: SmsCampaignReason, request: Request,
+                                admin: dict = Depends(require_role("superadmin"))):
+    """Re-queue only the recipients whose send definitely failed. 'Ambiguous' ones may have been delivered, so they are never retried."""
+    if len(data.reason.strip()) < 3:
+        raise HTTPException(400, "A reason is required.")
+    t = tdb(request)
+    if await t.sms_campaigns.find_one({"status": {"$in": ["queued", "running"]}}, {"_id": 1}):
+        raise HTTPException(409, "A bulk SMS is still sending.")
+    c = await t.sms_campaigns.find_one({"campaign_id": campaign_id})
+    if not c:
+        raise HTTPException(404, "Campaign not found.")
+    r = await t.sms_campaign_recipients.update_many({"campaign_id": campaign_id, "status": "failed"}, {"$set": {"status": "pending"}})
+    if not r.modified_count:
+        raise HTTPException(409, "There are no failed recipients to retry.")
+    c = await t.sms_campaigns.find_one_and_update(
+        {"campaign_id": campaign_id},
+        {"$set": {"status": "queued"}, "$unset": {"finished_at": ""}, "$inc": {"failed": -r.modified_count}}, return_document=True)
+    await _campaign_event(request.state.org_id, c, "sms_campaign_retry_failed", current_actor(request),
+                          {"retry_reason": data.reason.strip(), "retried": r.modified_count})
+    _start_campaign_task(request.state.org_id, campaign_id)
+    return _campaign_view(c)
 
 
 @app.get("/superadmin/security-settings")

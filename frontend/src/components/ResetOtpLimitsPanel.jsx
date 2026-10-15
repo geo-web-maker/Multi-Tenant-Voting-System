@@ -85,7 +85,7 @@ function TypeaheadSearch({ placeholder, ariaLabel, fetcher, onPick, renderResult
 /**
  * "Reset OTP limits" — clears one voter's send ladder and wrong-guess bucket so they can ask for a
  * fresh code. It never shows or creates a code. Every reset is logged with the reason and note, and
- * is capped per voter and per admin (set on Security & SMS).
+ * is capped per voter and per admin (set on the Security tab).
  *
  * canOverrideCaps  — The Chairperson, Deputy Chairperson and superadmin may raise one person's cap.
  */
@@ -181,7 +181,7 @@ export default function ResetOtpLimitsPanel({ canOverrideCaps = false, initialSt
           <b style={{ fontSize: 15 }}>Raise one person's cap</b>
           <p style={muted}>
             For when a commissioner or admin has hit a daily or hourly limit and the work is legitimate. Applies to that
-            person only; the organisation-wide limits stay as set on Security &amp; SMS.
+            person only; the organisation-wide limits stay as set on the Security tab.
           </p>
           <select style={inp} value={cap.kind} onChange={e => setCap({ ...cap, kind: e.target.value })} aria-label="Which cap">
             {CAP_KINDS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
