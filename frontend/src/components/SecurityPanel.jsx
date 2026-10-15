@@ -127,7 +127,7 @@ export default function SecurityPanel() {
   const dv = d.derived;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: 16, alignItems: 'start' }}>
       <LegacyDataPanel />
       {d.banner && <div style={{ ...box, borderColor: 'var(--warning)', gridColumn: '1 / -1' }}><Icon name="warning" /> {d.banner} Schedule the voting phase (Timeline tab) with “enforced” on.</div>}
 
@@ -431,6 +431,7 @@ function CaptchaHealthTile() {
 
           <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>Proxy hops: which address does the server treat as the voter?</b>
           <p style={note}>Path: voter's phone → {st.proxy.forwarded_for.length > 1 ? 'Vercel → ' : ''}Render (this server). The server reads the client address from the <code>X-Forwarded-For</code> header, counting <code>TRUSTED_PROXY_HOPS</code> entries from the right. Currently set to <b>{st.proxy.trusted_hops}</b>, which picks <code>{st.your_ip.detected}</code>.</p>
+          <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr style={{ textAlign: 'left', opacity: 0.65 }}><th style={cell}>TRUSTED_PROXY_HOPS</th><th style={cell}>Address the server would use</th><th style={cell}>Matches your public IP</th></tr></thead>
             <tbody>
@@ -447,6 +448,7 @@ function CaptchaHealthTile() {
               })}
             </tbody>
           </table>
+          </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
             <button disabled={busy === 'pubip'} onClick={detectPublicIp} className="perf-btn" style={{ cursor: 'pointer' }}>{busy === 'pubip' ? 'Looking up…' : 'Detect my public IP'}</button>
             <input style={{ ...inp, width: 220 }} value={pubIp} onChange={e => setPubIp(e.target.value.trim())} placeholder="or type your public IP" />
