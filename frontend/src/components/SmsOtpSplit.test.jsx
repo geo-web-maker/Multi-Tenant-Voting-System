@@ -7,6 +7,7 @@ const mockPut = vi.fn();
 vi.mock('../api', () => ({ default: { get: (...a) => mockGet(...a), post: (...a) => mockPost(...a), put: (...a) => mockPut(...a) } }));
 vi.mock('./UIFeedback', () => ({
   useToast: () => () => {}, useConfirm: () => async () => true, usePrompt: () => async () => 'Duplicate record entered twice',
+  ScrollList: ({ children, maxHeight }) => <div data-testid="scroll" data-max={maxHeight}>{children}</div>,
 }));
 
 import { SmsOtpSplitSettings } from './SmsSettings';
@@ -62,6 +63,7 @@ describe('SharedContactsPanel for IT admin', () => {
     render(<SharedContactsPanel role="it_admin" requestedBy="it1" />);
     expect(await screen.findByTestId('shared-contact-stats')).toBeTruthy();
     expect(screen.getByText('Voters sharing')).toBeTruthy();
+    expect(screen.getByTestId('scroll').dataset.max).toBe('60vh');   // the list scrolls inside the panel
     fireEvent.click(screen.getByText('Request removal'));
     await waitFor(() => expect(mockPost).toHaveBeenCalled());
     expect(mockPost.mock.calls[0][0]).toBe('/it-admin/students/request-remove');

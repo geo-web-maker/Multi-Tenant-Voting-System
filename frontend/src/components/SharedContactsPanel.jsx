@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
-import { useConfirm, useToast, usePrompt } from './UIFeedback';
+import { useConfirm, useToast, usePrompt, ScrollList } from './UIFeedback';
 import { LoadingBlock } from './Spinner.jsx';
 
 /** Phone numbers held by more than one voter, with statistics and suggested actions.
@@ -107,7 +107,8 @@ export default function SharedContactsPanel({ role = 'superadmin', requestedBy =
       {data?.roster?.frozen && <p className="perf-note">The roster is frozen, so voters cannot be deleted. Changing or removing a contact is still possible.</p>}
       {error && <p className="perf-msg" data-kind="error" role="alert">{error}</p>}
       {data && open.length === 0 && <p className="perf-note">No unresolved shared numbers.</p>}
-      <div style={{ display: 'grid', gap: 12, marginTop: 8 }}>
+      <ScrollList maxHeight="60vh" style={{ marginTop: 8 }}>
+      <div style={{ display: 'grid', gap: 12 }}>
         {groups.map(g => (
           <article key={g.phone_key} className="perf-row" style={{ display: 'grid', gap: 8, padding: 12 }}>
             <div className="perf-row-title">{g.phone_masked} · {g.count} voters{g.possible_duplicate ? ' · possible duplicate record' : ''}</div>
@@ -133,6 +134,7 @@ export default function SharedContactsPanel({ role = 'superadmin', requestedBy =
           </article>
         ))}
       </div>
+      </ScrollList>
     </section>
   );
 }

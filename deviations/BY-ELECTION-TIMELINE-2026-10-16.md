@@ -32,3 +32,7 @@ Request: the by-election timeline (voting start and end) is set and shown inside
 - SMS tab: new card "Voter codes: first message and resend". Settings `otp_split_enabled`, `otp_first_ego_pct`, `otp_resend_ego_pct` (saved through `PUT /superadmin/sms-budget`, with a reason, audited). When on, each first code and each resend picks EgoSMS first with that percentage chance (random per message, so the ratio holds over many messages, not exactly in any small batch); the other provider remains the fallback. When off, the fixed policy is unchanged (first EgoSMS, resend MamboSMS). Presets include "First 30:70, resend 100:0".
 - Cost estimate (`otpSplitCost.js`): voters, resends per voter and the saved per-part prices give messages and UGX per provider; a provider that carries messages but has no price makes the total "not set".
 - Budget counting and the vote path are unchanged.
+
+## Follow-up 3: shared numbers removed from the By-elections tab
+- The shared-phone-numbers panel now lives only under Student Changes (superadmin) and the Edit tab (IT admin). It was removed from the By-elections tab, which keeps the tie list and the by-election timeline only.
+- The panel's list is wrapped in the shared `ScrollList` (60% of the viewport height), so a long list scrolls inside the panel instead of lengthening the page.

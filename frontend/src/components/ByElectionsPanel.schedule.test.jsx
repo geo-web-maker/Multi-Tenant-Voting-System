@@ -71,37 +71,17 @@ describe('ByElectionsPanel schedule', () => {
   });
 });
 
-describe('ByElectionsPanel shared contacts', () => {
-  beforeEach(() => { mockGet.mockReset(); mockPost.mockReset(); });
+describe('ByElectionsPanel no longer hosts shared contacts', () => {
+  beforeEach(() => { mockGet.mockReset(); });
   afterEach(cleanup);
-  const group = { phone_masked: '*********111', phone_key: '256772000111', count: 2, severity: 'high', possible_duplicate: true,
-    acknowledged: false, voters: [
-      { student_id: 's1', full_name: 'Jane Doe', has_voted: true, holds_admin_role: false, other_numbers: 0, recommended: 'keep', reason: 'Keep it.', actions: { change_contact: true, remove_contact: false, delete_voter: false } },
-      { student_id: 's2', full_name: 'Jane Doe', has_voted: false, holds_admin_role: false, other_numbers: 0, recommended: 'delete_voter', reason: 'Duplicate.', actions: { change_contact: true, remove_contact: false, delete_voter: true } },
-    ] };
-
-  it('hides the shared-contact check when there is no tie', async () => {
-    mockGet.mockImplementation(async (url) => { if (url === '/superadmin/election-ties') return { data: { ties: [] } }; throw new Error(url); });
-    render(<ByElectionsPanel />);
-    await screen.findByText(/No tie records/);
-    expect(screen.queryByTestId('shared-contacts')).toBeNull();
-    expect(mockGet).not.toHaveBeenCalledWith('/admin/shared-contacts');
-  });
-
-  it('lists shared numbers with recommendations and deletes the duplicate', async () => {
+  it('does not render or request the shared-contact check even when a tie exists', async () => {
     mockGet.mockImplementation(async (url) => {
       if (url === '/superadmin/election-ties') return { data: { ties: [{ ...tie, by_election_round_id: undefined, status: 'pending' }] } };
-      if (url === '/admin/shared-contacts') return { data: { groups: [group], roster: { frozen: false } } };
       throw new Error(url);
     });
-    mockPost.mockResolvedValue({ data: {} });
     render(<ByElectionsPanel />);
-    expect(await screen.findByText(/possible duplicate record/)).toBeTruthy();
-    expect(screen.getByText(/Recommended: delete this duplicate record/)).toBeTruthy();
-    expect(screen.getAllByText('Delete voter')).toHaveLength(1);
-    fireEvent.click(screen.getByText('Delete voter'));
-    await waitFor(() => expect(mockPost).toHaveBeenCalled());
-    expect(mockPost.mock.calls[0][0]).toBe('/superadmin/students/remove');
-    expect(mockPost.mock.calls[0][1].student_id).toBe('s2');
+    await screen.findByText(/Tie review and by-elections/);
+    expect(screen.queryByTestId('shared-contacts')).toBeNull();
+    expect(mockGet).not.toHaveBeenCalledWith('/admin/shared-contacts');
   });
 });

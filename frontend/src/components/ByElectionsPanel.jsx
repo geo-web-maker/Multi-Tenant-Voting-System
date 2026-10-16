@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import api from '../api';
 import { useConfirm, useToast, usePrompt } from './UIFeedback';
 import { LoadingBlock } from './Spinner.jsx';
-import SharedContactsPanel from './SharedContactsPanel';
 import { askEarlyReason } from '../electionControls';
 import { DEFAULT_TZ, parseUtc, utcToZonedInput, zonedInputToUtcISO, fmtZoned, utcOffsetLabel } from '../tz';
 
@@ -248,7 +247,6 @@ export default function ByElectionsPanel() {
           </div>
         )}
       </section>
-      {ties.length > 0 && <SharedContactsPanel role="superadmin" />}
     </div>
   );
 }
