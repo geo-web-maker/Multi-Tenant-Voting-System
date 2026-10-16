@@ -7,7 +7,7 @@ import { errMsg } from '../studentEdit';
 // SMS settings cards (moved here from SecurityPanel): routing, test and check, budget, and the new pricing and
 // message-length card. Kit classes only (docs/UI_TEMPLATE_MANUAL.md). Every save needs a reason and is logged.
 
-export const ROUTE_LABELS = {
+const ROUTE_LABELS = {
   default: 'Automatic (original behaviour)',
   egosms_first: 'EgoSMS first, MamboSMS as fallback',
   mambosms_first: 'MamboSMS first, EgoSMS as fallback',
@@ -50,6 +50,7 @@ export function SmsRoutingSettings({ settings, derived, onSaved }) {
   const [f, setF] = useState({ otp: 'default', other: 'default', fallback: false });
   const [reason, setReason] = useState('');
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: re-seed the editable copy when the saved settings change
     setF({ otp: settings.sms_route_otp || 'default', other: settings.sms_route_other || 'default', fallback: Boolean(settings.sms_fallback_on_timeout) });
   }, [settings.sms_route_otp, settings.sms_route_other, settings.sms_fallback_on_timeout]);
   const routes = derived.sms_routes || Object.keys(ROUTE_LABELS);
@@ -71,8 +72,8 @@ export function SmsRoutingSettings({ settings, derived, onSaved }) {
   return (
     <section className="perf-card card-pad">
       <h3 style={{ margin: '0 0 6px', fontSize: 15 }}>SMS delivery &amp; routing</h3>
-      <p className="perf-lead">Choose which provider carries each kind of message. Bulk messages follow “Everything else”. Changes apply immediately to new messages.</p>
-      <label style={fieldBox}><span style={lblStyle}>Voter OTP codes</span>
+      <p className="perf-lead">Bulk messages follow “Everything else”. For the post-election OTP policy, first codes are sent through EgoSMS with MamboSMS fallback; resends prefer MamboSMS with EgoSMS fallback when <code>OTP_RESEND_VIA_MAMBO</code> is enabled. This managed first/resend policy takes precedence over the stored OTP route preference.</p>
+      <label style={fieldBox}><span style={lblStyle}>Stored OTP route preference (used when managed resend routing is disabled)</span>
         <select className="perf-field" value={f.otp} onChange={(e) => setF({ ...f, otp: e.target.value })}>
           {routes.map((r) => <option key={r} value={r}>{ROUTE_LABELS[r] || r}</option>)}
         </select></label>
@@ -144,6 +145,7 @@ export function SmsBudgetSettings({ usage, derived, onSaved }) {
   const [b, setB] = useState({ total: '', mode: 'normal', enforce: false, floor: '' });
   const [reason, setReason] = useState('');
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: re-seed the editable copy when the saved settings change
     setB({ total: usage.budget_total ?? '', mode: usage.mode === 'conservation' ? 'conservation' : 'normal', enforce: Boolean(usage.budget_enforced), floor: usage.balance_floor_ugx ?? '' });
   }, [usage.budget_total, usage.mode, usage.budget_enforced, usage.balance_floor_ugx]);
   const save = async () => {
@@ -193,6 +195,7 @@ export function SmsPricingSettings({ usage, onSaved }) {
   const [form, setForm] = useState(() => toForm(usage.sms_pricing));
   const [rate, setRate] = useState(usage.sms_bulk_per_second ?? 3);
   const [reason, setReason] = useState('');
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: re-seed the editable copy when the saved settings change
   useEffect(() => { setForm(toForm(usage.sms_pricing)); setRate(usage.sms_bulk_per_second ?? 3); }, [usage.sms_pricing, usage.sms_bulk_per_second]);
   const set = (p, k, v) => setForm((f) => ({ ...f, [p]: { ...f[p], [k]: v } }));
   const save = async () => {

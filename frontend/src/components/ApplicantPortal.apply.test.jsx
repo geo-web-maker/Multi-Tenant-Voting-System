@@ -174,7 +174,11 @@ describe('B2: progress feedback', () => {
     await fillAll(container);
     fireEvent.submit(form(container));
     fireEvent.submit(form(container));
-    expect(mockPost.mock.calls.filter(c => c[0] === '/apply/check-eligibility').length).toBe(1);
+    // The handler awaits wakeServer() before posting, so wait for the call, then confirm it stays at one.
+    const calls = () => mockPost.mock.calls.filter(c => c[0] === '/apply/check-eligibility').length;
+    await vi.waitFor(() => expect(calls()).toBe(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(calls()).toBe(1);
   });
 
   it('A7: while busy the fields are inert and the button is aria-busy; the step label shows', async () => {

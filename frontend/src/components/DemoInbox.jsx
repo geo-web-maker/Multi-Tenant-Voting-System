@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React from 'react';
 import api from '../api';
 import { Icon } from './icons.jsx';
@@ -7,7 +8,7 @@ export default function DemoInbox() {
   const [active, setActive] = React.useState(false);
   const [messages, setMessages] = React.useState([]);
   const [open, setOpen] = React.useState(false);
-  const [lastSeen, setLastSeen] = React.useState(() => sessionStorage.getItem('demo_inbox_seen') || '');
+  const [lastSeen, setLastSeen] = React.useState(() => safeSessionStorage.getItem('demo_inbox_seen') || '');
 
   const load = React.useCallback(async () => {
     try {
@@ -25,7 +26,7 @@ export default function DemoInbox() {
 
   if (!active) return null;
   const unread = messages.filter(m => !lastSeen || String(m.created_at) > lastSeen).length;
-  const markSeen = () => { const latest = messages[0]?.created_at || new Date().toISOString(); setLastSeen(String(latest)); sessionStorage.setItem('demo_inbox_seen', String(latest)); setOpen(true); };
+  const markSeen = () => { const latest = messages[0]?.created_at || new Date().toISOString(); setLastSeen(String(latest)); safeSessionStorage.setItem('demo_inbox_seen', String(latest)); setOpen(true); };
   const copyCode = async code => { try { await navigator.clipboard.writeText(code); } catch { /* browser may deny clipboard */ } };
   return (
     <>

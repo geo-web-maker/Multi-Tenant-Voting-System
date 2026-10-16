@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../../storage.js';
 // Console navigation (BP-T7a). Takes the SAME props as the default TabBar (`tabs` | `groups`, `activeTab`, `onChange`,
 // `className`) and calls the same handlers. Layout is CSS-only at 768 px (F7): a sticky rail on desktop, a pill row on phones.
 // It also publishes the active "group / tab" to the chrome store so the sticky header can show it as a crumb (no prop drilling).
@@ -9,7 +10,7 @@ import { textOf } from './labels.js';
 // Same analytics call as the default TabBar (role:tab from the admin session). Kept in sync by hand: 3 lines.
 function useTabAnalytics(activeTab) {
   useEffect(() => {
-    const role = sessionStorage.getItem('admin_role');
+    const role = safeSessionStorage.getItem('admin_role');
     if (role && activeTab) trackPage(`${role}:${String(activeTab).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 40)}`);
   }, [activeTab]);
 }

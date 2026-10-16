@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React from 'react';
 import { getViewAs, clearAdminSession } from '../session';
 import { ADMIN_TOKEN_KEY } from '../api';
@@ -6,7 +7,7 @@ const LABELS = { it_admin: 'IT Admin', commission: 'Commissioner', financial_con
 
 function minutesLeft() {
   try {
-    const p = sessionStorage.getItem(ADMIN_TOKEN_KEY).split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const p = safeSessionStorage.getItem(ADMIN_TOKEN_KEY).split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
     const exp = JSON.parse(atob(p + '='.repeat((4 - (p.length % 4)) % 4))).exp;
     return Math.max(0, Math.ceil((exp * 1000 - Date.now()) / 60000));
   } catch { return null; }

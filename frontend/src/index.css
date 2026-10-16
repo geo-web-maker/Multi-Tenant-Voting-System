@@ -966,6 +966,8 @@ td, th {
 .perf-pair { display: grid; align-items: start; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
 .perf-btn { padding: 0 16px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
 .perf-btn[aria-selected="true"], .perf-btn[aria-pressed="true"] { border-color: var(--brand-primary, currentColor); background: var(--brand-primary); color: var(--brand-on-primary, white); }
+/* Multi-line card button (job rows, clickable stat tiles): a row inside a .perf-card, not a pill. Blueprint mirror: blueprint.css .perf-btn.perf-btn-card. */
+.perf-btn-card { height: auto; text-align: left; border-radius: 8px; }
 .perf-btn-primary { background: var(--brand-primary); color: var(--brand-on-primary, white); border-color: var(--brand-primary); }
 .perf-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .perf-seg { display: flex; flex: 1 1 200px; gap: 4px; }

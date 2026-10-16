@@ -204,6 +204,8 @@ PERF_INDEXES = [
     ("candidate_lists", [("list_id", 1)]),
     ("organizations", [("slug", 1)]),
     ("voters", [("org_id", 1), ("has_voted", 1)]),
+    ("vote_events", [("org_id", 1), ("round_id", 1), ("candidate_id", 1)]),
+    ("ties", [("org_id", 1), ("detected_at", -1)]),
 ]
 
 
@@ -220,7 +222,7 @@ async def _ensure_perf_indexes() -> None:
 # last created. Bump INDEX_SCHEMA_VERSION when you add or change an index in _create_startup_indexes (a change
 # to PERF_INDEXES is picked up automatically), or set FORCE_INDEX_SYNC=1 for one boot to re-create everything,
 # for example after dropping an index by hand in Atlas.
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 4
 
 
 def _index_signature() -> str:
@@ -358,6 +360,18 @@ async def _create_startup_indexes() -> None:
     # Turnout-velocity aggregation scans cast_at.
     await db.vote_events.create_index([("org_id", 1), ("cast_at", 1)])
     await _ensure_perf_indexes()
+    # Unique round/tie identities are required for idempotent tie detection and to
+    # prevent duplicate round IDs within a tenant. Use named indexes so the schema is
+    # explicit; ties from pre-round builds without tie_type remain compatible.
+    try:
+        await db.rounds.create_index([("org_id", 1), ("round_id", 1)], unique=True,
+                                     name="org_round_id_unique",
+                                     partialFilterExpression={"round_id": {"$type": "string"}})
+        await db.ties.create_index([("org_id", 1), ("round_id", 1), ("position", 1), ("tie_type", 1)],
+                                   unique=True, name="org_round_position_tie_type_unique",
+                                   partialFilterExpression={"tie_type": {"$exists": True}})
+    except Exception:
+        logger.warning("Could not create unique round/tie indexes; investigate existing duplicate data", exc_info=True)
 
 
 @asynccontextmanager
@@ -1205,6 +1219,8 @@ class PositionCreate(BaseModel):
     title: str
     description: str = ""
     order: int = 0
+    # Number of elected seats for this position; enables tie detection at the multi-seat cut-off.
+    seats: int = Field(1, ge=1, le=100)
     # Nomination fee in UGX shown to applicants next to the proof-of-payment upload. 0 = no fee stated.
     application_fee: int = Field(0, ge=0, le=100_000_000)
 
@@ -1212,6 +1228,7 @@ class PositionUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     order: int | None = None
+    seats: int | None = Field(None, ge=1, le=100)
     application_fee: int | None = Field(None, ge=0, le=100_000_000)
 
 # --- Applications ---
@@ -1556,6 +1573,9 @@ PRIORITY_SMS_KINDS = {"otp"}
 SMS_PROVIDERS = ("egosms", "mambosms")
 SMS_ROUTES = ("default", "egosms_first", "mambosms_first", "egosms_only", "mambosms_only")
 _SMS_PROVIDER_LABEL = {"egosms": "EgoSMS", "mambosms": "MamboSMS"}
+# Round-aware OTP routing: first send via EgoSMS, subsequent send attempts prefer MamboSMS.
+# Set OTP_RESEND_VIA_MAMBO=0 to return resends to the organisation's configured OTP route.
+OTP_RESEND_VIA_MAMBO = os.getenv("OTP_RESEND_VIA_MAMBO", "1").strip().lower() not in ("0", "false", "off", "no")
 
 
 def sms_route_group(kind: str) -> str:
@@ -1583,7 +1603,7 @@ async def _sms_try_provider(provider: str, to_number: str, message_text: str) ->
     return "ok" if await send_sms_via_mambosms(to_number, message_text) else "failed"
 
 
-async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) -> str:
+async def _send_sms_routed(to_number: str, message_text: str, org, kind: str, is_resend: bool = False) -> str:
     """Send following the org's routing setting for this kind of message.
 
     Every attempt that was accepted OR may have been accepted (ambiguous) is counted toward the SMS
@@ -1597,7 +1617,16 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) ->
         logger.error(f"sms routing settings read failed, using defaults: {e}")
         sec = dict(_SEC_DEFAULTS)
     route = sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
-    order = sms_provider_order(route, kind)
+    if kind == "otp" and not is_resend:
+        # The first code is always tried through EgoSMS, regardless of an org-level
+        # route preference; MamboSMS is the explicit fallback for that attempt.
+        order = ["egosms", "mambosms"]
+        route = f"{route}; first OTP prefers EgoSMS"
+    elif kind == "otp" and is_resend and OTP_RESEND_VIA_MAMBO:
+        order = ["mambosms", "egosms"]
+        route = f"{route}; resend prefers MamboSMS"
+    else:
+        order = sms_provider_order(route, kind)
 
     last = "failed"
     for i, provider in enumerate(order):
@@ -1631,7 +1660,7 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str) ->
 
 
 async def send_sms_status(to_number: str, message_text: str, request: Request | None = None,
-                          kind: str = "otp", org_id: str | None = None) -> str:
+                          kind: str = "otp", org_id: str | None = None, is_resend: bool = False) -> str:
     """Single entrypoint every route should call to send an SMS. Returns "ok", "failed" or "ambiguous".
 
     Provider order comes from the org's SMS routing setting (see SMS_ROUTES / sms_provider_order),
@@ -1647,13 +1676,13 @@ async def send_sms_status(to_number: str, message_text: str, request: Request | 
         await _safe_count_sms(org, kind)
         return "ok"
 
-    return await _send_sms_routed(to_number, message_text, org, kind)
+    return await _send_sms_routed(to_number, message_text, org, kind, is_resend=is_resend)
 
 
 async def send_sms(to_number: str, message_text: str, request: Request | None = None,
-                   kind: str = "otp", org_id: str | None = None) -> bool:
+                   kind: str = "otp", org_id: str | None = None, is_resend: bool = False) -> bool:
     """Boolean wrapper over send_sms_status(): True only on a confirmed send."""
-    return await send_sms_status(to_number, message_text, request, kind, org_id) == "ok"
+    return await send_sms_status(to_number, message_text, request, kind, org_id, is_resend=is_resend) == "ok"
 
 
 # =============================================================================
@@ -1793,17 +1822,18 @@ def org_stamp(request: Request, doc: dict) -> dict:
     doc["org_id"] = require_org(getattr(request.state, "org_id", None))
     return doc
 
-async def get_vote_counts(request: Request) -> dict[str, int]:
+async def get_vote_counts(request: Request, round_id: str | None = None) -> dict[str, int]:
+    """Aggregate anonymous ballot events for one round, never combining a by-election with Round 1.
+
+    Legacy vote_events without round_id are treated as round-1 so existing elections retain their tally.
+    The tenant-scoped collection prepends its own org_id match to this aggregation.
     """
-    Aggregate vote_events into per-candidate counts, scoped to the current
-    org. Replaces reads of the old candidates.votes counter now that writes
-    go to vote_events instead (see /vote, /vote-bulk). Candidates with zero
-    votes won't have a group row at all, so callers use
-    counts.get(str(candidate_id), 0) rather than indexing directly.
-    """
+    active_round = round_id or await current_round_id(request)
+    round_filter = ({"$or": [{"round_id": active_round}, {"round_id": {"$exists": False}}]}
+                    if active_round == DEFAULT_ROUND_ID else {"round_id": active_round})
     counts: dict[str, int] = {}
     async for row in tdb(request).vote_events.aggregate([
-        {"$match": org_query(request)},
+        {"$match": round_filter},
         {"$group": {"_id": "$candidate_id", "count": {"$sum": 1}}}
     ]):
         counts[str(row["_id"])] = row["count"]
@@ -1925,7 +1955,13 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
 
     chain_hash = prev_hash
     for ev in events:
-        payload = f"{chain_hash}|{ev['_id']}|{ev['candidate_id']}|{ev['cast_at'].isoformat()}"
+        if int(ev.get("chain_version", 1) or 1) >= 2:
+            # V2 binds the round id into the chain. This prevents changing the round tag of an
+            # already-checkpointed anonymous ballot to move its count between elections.
+            payload = f"{chain_hash}|{ev['_id']}|{ev['candidate_id']}|{ev['cast_at'].isoformat()}|{ev.get('round_id', DEFAULT_ROUND_ID)}"
+        else:
+            # V1 remains verifiable for historic checkpoints created before round-aware voting.
+            payload = f"{chain_hash}|{ev['_id']}|{ev['candidate_id']}|{ev['cast_at'].isoformat()}"
         chain_hash = hashlib.sha256(payload.encode()).hexdigest()
 
     checkpoint = org_stamp(request, {
@@ -3225,6 +3261,12 @@ class PhaseScheduleUpdate(BaseModel):
     reason: str | None = None        # required only when this edit ends a live voting window right now
 
 
+class CreateByElectionRequest(BaseModel):
+    tie_id: str = Field(..., max_length=64)
+    reason: str = Field(..., min_length=10, max_length=500)
+    eligibility_rule: str = Field(..., max_length=32)  # all_registered | round1_voters
+
+
 class Milestone(BaseModel):
     """One row of a client-supplied election roadmap (e.g. ASK-Table-EC.pdf).
     Purely informational — doesn't gate anything, unlike PhaseWindow above.
@@ -3458,10 +3500,18 @@ async def assert_voting_allowed(request: Request, student_id: str):
     # not be accepted after the election was closed or certified. Costs one read per ballot. The phase schedule
     # below stays cached: it changes on a timetable, so a short lag there is harmless.
     config = await tdb(request).settings.find_one({"name": "election_config"})
+    round_id = await current_round_id(request)
     if config and not config.get("is_open", True):
         raise HTTPException(status_code=403, detail="Election is closed.")
-    if config and config.get("is_certified"):
-        raise HTTPException(status_code=403, detail="Results have been certified; voting is closed.")
+    if round_id == DEFAULT_ROUND_ID:
+        if config and config.get("is_certified"):
+            raise HTTPException(status_code=403, detail="Results have been certified; voting is closed.")
+    else:
+        round_doc = await tdb(request).rounds.find_one({"round_id": round_id})
+        if not round_doc:
+            raise HTTPException(status_code=404, detail="Election round not found.")
+        if round_doc.get("status") == "certified":
+            raise HTTPException(status_code=403, detail="Results for this round have been certified; voting is closed.")
     await assert_phase_open(request, "voting", student_id)
 
 # =============================================================================
@@ -3682,6 +3732,172 @@ async def cached_setting(org_id, name: str):
     return doc
 
 
+async def _round_is_ended(request: Request, round_id: str) -> bool:
+    """Evaluate the requested round's own close state, not another round's master switch."""
+    schedule = await get_phase_schedule(request)
+    if round_id == schedule.get("round_id", DEFAULT_ROUND_ID):
+        cfg = await cached_setting(request.state.org_id, "election_config") or {}
+        window_state = voting_window_state(schedule, datetime.utcnow())
+        # A newly created round with a future enforced start is scheduled, not ended,
+        # even though the global master switch is deliberately closed until launch.
+        if window_state["not_started"]:
+            return False
+        return bool(not cfg.get("is_open", True) or window_state["ended"])
+    round_doc = await tdb(request).rounds.find_one({"round_id": round_id})
+    if not round_doc:
+        return False
+    if round_doc.get("status") in ("closed", "complete", "certified"):
+        return True
+    voting = (round_doc.get("phases") or {}).get("voting") or {}
+    return bool(voting_window_state({"phases": {"voting": voting}}, datetime.utcnow())["ended"])
+
+
+async def _detect_ties_for_round(request: Request, round_id: str) -> list[dict]:
+    """Snapshot the closed round, then persist ties without storing voter data."""
+    round_doc = await tdb(request).rounds.find_one({"round_id": round_id})
+
+    # Freeze the Round 1 candidate roster and seat counts the first time closed results are
+    # computed. This is the earliest safe automatic boundary in legacy installations: without
+    # a prior snapshot, later candidate/position edits would otherwise rewrite historical results.
+    if round_id == DEFAULT_ROUND_ID and (not round_doc or not round_doc.get("candidate_snapshot")):
+        cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
+        current_schedule = await get_phase_schedule(request)
+        if round_doc and isinstance(round_doc.get("candidate_ids"), list):
+            candidate_docs = []
+            for raw_id in round_doc.get("candidate_ids", []):
+                try:
+                    cdoc = await tdb(request).candidates.find_one({"_id": ObjectId(str(raw_id))})
+                except Exception:
+                    cdoc = None
+                if cdoc:
+                    candidate_docs.append(cdoc)
+        else:
+            candidate_docs = await tdb(request).candidates.find({}).to_list(length=None)
+        position_docs_for_snapshot = await tdb(request).positions.find({}).to_list(length=None)
+        snapshot = [{"id": str(c["_id"]), "name": c.get("name", "Candidate"),
+                     "position": c.get("position", ""), "order": c.get("order", 0)}
+                    for c in candidate_docs]
+        seat_snapshot = {str(p.get("title", "")): max(1, int(p.get("seats", 1) or 1))
+                         for p in position_docs_for_snapshot}
+        snapshot_values = {
+            "round_id": DEFAULT_ROUND_ID, "kind": "general",
+            "status": "certified" if cfg.get("is_certified", False) else "closed",
+            "parent_round_id": None, "position": None,
+            "candidate_ids": [c["id"] for c in snapshot],
+            "candidate_snapshot": snapshot, "seats_by_position": seat_snapshot,
+            "phases": current_schedule.get("phases", {}),
+            "timezone": current_schedule.get("timezone", "Africa/Kampala"),
+            "created_at": datetime.utcnow(),
+        }
+        await tdb(request).rounds.update_one(
+            {"round_id": DEFAULT_ROUND_ID}, {"$setOnInsert": org_stamp(request, snapshot_values)}, upsert=True)
+        if snapshot:
+            # Upgrade any early round record that predates immutable snapshots, without
+            # overwriting a snapshot another request has already written.
+            await tdb(request).rounds.update_one(
+                {"round_id": DEFAULT_ROUND_ID, "candidate_snapshot": {"$exists": False}},
+                {"$set": {"candidate_ids": [c["id"] for c in snapshot],
+                          "candidate_snapshot": snapshot, "seats_by_position": seat_snapshot,
+                          "phases": current_schedule.get("phases", {}),
+                          "timezone": current_schedule.get("timezone", "Africa/Kampala")}})
+        round_doc = await tdb(request).rounds.find_one({"round_id": round_id})
+
+    candidate_filter = {}
+    if round_doc and isinstance(round_doc.get("candidate_ids"), list):
+        ids = []
+        for item in round_doc.get("candidate_ids", []):
+            try:
+                ids.append(ObjectId(str(item)))
+            except Exception:
+                continue
+        candidate_filter = {"_id": {"$in": ids}}
+    candidate_snapshot = (round_doc or {}).get("candidate_snapshot") or []
+    if candidate_snapshot:
+        candidates = []
+        for item in candidate_snapshot:
+            try:
+                candidates.append({"_id": ObjectId(str(item["id"])), "name": item.get("name", "Candidate"),
+                                   "position": item.get("position", ""), "order": item.get("order", 0)})
+            except Exception:
+                continue
+    else:
+        candidates = await tdb(request).candidates.find(candidate_filter).to_list(length=None)
+    vote_counts = await get_vote_counts(request, round_id)
+    position_docs = await tdb(request).positions.find({}).to_list(length=None)
+    seats_by_title = {str(p.get("title", "")): max(1, int(p.get("seats", 1) or 1)) for p in position_docs}
+    if (round_doc or {}).get("seats_by_position"):
+        seats_by_title = {str(k): max(1, int(v or 1)) for k, v in round_doc["seats_by_position"].items()}
+    by_position: dict[str, list[dict]] = {}
+    for candidate in candidates:
+        by_position.setdefault(str(candidate.get("position", "")), []).append(candidate)
+
+    found = []
+    now = datetime.utcnow()
+    for position, rows in by_position.items():
+        ranked = sorted(rows, key=lambda c: (int(vote_counts.get(str(c["_id"]), 0)), str(c["_id"])), reverse=True)
+        if not ranked:
+            continue
+        counts = [int(vote_counts.get(str(c["_id"]), 0)) for c in ranked]
+        groups: dict[str, list[dict]] = {}
+
+        top_count = counts[0]
+        top_tied = [c for c, count in zip(ranked, counts) if count == top_count]
+        if top_count > 0 and len(top_tied) >= 2:
+            groups["top"] = top_tied
+
+        seats = seats_by_title.get(position, 1)
+        if seats > 1 and len(ranked) > seats:
+            cutoff_count = counts[seats - 1]
+            cutoff_tied = [c for c, count in zip(ranked, counts) if count == cutoff_count]
+            cutoff_indexes = [i for i, count in enumerate(counts) if count == cutoff_count]
+            crosses_cutoff = any(i < seats for i in cutoff_indexes) and any(i >= seats for i in cutoff_indexes)
+            if cutoff_count > 0 and len(cutoff_tied) >= 2 and crosses_cutoff:
+                top_ids = {str(c["_id"]) for c in groups.get("top", [])}
+                cutoff_ids = {str(c["_id"]) for c in cutoff_tied}
+                # A tie for all seats can also touch the cut-off; keep one decision record, not duplicates.
+                if cutoff_ids != top_ids:
+                    groups["cutoff"] = cutoff_tied
+
+        for tie_type, tied_candidates in groups.items():
+            query = {"round_id": round_id, "position": position, "tie_type": tie_type}
+            doc = await tdb(request).ties.find_one(query)
+            # Compatibility for old top-tie records created before tie_type was stored.
+            if not doc and tie_type == "top":
+                doc = await tdb(request).ties.find_one({"round_id": round_id, "position": position, "tie_type": {"$exists": False}})
+            if not doc:
+                try:
+                    await tdb(request).ties.insert_one({
+                        "round_id": round_id, "position": position, "tie_type": tie_type,
+                        "candidate_ids": [str(c["_id"]) for c in tied_candidates],
+                        "count": int(vote_counts.get(str(tied_candidates[0]["_id"]), 0)),
+                        "detected_at": now, "status": "pending",
+                    })
+                    doc = await tdb(request).ties.find_one(query)
+                    if not doc and tie_type == "top":
+                        doc = await tdb(request).ties.find_one({"round_id": round_id, "position": position, "tie_type": {"$exists": False}})
+                except Exception:
+                    # Concurrent results polls can race to create the same record; read the winner's record.
+                    doc = await tdb(request).ties.find_one(query)
+                    if not doc and tie_type == "top":
+                        doc = await tdb(request).ties.find_one({"round_id": round_id, "position": position, "tie_type": {"$exists": False}})
+                    if not doc:
+                        raise
+            found.append(doc)
+    return found
+
+async def _round_candidate_filter(request: Request, round_id: str) -> dict:
+    round_doc = await tdb(request).rounds.find_one({"round_id": round_id})
+    if not round_doc or not isinstance(round_doc.get("candidate_ids"), list):
+        return {"_id": {"$in": []}} if round_doc and round_doc.get("kind") == "by_election" else {}
+    ids = []
+    for item in round_doc.get("candidate_ids", []):
+        try:
+            ids.append(ObjectId(str(item)))
+        except Exception:
+            continue
+    return {"_id": {"$in": ids}}
+
+
 # Public results payload, per organisation: every open results page polls /election-results, and without
 # this each poll recounted turnout and re-aggregated every vote event (performance audit P1-2). The key
 # includes `results_released`, so a gated visitor can never be served a payload built for a released one.
@@ -3811,12 +4027,15 @@ def _client_ip(request: Request) -> str:
     return real_client_ip(request)
 
 
-def _otp_key_for(org_id, student_id: str) -> str:
-    return f"{org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+def _otp_key_for(org_id, student_id: str, round_id: str = DEFAULT_ROUND_ID) -> str:
+    # Keep legacy Round-1 keys unchanged; each later round receives independent cooldown,
+    # daily-send and guess-bucket state so Round 1's limiter cannot lock out a by-election.
+    base = f"{org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    return base if round_id == DEFAULT_ROUND_ID else f"{base}:round:{round_id}"
 
 
-def _otp_key(request: Request, student_id: str) -> str:
-    return _otp_key_for(request.state.org_id, student_id)
+def _otp_key(request: Request, student_id: str, round_id: str = DEFAULT_ROUND_ID) -> str:
+    return _otp_key_for(request.state.org_id, student_id, round_id)
 
 
 # ── Election window -> guess-bucket parameters ──────────────────────────────
@@ -3835,10 +4054,10 @@ async def guess_params(request: Request, sec: dict | None = None) -> dict:
 
 # ── Part A: atomic send reservation (ladder + 24 h ceiling) ─────────────────
 
-async def reserve_send(request: Request, student_id: str) -> dict:
+async def reserve_send(request: Request, student_id: str, round_id: str = DEFAULT_ROUND_ID) -> dict:
     """Reserve the voter's next SMS slot or raise 429. Optimistic-concurrency on `version`, so
     20 parallel Resend taps produce exactly one reservation. Returns {"snapshot", "wait"}."""
-    key = _otp_key(request, student_id)
+    key = _otp_key(request, student_id, round_id)
     # Nearly every voter is on their FIRST send, where the read below always misses. Try the insert first: the
     # unique index on `key` (created at startup) makes it succeed only when no state exists, so this is the same
     # decision for one DB call instead of two. Any existing state falls through to the read path unchanged.
@@ -3892,9 +4111,9 @@ async def reserve_send(request: Request, student_id: str) -> dict:
     raise ApiError(429, "Too many requests at once. Please wait a moment and try again.", "cooldown", 2)
 
 
-async def rollback_send(request: Request, student_id: str, snapshot: dict | None):
+async def rollback_send(request: Request, student_id: str, snapshot: dict | None, round_id: str = DEFAULT_ROUND_ID):
     """Gateway failure is free: give the reserved slot back."""
-    key = _otp_key(request, student_id)
+    key = _otp_key(request, student_id, round_id)
     if snapshot is None:
         await db.otp_send_state.delete_one({"key": key})
         return
@@ -3907,9 +4126,9 @@ async def rollback_send(request: Request, student_id: str, snapshot: dict | None
 
 # ── Part B: guess token bucket ──────────────────────────────────────────────
 
-async def peek_guess(request: Request, student_id: str, params: dict) -> tuple[float, int]:
+async def peek_guess(request: Request, student_id: str, params: dict, round_id: str = DEFAULT_ROUND_ID) -> tuple[float, int]:
     """(tokens, retry_after) without consuming. Used to refuse SMS sends while the bucket is empty."""
-    doc = await db.otp_guess_state.find_one({"key": _otp_key(request, student_id)})
+    doc = await db.otp_guess_state.find_one({"key": _otp_key(request, student_id, round_id)})
     if not doc:
         return float(ol.FREE_GUESSES), 0
     tokens = ol.refill(doc["tokens"], (datetime.utcnow() - doc["updated_at"]).total_seconds(),
@@ -3917,10 +4136,10 @@ async def peek_guess(request: Request, student_id: str, params: dict) -> tuple[f
     return tokens, (ol.retry_after(tokens, params["interval"]) if tokens < 1 else 0)
 
 
-async def consume_guess(request: Request, student_id: str, params: dict) -> tuple[bool, float, int]:
+async def consume_guess(request: Request, student_id: str, params: dict, round_id: str = DEFAULT_ROUND_ID) -> tuple[bool, float, int]:
     """Atomically pay one token BEFORE comparing the code (so parallel guesses can't overdraw).
     Returns (allowed, tokens_after, retry_after)."""
-    key = _otp_key(request, student_id)
+    key = _otp_key(request, student_id, round_id)
     interval = params["interval"]
     # Most voters get their code right first time and have no bucket yet: insert first (unique `key` index), and
     # only read when a bucket already exists. Same outcome, one DB call instead of two on the common path.
@@ -3956,8 +4175,12 @@ async def clear_otp_limit_state(org_id, student_ids):
     """Forget send + guess state for these voters. Never touches or creates a code."""
     for sid in {normalize_student_id(s) for s in student_ids if s}:
         key = _otp_key_for(org_id, sid)
-        await db.otp_send_state.delete_one({"key": key})
-        await db.otp_guess_state.delete_one({"key": key})
+        # Clear the legacy Round-1 key and every scoped by-election key for this voter.
+        prefix = re.escape(key)
+        query = {"key": {"$regex": f"^{prefix}(?::round:.*)?$"}}
+        await db.otp_send_state.delete_many(query)
+        await db.otp_guess_state.delete_many(query)
+        await db.otp_attempts.delete_many(query)
 
 
 async def reset_voter_otp_state(org_id, student_ids):
@@ -4311,16 +4534,28 @@ async def get_status(request: Request):
         "timezone": schedule["timezone"],
     }
 
+    active_round_id = schedule.get("round_id") or DEFAULT_ROUND_ID
+    active_round_doc = None if active_round_id == DEFAULT_ROUND_ID else await tdb(request).rounds.find_one({"round_id": active_round_id})
+    round_is_certified = (
+        bool(active_round_doc and active_round_doc.get("status") == "certified")
+        if active_round_id != DEFAULT_ROUND_ID else bool((status_doc or {}).get("is_certified", False))
+    )
+    # A full reset would erase all rounds. Keep it locked if any round has been certified,
+    # or if a by-election exists (its creation promises to preserve Round 1 permanently).
+    is_reset_blocked = bool((status_doc or {}).get("is_certified", False)) or (
+        await tdb(request).rounds.count_documents({"status": "certified"}) > 0
+    ) or (await tdb(request).rounds.count_documents({"kind": "by_election"}) > 0)
     if not status_doc:
-        return {"is_open": True, "is_certified": False, "start": None, "end": None,
-                "voting_phase_open": voting_phase_open, "turnstile_mode": turnstile_mode,
-                "approval_policy": approval_policy, **phase_info}
+        return {"is_open": True, "is_certified": round_is_certified, "is_reset_blocked": is_reset_blocked,
+                "start": None, "end": None, "voting_phase_open": voting_phase_open,
+                "turnstile_mode": turnstile_mode, "approval_policy": approval_policy, **phase_info}
     return {
         **phase_info,
         "turnstile_mode": turnstile_mode,
         "approval_policy": approval_policy,
         "is_open": status_doc.get("is_open", True),
-        "is_certified": status_doc.get("is_certified", False),
+        "is_certified": round_is_certified,
+        "is_reset_blocked": is_reset_blocked,
         "start": status_doc.get("start_time"),
         "end": status_doc.get("end_time"),
         # Whether the "voting" phase (Timeline tab) currently allows casting a
@@ -4332,8 +4567,25 @@ async def get_status(request: Request):
     }
 
 # =============================================================================
-# VOTER ROUTES  (unchanged)
+# VOTER ROUTES  (round-aware voting)
 # =============================================================================
+
+def _has_voted_in_round(student: dict, round_id: str) -> bool:
+    """Keep the legacy has_voted field as the Round-1 source of truth."""
+    voted_rounds = student.get("voted_rounds") or []
+    if round_id == DEFAULT_ROUND_ID:
+        return bool(student.get("has_voted") or round_id in voted_rounds)
+    return round_id in voted_rounds
+
+
+async def _round_candidate_allowed(request: Request, candidate_ids: list[ObjectId], round_id: str) -> bool:
+    if round_id == DEFAULT_ROUND_ID:
+        return True  # Round 1 uses the whole candidate list; no lookup needed.
+    round_doc = await tdb(request).rounds.find_one({"round_id": round_id})
+    if not round_doc or round_doc.get("kind") != "by_election":
+        return True
+    allowed = {str(item) for item in round_doc.get("candidate_ids", [])}
+    return all(str(candidate_id) in allowed for candidate_id in candidate_ids)
 
 @app.post("/verify-identity")
 async def verify_identity(data: IdentityCheck, request: Request):
@@ -4364,9 +4616,16 @@ async def verify_identity(data: IdentityCheck, request: Request):
             detail="Too many attempts. Please check the official register for your details."
         )
 
-    if student.get("has_voted"):
+    active_round = await current_round_id(request)
+    active_round_id = active_round  # explicit name used by per-round OTP routing below
+    active_round_doc = None if active_round == DEFAULT_ROUND_ID else await tdb(request).rounds.find_one({"round_id": active_round})
+    if _has_voted_in_round(student, active_round):
         analytics.set_reason(request, "already_voted")
-        raise HTTPException(status_code=400, detail="Already voted.")
+        raise HTTPException(status_code=400, detail="You have already voted in this round.")
+    if active_round_doc and active_round_doc.get("kind") == "by_election":
+        if active_round_doc.get("eligibility_rule") == "round1_voters" and not student.get("has_voted"):
+            analytics.set_reason(request, "ineligible")
+            raise HTTPException(status_code=403, detail="This by-election is limited to voters who participated in Round 1.")
 
     if not names_match(student.get("full_name", ""), data.full_name):
         await ip_record(request, "fails")
@@ -4399,15 +4658,17 @@ async def verify_identity(data: IdentityCheck, request: Request):
         flagged = await ip_flagged(request) if sec["turnstile_mode"] == "adaptive" else False
         await enforce_turnstile(request, data.turnstile_token, sec, mode, flagged)
         await sms_budget_gate(request, sec, usage, student)
-        tokens, retry = await peek_guess(request, sid, await guess_params(request, sec))
+        tokens, retry = await peek_guess(request, sid, await guess_params(request, sec), active_round_id)
         if tokens < 1:      # a fresh code is useless while no guess is allowed
             raise ApiError(429, f"Too many incorrect codes. You can try again in {ol.fmt_wait(retry)}. "
                                 f"You do not need to do anything.", "guess_lock", retry)
-        reservation = await reserve_send(request, sid)
+        reservation = await reserve_send(request, sid, active_round_id)
 
     # Re-send the SAME code while it is still valid, so a late first SMS never becomes a wrong guess.
     existing = None if legacy else await tdb(request).otps.find_one({"student_id": sid})
-    live = bool(existing and existing.get("created_at")
+    # Never carry a live OTP from the previous round into a new by-election.
+    existing_round = (existing or {}).get("round_id", DEFAULT_ROUND_ID)
+    live = bool(existing and existing_round == active_round and existing.get("created_at")
                 and now - existing["created_at"] < timedelta(minutes=ol.CODE_TTL_MINUTES))
     otp = existing["code"] if live else str(secrets.randbelow(900000) + 100000)
 
@@ -4417,10 +4678,13 @@ async def verify_identity(data: IdentityCheck, request: Request):
 
     message = sms_templates.render("otp", first_name=first_name, org=sms_org_name, code=otp)
 
-    outcome = await send_sms_status(raw_phone, message, request)
+    # Route the first OTP independently for each election round. The global send counter is
+    # kept for billing/operations, but must not make a voter’s first by-election code a resend.
+    round_send_count = int(student.get("otp_send_count_in_round", 0) or 0) if student.get("otp_send_round_id") == active_round_id else 0
+    outcome = await send_sms_status(raw_phone, message, request, is_resend=round_send_count > 0)
     if outcome == "failed":
         if reservation:
-            await rollback_send(request, sid, reservation["snapshot"])      # gateway failure is free
+            await rollback_send(request, sid, reservation["snapshot"], active_round_id)      # gateway failure is free
         analytics.set_reason(request, "sms_failed")
         raise HTTPException(status_code=500, detail="SMS delivery failed.")
 
@@ -4428,15 +4692,20 @@ async def verify_identity(data: IdentityCheck, request: Request):
     if not live:
         await tdb(request).otps.update_one(
             {"student_id": sid},
-            {"$set": org_stamp(request, {"code": otp, "created_at": now,
+            {"$set": org_stamp(request, {"code": otp, "created_at": now, "round_id": active_round,
                                       "is_demo": bool(await _demo_active(request.state.org_id))})},
             upsert=True
         )
-    await tdb(request).voters.update_one(
-        {"student_id": sid},
-        {"$set": {"last_status": "otp_sent"}, "$inc": {"otp_count": 1, "sms_sends_total": 1},
-         "$min": {"first_sms_at": now}}
-    )
+    voter_sms_update = {
+        "$set": {"last_status": "otp_sent", "otp_send_round_id": active_round_id},
+        "$inc": {"otp_count": 1, "sms_sends_total": 1},
+        "$min": {"first_sms_at": now},
+    }
+    if student.get("otp_send_round_id") == active_round_id:
+        voter_sms_update["$inc"]["otp_send_count_in_round"] = 1
+    else:
+        voter_sms_update["$set"]["otp_send_count_in_round"] = 1
+    await tdb(request).voters.update_one({"student_id": sid}, voter_sms_update)
     await ip_record(request, "sends")
     resp = {"status": "success", "phone": f"{raw_phone[:6]}****{raw_phone[-2:]}",
             "next_send_in": reservation["wait"] if reservation else 60}
@@ -4462,7 +4731,7 @@ async def _enforce_otp_attempt_limit(request: Request, student_id: str):
     capped how many could be TRIED. Mongo-backed so it survives a restart and
     works across multiple instances.
     """
-    key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    key = _otp_key_for(request.state.org_id, student_id, await current_round_id(request))
     record = await db.otp_attempts.find_one({"key": key})
     locked_until = (record or {}).get("locked_until")
     if locked_until and locked_until > datetime.utcnow():
@@ -4470,7 +4739,7 @@ async def _enforce_otp_attempt_limit(request: Request, student_id: str):
 
 
 async def _record_otp_failure(request: Request, student_id: str):
-    key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    key = _otp_key_for(request.state.org_id, student_id, await current_round_id(request))
     # CONCURRENCY: same fix as record_failed_login above — atomic $inc
     # instead of read-then-write, so concurrent guesses against one
     # student_id can't undercount past the real attempt cap.
@@ -4495,7 +4764,7 @@ async def _record_otp_failure(request: Request, student_id: str):
 
 
 async def _clear_otp_attempts(request: Request, student_id: str):
-    key = f"{request.state.org_id or 'default'}:otp:{normalize_student_id(student_id)}"
+    key = _otp_key_for(request.state.org_id, student_id, await current_round_id(request))
     await db.otp_attempts.delete_one({"key": key})
 
 
@@ -4509,6 +4778,9 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
         raise HTTPException(status_code=404, detail="Voter not found.")
 
     record = await tdb(request).otps.find_one(search) or await db.admin_otps.find_one(search)
+    if record and record.get("round_id", DEFAULT_ROUND_ID) != await current_round_id(request):
+        await tdb(request).otps.delete_one(search)
+        raise HTTPException(status_code=400, detail="Please request a new code for this election round.")
 
     if record:
         created_at = record.get("created_at")
@@ -4528,7 +4800,7 @@ async def _verify_otp_legacy(data: OTPCheck, request: Request):
                 student_id=normalize_student_id(voter["student_id"]), org_id=request.state.org_id)
             await tdb(request).voters.update_one(search, {"$set": {
                 "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
-                "authenticated_at": datetime.utcnow()}})
+                "authenticated_at": datetime.utcnow(), "auth_round_id": await current_round_id(request)}})
             await tdb(request).otps.delete_one(search)
             await _clear_otp_attempts(request, data.student_id)
             # Failure (otp_verify_locked) was already logged; success never
@@ -4552,6 +4824,12 @@ async def verify_otp(data: OTPCheck, request: Request):
     sid = normalize_student_id(data.student_id)      # voters are stored normalized and `search` matches exactly this
 
     record = await tdb(request).otps.find_one(search) or await db.admin_otps.find_one(search)
+    active_round = await current_round_id(request)
+    record_round = (record or {}).get("round_id", DEFAULT_ROUND_ID)
+    if record and record_round != active_round:
+        # A code issued before a round change can never establish a session in the new round.
+        await tdb(request).otps.delete_one(search)
+        raise ApiError(400, "Please request a new code for this election round.", "round_code_mismatch")
     created_at = (record or {}).get("created_at")
     live = bool(record and created_at
                 and datetime.utcnow() - created_at <= timedelta(minutes=ol.CODE_TTL_MINUTES))
@@ -4569,7 +4847,7 @@ async def verify_otp(data: OTPCheck, request: Request):
                        else "Please request a new code first.", "no_live_code")
 
     params = await guess_params(request)
-    allowed, tokens_after, retry = await consume_guess(request, sid, params)   # pay BEFORE comparing
+    allowed, tokens_after, retry = await consume_guess(request, sid, params, active_round)   # pay BEFORE comparing
     if not allowed:
         raise ApiError(429, f"Too many incorrect codes. You can try again in {ol.fmt_wait(retry)}. "
                             f"You do not need to do anything.", "guess_lock", retry, attempts_remaining=0)
@@ -4580,12 +4858,12 @@ async def verify_otp(data: OTPCheck, request: Request):
             student_id=normalize_student_id(sid), org_id=request.state.org_id)
         marked = await tdb(request).voters.update_one(search, {"$set": {
             "last_status": "authenticated", "otp_count": 0, "vote_jti": vote_jti,
-            "authenticated_at": datetime.utcnow()}})
+            "authenticated_at": datetime.utcnow(), "auth_round_id": await current_round_id(request)}})
         if marked.matched_count != 1:                 # voter removed since the code was sent: no session for them
             analytics.set_reason(request, "voter_not_found")
             raise HTTPException(status_code=404, detail="Voter not found.")
         await tdb(request).otps.delete_one(search)
-        await db.otp_guess_state.delete_one({"key": _otp_key(request, sid)})   # success forgives the bucket
+        await db.otp_guess_state.delete_one({"key": _otp_key(request, sid, active_round)})   # success forgives this round's bucket
         await count_verified(request.state.org_id)
         await ip_record(request, "verifies")
         await log_action("otp_verified", sid, {}, org_id=request.state.org_id)
@@ -4623,6 +4901,7 @@ def _assert_voter_session(request: Request, student: dict):
 
 @app.post("/vote")
 async def cast_vote(data: VoteRequest, request: Request):
+    round_id = await current_round_id(request)
     try:
         candidate_oid = ObjectId(data.candidate_id)
     except Exception:
@@ -4643,16 +4922,24 @@ async def cast_vote(data: VoteRequest, request: Request):
     if not candidate_exists:
         analytics.set_reason(request, "candidate_missing")
         raise HTTPException(status_code=404, detail="Candidate not found.")
+    if not await _round_candidate_allowed(request, [candidate_oid], round_id):
+        raise HTTPException(status_code=400, detail="This candidate is not part of the current election round.")
 
     await assert_voting_allowed(request, data.student_id)
+    # Round 1 has no eligibility rule, so skip the extra read on the hot path (call-budget tests).
+    round_doc = None if round_id == DEFAULT_ROUND_ID else await tdb(request).rounds.find_one({"round_id": round_id})
 
     async def _do_vote(session):
         student = await tdb(request).voters.find_one(
             get_forgiving_filter(data.student_id), session=session
         )
-        if not student or student.get("has_voted"):
+        if not student or _has_voted_in_round(student, round_id):
             analytics.set_reason(request, "ineligible")
             raise HTTPException(status_code=400, detail="Ineligible voter.")
+        if round_id != (student.get("auth_round_id") or DEFAULT_ROUND_ID):
+            raise HTTPException(status_code=401, detail="Your voting session belongs to another election round. Please verify your identity again.")
+        if round_doc and round_doc.get("kind") == "by_election" and round_doc.get("eligibility_rule") == "round1_voters" and not student.get("has_voted"):
+            raise HTTPException(status_code=403, detail="This by-election is limited to voters who participated in Round 1.")
         if student.get("last_status") != "authenticated":
             analytics.set_reason(request, "otp_required")
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
@@ -4665,11 +4952,19 @@ async def cast_vote(data: VoteRequest, request: Request):
             analytics.set_reason(request, "candidate_missing")
             raise HTTPException(status_code=404, detail="Candidate not found.")
 
-        claimed = await tdb(request).voters.update_one(
-            {"_id": student["_id"], "has_voted": {"$ne": True}},
-            {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
-            session=session
-        )
+        if round_id == DEFAULT_ROUND_ID:
+            claimed = await tdb(request).voters.update_one(
+                {"_id": student["_id"], "has_voted": {"$ne": True}, "voted_rounds": {"$ne": round_id}},
+                {"$set": {"has_voted": True, "last_status": "completed"},
+                 "$addToSet": {"voted_rounds": round_id}, "$unset": {"vote_jti": ""}},
+                session=session
+            )
+        else:
+            claimed = await tdb(request).voters.update_one(
+                {"_id": student["_id"], "voted_rounds": {"$ne": round_id}},
+                {"$set": {"last_status": "completed"}, "$addToSet": {"voted_rounds": round_id},
+                 "$unset": {"vote_jti": ""}}, session=session
+            )
         if claimed.matched_count != 1:
             analytics.set_reason(request, "ineligible")
             raise HTTPException(status_code=400, detail="Ineligible voter.")
@@ -4684,6 +4979,8 @@ async def cast_vote(data: VoteRequest, request: Request):
                 "_id": _ev_id,
                 "candidate_id": candidate_oid,
                 "cast_at": _ev_at,
+                "round_id": round_id,
+                "chain_version": 2,
                 "is_demo": bool(await _demo_active(request.state.org_id)),
             },
             session=session
@@ -4721,15 +5018,17 @@ async def vote_status(student_id: str, request: Request, response: Response):
     the ballot must still be able to ask. Only reveals whether THIS voter has voted; never choices."""
     sid = normalize_student_id(student_id)
     verify_voter_token(request, sid, request.state.org_id)
-    student = await tdb(request).voters.find_one(get_forgiving_filter(sid), {"has_voted": 1})
+    student = await tdb(request).voters.find_one(get_forgiving_filter(sid), {"has_voted": 1, "voted_rounds": 1})
     if not student:
         raise HTTPException(status_code=404, detail="Voter not found.")
+    round_id = await current_round_id(request)
     response.headers["Cache-Control"] = "no-store"
-    return {"has_voted": bool(student.get("has_voted"))}
+    return {"has_voted": _has_voted_in_round(student, round_id)}  # shape unchanged (spec: no API-shape changes)
 
 
 @app.post("/vote-bulk")
 async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
+    round_id = await current_round_id(request)
     try:
         candidate_oids = [ObjectId(c_id) for c_id in data.candidate_ids]
     except Exception:
@@ -4747,6 +5046,9 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         raise HTTPException(status_code=400, detail="Duplicate candidate selected.")
 
     await assert_voting_allowed(request, data.student_id)
+    if not await _round_candidate_allowed(request, candidate_oids, round_id):
+        raise HTTPException(status_code=400, detail="One or more candidates are not part of the current election round.")
+    round_doc = None if round_id == DEFAULT_ROUND_ID else await tdb(request).rounds.find_one({"round_id": round_id})
 
     # with_transaction auto-retries transient write conflicts — expected
     # under concurrent load when many voters hit the same popular
@@ -4762,9 +5064,13 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         if not student:
             analytics.set_reason(request, "voter_not_found")
             raise HTTPException(status_code=404, detail="Voter not found.")
-        if student.get("has_voted"):
+        if _has_voted_in_round(student, round_id):
             analytics.set_reason(request, "already_voted")
-            raise HTTPException(status_code=400, detail="You have already cast your vote.")
+            raise HTTPException(status_code=400, detail="You have already cast your vote in this round.")
+        if round_id != (student.get("auth_round_id") or DEFAULT_ROUND_ID):
+            raise HTTPException(status_code=401, detail="Your voting session belongs to another election round. Please verify your identity again.")
+        if round_doc and round_doc.get("kind") == "by_election" and round_doc.get("eligibility_rule") == "round1_voters" and not student.get("has_voted"):
+            raise HTTPException(status_code=403, detail="This by-election is limited to voters who participated in Round 1.")
         if student.get("last_status") != "authenticated":
             analytics.set_reason(request, "otp_required")
             raise HTTPException(status_code=403, detail="OTP verification required before voting.")
@@ -4794,22 +5100,40 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
             except HTTPException:
                 jti = None                                   # _voter_gate raises the same 401/403 in the same order
             if jti:
+                claim_filter = {**get_forgiving_filter(data.student_id), "last_status": "authenticated", "vote_jti": jti}
+                if round_id == DEFAULT_ROUND_ID:
+                    # Existing Round-1 sessions minted before round tracking may not have auth_round_id.
+                    claim_filter["$or"] = [{"auth_round_id": round_id}, {"auth_round_id": {"$exists": False}}]
+                    claim_filter.update({"has_voted": {"$ne": True}, "voted_rounds": {"$ne": round_id}})
+                    claim_update = {"$set": {"has_voted": True, "last_status": "completed"},
+                                    "$addToSet": {"voted_rounds": round_id}, "$unset": {"vote_jti": ""}}
+                else:
+                    claim_filter["auth_round_id"] = round_id
+                    claim_filter["voted_rounds"] = {"$ne": round_id}
+                    # This condition must be part of the atomic fast-path claim too. Otherwise an
+                    # ineligible voter with a valid OTP could bypass _voter_gate's eligibility check.
+                    if round_doc and round_doc.get("kind") == "by_election" and round_doc.get("eligibility_rule") == "round1_voters":
+                        claim_filter["has_voted"] = True
+                    claim_update = {"$set": {"last_status": "completed"}, "$addToSet": {"voted_rounds": round_id},
+                                    "$unset": {"vote_jti": ""}}
                 claimed = await tdb(request).voters.find_one_and_update(
-                    {**get_forgiving_filter(data.student_id), "has_voted": {"$ne": True},
-                     "last_status": "authenticated", "vote_jti": jti},
-                    {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
-                    projection={"_id": 1}, session=session) is not None
+                    claim_filter, claim_update, projection={"_id": 1}, session=session) is not None
 
         if not claimed:
             student = await _voter_gate(session)
             if problem is not None:
                 analytics.set_reason(request, problem[0])
                 raise HTTPException(status_code=problem[1], detail=problem[2])
-            updated = await tdb(request).voters.update_one(
-                {"_id": student["_id"], "has_voted": {"$ne": True}},
-                {"$set": {"has_voted": True, "last_status": "completed"}, "$unset": {"vote_jti": ""}},
-                session=session
-            )
+            if round_id == DEFAULT_ROUND_ID:
+                updated = await tdb(request).voters.update_one(
+                    {"_id": student["_id"], "has_voted": {"$ne": True}, "voted_rounds": {"$ne": round_id}},
+                    {"$set": {"has_voted": True, "last_status": "completed"}, "$addToSet": {"voted_rounds": round_id},
+                     "$unset": {"vote_jti": ""}}, session=session)
+            else:
+                updated = await tdb(request).voters.update_one(
+                    {"_id": student["_id"], "voted_rounds": {"$ne": round_id}},
+                    {"$set": {"last_status": "completed"}, "$addToSet": {"voted_rounds": round_id},
+                     "$unset": {"vote_jti": ""}}, session=session)
             if updated.matched_count != 1:
                 analytics.set_reason(request, "already_voted")
                 raise HTTPException(status_code=400, detail="You have already cast your vote.")
@@ -4821,7 +5145,7 @@ async def cast_bulk_vote(data: BulkVoteRequest, request: Request):
         perf_metrics.note_election("vote")
         await tdb(request).vote_events.insert_many(
             [org_stamp(request, {"_id": _new_vote_event_stamp()[0], "candidate_id": c_oid, "cast_at": cast_at,
-                                 "is_demo": demo_flag}) for c_oid in candidate_oids],
+                                 "round_id": round_id, "chain_version": 2, "is_demo": demo_flag}) for c_oid in candidate_oids],
             session=session
         )
 
@@ -4870,8 +5194,19 @@ async def get_candidates(request: Request):
         if voting_window.get("enforced") and voting_window.get("end") and datetime.utcnow() > voting_window["end"]:
             raise HTTPException(status_code=403, detail="Voting has closed. The candidate list is no longer available.")
 
+    active_round = await current_round_id(request)
+    round_doc = await tdb(request).rounds.find_one({"round_id": active_round}) if (not is_admin_caller and active_round != DEFAULT_ROUND_ID) else None
+    candidate_filter = {}
+    if round_doc and round_doc.get("kind") == "by_election":
+        ids = []
+        for item in round_doc.get("candidate_ids", []):
+            try:
+                ids.append(ObjectId(str(item)))
+            except Exception:
+                continue
+        candidate_filter = {"_id": {"$in": ids}}
     candidates = []
-    async for cand in tdb(request).candidates.find({}).sort("order", 1):
+    async for cand in tdb(request).candidates.find(candidate_filter).sort("order", 1):
         cand["_id"] = str(cand["_id"])
         candidates.append(cand)
     return candidates
@@ -5299,7 +5634,7 @@ async def get_vote_counts_cached(request: Request) -> dict[str, int]:
     _RESULTS_CACHE, so invalidate_settings() (open / close / certify) drops it too."""
     if _RESULTS_TTL <= 0:
         return await get_vote_counts(request)
-    key = (str(request.state.org_id), "vote_counts")
+    key = (str(request.state.org_id), "vote_counts", await current_round_id(request))
     hit = _RESULTS_CACHE.get(key)
     if hit and hit[0] > time.monotonic():
         perf_metrics.note_cache("results", True)
@@ -5802,8 +6137,12 @@ async def toggle_election(request: Request, data: ElectionToggle | None = None,
     # "FINAL and BINDING" stamp on a live election. Certification is chief-commissioner-only, so
     # it is not silently cleared here (that would let a superadmin bypass that sign-off) — the
     # certification has to be revoked first, same rule as the election reset below.
-    if new_status and (current or {}).get("is_certified"):
-        raise HTTPException(400, "Results are certified. Revoke certification before starting the election.")
+    active_round_id = schedule.get("round_id") or DEFAULT_ROUND_ID
+    active_round_doc = None if active_round_id == DEFAULT_ROUND_ID else await tdb(request).rounds.find_one({"round_id": active_round_id})
+    if new_status and active_round_id == DEFAULT_ROUND_ID and (current or {}).get("is_certified"):
+        raise HTTPException(400, "Round 1 results are certified. They cannot be reopened.")
+    if new_status and active_round_doc and active_round_doc.get("status") == "certified":
+        raise HTTPException(400, "Results for this round are certified. Revoke certification before starting the round.")
 
     # A roster freeze with no resolvable timestamp is a no-op: roster_status() only ever
     # freezes once `now >= freeze_at`, and with freeze_at None it never does, regardless of
@@ -5879,15 +6218,23 @@ async def toggle_election(request: Request, data: ElectionToggle | None = None,
 @app.post("/admin/reset-election")
 async def reset_election(request: Request, admin: dict = Depends(require_role("superadmin"))):
     # Refuse to wipe a certified election. The UI already disables the button
-    # when is_certified is true, but a disabled button is not an access
-    # control — the endpoint has to enforce it too.
+    # when any round is certified, but the endpoint is the real security boundary.
     config = await tdb(request).settings.find_one({"name": "election_config"})
-    if (config or {}).get("is_certified"):
-        raise HTTPException(400, "Certified results cannot be reset. Revoke certification first.")
+    any_certified_round = await tdb(request).rounds.count_documents({"status": "certified"}) > 0
+    if (config or {}).get("is_certified") or any_certified_round:
+        raise HTTPException(400, "Certified results in at least one round cannot be reset. Revoke certification first.")
+    if await tdb(request).rounds.count_documents({"kind": "by_election"}) > 0:
+        raise HTTPException(409, "A by-election round exists. Reset is blocked to preserve Round 1 and by-election results.")
+    org_id = require_org(request.state.org_id)
+    current_schedule = await get_phase_schedule(request)
+    round_one = await tdb(request).rounds.find_one({"round_id": DEFAULT_ROUND_ID})
+    if current_schedule.get("round_id", DEFAULT_ROUND_ID) != DEFAULT_ROUND_ID and not round_one:
+        raise HTTPException(409, "Cannot reset safely: this non-Round-1 schedule has no saved Round 1 snapshot. Restore the original schedule first.")
+    restore_phases = (round_one or {}).get("phases") or current_schedule["phases"]
+    restore_timezone = (round_one or {}).get("timezone") or current_schedule.get("timezone") or DEFAULT_ELECTION_TZ
     # Safety snapshot BEFORE anything is deleted. If it cannot be uploaded to B2 the
     # reset aborts — it never continues without a backup. A reset only ever touches the caller's
     # own tenant: a missing X-Org-Slug is rejected, there is no "reset every tenant" mode.
-    org_id = require_org(request.state.org_id)
     try:
         await backup.snapshot_before_destructive(db, org_id, "reset-election")
     except Exception as e:
@@ -5908,12 +6255,21 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
     await _save_security(request, {"freeze_lifted_at": datetime.utcnow(), "epoch_at": datetime.utcnow()})
     await append_ledger(request.state.org_id, "election_reset", "election", current_actor(request),
                         current_role(request), {"note": "roster freeze lifted; caps and quotas restart"})
-    await tdb(request).voters.update_many({}, {"$set": {"has_voted": False, "last_status": "idle"}})
+    await tdb(request).voters.update_many({}, {
+        "$set": {"has_voted": False, "last_status": "idle", "otp_count": 0},
+        "$unset": {"voted_rounds": "", "auth_round_id": "", "vote_jti": "",
+                    "otp_send_round_id": "", "otp_send_count_in_round": ""},
+    })
     await tdb(request).candidates.update_many({}, {"$set": {"votes": 0}})
-    # votes now live in vote_events, not candidates.votes — without this, a
-    # reset (used for testing/re-runs) would leave stale events behind and
-    # the next election's tally would include last time's votes.
+    # A full reset is the one explicitly destructive operation. Keep the certified-round
+    # guard above, then clear all un-certified round metadata as well as events/markers so
+    # no voter remains marked as having voted in a deleted round.
     await tdb(request).vote_events.delete_many({})
+    await tdb(request).ties.delete_many({})
+    await tdb(request).rounds.delete_many({})
+    await _write_phase_schedule(org_id, restore_phases, restore_timezone, DEFAULT_ROUND_ID)
+    await tdb(request).settings.update_one({"name": "otp_derived"},
+        {"$set": org_stamp(request, {"name": "otp_derived", "round_id": DEFAULT_ROUND_ID})}, upsert=True)
     # If this election was ever checkpointed, those checkpoints now
     # reference _id ranges that no longer exist — verify_audit_chain would
     # report the chain permanently invalid, a false alarm, not real
@@ -5931,26 +6287,47 @@ async def reset_election(request: Request, admin: dict = Depends(require_role("s
 
 @app.post("/admin/toggle-certification")
 async def toggle_certification(request: Request, admin: dict = Depends(require_chief_commissioner)):
-    current    = await tdb(request).settings.find_one({"name": "election_config"})
-    new_status = not (current.get("is_certified", False) if current else False)
-    # "Stop the election before certifying" used to live only in the dashboards. Certified results
-    # also block voting (assert_voting_allowed), so certifying an open election was a way to end
-    # voting early with no reason on record. Enforce it here; revoking is always allowed.
-    if new_status and (current.get("is_open", True) if current else True):
-        raise HTTPException(400, "Stop the election before certifying results.")
-    await tdb(request).settings.update_one(
-        {"name": "election_config"},
-        {"$set": {"is_certified": new_status}},
-        upsert=True
-    )
-    invalidate_settings(request.state.org_id)
-    # Was hardcoded actor="superadmin". Certification is the single most
-    # consequential action in the system; it has to name the real signer.
-    await log_action("results_certified", current_actor(request), {
-        "is_certified": new_status, "role": current_role(request)
-    }, org_id=request.state.org_id)
-    return {"is_certified": new_status}
+    current = await tdb(request).settings.find_one({"name": "election_config"})
+    active_round_id = await current_round_id(request)
+    now = datetime.utcnow()
 
+    if active_round_id == DEFAULT_ROUND_ID:
+        new_status = not (current.get("is_certified", False) if current else False)
+        # Round 1: preserve the original single-round certification behavior.
+        if new_status and (current.get("is_open", True) if current else True):
+            raise HTTPException(400, "Stop the election before certifying results.")
+        await tdb(request).settings.update_one(
+            {"name": "election_config"},
+            {"$set": org_stamp(request, {"is_certified": new_status, "name": "election_config"})},
+            upsert=True,
+        )
+        # When Round 1 has been snapshotted as a parent for a by-election, preserve its
+        # round-level certification history as well as the legacy config flag.
+        if await tdb(request).rounds.find_one({"round_id": DEFAULT_ROUND_ID}):
+            parent_status = "certified" if new_status else ("closed" if await _round_is_ended(request, DEFAULT_ROUND_ID) else "scheduled")
+            await tdb(request).rounds.update_one({"round_id": DEFAULT_ROUND_ID},
+                {"$set": {"status": parent_status, "certified_at": now if new_status else None}})
+    else:
+        round_doc = await tdb(request).rounds.find_one({"round_id": active_round_id})
+        if not round_doc:
+            raise HTTPException(404, "Election round not found.")
+        new_status = round_doc.get("status") != "certified"
+        if new_status and (current.get("is_open", True) if current else True):
+            raise HTTPException(400, "Stop this round before certifying results.")
+        if new_status:
+            next_round_status = "certified"
+        else:
+            next_round_status = "closed" if await _round_is_ended(request, active_round_id) else "scheduled"
+        await tdb(request).rounds.update_one(
+            {"round_id": active_round_id},
+            {"$set": {"status": next_round_status, "certified_at": now if new_status else None}},
+        )
+
+    invalidate_settings(request.state.org_id)
+    await log_action("results_certified", current_actor(request), {
+        "is_certified": new_status, "role": current_role(request), "round_id": active_round_id,
+    }, org_id=request.state.org_id)
+    return {"is_certified": new_status, "round_id": active_round_id}
 
 async def get_egosms_balance() -> dict:
     """EgoSMS's balance check lives on a different, JSON-only endpoint than
@@ -8722,53 +9099,246 @@ async def superadmin_remove_candidate(candidate_id: str, request: Request):
 # to anyone during voting; together with the public has_voted roll a watcher can correlate a tally
 # tick with a known voter finishing. Set closed/certified to withhold until then (admins always see).
 @app.get("/election-results")
-async def get_election_results(request: Request):
-    # Per-org, not process-wide: each tenant's own security_settings doc can
-    # override this; PUBLIC_RESULTS_MODE (env) is only the fallback default
-    # for orgs that haven't set their own (see _SEC_DEFAULTS).
-    #
-    # Turnout (how many people voted) is NEVER gated by this setting — it's
-    # participation data, not "who's winning," and hiding it too just breaks
-    # the public page instead of protecting anything. Only the per-candidate
-    # vote breakdown is withheld until results are released. A gated request
-    # gets a 200 with results_released=false and an empty results list, not
-    # a 403 — so the turnout figure and voter-roll section on the public page
-    # keep working even while the breakdown itself stays hidden.
+async def get_election_results(request: Request, round_id: str | None = None):
+    # Default to the active round. Supplying a past round_id reads that round's immutable event slice.
+    schedule = await get_phase_schedule(request)
+    active_round = schedule.get("round_id") or DEFAULT_ROUND_ID
+    requested_round = (round_id or active_round).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", requested_round):
+        raise HTTPException(400, "Invalid round_id.")
+    # Round 1 is read lazily (only on a cache miss) so a cache hit touches no collection.
+    round_doc = None
+    if requested_round != DEFAULT_ROUND_ID:
+        round_doc = await tdb(request).rounds.find_one({"round_id": requested_round})
+        if not round_doc:
+            raise HTTPException(404, "Election round not found.")
+
     sec_now = await get_security_settings(request)
     results_mode = sec_now["public_results_mode"]
+    round_ended = await _round_is_ended(request, requested_round)
     results_released = True
     if results_mode != "live":
         try:
             await require_admin(request)
         except HTTPException:
-            cfg = await tdb(request).settings.find_one({"name": "election_config"}) or {}
-            results_released = cfg.get("is_certified", False) or (
-                results_mode == "closed" and not cfg.get("is_open", True))
-    cache_key = (str(request.state.org_id), bool(results_released))
+            cfg = await cached_setting(request.state.org_id, "election_config") or {}
+            round_certified = bool(
+                round_doc.get("status") == "certified" if round_doc else cfg.get("is_certified", False)
+            )
+            if results_mode == "closed":
+                results_released = bool(round_certified or round_ended)
+            else:
+                results_released = round_certified
+
+    cache_key = (str(request.state.org_id), bool(results_released), requested_round)
     if _RESULTS_TTL > 0:
         hit = _RESULTS_CACHE.get(cache_key)
         if hit and hit[0] > time.monotonic():
             perf_metrics.note_cache("results", True)
             return copy.deepcopy(hit[1])
         perf_metrics.note_cache("results", False)
-    voter_turnout = await tdb(request).voters.count_documents({"has_voted": True})
+
+    # Results polling remains read-only while a round is open. Tie records are detected from vote data after close.
+    # This runs on a cache miss only, so a cached poll stays free (the TTL still bounds how stale it can be).
+    if round_ended:
+        await _detect_ties_for_round(request, requested_round)
+        # Tie detection may have created/upgraded the immutable round snapshot on a legacy
+        # installation. Use it for this response too, not only on the next poll.
+        round_doc = await tdb(request).rounds.find_one({"round_id": requested_round}) or round_doc
+    elif round_doc is None and requested_round == DEFAULT_ROUND_ID and results_released:
+        round_doc = await tdb(request).rounds.find_one({"round_id": requested_round})
+
+    if requested_round == DEFAULT_ROUND_ID:
+        voter_turnout = await tdb(request).voters.count_documents({"has_voted": True})
+    else:
+        voter_turnout = await tdb(request).voters.count_documents({"voted_rounds": requested_round})
     results = []
     if results_released:
-        vote_counts = await get_vote_counts(request)
-        async for cand in tdb(request).candidates.find({}).sort("order", 1):
-            results.append({
-                "id": str(cand["_id"]),
-                "name": cand["name"],
-                "position": cand["position"],
-                "votes": vote_counts.get(str(cand["_id"]), 0),
-                "order": cand.get("order", 0)
-            })
+        vote_counts = await get_vote_counts(request, requested_round)
+        candidate_filter = await _round_candidate_filter(request, requested_round)
+        position_docs = await tdb(request).positions.find({}).to_list(length=None)
+        seats_by_title = {str(p.get("title", "")): max(1, int(p.get("seats", 1) or 1)) for p in position_docs}
+        if (round_doc or {}).get("seats_by_position"):
+            seats_by_title = {str(k): max(1, int(v or 1)) for k, v in round_doc["seats_by_position"].items()}
+        if (round_doc or {}).get("candidate_snapshot"):
+            for cand in round_doc["candidate_snapshot"]:
+                candidate_id = str(cand.get("id", ""))
+                results.append({"id": candidate_id, "name": cand.get("name", "Candidate"),
+                                "position": cand.get("position", ""),
+                                "votes": vote_counts.get(candidate_id, 0), "order": cand.get("order", 0),
+                                "seats": seats_by_title.get(str(cand.get("position", "")), 1)})
+        else:
+            async for cand in tdb(request).candidates.find(candidate_filter).sort("order", 1):
+                results.append({"id": str(cand["_id"]), "name": cand["name"], "position": cand["position"],
+                                "votes": vote_counts.get(str(cand["_id"]), 0), "order": cand.get("order", 0),
+                                "seats": seats_by_title.get(str(cand.get("position", "")), 1)})
     payload = {"voter_turnout": voter_turnout, "results": results, "results_released": results_released,
                "registered_voters": await tdb(request).voters.count_documents({}),
                **{k: sec_now[k] for k in _UNOPPOSED_KEYS}}
     if _RESULTS_TTL > 0:
         _RESULTS_CACHE[cache_key] = (time.monotonic() + _RESULTS_TTL, copy.deepcopy(payload))
     return payload
+
+
+@app.get("/election-results/rounds")
+async def get_public_rounds(request: Request):
+    """Round index for results navigation; contains only round/status relationship metadata."""
+    docs = await tdb(request).rounds.find({}).sort("created_at", 1).to_list(length=100)
+    active_id = await current_round_id(request)
+    r1_ended = await _round_is_ended(request, DEFAULT_ROUND_ID)
+    r1_has_tie = await tdb(request).ties.count_documents({"round_id": DEFAULT_ROUND_ID}) > 0
+    rounds = [{"round_id": DEFAULT_ROUND_ID, "kind": "general", "parent_round_id": None,
+               "position": None, "has_tie": r1_has_tie,
+               "status": "closed" if r1_ended else "open"}]
+    for doc in docs:
+        if doc.get("round_id") == DEFAULT_ROUND_ID:
+            rounds[0].update({k: doc.get(k) for k in ("status", "kind", "parent_round_id", "position") if doc.get(k) is not None})
+            continue
+        status = doc.get("status", "scheduled")
+        if doc.get("round_id") == active_id and status != "certified":
+            schedule = await get_phase_schedule(request)
+            voting = schedule["phases"]["voting"]
+            if await _round_is_ended(request, active_id):
+                status = "closed"
+            elif _phase_is_open(voting, datetime.utcnow()):
+                status = "open"
+            else:
+                status = "scheduled"
+        has_tie = await tdb(request).ties.count_documents({"round_id": doc.get("round_id")}) > 0
+        rounds.append({"round_id": doc.get("round_id"), "kind": doc.get("kind", "by_election"),
+                       "parent_round_id": doc.get("parent_round_id"), "position": doc.get("position"),
+                       "has_tie": has_tie, "status": status})
+    return {"active_round_id": active_id, "rounds": rounds}
+
+
+@app.get("/superadmin/election-ties")
+async def get_election_ties(request: Request, admin: dict = Depends(require_role("superadmin"))):
+    # Detection must not depend on a public visitor loading Results. This admin view
+    # can trigger the read-only detection pass after each round's voting window ends.
+    round_docs = await tdb(request).rounds.find({}).to_list(length=100)
+    round_ids = {DEFAULT_ROUND_ID, *(str(doc.get("round_id")) for doc in round_docs if doc.get("round_id"))}
+    for rid in round_ids:
+        if await _round_is_ended(request, rid):
+            await _detect_ties_for_round(request, rid)
+    ties = await tdb(request).ties.find({}).sort("detected_at", -1).to_list(length=200)
+    output = []
+    for tie in ties:
+        names = []
+        for cid in tie.get("candidate_ids", []):
+            try:
+                candidate = await tdb(request).candidates.find_one({"_id": ObjectId(str(cid))}, {"name": 1})
+            except Exception:
+                candidate = None
+            if candidate:
+                names.append({"id": str(cid), "name": candidate.get("name", "Candidate")})
+        output.append({"id": str(tie["_id"]), "round_id": tie.get("round_id", DEFAULT_ROUND_ID),
+                       "position": tie.get("position", ""), "tie_type": tie.get("tie_type", "top"),
+                       "candidate_ids": tie.get("candidate_ids", []), "candidates": names, "count": tie.get("count", 0), "detected_at": iso_utc(tie.get("detected_at")),
+                       "status": tie.get("status", "pending"), "by_election_round_id": tie.get("by_election_round_id")})
+    return {"ties": output}
+
+
+@app.post("/superadmin/by-elections")
+async def create_by_election(data: CreateByElectionRequest, request: Request,
+                             admin: dict = Depends(require_role("superadmin"))):
+    """Create a by-election only from a persisted tie record; Round-1 ballots/events are never reset or rewritten."""
+    if data.eligibility_rule not in ("all_registered", "round1_voters"):
+        raise HTTPException(400, "Eligibility must be all_registered or round1_voters.")
+    reason = data.reason.strip()
+    if len(reason) < 10:
+        raise HTTPException(400, "A reason of at least 10 characters is required.")
+    tie_oid = parse_oid(data.tie_id, "tie record id")
+    tie = await tdb(request).ties.find_one({"_id": tie_oid})
+    if not tie:
+        raise HTTPException(404, "Tie record not found for this organisation.")
+    if tie.get("status") not in ("pending", "tie_pending_decision", None):
+        raise HTTPException(409, "This tie is not pending a decision.")
+    if tie.get("by_election_round_id"):
+        raise HTTPException(409, "A by-election already exists for this tie.")
+    parent_round_id = tie.get("round_id", DEFAULT_ROUND_ID)
+    parent_doc = await tdb(request).rounds.find_one({"round_id": parent_round_id})
+    if parent_doc and parent_doc.get("kind") == "by_election":
+        raise HTTPException(409, "A second tie must follow the locked tie-break policy; another by-election cannot be created automatically.")
+    if not await _round_is_ended(request, parent_round_id):
+        raise HTTPException(409, "The voting window must end before a by-election can be created.")
+    candidate_ids = [str(cid) for cid in tie.get("candidate_ids", [])]
+    valid_ids = []
+    valid_candidates = []
+    for cid in candidate_ids:
+        try:
+            oid = ObjectId(cid)
+        except Exception:
+            continue
+        candidate_doc = await tdb(request).candidates.find_one({"_id": oid})
+        if candidate_doc:
+            valid_ids.append(cid)
+            valid_candidates.append(candidate_doc)
+    if len(valid_ids) < 2:
+        raise HTTPException(409, "The tied candidates could not be verified.")
+
+    now = datetime.utcnow()
+    old_schedule = await get_phase_schedule(request)
+    if parent_round_id == DEFAULT_ROUND_ID and not parent_doc:
+        prior_candidates = await tdb(request).candidates.find({}).to_list(length=None)
+        prior_positions = await tdb(request).positions.find({}).to_list(length=None)
+        candidate_snapshot = [{"id": str(c["_id"]), "name": c.get("name", "Candidate"),
+                               "position": c.get("position", ""), "order": c.get("order", 0)}
+                              for c in prior_candidates]
+        seats_by_position = {str(p.get("title", "")): max(1, int(p.get("seats", 1) or 1))
+                             for p in prior_positions}
+        await tdb(request).rounds.update_one(
+            {"round_id": DEFAULT_ROUND_ID},
+            {"$setOnInsert": org_stamp(request, {"round_id": DEFAULT_ROUND_ID, "kind": "general",
+                "status": "certified" if (await tdb(request).settings.find_one({"name": "election_config"}) or {}).get("is_certified", False) else "closed",
+                "parent_round_id": None, "position": None,
+                "candidate_ids": [str(c["_id"]) for c in prior_candidates], "candidate_snapshot": candidate_snapshot,
+                "seats_by_position": seats_by_position, "phases": old_schedule["phases"],
+                "timezone": old_schedule["timezone"], "created_at": now})}, upsert=True)
+    new_round_id = "by-election-" + secrets.token_hex(5)
+    parent_snapshot = parent_doc or await tdb(request).rounds.find_one({"round_id": parent_round_id}) or {}
+    parent_seats = (parent_snapshot.get("seats_by_position") or {}).get(str(tie.get("position", "")), 1)
+    if parent_round_id == DEFAULT_ROUND_ID and not parent_snapshot.get("seats_by_position"):
+        position_doc = await tdb(request).positions.find_one({"title": tie.get("position")}) or {}
+        parent_seats = max(1, int(position_doc.get("seats", 1) or 1))
+    by_election_snapshot = [{"id": str(c["_id"]), "name": c.get("name", "Candidate"),
+                             "position": c.get("position", ""), "order": c.get("order", 0)}
+                            for c in valid_candidates]
+    await tdb(request).rounds.insert_one(org_stamp(request, {
+        "round_id": new_round_id, "kind": "by_election", "parent_round_id": parent_round_id,
+        "parent_tie_id": str(tie_oid), "reason": reason, "position": tie.get("position"),
+        "candidate_ids": valid_ids, "candidate_snapshot": by_election_snapshot,
+        "seats_by_position": {str(tie.get("position", "")): max(1, int(parent_seats or 1))},
+        "eligibility_rule": data.eligibility_rule,
+        "created_by": current_actor(request), "created_by_role": admin.get("role", "superadmin"),
+        "created_at": now, "status": "scheduled", "phases": old_schedule["phases"],
+        "timezone": old_schedule["timezone"],
+    }))
+    # Claim the tie before switching the active schedule; a losing concurrent request must not
+    # leave the election pointing at an orphaned round. The copied past windows keep this round closed.
+    tied = await tdb(request).ties.update_one(
+        {"_id": tie_oid, "by_election_round_id": {"$exists": False}},
+        {"$set": {"by_election_round_id": new_round_id, "status": "by_election_ordered"}})
+    if tied.modified_count != 1:
+        await tdb(request).rounds.delete_one({"round_id": new_round_id})
+        raise HTTPException(409, "Another request already created a by-election for this tie.")
+    try:
+        await _write_phase_schedule(request.state.org_id, old_schedule["phases"], old_schedule["timezone"], new_round_id)
+    except Exception:
+        await tdb(request).ties.update_one({"_id": tie_oid, "by_election_round_id": new_round_id},
+            {"$unset": {"by_election_round_id": ""}, "$set": {"status": "pending"}})
+        await tdb(request).rounds.delete_one({"round_id": new_round_id})
+        raise
+    await tdb(request).settings.update_one({"name": "otp_derived"}, {"$set": {"round_id": new_round_id}}, upsert=True)
+    invalidate_settings(request.state.org_id, "election_phases")
+    await log_action("by_election_created", current_actor(request), {
+        "actor_role": admin.get("role", "superadmin"), "round_id": new_round_id,
+        "parent_round_id": parent_round_id, "position": str(tie.get("position", "")),
+        "candidate_count": len(valid_ids), "tie_count": int(tie.get("count", 0)),
+        "eligibility_rule": data.eligibility_rule,
+    }, org_id=request.state.org_id)
+    return {"status": "created", "round_id": new_round_id, "parent_round_id": parent_round_id,
+            "position": tie.get("position"), "candidate_count": len(valid_ids),
+            "status_detail": "Schedule this round before opening voting."}
 
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
@@ -11137,7 +11707,17 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
             "timezone": old_schedule["timezone"],
         })
 
-    await _write_phase_schedule(request.state.org_id, stored, tz_name, data.round_id or DEFAULT_ROUND_ID)
+    round_id_to_save = data.round_id or DEFAULT_ROUND_ID
+    if round_id_to_save != DEFAULT_ROUND_ID:
+        round_doc = await tdb(request).rounds.find_one({"round_id": round_id_to_save})
+        if not round_doc:
+            raise HTTPException(404, "Election round not found; schedule was not changed.")
+        if round_doc.get("status") == "certified":
+            raise HTTPException(409, "This round is certified. Revoke certification before changing its schedule.")
+    await _write_phase_schedule(request.state.org_id, stored, tz_name, round_id_to_save)
+    if round_id_to_save != DEFAULT_ROUND_ID:
+        await tdb(request).rounds.update_one({"round_id": round_id_to_save},
+            {"$set": {"phases": stored, "timezone": tz_name, "status": "scheduled"}})
     await log_action("phases_scheduled", current_actor(request), {
         "round_id": data.round_id, "timezone": tz_name,
         "phases": {k: {"enforced": v["enforced"], "start_utc": v["start"].isoformat() if v["start"] else None,
@@ -11797,24 +12377,30 @@ ROLL_RATE_WINDOW_S = 60
 
 
 @app.get("/election-results/voter-roll")
-async def get_public_voter_roll(request: Request):
+async def get_public_voter_roll(request: Request, round_id: str | None = None):
     await _check_rate_limit(
         request, bucket="voter_roll", limit=ROLL_RATE_LIMIT, window_s=ROLL_RATE_WINDOW_S,
         message="Too many requests. Please try again shortly.",
     )
-    voted = await tdb(request).voters.count_documents({"has_voted": True})
+    selected_round = (round_id or await current_round_id(request)).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", selected_round):
+        raise HTTPException(400, "Invalid round_id.")
+    if selected_round != DEFAULT_ROUND_ID and not await tdb(request).rounds.find_one({"round_id": selected_round}):
+        raise HTTPException(404, "Election round not found.")
+    voter_filter = {"has_voted": True} if selected_round == DEFAULT_ROUND_ID else {"voted_rounds": selected_round}
+    voted = await tdb(request).voters.count_documents(voter_filter)
     if voted < PUBLIC_ROLL_THRESHOLD:
         # Below the threshold the server returns nothing at all, so a small
         # turnout can't be de-anonymised by reading the network response.
-        return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": False, "roll": []}
+        return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": False, "roll": [], "round_id": selected_round}
 
     roll = []
     cursor = tdb(request).voters.find(
-        {"has_voted": True}, {"_id": 0, "full_name": 1}
+        voter_filter, {"_id": 0, "full_name": 1}
     ).limit(PUBLIC_ROLL_MAX)
     async for v in cursor:
         roll.append({"full_name": _mask_name(v.get("full_name", ""))})
-    return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": True, "roll": roll}
+    return {"threshold": PUBLIC_ROLL_THRESHOLD, "voted": voted, "unlocked": True, "roll": roll, "round_id": selected_round}
 
 
 async def _election_closed(request: Request) -> bool:
@@ -13047,9 +13633,10 @@ async def superadmin_captcha_reset_ip(data: CaptchaIpReset, request: Request):
 # error, a captcha that never returns a token, a JavaScript crash or a blank screen. Nothing personal is accepted:
 # only the problem type, a short error code, the voter's step and a browser family taken from the User-Agent.
 CLIENT_REPORT_KINDS = {"captcha_script_failed", "captcha_error", "captcha_stuck", "js_error", "unhandled_rejection", "blank_screen"}
+_CLIENT_REPORT_IGNORED = re.compile(r"(?:^|\b)(?:xbrowser|swbrowser) is not defined\b", re.IGNORECASE)
 # kind -> (reports within the window that raise an email alert, window minutes)
 CLIENT_REPORT_ALERTS = {"captcha_script_failed": (10, 10), "captcha_error": (10, 10), "captcha_stuck": (10, 10),
-                        "blank_screen": (1, 10), "js_error": (15, 10), "unhandled_rejection": (15, 10)}
+                        "blank_screen": (3, 10), "js_error": (15, 10), "unhandled_rejection": (15, 10)}
 _CLIENT_REPORT_IP_MAX, _CLIENT_REPORT_IP_WINDOW_S, _CLIENT_REPORT_IP_TRACKED = 20, 600.0, 5000
 _CLIENT_REPORT_IP_HITS: dict[str, list[float]] = {}
 
@@ -13101,6 +13688,8 @@ async def client_report(data: ClientReport, request: Request):
     try:
         org_id = getattr(request.state, "org_id", None)
         if not org_id or data.kind not in CLIENT_REPORT_KINDS or not _client_report_rate_ok(_client_ip(request)):
+            return {"ok": True}
+        if _CLIENT_REPORT_IGNORED.search(data.code or "") or _CLIENT_REPORT_IGNORED.search(data.detail or ""):
             return {"ok": True}
         now = datetime.utcnow()
         await db.client_reports.insert_one({

@@ -1,3 +1,4 @@
+import { safeSessionStorage } from './storage.js';
 import { API_BASE, ORG_SLUG, SUPERADMIN_ORG_OVERRIDE_KEY } from './api';
 
 // Privacy: random per-tab id only. Never sends URLs, ids, names, text, IPs or error messages.
@@ -25,27 +26,27 @@ const listeners = new Set();
 // Evaluated on every call so a session that becomes "View as" or opts out later stops sending.
 function allowed() {
   try {
-    return !IN_HEATMAP_FRAME && !sessionStorage.getItem('view_as')
+    return !IN_HEATMAP_FRAME && !safeSessionStorage.getItem('view_as')
       && navigator.doNotTrack !== '1' && !navigator.globalPrivacyControl;
   } catch { return false; }
 }
 function sid() {
-  let v = sessionStorage.getItem(SID_KEY);
-  if (!v) { v = crypto.randomUUID(); sessionStorage.setItem(SID_KEY, v); }
+  let v = safeSessionStorage.getItem(SID_KEY);
+  if (!v) { v = crypto.randomUUID(); safeSessionStorage.setItem(SID_KEY, v); }
   return v;
 }
 // Optional traffic-channel tag from a shared link, e.g. https://site/?src=whatsapp. Lower-case slug only; kept for the tab.
 function channel() {
   try {
-    const kept = sessionStorage.getItem(SRC_KEY);
+    const kept = safeSessionStorage.getItem(SRC_KEY);
     if (kept !== null) return kept;
     const raw = (new URLSearchParams(window.location.search).get('src') || '').trim().toLowerCase();
     const v = /^[a-z0-9_-]{2,40}$/.test(raw) ? raw : '';
-    sessionStorage.setItem(SRC_KEY, v);
+    safeSessionStorage.setItem(SRC_KEY, v);
     return v;
   } catch { return ''; }
 }
-function slug() { return sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG; }
+function slug() { return safeSessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG; }
 const visible = () => document.visibilityState === 'visible';
 
 export function pageName(view, step, adminLogin = false) {
@@ -66,7 +67,7 @@ function enqueue(event) {
 function flush() {
   if (!allowed() || !queue.length || Date.now() < backoffUntil) return;
   const events = queue.splice(0, 25);
-  const body = JSON.stringify({ sid: sid(), w: window.innerWidth, seg: sessionStorage.getItem('admin_role') ? 'staff' : 'public', events });
+  const body = JSON.stringify({ sid: sid(), w: window.innerWidth, seg: safeSessionStorage.getItem('admin_role') ? 'staff' : 'public', events });
   const fail = () => { backoffUntil = Date.now() + 120000; queue = events.concat(queue).slice(-50); };
   try {
     fetch(`${API_BASE}/analytics/collect`, {
@@ -97,16 +98,16 @@ export function trackPage(name) {
   listeners.forEach((cb) => cb(currentPage));
   if (!allowed()) return;
   let pages = [];
-  try { pages = JSON.parse(sessionStorage.getItem(PAGES_KEY) || '[]'); } catch { pages = []; }
-  const count = Number(sessionStorage.getItem(COUNT_KEY) || '0');
+  try { pages = JSON.parse(safeSessionStorage.getItem(PAGES_KEY) || '[]'); } catch { pages = []; }
+  const count = Number(safeSessionStorage.getItem(COUNT_KEY) || '0');
   enqueue({
     t: 'pv', page: name, from: pages.length ? pages[pages.length - 1] : '(entry)', from_dur: fromDur,
     first: count === 0, ns: count === 0, second: count === 1, entry: pages[0] || name,
     u: !pages.includes(name), src: channel(), // u: first time this session reaches this page
   });
   pages.push(name);
-  sessionStorage.setItem(PAGES_KEY, JSON.stringify(pages.slice(-50)));
-  sessionStorage.setItem(COUNT_KEY, String(count + 1));
+  safeSessionStorage.setItem(PAGES_KEY, JSON.stringify(pages.slice(-50)));
+  safeSessionStorage.setItem(COUNT_KEY, String(count + 1));
   maybeSendPerf();
 }
 export const getCurrentPage = () => currentPage;
@@ -115,10 +116,10 @@ export const getCurrentPage = () => currentPage;
 export function trackStep(flow, step) {
   if (!currentPage || !allowed()) return;
   let done = [];
-  try { done = JSON.parse(sessionStorage.getItem(STEPS_KEY) || '[]'); } catch { done = []; }
+  try { done = JSON.parse(safeSessionStorage.getItem(STEPS_KEY) || '[]'); } catch { done = []; }
   const key = `${flow}:${step}`;
   const u = !done.includes(key);
-  if (u) { done.push(key); try { sessionStorage.setItem(STEPS_KEY, JSON.stringify(done.slice(-40))); } catch { /* ignore */ } }
+  if (u) { done.push(key); try { safeSessionStorage.setItem(STEPS_KEY, JSON.stringify(done.slice(-40))); } catch { /* ignore */ } }
   enqueue({ t: 'fs', page: currentPage, flow, step, u });
 }
 export function onPageChange(cb) { listeners.add(cb); return () => listeners.delete(cb); }
@@ -143,12 +144,12 @@ function watchForUsable() {
 }
 
 function entryPage() {
-  try { return JSON.parse(sessionStorage.getItem(PAGES_KEY) || '[]')[0] || currentPage; } catch { return currentPage; }
+  try { return JSON.parse(safeSessionStorage.getItem(PAGES_KEY) || '[]')[0] || currentPage; } catch { return currentPage; }
 }
 function maybeSendPerf(force = false) {
-  if (!allowed() || !pageLoaded || sessionStorage.getItem(PERF_KEY) || !entryPage()) return;
+  if (!allowed() || !pageLoaded || safeSessionStorage.getItem(PERF_KEY) || !entryPage()) return;
   if (firstApiMs === null && !force) return;
-  sessionStorage.setItem(PERF_KEY, '1');
+  safeSessionStorage.setItem(PERF_KEY, '1');
   const nav = performance.getEntriesByType('navigation')[0];
   enqueue({
     t: 'perf', page: entryPage(), load_ms: Math.round(nav?.loadEventEnd || 0), first_api_ms: Math.round(firstApiMs || 0),

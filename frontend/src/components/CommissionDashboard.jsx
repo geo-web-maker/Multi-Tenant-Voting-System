@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
@@ -45,7 +46,7 @@ export default function CommissionDashboard({ onLogout }) {
   // now rejects any request whose body claims a different commissioner than
   // the session token, so a hand-entered value would simply 403.
   useEffect(() => {
-    setCommissionerId(sessionStorage.getItem('commissioner_id') || '');
+    setCommissionerId(safeSessionStorage.getItem('commissioner_id') || '');
     fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only load
   }, []);
@@ -62,7 +63,7 @@ export default function CommissionDashboard({ onLogout }) {
         ]);
         const me = (commRes.data || []).find(
           c => String(c.student_id || '').toLowerCase()
-            === String(sessionStorage.getItem('commissioner_id') || '').toLowerCase()
+            === String(safeSessionStorage.getItem('commissioner_id') || '').toLowerCase()
         );
         const chief = Boolean(me?.is_chief_commissioner);
         const deputyChief = Boolean(me?.is_deputy_chief_commissioner);

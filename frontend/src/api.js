@@ -1,3 +1,4 @@
+import { safeSessionStorage } from './storage.js';
 import axios from 'axios';
 
 // Base URL for the backend API — same env var every component already uses.
@@ -22,18 +23,18 @@ export function baseUrlFor(url) {
 // there is no legacy/default tenant any more. (A superadmin picks an org in the switcher instead.)
 export const ORG_SLUG = import.meta.env.VITE_ORG_SLUG || "";
 
-// sessionStorage key the Superadmin org-switcher dropdown writes to. This lets
+// safeSessionStorage key the Superadmin org-switcher dropdown writes to. This lets
 // one logged-in superadmin flip between organizations at runtime, without a
 // rebuild/redeploy. It only ever affects the browser tab that set it — every
 // other role (voters, commissioners, IT admins, etc.) never touches this key,
 // so their requests keep using the build-time ORG_SLUG exactly as before.
 export const SUPERADMIN_ORG_OVERRIDE_KEY = 'superadmin_active_org_slug';
 
-// sessionStorage key the admin JWT (issued by /verify-admin) is stored under.
+// safeSessionStorage key the admin JWT (issued by /verify-admin) is stored under.
 // Set on login, cleared on logout, read here on every request.
 export const ADMIN_TOKEN_KEY = 'admin_token';
 
-// sessionStorage key for the voter session token returned by /verify-otp.
+// safeSessionStorage key for the voter session token returned by /verify-otp.
 // It is required by /vote and /vote-bulk (sent as X-Voter-Token) and is
 // deliberately NOT the admin bearer token: voters never touch the admin
 // Authorization header, so a rejected voter token can't trigger the admin
@@ -83,7 +84,7 @@ api.interceptors.request.use((config) => {
   // Pick the base per request; a caller that set its own baseURL keeps it.
   if (!config.__baseChosen) { config.baseURL = baseUrlFor(config.url); config.__baseChosen = true; }
   // "View as" tab: refuse writes before they leave the browser (the server also rejects them).
-  if (sessionStorage.getItem('view_as') && !['get', 'head', 'options'].includes((config.method || 'get').toLowerCase())) {
+  if (safeSessionStorage.getItem('view_as') && !['get', 'head', 'options'].includes((config.method || 'get').toLowerCase())) {
     return Promise.reject({ config, response: { status: 403, data: { detail: 'Read-only view: this action is disabled.' } } });
   }
   if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
@@ -91,18 +92,18 @@ api.interceptors.request.use((config) => {
   } else if (config.url && config.url.startsWith('/vote')) {
     config.timeout = Math.max(config.timeout || 0, VOTE_TIMEOUT_MS);
   }
-  const activeSlug = sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG;
+  const activeSlug = safeSessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG;
   if (activeSlug) {
     config.headers['X-Org-Slug'] = activeSlug;
   }
-  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  const token = safeSessionStorage.getItem(ADMIN_TOKEN_KEY);
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`;
   }
   // Only the ballot-casting endpoints need the voter token; don't attach it
   // to unrelated requests.
   if (config.url && config.url.startsWith('/vote')) {
-    const voterToken = sessionStorage.getItem(VOTER_TOKEN_KEY);
+    const voterToken = safeSessionStorage.getItem(VOTER_TOKEN_KEY);
     if (voterToken) {
       config.headers['X-Voter-Token'] = voterToken;
     }
@@ -140,8 +141,8 @@ api.interceptors.response.use(
     }
     const hadToken = Boolean(error.config?.headers?.Authorization);
     if (error.response && error.response.status === 401 && hadToken) {
-      sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-      sessionStorage.removeItem('admin_role');
+      safeSessionStorage.removeItem(ADMIN_TOKEN_KEY);
+      safeSessionStorage.removeItem('admin_role');
       if (typeof window !== 'undefined' && !window.location.pathname.includes('login')) {
         window.location.reload();
       }

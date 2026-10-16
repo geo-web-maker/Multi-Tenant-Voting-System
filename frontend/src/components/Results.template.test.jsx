@@ -107,7 +107,7 @@ describe('Results template seam (BP-T5)', () => {
     expect(pill('MANDATE GAINED')).toBeTruthy();
     cleanup();
     ({ container } = await show('tie'));
-    expect(pill('TIE (RE-RUN)')).toHaveClass('bp-warn');
+    expect(pill('Tie, pending decision')).toHaveClass('bp-warn');
     cleanup();
     ({ container } = await show('live'));
     expect(pill('LEADING')).toBeTruthy();

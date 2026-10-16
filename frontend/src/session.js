@@ -1,25 +1,26 @@
+import { safeSessionStorage, safeLocalStorage } from './storage.js';
 // Session persistence helpers.
 //
 // Why this exists: every piece of "where am I in the app" used to live only in
 // React state. A reload (pull-to-refresh on a phone, an accidental F5, the
 // browser discarding a background tab) wiped that state and dropped everyone
 // on the voter login screen — even admins whose JWT was still perfectly valid
-// in sessionStorage, and voters who had already passed OTP verification.
+// in safeSessionStorage, and voters who had already passed OTP verification.
 //
-// Everything here uses sessionStorage on purpose (not localStorage): it is
+// Everything here uses safeSessionStorage on purpose (not safeLocalStorage): it is
 // scoped to the tab, survives reloads, and disappears when the tab is closed,
 // which is the right lifetime for a login session on shared lab/library PCs.
 import { useEffect, useState } from 'react';
 import { ADMIN_TOKEN_KEY, VOTER_TOKEN_KEY } from './api';
 
 // ── Safe storage wrappers ────────────────────────────────────────────────
-// sessionStorage can throw (Safari private mode, storage disabled, quota).
+// safeSessionStorage can throw (Safari private mode, storage disabled, quota).
 // Persistence is a convenience; it must never break the app.
-const safeGet = (k) => { try { return sessionStorage.getItem(k); } catch { return null; } };
-const safeSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch { /* ignore */ } };
-const safeRemove = (k) => { try { sessionStorage.removeItem(k); } catch { /* ignore */ } };
+const safeGet = (k) => { try { return safeSessionStorage.getItem(k); } catch { return null; } };
+const safeSet = (k, v) => { try { safeSessionStorage.setItem(k, v); } catch { /* ignore */ } };
+const safeRemove = (k) => { try { safeSessionStorage.removeItem(k); } catch { /* ignore */ } };
 const safeKeys = () => {
-  try { return Object.keys(sessionStorage); } catch { return []; }
+  try { return Object.keys(safeSessionStorage); } catch { return []; }
 };
 
 // ── Keys ─────────────────────────────────────────────────────────────────
@@ -48,9 +49,9 @@ function decodeJwtClaims(token) {
 }
 
 // ── "View as" (superadmin read-only window into another admin's interface) ──
-// A superadmin's "View" button mints a read-only token server-side, parks it in localStorage under a
+// A superadmin's "View" button mints a read-only token server-side, parks it in safeLocalStorage under a
 // one-time nonce and opens this app in a new tab with ?view_as=<nonce>. That tab starts with a wiped
-// sessionStorage (so it never inherits the superadmin's own token), loads the read-only session and
+// safeSessionStorage (so it never inherits the superadmin's own token), loads the read-only session and
 // shows a banner. Actual read-only enforcement is on the server; this is just the plumbing.
 export const VIEW_AS_KEY = 'view_as';
 const VIEW_AS_HANDOFF_PREFIX = 'viewas:';
@@ -65,10 +66,10 @@ export function consumeViewAsHandoff() {
   if (!nonce) return;
   const lsKey = VIEW_AS_HANDOFF_PREFIX + nonce;
   let d = null;
-  try { d = JSON.parse(localStorage.getItem(lsKey) || 'null'); localStorage.removeItem(lsKey); } catch { /* ignore */ }
+  try { d = JSON.parse(safeLocalStorage.getItem(lsKey) || 'null'); safeLocalStorage.removeItem(lsKey); } catch { /* ignore */ }
   try { window.history.replaceState(null, '', window.location.pathname); } catch { /* ignore */ }
   if (!d || !d.access_token || Date.now() - (d.ts || 0) > 60000) return;   // one-time, 60s window
-  try { sessionStorage.clear(); } catch { /* ignore */ }   // a new tab may inherit the opener's sessionStorage
+  try { safeSessionStorage.clear(); } catch { /* ignore */ }   // a new tab may inherit the opener's safeSessionStorage
   safeSet('admin_role', d.role);
   safeSet(ADMIN_TOKEN_KEY, d.access_token);
   if (d.org_slug) safeSet('superadmin_active_org_slug', d.org_slug);
@@ -81,7 +82,7 @@ export function consumeViewAsHandoff() {
 
 export function stashViewAsHandoff(data) {
   const nonce = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
-  localStorage.setItem(VIEW_AS_HANDOFF_PREFIX + nonce, JSON.stringify({ ...data, ts: Date.now() }));
+  safeLocalStorage.setItem(VIEW_AS_HANDOFF_PREFIX + nonce, JSON.stringify({ ...data, ts: Date.now() }));
   return nonce;
 }
 
@@ -96,9 +97,9 @@ export function clearAdminSession() {
   safeKeys().filter((k) => k.startsWith(TAB_PREFIX)).forEach(safeRemove);
 }
 
-// If a still-valid admin token is in sessionStorage, return the view (role)
+// If a still-valid admin token is in safeSessionStorage, return the view (role)
 // to reopen; otherwise null. The role comes from the signed token itself, not
-// from a separate sessionStorage key, so the two can never disagree. The
+// from a separate safeSessionStorage key, so the two can never disagree. The
 // backend still verifies the token on every request — this only decides what
 // to render first, and expired tokens are dropped here so the dashboard never
 // flashes up just to 401 and bounce.

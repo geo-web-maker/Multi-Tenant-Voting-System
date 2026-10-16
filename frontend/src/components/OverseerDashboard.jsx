@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
@@ -16,8 +17,8 @@ import { getTemplate } from '../template';
 
 
 export default function OverseerDashboard({ onLogout }) {
-  const overseerId   = sessionStorage.getItem('overseer_id')   || '';
-  const overseerName = sessionStorage.getItem('overseer_name') || '';
+  const overseerId   = safeSessionStorage.getItem('overseer_id')   || '';
+  const overseerName = safeSessionStorage.getItem('overseer_name') || '';
   const bp = getTemplate(); // render-time: null => the standard UI
 
   const [data, setData]       = useState(null);

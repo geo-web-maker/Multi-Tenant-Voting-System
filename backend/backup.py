@@ -49,6 +49,8 @@ FULL_COLLECTIONS = [
     # Previously missed in the backup coverage audit (BK-1).
     "panel_members", "contact_changes", "candidate_lists", "candidate_tokens",
     "certificates", "nomination_uploads", "sms_usage", "sms_campaigns",
+    # Round/tie metadata must survive routine, safety and milestone restores.
+    "rounds", "ties",
     # Soft-deleted applications (superadmin archive; restorable).
     "deleted_applications",
 ]

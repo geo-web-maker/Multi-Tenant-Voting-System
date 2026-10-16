@@ -511,3 +511,9 @@ Source: BLUEPRINT_TEMPLATE_GUIDE.md §7 and §13; per-card notes in progress/BP-
 
 ## SMS-TAB: variable chips are buttons inside `perf-chips`
 `perf-chips` items were display-only. The SMS tab needs tappable chips, so each `li` holds a `perf-btn` (keeps the 44 px tap target and both templates' styling). No new class. If this looks heavy in Blueprint, add a `perf-chips` button rule to the kit (both stylesheets and the manual) rather than inline styles.
+
+---
+
+# Post-Election Plan (16 October 2026)
+
+See `deviations/POST-ELECTION-IMPLEMENTATION.md` for the detailed decision and verification record. The implementation does not invent the constitution's tie-break rule or assert unverified MamboSMS provider pricing/delivery behavior. The optional read-triggered write that would toggle `is_open=false` was not added; the results state is driven by the scheduled window. Backend pytest collection and frontend Vitest/ESLint/Vite checks were blocked by missing dependencies and unavailable package registry DNS; static syntax checks passed, but full tests and staging remain outstanding.

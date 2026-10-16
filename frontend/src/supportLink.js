@@ -1,3 +1,4 @@
+import { safeSessionStorage } from './storage.js';
 // Voter-facing WhatsApp support link (design Appendix H). Uses the ORG's configured contact, never a
 // hardcoded number, and a prefilled message that never asks for the code.
 // `contact` is either a number (digits, country code) or a full https WhatsApp link (used as given:
@@ -15,11 +16,11 @@ export function buildSupportLink(contact, orgName, studentId, problem = '') {
 // Resend deadline survives a page reload: the SERVER decides the wait, the browser only displays it.
 const key = (sid) => `resend_deadline:${String(sid || '').trim().toLowerCase()}`;
 export function saveResendDeadline(sid, seconds) {
-  try { sessionStorage.setItem(key(sid), String(Date.now() + seconds * 1000)); } catch { /* private mode */ }
+  try { safeSessionStorage.setItem(key(sid), String(Date.now() + seconds * 1000)); } catch { /* private mode */ }
 }
 export function loadResendSeconds(sid) {
   try {
-    const t = Number(sessionStorage.getItem(key(sid)) || 0);
+    const t = Number(safeSessionStorage.getItem(key(sid)) || 0);
     return Math.max(0, Math.ceil((t - Date.now()) / 1000));
   } catch { return 0; }
 }

@@ -42,6 +42,14 @@ describe('WP-7d Results page states', () => {
     expect(screen.getByText(/Voter Participation Roll/)).toBeTruthy();
   });
 
+  it('ended voting window overrides a still-true master switch', async () => {
+    serve({ is_open: true, voting_phase: 'ended', is_certified: false },
+      { voter_turnout: 4, results: [{ id: '1', name: 'Ann', position: 'Chair', votes: 4 }], results_released: true });
+    render(<Results />);
+    await waitFor(() => screen.getByText(/Provisional Standings/));
+    expect(screen.queryByText(/Live Tallying/)).toBeNull();
+  });
+
   it('embargoed (results_released false): turnout stays, candidate numbers withheld', async () => {
     serve({ is_open: true, voting_phase: 'open' }, { voter_turnout: 9, results: [], results_released: false });
     render(<Results />);

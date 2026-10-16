@@ -20,6 +20,33 @@ const shuffleArray = (array) => {
   return shuffled;
 };
 
+// Mirrors the persisted backend rule for public labels: a positive-count tie
+// for first place, or a positive-count tie spanning a multi-seat cut-off.
+function getPositionTieDetails(position) {
+  const candidates = Array.isArray(position?.candidates) ? position.candidates : [];
+  const ranked = [...candidates].sort((a, b) => (Number(b.votes) || 0) - (Number(a.votes) || 0));
+  if (!ranked.length) return { hasTie: false, tiedIds: new Set(), topTiedIds: new Set() };
+  const topCount = Number(ranked[0].votes) || 0;
+  const topShared = topCount > 0 ? ranked.filter(c => (Number(c.votes) || 0) === topCount) : [];
+  // A lone leader is a winner, not a tie: only two or more candidates sharing first place count.
+  const topTied = topShared.length > 1 ? topShared : [];
+  const topTiedIds = new Set(topTied.map(c => String(c.id)));
+  const tiedIds = new Set(topTiedIds);
+  const seats = Math.max(1, Number(ranked[0].seats) || 1);
+  if (seats > 1 && ranked.length > seats) {
+    const cutoffCount = Number(ranked[seats - 1].votes) || 0;
+    const cutoffTied = cutoffCount > 0 ? ranked.filter(c => (Number(c.votes) || 0) === cutoffCount) : [];
+    const cutoffIndexes = ranked.map((c, i) => (Number(c.votes) || 0) === cutoffCount ? i : -1).filter(i => i >= 0);
+    const crossesCutoff = cutoffIndexes.some(i => i < seats) && cutoffIndexes.some(i => i >= seats);
+    const cutoffIds = new Set(cutoffTied.map(c => String(c.id)));
+    const sameAsTopTie = topTiedIds.size === cutoffIds.size && [...topTiedIds].every(id => cutoffIds.has(id));
+    if (cutoffCount > 0 && cutoffTied.length > 1 && crossesCutoff && !sameAsTopTie) {
+      for (const id of cutoffIds) tiedIds.add(id);
+    }
+  }
+  return { hasTie: tiedIds.size > 1, tiedIds, topTiedIds };
+}
+
 export default function Results() {
   const [electionData, setElectionData] = useState({ 
     voter_turnout: 0, 
@@ -33,6 +60,8 @@ export default function Results() {
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified] = useState(false); 
   const [statusInfo, setStatusInfo] = useState({});   // /election-status payload, for resultsState()
+  const [roundOptions, setRoundOptions] = useState([]);
+  const [selectedRoundId, setSelectedRoundId] = useState('');
   const [lastSynced, setLastSynced] = useState(new Date());
   const [logoUrl, setLogoUrl] = useState("");
   const [orgName, setOrgName] = useState("");
@@ -59,7 +88,8 @@ const ROLL_EVERY = 3;                 // 3 ticks x 10s = 30s while voting is ope
 const tickRef = useRef(0);
 const brandingLoadedRef = useRef(false);
 
-const fetchData = async ({ force = false } = {}) => {
+const fetchData = async ({ force = false, roundId } = {}) => {
+  const requestedRoundId = typeof roundId === 'string' ? roundId : selectedRoundId;
   const tick = tickRef.current++;
   const wantRoll = force || tick % ROLL_EVERY === 0;
   const wantBranding = !brandingLoadedRef.current;
@@ -67,12 +97,25 @@ const fetchData = async ({ force = false } = {}) => {
     // A failed roll/branding request resolves to null and the previous value is KEPT. Falling back to
     // "locked, empty roll" on any error (e.g. a 429) made the page claim the privacy lock was active
     // when 1820 people had voted.
-    const [resultsRes, statusRes, votersRes, brandingRes] = await Promise.all([
-      api.get('/election-results'),
+    const roundsRequest = api.get('/election-results/rounds').catch(() => null);
+    const [resultsRes, statusRes, votersRes, brandingRes, roundsRes] = await Promise.all([
+      requestedRoundId
+        ? api.get('/election-results', { params: { round_id: requestedRoundId } })
+        : api.get('/election-results'),
       api.get('/election-status'),
-      wantRoll ? api.get('/election-results/voter-roll').catch(() => null) : Promise.resolve(null),
+      wantRoll ? api.get('/election-results/voter-roll', { params: requestedRoundId ? { round_id: requestedRoundId } : {} }).catch(() => null) : Promise.resolve(null),
       wantBranding ? api.get('/superadmin/branding').catch(() => null) : Promise.resolve(null),
+      roundsRequest,
     ]);
+
+    // Keep an index of rounds so Round 1 remains selectable after a by-election.
+    const roundPayload = roundsRes?.data || {};
+    const roundList = Array.isArray(roundPayload.rounds) ? roundPayload.rounds : [];
+    setRoundOptions(roundList);
+    const resolvedRoundId = requestedRoundId || roundPayload.active_round_id || 'round-1';
+    if (!selectedRoundId && roundPayload.active_round_id) setSelectedRoundId(roundPayload.active_round_id);
+    const selectedRound = roundList.find(r => r.round_id === resolvedRoundId);
+    const viewingActiveRound = !roundPayload.active_round_id || resolvedRoundId === roundPayload.active_round_id;
 
     // The privacy threshold is enforced server-side — below it the backend returns an empty roll, so
     // the names are not merely hidden in the UI, they are never sent.
@@ -91,9 +134,22 @@ const fetchData = async ({ force = false } = {}) => {
       results_released: resultsRes.data.results_released !== false
     }));
 
-    setIsElectionOpen(statusRes.data.is_open);
-    setIsCertified(statusRes.data.is_certified || false);
-    setStatusInfo(statusRes.data || {});
+    // Historical rounds are always presented as closed; the active round uses its current schedule.
+    // A prior round's certification must not carry forward into a new by-election.
+    const roundIsOpen = viewingActiveRound
+      ? Boolean(statusRes.data.is_open) && statusRes.data.voting_phase !== 'ended'
+      : selectedRound?.status === 'open';
+    const roundIsCertified = viewingActiveRound
+      ? Boolean(statusRes.data.is_certified)
+      : selectedRound?.status === 'certified';
+    setIsElectionOpen(roundIsOpen);
+    setIsCertified(Boolean(roundIsCertified));
+    setStatusInfo(viewingActiveRound ? (statusRes.data || {}) : {
+      ...(statusRes.data || {}),
+      voting_phase: selectedRound?.status === 'scheduled' ? 'not_started' : 'ended',
+      voting_phase_open: false,
+      voting_opens_at: null,
+    });
     setLastSynced(new Date());
     setLoading(false);
 
@@ -205,16 +261,26 @@ const fetchData = async ({ force = false } = {}) => {
     <div style={{ padding: 'clamp(12px, 4vw, 20px)', maxWidth: '700px', margin: '0 auto', width: '100%', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif' }}>
       
       <div className="no-print">
-        <h2 style={{ textAlign: 'center', color: 'var(--bp-tx, #2c3e50)', marginBottom: '20px' }}>Election Results</h2>
+        <h2 style={{ textAlign: 'center', color: 'var(--bp-tx, #2c3e50)', marginBottom: '12px' }}>Election Results</h2>
+        {roundOptions.length > 1 && (
+          <label style={{ display: 'grid', gap: 6, margin: '0 auto 20px', maxWidth: 420, fontSize: 13, color: 'var(--text-muted)' }}>
+            View election round
+            <select className="perf-field" value={selectedRoundId || roundOptions.find(r => r.status === 'open')?.round_id || roundOptions[roundOptions.length - 1]?.round_id || 'round-1'}
+              onChange={e => { setSelectedRoundId(e.target.value); setLoading(true); fetchData({ force: true, roundId: e.target.value }); }}>
+              {roundOptions.map(round => (
+                <option key={round.round_id} value={round.round_id}>
+                  {round.round_id === 'round-1' ? `Round 1${round.has_tie ? ' (tie)' : ''}` : `By-election · ${round.position || round.round_id}`} — {round.status || 'scheduled'}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {/* 2. THE TIE ALERT (Your new addition) */}
-          {!isElectionOpen && orderedPositions.some(p => {
-              const max = Math.max(...p.candidates.map(c => c.votes));
-              return p.candidates.filter(c => c.votes === max && max > 0).length > 1;
-          }) && (
+          {!isElectionOpen && orderedPositions.some(p => getPositionTieDetails(p).hasTie) && (
               <div style={tieWarningBanner}>
-                  <Icon name="alarm" /> <strong>Contested Outcome:</strong> A tie has been detected. 
-                  Official Certification is paused for affected positions.
+                  <Icon name="alarm" /> <strong>Tie, pending decision:</strong> A tie affects the outcome for at least one position.
+                  Official certification is paused for affected positions.
               </div>
           )}
         
@@ -265,12 +331,11 @@ const fetchData = async ({ force = false } = {}) => {
               const isSolo = position.candidates.length === 1;
               const MANDATE_THRESHOLD = unopposedRule(electionData).required;
               
-              // 1. Calculate the highest vote count in this position
+              // Count ties both at first place and where a multi-seat result crosses the last seat.
               const categoryMax = Math.max(...position.candidates.map(c => c.votes || 0));
-              
-              // 2. Identify if multiple candidates share that top spot
-              const tieCount = position.candidates.filter(c => c.votes === categoryMax && c.votes > 0).length;
-              const isTie = tieCount > 1;
+              const tieDetails = getPositionTieDetails(position);
+              const isTie = tieDetails.hasTie;
+              const isTopTie = tieDetails.topTiedIds.size > 1;
 
               // Bars show each candidate's share of THIS position's votes (same basis as the
               // printed report's Share column). Dividing by overall turnout was wrong: the
@@ -282,6 +347,19 @@ const fetchData = async ({ force = false } = {}) => {
                   {bp ? <bp.PositionHeading>{position.name}</bp.PositionHeading> : (
                   <h3 className="position-header" style={positionHeaderStyle}>{position.name}</h3>
                   )}
+                  {(() => {
+                    const linkedRound = roundOptions.find(r => r.kind === 'by_election' &&
+                      r.parent_round_id === (selectedRoundId || 'round-1') && r.position === position.name);
+                    if (!linkedRound) return null;
+                    return (
+                      <div className="perf-note" style={{ margin: '-10px 0 14px' }}>
+                        By-election: <button type="button" className="perf-btn" style={{ minHeight: 44, marginLeft: 6 }}
+                          onClick={() => { setSelectedRoundId(linkedRound.round_id); setLoading(true); fetchData({ force: true, roundId: linkedRound.round_id }); }}>
+                          {linkedRound.status || 'scheduled'} — View round
+                        </button>
+                      </div>
+                    );
+                  })()}
                   
                   {position.candidates.sort((a,b) => b.votes - a.votes).map(candidate => {
                     const percentage = positionTotal > 0
@@ -291,13 +369,22 @@ const fetchData = async ({ force = false } = {}) => {
                     let winStatus = null;
                     const hasVotes = candidate.votes > 0;
                     const isTopCandidate = candidate.votes === categoryMax && hasVotes;
+                    const isTiedCandidate = tieDetails.tiedIds.has(String(candidate.id));
+                    const seatCount = Math.max(1, Number(candidate.seats || position.candidates[0]?.seats) || 1);
+                    const sortedCandidates = [...position.candidates].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+                    const seatRank = sortedCandidates.findIndex(c => String(c.id) === String(candidate.id));
+                    const wouldTakeSeat = seatRank >= 0 && seatRank < seatCount;
                     
                     if (!isElectionOpen) {
-                      if (isSolo) {
+                      if (isTiedCandidate) {
+                        // The tie participants are explicit; the position does not declare winners while the tie is unresolved.
+                        winStatus = 'TIE';
+                      } else if (isTie) {
+                        winStatus = null;
+                      } else if (isSolo) {
                         winStatus = candidate.votes >= MANDATE_THRESHOLD ? 'MANDATE_GAINED' : 'UNDERMANDATED';
-                      } else if (isTopCandidate) {
-                        // If it's a tie, they aren't the winner yet
-                        winStatus = isTie ? 'TIE' : 'WINNER';
+                      } else if (isTopCandidate || (seatCount > 1 && wouldTakeSeat)) {
+                        winStatus = 'WINNER';
                       }
                     }
             
@@ -318,15 +405,15 @@ const fetchData = async ({ force = false } = {}) => {
                           <div className="cand-badges">
                             {winStatus === 'WINNER' && badge('ok', 'var(--warning)', 'var(--bp-ai, #1e293b)', 'trophy', 'ELECTED')}
                             {winStatus === 'MANDATE_GAINED' && badge('ok', 'var(--bp-ok, #10b981)', 'var(--bp-ai, #fff)', 'success', 'MANDATE GAINED')}
-                            {winStatus === 'TIE' && badge('warn', 'var(--bp-wn, #e67e22)', 'var(--bp-ai, #fff)', 'scale', 'TIE (RE-RUN)')}
+                            {winStatus === 'TIE' && badge('warn', 'var(--bp-wn, #e67e22)', 'var(--bp-ai, #fff)', 'scale', 'Tie, pending decision')}
                             {winStatus === 'UNDERMANDATED' && badge('neg', 'var(--bp-no, #ef4444)', 'var(--bp-ai, #fff)', 'warning', 'UNDERMANDATED')}
                             {isElectionOpen && isTopCandidate && (bp ? (
-                              <bp.Pill tone={isTie ? 'warn' : 'ok'}>
-                                {isTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
+                              <bp.Pill tone={isTopTie ? 'warn' : 'ok'}>
+                                {isTopTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
                               </bp.Pill>
                             ) : (
-                              <span className="cand-live" style={{ color: isTie ? 'var(--bp-wn, #e67e22)' : 'var(--success)' }}>
-                                {isTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
+                              <span className="cand-live" style={{ color: isTopTie ? 'var(--bp-wn, #e67e22)' : 'var(--success)' }}>
+                                {isTopTie ? <><Icon name="dot" /> DEADLOCK</> : <><Icon name="dot" /> LEADING</>}
                               </span>
                             ))}
                           </div>
@@ -422,7 +509,9 @@ const fetchData = async ({ force = false } = {}) => {
         </div>
         )}
 
-        {!notStarted && !noVotes && <PublicTurnoutBreakdown />}
+        {/* The breakdown endpoint is election-wide rather than round-aware. Hide it when a by-election
+            exists so viewing historical Round 1 cannot accidentally show the active round's breakdown. */}
+        {!notStarted && !noVotes && roundOptions.length === 1 && roundOptions[0].round_id === 'round-1' && <PublicTurnoutBreakdown />}
 
         <div style={{ marginTop: '40px', textAlign: 'center', borderTop: '1px solid #eee', paddingTop: '20px' }}>
           {!notStarted && (

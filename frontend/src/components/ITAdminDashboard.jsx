@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useEffect, useState } from 'react';
 import { useIdText } from '../idText';
 import api from '../api';
@@ -32,8 +33,8 @@ export default function ITAdminDashboard({ onLogout }) {
   const confirm = useConfirm();
   const prompt = usePrompt();
 
-  const itAdminId   = sessionStorage.getItem('it_admin_id')   || '';
-  const itAdminName = sessionStorage.getItem('it_admin_name') || '';
+  const itAdminId   = safeSessionStorage.getItem('it_admin_id')   || '';
+  const itAdminName = safeSessionStorage.getItem('it_admin_name') || '';
 
   const [activeTab, setActiveTab] = usePersistedTab('it_admin', 'overview');
   const [voterListKey, setVoterListKey] = useState(0);   // bumped after an import to reload the register

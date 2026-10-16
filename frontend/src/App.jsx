@@ -1,3 +1,4 @@
+import { safeSessionStorage, safeLocalStorage } from './storage.js';
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'; 
 import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
 import { LoadingBlock } from './components/Spinner';
@@ -96,7 +97,7 @@ const HEATMAP_VIEWS = { voter_identity: 'voter', results: 'results', apply: 'app
 const HEATMAP_FRAME = (() => {
   try {
     const p = new URLSearchParams(window.location.search).get('heatmap');
-    const ok = p && HEATMAP_VIEWS[p] && sessionStorage.getItem('admin_role') === 'superadmin' && sessionStorage.getItem(ADMIN_TOKEN_KEY);
+    const ok = p && HEATMAP_VIEWS[p] && safeSessionStorage.getItem('admin_role') === 'superadmin' && safeSessionStorage.getItem(ADMIN_TOKEN_KEY);
     return ok ? { page: p, view: HEATMAP_VIEWS[p] } : null;
   } catch { return null; }
 })();
@@ -142,7 +143,7 @@ function App() {
   const [step, setStep] = useState(HEATMAP_FRAME ? 1 : (restored.step || 1)); 
   const [view, setView] = useState(HEATMAP_FRAME ? HEATMAP_FRAME.view : (restored.view || "voter")); 
   useEffect(() => { initAnalytics(); }, []);
-  // Mirrors sessionStorage's "admin_role" in React state so the nav can react
+  // Mirrors safeSessionStorage's "admin_role" in React state so the nav can react
   // to it. Lets a logged-in admin who has navigated to Results/Apply/Vote get
   // back to their dashboard with one click, instead of refreshing or hitting
   // "Vote Now" — which calls resetFlow() and signs them out entirely.
@@ -225,14 +226,14 @@ function App() {
   const [bootStage, setBootStage] = useState('connecting');
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem('theme');
+    const saved = safeLocalStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
+    safeLocalStorage.setItem('theme', theme);
   }, [theme]);
 
   const logoNeedsInvert = useLogoNeedsInvert(logoUrl, theme);
@@ -414,7 +415,7 @@ useEffect(() => {
 
   // --- HANDLERS ---
   // BallotBox calls this on a 401 from /vote-bulk (token missing/expired/
-  // replaced by a newer login). Their ballot picks are kept in sessionStorage.
+  // replaced by a newer login). Their ballot picks are kept in safeSessionStorage.
   const handleSessionExpired = (detail) => {
     clearVoterSession();
     setOtp("");
@@ -471,25 +472,25 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         const res = await api.post(endpoint, payload);
   
         if (res.data.bypass === true) {
-          sessionStorage.setItem("admin_role", res.data.role);
+          safeSessionStorage.setItem("admin_role", res.data.role);
           setAdminRole(res.data.role);
           if (res.data.access_token) {
-            sessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
+            safeSessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
           }
           if (res.data.commissioner_id) {
-            sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
+            safeSessionStorage.setItem("commissioner_id", res.data.commissioner_id);
           }
           if (res.data.it_admin_id) {
-            sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
-            sessionStorage.setItem("it_admin_name", res.data.full_name || "");
+            safeSessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
+            safeSessionStorage.setItem("it_admin_name", res.data.full_name || "");
           }
           if (res.data.financial_controller_id) {
-            sessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
-            sessionStorage.setItem("financial_controller_name", res.data.full_name || "");
+            safeSessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
+            safeSessionStorage.setItem("financial_controller_name", res.data.full_name || "");
           }
           if (res.data.overseer_id) {
-            sessionStorage.setItem("overseer_id", res.data.overseer_id);
-            sessionStorage.setItem("overseer_name", res.data.full_name || "");
+            safeSessionStorage.setItem("overseer_id", res.data.overseer_id);
+            safeSessionStorage.setItem("overseer_name", res.data.full_name || "");
           }
         
           if (res.data.role !== "superadmin" && res.data.must_change_password) {
@@ -503,7 +504,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           setView(res.data.role);
           return;
         }
-        sessionStorage.setItem("admin_role",res.data.role || "commission");
+        safeSessionStorage.setItem("admin_role",res.data.role || "commission");
         setAdminRole(res.data.role || "commission");
   
         if (res.data.status === "needs_selection") {
@@ -580,9 +581,9 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
           type: "success"
         });
   
-        sessionStorage.setItem("commissioner_id", studentId);
+        safeSessionStorage.setItem("commissioner_id", studentId);
   
-        const role = sessionStorage.getItem("admin_role");
+        const role = safeSessionStorage.getItem("admin_role");
         setView(role === "superadmin" ? "superadmin" : (role || "commission"));
       } else {
         setStep(3);
@@ -633,23 +634,23 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         password: newPasswordForm.new_password,
       });
   
-      sessionStorage.setItem("admin_role", res.data.role);
+      safeSessionStorage.setItem("admin_role", res.data.role);
       setAdminRole(res.data.role);
       if (res.data.access_token) {
-        sessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
+        safeSessionStorage.setItem(ADMIN_TOKEN_KEY, res.data.access_token);
       }
-      if (res.data.commissioner_id) sessionStorage.setItem("commissioner_id", res.data.commissioner_id);
+      if (res.data.commissioner_id) safeSessionStorage.setItem("commissioner_id", res.data.commissioner_id);
       if (res.data.it_admin_id) {
-        sessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
-        sessionStorage.setItem("it_admin_name", res.data.full_name || "");
+        safeSessionStorage.setItem("it_admin_id",   res.data.it_admin_id);
+        safeSessionStorage.setItem("it_admin_name", res.data.full_name || "");
       }
       if (res.data.financial_controller_id) {
-          sessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
-          sessionStorage.setItem("financial_controller_name", res.data.full_name || "");
+          safeSessionStorage.setItem("financial_controller_id", res.data.financial_controller_id);
+          safeSessionStorage.setItem("financial_controller_name", res.data.full_name || "");
       }
       if (res.data.overseer_id) {
-          sessionStorage.setItem("overseer_id", res.data.overseer_id);
-          sessionStorage.setItem("overseer_name", res.data.full_name || "");
+          safeSessionStorage.setItem("overseer_id", res.data.overseer_id);
+          safeSessionStorage.setItem("overseer_name", res.data.full_name || "");
       }
   
       clearPasswordChangePending();
@@ -668,7 +669,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     // Best-effort server-side revocation — fire and forget, don't block the
     // UI on it. Client-side clearing below happens regardless, so a failed
     // revoke call never traps the user on a stuck screen.
-    if (sessionStorage.getItem(ADMIN_TOKEN_KEY)) {
+    if (safeSessionStorage.getItem(ADMIN_TOKEN_KEY)) {
       api.post("/admin/logout").catch(() => {});
     }
     setStep(1);
@@ -694,7 +695,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
   // their session, so ask first. No admin token -> no dialog (plain voter reset). (WP-7c)
   const confirmDialog = useOptionalConfirm();
   const handleVoteNow = async () => {
-    if (sessionStorage.getItem(ADMIN_TOKEN_KEY)
+    if (safeSessionStorage.getItem(ADMIN_TOKEN_KEY)
       && !(await confirmDialog("You will be signed out. Continue?", {
         title: 'Sign out?', confirmText: 'Sign out', cancelText: 'Stay signed in',
       }))) {
@@ -862,7 +863,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
         {view === "vetting" && <VettingDashboard onLogout={resetFlow} />}
         {HEATMAP_FRAME
           ? <HeatmapOverlay embedded page={HEATMAP_FRAME.page} />
-          : window.self === window.top && view !== "voter" && sessionStorage.getItem('admin_role') === 'superadmin' && <HeatmapOverlay />}
+          : window.self === window.top && view !== "voter" && safeSessionStorage.getItem('admin_role') === 'superadmin' && <HeatmapOverlay />}
         </Suspense>
         
         
@@ -1281,7 +1282,7 @@ const activeNavBtnStyle = {
   borderColor: 'var(--brand-primary, #003366)'
 };
 
-// Only shown when an admin session exists (sessionStorage's "admin_role")
+// Only shown when an admin session exists (safeSessionStorage's "admin_role")
 // and the visitor has clicked away from their dashboard — e.g. to preview
 // Live Results — so they never have to refresh or use "Vote Now" (which
 // signs them out) just to get back to where they were logged in.

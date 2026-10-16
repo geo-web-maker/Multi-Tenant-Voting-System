@@ -1,3 +1,4 @@
+import { safeSessionStorage, safeLocalStorage } from '../storage.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from './icons.jsx';
 import { trackPage } from '../analytics';
@@ -200,7 +201,7 @@ function ListItem({ t, isActive, onChange, tabRef }) {
 function DefaultTabBar({ tabs, groups, activeTab, onChange, className = '' }) {
   const isMobile = useIsMobile();
   useEffect(() => {
-    const role = sessionStorage.getItem('admin_role');
+    const role = safeSessionStorage.getItem('admin_role');
     if (role && activeTab) trackPage(`${role}:${String(activeTab).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 40)}`);
   }, [activeTab]);
   const flatMode = !groups || groups.length === 0;
@@ -212,11 +213,11 @@ function DefaultTabBar({ tabs, groups, activeTab, onChange, className = '' }) {
   // remembered across visits. Mobile has no group-level UI of its own
   // to collapse: it's one flat pill row, same as flatMode.
   const [railCollapsed, setRailCollapsed] = useState(() => {
-    try { return window.localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'; }
+    try { return safeLocalStorage.getItem(RAIL_COLLAPSED_KEY) === '1'; }
     catch { return false; }
   });
   useEffect(() => {
-    try { window.localStorage.setItem(RAIL_COLLAPSED_KEY, railCollapsed ? '1' : '0'); }
+    try { safeLocalStorage.setItem(RAIL_COLLAPSED_KEY, railCollapsed ? '1' : '0'); }
     catch { /* storage unavailable — collapse state just won't persist */ }
   }, [railCollapsed]);
 

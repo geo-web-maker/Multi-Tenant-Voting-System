@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useIdText } from '../idText';
 import api from '../api';
@@ -31,8 +32,8 @@ export default function VettingDashboard({ onLogout }) {
   const [me, setMe] = useState(null);
   const [meError, setMeError] = useState(false);
   const [accepting, setAccepting] = useState(false);
-  const linked = sessionStorage.getItem(PANEL_LINKED_KEY) === '1';
-  const backLabel = sessionStorage.getItem(HAT_BACK_LABEL_KEY) || 'Commissioner';
+  const linked = safeSessionStorage.getItem(PANEL_LINKED_KEY) === '1';
+  const backLabel = safeSessionStorage.getItem(HAT_BACK_LABEL_KEY) || 'Commissioner';
   // An overseer's own role stays paused while they serve, so there is nothing to switch back to.
   const canSwitchBack = linked && backLabel !== 'Overseer';
 

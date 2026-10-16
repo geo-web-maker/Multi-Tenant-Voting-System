@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useEffect, useState } from 'react';
 import api from '../api';
 import { usePersistedTab } from '../session';
@@ -51,9 +52,9 @@ export default function FinancialControllerDashboard({ onLogout }) {
   const isSection = SECTION_IDS.includes(activeTab);
   const view = STATUS_LABELS.voters[statusView] ? statusView : 'pending';
 
-  // On mount — figure out who this Financial Controller is from sessionStorage
+  // On mount — figure out who this Financial Controller is from safeSessionStorage
   useEffect(() => {
-    const stored = sessionStorage.getItem('financial_controller_id') || '';
+    const stored = safeSessionStorage.getItem('financial_controller_id') || '';
     setFcId(stored);
     fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only load
@@ -222,7 +223,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
                   const val = e.target.value.trim();
                   if (val) {
                     setFcId(val);
-                    sessionStorage.setItem('financial_controller_id', val);
+                    safeSessionStorage.setItem('financial_controller_id', val);
                   }
                 }}
               />
@@ -230,7 +231,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
                 const el = document.querySelector('[data-fcid-input]');
                 if (el && el.value.trim()) {
                   setFcId(el.value.trim());
-                  sessionStorage.setItem('financial_controller_id', el.value.trim());
+                  safeSessionStorage.setItem('financial_controller_id', el.value.trim());
                 }
               }} className="perf-btn perf-btn-primary">Confirm</button>
             </div>
@@ -244,7 +245,7 @@ export default function FinancialControllerDashboard({ onLogout }) {
           <div style={infoPill}>
             Deciding as: <strong>{fcId}</strong>
             <button 
-              onClick={() => { setFcId(''); sessionStorage.removeItem('financial_controller_id'); }} className="perf-btn" style={{ cursor: 'pointer', marginLeft: '10px' }}>
+              onClick={() => { setFcId(''); safeSessionStorage.removeItem('financial_controller_id'); }} className="perf-btn" style={{ cursor: 'pointer', marginLeft: '10px' }}>
               Change
             </button>
           </div>

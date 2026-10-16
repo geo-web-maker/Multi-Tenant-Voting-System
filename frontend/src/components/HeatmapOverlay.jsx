@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import { getCurrentPage, onPageChange } from '../analytics';
@@ -24,8 +25,8 @@ export default function HeatmapOverlay({ page, embedded = false }) {
   const [error, setError] = useState('');
   const canvas = useRef(null);
   const scroller = useRef(null);
-  const role = sessionStorage.getItem('admin_role');
-  const allowed = embedded || role === 'superadmin' || Boolean(sessionStorage.getItem('view_as'));
+  const role = safeSessionStorage.getItem('admin_role');
+  const allowed = embedded || role === 'superadmin' || Boolean(safeSessionStorage.getItem('view_as'));
 
   useEffect(() => (page ? undefined : onPageChange(setCurrent)), [page]);
   useEffect(() => {

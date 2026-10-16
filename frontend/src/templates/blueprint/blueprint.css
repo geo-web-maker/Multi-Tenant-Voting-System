@@ -612,12 +612,6 @@ html[data-template="blueprint"] {
       box-sizing: border-box;
     }
   }
-  /* Heatmap button (superadmin): on phones the tab rail is pinned to the screen bottom, so lift the button (and its popup) above it.
-     Rail = s3 offset + one pill row (about s7 + s4 = 64); the extra s3 is the gap. Tokens only. */
-  @media (max-width: 768px) {
-    html[data-template="blueprint"] .heatmap-fab { left: var(--bp-gut); bottom: calc(var(--bp-s3) + var(--bp-s7) + var(--bp-s4) + var(--bp-s3) + env(safe-area-inset-bottom, 0px)); }
-    html[data-template="blueprint"] .heatmap-panel { left: var(--bp-gut); bottom: calc(var(--bp-s3) + var(--bp-s7) + var(--bp-s4) + var(--bp-s3) + var(--bp-s7) + var(--bp-s5) + env(safe-area-inset-bottom, 0px)); }
-  }
   /* N8 VoterList.jsx:91 table const - inline minWidth 760px would keep the card-row table wider than a phone; desktop keeps it so the table scrolls instead of squeezing */
   @media (max-width: 768px) {
     html[data-template="blueprint"] table.bp-rs { min-width: 0 !important; }
@@ -660,6 +654,12 @@ html[data-template="blueprint"] {
     html[data-template="blueprint"] .bp-top.no-print .bp-theme button { padding: calc(var(--bp-s1) * 1.5) var(--bp-s3) !important; }
   }
   /* ===== /NEUTRALISERS ===== */
+  /* Heatmap button (superadmin): on phones the tab rail is pinned to the screen bottom, so lift the button (and its popup) above it.
+     Rail = s3 offset + one pill row (about s7 + s4 = 64); the extra s3 is the gap. Tokens only. */
+  @media (max-width: 768px) {
+    html[data-template="blueprint"] .heatmap-fab { left: var(--bp-gut); bottom: calc(var(--bp-s3) + var(--bp-s7) + var(--bp-s4) + var(--bp-s3) + env(safe-area-inset-bottom, 0px)); }
+    html[data-template="blueprint"] .heatmap-panel { left: var(--bp-gut); bottom: calc(var(--bp-s3) + var(--bp-s7) + var(--bp-s4) + var(--bp-s3) + var(--bp-s7) + var(--bp-s5) + env(safe-area-inset-bottom, 0px)); }
+  }
 }
 
 /* ===== 7. PRINT ===== reset only; the official documents print identically in both templates */

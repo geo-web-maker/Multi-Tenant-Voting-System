@@ -1,3 +1,4 @@
+import { safeSessionStorage } from './storage.js';
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
@@ -13,9 +14,9 @@ import { initClientReporting } from './clientReport.js'
 window.addEventListener('vite:preloadError', (event) => {
   event.preventDefault()
   try {
-    const last = Number(sessionStorage.getItem('chunk_reload_at') || 0)
+    const last = Number(safeSessionStorage.getItem('chunk_reload_at') || 0)
     if (Date.now() - last < 10000) return
-    sessionStorage.setItem('chunk_reload_at', String(Date.now()))
+    safeSessionStorage.setItem('chunk_reload_at', String(Date.now()))
   } catch { /* storage blocked: reload once anyway */ }
   window.location.reload()
 })

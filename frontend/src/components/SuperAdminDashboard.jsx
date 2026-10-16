@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useEffect, useState } from 'react';
 import api, { SUPERADMIN_ORG_OVERRIDE_KEY, ORG_SLUG } from '../api';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
@@ -19,6 +20,7 @@ import { DOCUMENT_TEMPLATES, resolveDocTemplate } from '../documentTemplates';
 import VoterStats from './VoterStats';
 import SecurityPanel from './SecurityPanel';
 import SmsPanel from './SmsPanel';
+import ByElectionsPanel from './ByElectionsPanel';
 import VoterFieldsPanel from './VoterFieldsPanel';
 import VettingPanelManager from './VettingPanelManager';
 import usePolling from '../hooks/usePolling';
@@ -95,7 +97,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   // switcher always holds a real org: the one picked earlier, else this deployment's own, else the first one
   // once the list has loaded (see fetchOrganizations).
   const [activeOrgSlug, setActiveOrgSlug] = useState(
-    sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG || ''
+    safeSessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG || ''
   );
   const [switchingOrg, setSwitchingOrg] = useState(false);
 
@@ -108,10 +110,10 @@ export default function SuperAdminDashboard({ onLogout }) {
 
   // --- Positions state ---
   const [positions, setPositions]   = useState([]);
-  const [newPosition, setNewPosition] = useState({ title: '', description: '', order: 0, application_fee: '' });
+  const [newPosition, setNewPosition] = useState({ title: '', description: '', order: 0, seats: 1, application_fee: '' });
   const [posLoading, setPosLoading]   = useState(false);
   const [editingPositionId, setEditingPositionId] = useState(null);
-  const [editPositionForm, setEditPositionForm] = useState({ title: '', description: '', order: 0, application_fee: '' });
+  const [editPositionForm, setEditPositionForm] = useState({ title: '', description: '', order: 0, seats: 1, application_fee: '' });
   const [editPosSaving, setEditPosSaving] = useState(false);
 
   // --- Candidates state (mirrored from AdminDashboard) ---
@@ -139,6 +141,7 @@ export default function SuperAdminDashboard({ onLogout }) {
   const [, setElectionVoters] = useState([]);
   const [isElectionOpen, setIsElectionOpen] = useState(true);
   const [isCertified, setIsCertified]       = useState(false);
+  const [isResetBlocked, setIsResetBlocked] = useState(false);
   const [loading, setLoading]               = useState(false);
   const [, setElectionLoaded]         = useState(false);
   const [lastRefreshed, setLastRefreshed]   = useState(new Date());
@@ -262,6 +265,7 @@ export default function SuperAdminDashboard({ onLogout }) {
       setElectionVoters(voterRes.data);
       setIsElectionOpen(statusRes.data.is_open);
       setIsCertified(statusRes.data.is_certified || false);
+      setIsResetBlocked(Boolean(statusRes.data.is_reset_blocked));
       setLastRefreshed(new Date());
     } catch { /* non-critical: ignore */ }
     finally { if (!silent) setLoading(false); setElectionLoaded(true); }
@@ -314,7 +318,7 @@ const refetchAll = () => {
   const handleSwitchOrg = (slug) => {
     if (!slug) return;   // no unscoped mode (the server refuses requests without an organisation)
     setSwitchingOrg(true);
-    sessionStorage.setItem(SUPERADMIN_ORG_OVERRIDE_KEY, slug);
+    safeSessionStorage.setItem(SUPERADMIN_ORG_OVERRIDE_KEY, slug);
     setActiveOrgSlug(slug);
     setActiveTab('candidates');
     refetchAll();
@@ -364,8 +368,8 @@ const refetchAll = () => {
     if (!newPosition.title.trim()) return toast('Position title is required.');
     setPosLoading(true);
     try {
-      await api.post(`/positions`, { ...newPosition, application_fee: parseInt(newPosition.application_fee, 10) || 0 });
-      setNewPosition({ title: '', description: '', order: 0, application_fee: '' });
+      await api.post(`/positions`, { ...newPosition, seats: parseInt(newPosition.seats, 10) || 1, application_fee: parseInt(newPosition.application_fee, 10) || 0 });
+      setNewPosition({ title: '', description: '', order: 0, seats: 1, application_fee: '' });
       fetchPositions();
     } catch (e) { toast(getErrorMessage(e, 'Failed to add position.'), { kind: 'error' }); }
     finally { setPosLoading(false); }
@@ -377,6 +381,7 @@ const refetchAll = () => {
       title: p.title || '',
       description: p.description || '',
       order: p.order ?? 0,
+      seats: p.seats ?? 1,
       application_fee: String(p.application_fee ?? 0),
     });
   };
@@ -394,6 +399,7 @@ const refetchAll = () => {
         title: editPositionForm.title.trim(),
         description: editPositionForm.description,
         order: parseInt(editPositionForm.order, 10) || 0,
+        seats: parseInt(editPositionForm.seats, 10) || 1,
         application_fee: fee,
       });
       setEditingPositionId(null);
@@ -751,6 +757,7 @@ const handleCreateOrg = async (e) => {
     try {
       const res = await api.post(`/admin/toggle-certification`);
       setIsCertified(res.data.is_certified);
+      await fetchElectionData({ silent: true });
       toast(`Results ${res.data.is_certified ? 'certified' : 'de-certified'}.`);
     } catch (e) { toast(getErrorMessage(e, 'Failed.'), { kind: 'error' }); }
   };
@@ -905,6 +912,7 @@ const handleSuperAdminRemoveStudent = async () => {
         { id: 'applications', label: <>Applications</>, icon: 'file' },
         { id: 'branding',     label: <>Branding</>,     icon: 'palette' },
         { id: 'election',     label: <>Election</>,     icon: 'calendar' },
+        { id: 'by_elections', label: <>By-elections</>, icon: 'vote' },
       ],
     },
     {
@@ -1582,6 +1590,9 @@ const handleSuperAdminRemoveStudent = async () => {
                 <input style={inp} placeholder="Description (optional)"
                   value={newPosition.description}
                   onChange={e => setNewPosition({ ...newPosition, description: e.target.value })} />
+                <input style={inp} type="number" min="1" max="100" placeholder="Number of seats (default 1)"
+                  value={newPosition.seats}
+                  onChange={e => setNewPosition({ ...newPosition, seats: e.target.value })} />
                 <input style={inp} type="number" min="0" placeholder="Nomination fee in UGX (optional, e.g. 50000)"
                   value={newPosition.application_fee}
                   onChange={e => setNewPosition({ ...newPosition, application_fee: e.target.value })} />
@@ -1608,6 +1619,9 @@ const handleSuperAdminRemoveStudent = async () => {
                     <input style={inp} placeholder="Description (optional)"
                       value={editPositionForm.description}
                       onChange={e => setEditPositionForm({ ...editPositionForm, description: e.target.value })} />
+                    <input style={inp} type="number" min="1" max="100" placeholder="Number of seats (default 1)"
+                      value={editPositionForm.seats}
+                      onChange={e => setEditPositionForm({ ...editPositionForm, seats: e.target.value })} />
                     <input style={inp} type="number" min="0" placeholder="Nomination fee in UGX (0 = none)"
                       value={editPositionForm.application_fee}
                       onChange={e => setEditPositionForm({ ...editPositionForm, application_fee: e.target.value })} />
@@ -1628,6 +1642,7 @@ const handleSuperAdminRemoveStudent = async () => {
                       {p.description && <><br /><small style={{ opacity: 0.6 }}>{p.description}</small></>}
                       <br />
                       <small style={{ color: 'var(--info)' }}>Order: {p.order}</small>
+                      <small style={{ marginLeft: 10, color: 'var(--info)' }}>Seats: {p.seats ?? 1}</small>
                       <small style={{ marginLeft: 10, color: 'var(--success)' }}>
                         Fee: {p.application_fee ? `UGX ${Number(p.application_fee).toLocaleString('en-UG')}` : 'none'}
                       </small>
@@ -2088,15 +2103,16 @@ const handleSuperAdminRemoveStudent = async () => {
               </p>
               <button
                 onClick={handleResetElection}
-                disabled={isCertified}
-                
-               className="perf-btn perf-btn-danger" style={{ cursor: isCertified ? 'not-allowed' : 'pointer', opacity: isCertified ? 0.4 : 1 }}>
-                {isCertified ? 'Cannot Reset — Results Certified' : 'Full Election Reset'}
+                disabled={isResetBlocked}
+               className="perf-btn perf-btn-danger" style={{ cursor: isResetBlocked ? 'not-allowed' : 'pointer', opacity: isResetBlocked ? 0.4 : 1 }}>
+                {isResetBlocked ? 'Cannot Reset — A Round Is Certified' : 'Full Election Reset'}
               </button>
             </div>
           </div>
         )}
         
+        {activeTab === 'by_elections' && <ByElectionsPanel />}
+
         {/* ══════════════ IT ADMINS TAB ══════════════ */}
         {activeTab === 'security' && (
           <RevealGroup text="Loading security settings…">

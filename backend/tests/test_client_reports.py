@@ -50,8 +50,12 @@ async def test_threshold_sends_one_alert(env, monkeypatch):
         sent.append(subject)
         return True
     monkeypatch.setattr(main, "alert_warning", fake)
+    # Blank screens alert at 3 reports in 10 minutes (post-election plan 9: one stuck voter is not an outage).
+    for _ in range(2):
+        await env.client.post("/client-report", headers=_h(env), json={"kind": "blank_screen"})
+    assert len(sent) == 0
     await env.client.post("/client-report", headers=_h(env), json={"kind": "blank_screen"})
-    assert len(sent) == 1                                   # blank screen alerts on the first report
+    assert len(sent) == 1
     for i in range(3):
         await env.client.post("/client-report", headers=_h(env), json={"kind": "js_error", "code": f"e{i}"})
     assert len(sent) == 1                                   # below the js_error threshold

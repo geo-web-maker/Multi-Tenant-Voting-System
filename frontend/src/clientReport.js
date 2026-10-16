@@ -1,3 +1,4 @@
+import { safeSessionStorage } from './storage.js';
 // Voter-side problem reports. Tells the server about failures it cannot see itself: a blocked bot-check script, a widget
 // error, a bot check that never returns a token, a JavaScript crash. Nothing personal is ever sent: only the problem type,
 // a short code, the page the voter was on and a short error text. The browser family comes from the User-Agent on the server.
@@ -13,8 +14,8 @@ const lastAt = new Map();
 /** The page the voter is on (same names as analytics, e.g. voter_identity). */
 export function setReportStep(name) { if (name) step = String(name).slice(0, 30); }
 
-const isStaff = () => { try { return Boolean(sessionStorage.getItem('admin_token')); } catch { return false; } };
-const slug = () => { try { return sessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG; } catch { return ORG_SLUG; } };
+const isStaff = () => { try { return Boolean(safeSessionStorage.getItem('admin_token')); } catch { return false; } };
+const slug = () => { try { return safeSessionStorage.getItem(SUPERADMIN_ORG_OVERRIDE_KEY) || ORG_SLUG; } catch { return ORG_SLUG; } };
 
 export function reportClientProblem(kind, { code = '', detail = '' } = {}) {
   try {

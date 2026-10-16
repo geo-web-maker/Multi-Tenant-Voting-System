@@ -1,3 +1,4 @@
+import { safeSessionStorage } from './storage.js';
 import { useCallback, useEffect, useState } from 'react';
 import api from './api';
 import { startPolling } from './hooks/usePolling';
@@ -15,7 +16,7 @@ let inflight = null; // de-dupes the prefetch + the hook's own first load
 function readStored() {
   if (cached) return cached;
   try {
-    const raw = window.sessionStorage.getItem(CACHE_KEY);
+    const raw = safeSessionStorage.getItem(CACHE_KEY);
     if (raw) cached = JSON.parse(raw);
   } catch { /* storage unavailable: fine, we just fetch */ }
   return cached;
@@ -26,7 +27,7 @@ function fetchNominationForm() {
   inflight = api.get('/nomination-form')
     .then((res) => {
       cached = res.data || { enabled: false };
-      try { window.sessionStorage.setItem(CACHE_KEY, JSON.stringify(cached)); } catch { /* ignore */ }
+      try { safeSessionStorage.setItem(CACHE_KEY, JSON.stringify(cached)); } catch { /* ignore */ }
       return cached;
     })
     .catch(() => ({ enabled: false })) // a failed fetch hides the card, as before (the cache is left untouched)

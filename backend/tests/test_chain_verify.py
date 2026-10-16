@@ -62,3 +62,31 @@ async def test_other_tenants_events_do_not_affect_the_chain():
 def test_main_verify_audit_chain_delegates_to_shared_function():
     src = open("main.py", encoding="utf-8").read()
     assert "from chain_verify import chain_verify_db" in src
+
+
+async def test_round_label_is_bound_into_v2_checkpoint_hash():
+    db = AsyncMongoMockClient()["round-aware"]
+    cast_at = datetime(2026, 10, 16, 10, 0, 0)
+    events = [
+        {"_id": ObjectId(), "org_id": ORG, "candidate_id": "candidate-a",
+         "cast_at": cast_at, "round_id": "round-1", "chain_version": 2},
+        {"_id": ObjectId(), "org_id": ORG, "candidate_id": "candidate-b",
+         "cast_at": cast_at, "round_id": "by-election-1", "chain_version": 2},
+    ]
+    events.sort(key=lambda ev: ev["_id"])
+    await db.vote_events.insert_many(events)
+    head = "GENESIS"
+    for event in events:
+        head = hashlib.sha256(
+            f"{head}|{event['_id']}|{event['candidate_id']}|{event['cast_at'].isoformat()}|{event['round_id']}".encode()
+        ).hexdigest()
+    await db.audit_checkpoints.insert_one({
+        "_id": ObjectId(), "org_id": ORG, "from_id": None,
+        "to_id": events[-1]["_id"], "chain_hash": head,
+    })
+
+    assert (await chain_verify.chain_verify_db(db, ORG))["valid"] is True
+    await db.vote_events.update_one(
+        {"_id": events[1]["_id"]}, {"$set": {"round_id": "round-1" if events[1]["round_id"] == "by-election-1" else "by-election-1"}}
+    )
+    assert (await chain_verify.chain_verify_db(db, ORG))["valid"] is False

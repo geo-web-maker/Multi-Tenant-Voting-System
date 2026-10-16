@@ -59,20 +59,31 @@ async def test_otp_default_uses_ego_only_when_it_works(rig):
     assert calls["sent"] == ["egosms"] and calls["counted"] == 1
 
 
-async def test_force_mambo_first_for_otp(rig):
+async def test_first_otp_forces_ego_even_if_org_route_prefers_mambo(rig):
     calls, _, sec = rig
     sec["sms_route_otp"] = "mambosms_first"
-    assert await main._send_sms_routed("+256700000000", "x", "o", "otp") == "ok"
-    assert calls["sent"] == ["mambosms"]
+    assert await main._send_sms_routed("+256700000000", "x", "o", "otp", is_resend=False) == "ok"
+    assert calls["sent"] == ["egosms"]
 
 
-async def test_only_route_never_falls_back(rig):
+async def test_resend_prefers_mambo_and_keeps_ego_fallback(rig):
     calls, results, sec = rig
-    sec["sms_route_otp"] = "mambosms_only"
-    results["mambosms"] = "failed"
-    assert await main._send_sms_routed("+256700000000", "x", "o", "otp") == "failed"
+    sec["sms_route_otp"] = "egosms_only"
+    assert await main._send_sms_routed("+256700000000", "x", "o", "otp", is_resend=True) == "ok"
     assert calls["sent"] == ["mambosms"]
-    assert calls["alerts"] == [("SMS send failed (otp)", "critical")]
+    calls["sent"].clear()
+    results["mambosms"] = "failed"
+    assert await main._send_sms_routed("+256700000000", "x", "o", "otp", is_resend=True) == "ok"
+    assert calls["sent"] == ["mambosms", "egosms"]
+
+
+async def test_only_route_never_falls_back_for_non_otp(rig):
+    calls, results, sec = rig
+    sec["sms_route_other"] = "mambosms_only"
+    results["mambosms"] = "failed"
+    assert await main._send_sms_routed("+256700000000", "x", "o", "notice") == "failed"
+    assert calls["sent"] == ["mambosms"]
+    assert calls["alerts"] == [("SMS send failed (notice)", "warning")]
 
 
 async def test_definite_failure_falls_back_and_counts_only_the_success(rig):

@@ -1,3 +1,4 @@
+import { safeSessionStorage } from '../storage.js';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api, { getErrorMessage } from '../api';
 import usePolling from '../hooks/usePolling';
@@ -47,7 +48,7 @@ export default function BackupsPanel() {
   const [liveSteps, setLiveSteps] = useState({});
   const toast = useToast();
   const confirm = useConfirm();
-  const viewAs = typeof window !== 'undefined' && !!sessionStorage.getItem('view_as');
+  const viewAs = typeof window !== 'undefined' && !!safeSessionStorage.getItem('view_as');
   // The backend runs on a Render free instance (0.1 CPU). /summary already carries connections, b2, mirror and the
   // migration checklist, so the poll asks for that, the job list, and only the extras the open tab actually draws.
   const configLoaded = useRef(false);
