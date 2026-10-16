@@ -53,12 +53,12 @@ describe('LiveStatus (header status cell)', () => {
     expect(screen.getByText('Opens in 00h 00m 10s')).toBeInTheDocument();
   });
 
-  it('Apply tab is highlighted only while applications are open (and not when it is the active page)', () => {
+  it('Apply tab is highlighted only while applications are open (gone once they close; not highlighted when active)', () => {
     const p = { orgName: 'KES', view: 'voter', step: 1, theme: 'light', onToggleTheme() {}, onVoteNow() {}, onNavigate() {} };
     const { rerender } = render(<TitleBlockHeader {...p} status={S.apply_open} />);
     expect(screen.getByRole('button', { name: 'Apply' })).toHaveClass('bp-hl');
     rerender(<TitleBlockHeader {...p} status={S.voting_open} />);
-    expect(screen.getByRole('button', { name: 'Apply' })).not.toHaveClass('bp-hl');
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull();   // applications closed: the Apply tab is gone
     rerender(<TitleBlockHeader {...p} phase="apply_open" />);
     expect(screen.getByRole('button', { name: 'Apply' })).toHaveClass('bp-hl');
     rerender(<TitleBlockHeader {...p} view="apply" status={S.apply_open} />);

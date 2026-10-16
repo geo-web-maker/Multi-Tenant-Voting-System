@@ -921,8 +921,11 @@ export function ActivityLog() {
 
 /* ══════════════════════════ CHAIN VERIFY ══════════════════════════ */
 
-export function ChainView() {
+export function ChainView({ canCheckpoint = false }) {
   const [checkpoints, setCheckpoints] = useState([]);
+  const [pending, setPending] = useState(0);
+  const [note, setNote] = useState('');
+  const [creating, setCreating] = useState(false);
   const [anchorFailures, setAnchorFailures] = useState(0);
   const [verdict, setVerdict] = useState(null);
   const [verifying, setVerifying] = useState(false);
@@ -933,6 +936,7 @@ export function ChainView() {
       const res = await api.get('/admin/audit/checkpoints');
       setCheckpoints(res.data.checkpoints || []);
       setAnchorFailures(res.data.anchor_failures || 0);
+      setPending(res.data.uncheckpointed_events || 0);
       setError('');
     } catch (e) {
       setError(errText(e, 'Could not load checkpoints.'));
@@ -954,6 +958,24 @@ export function ChainView() {
     }
   };
 
+  const createCheckpoint = async () => {
+    setCreating(true);
+    setNote('');
+    try {
+      const res = await api.post('/superadmin/audit/checkpoint');
+      setNote(res.data.status === 'checkpoint_created'
+        ? 'Checkpoint created.'
+        : 'Nothing to checkpoint yet. Ballots are only included once their time bucket has closed (about 10 minutes plus a minute).');
+      await load();
+    } catch (e) {
+      setError(errText(e, 'Could not create a checkpoint.'));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const ledger = verdict?.roster_ledger;
+
   return (
     <div>
       <h4 style={panelTitle}>Integrity Chain</h4>
@@ -969,7 +991,18 @@ export function ChainView() {
           {verifying ? 'Verifying…' : <>Verify Chain</>}
         </button>
         <button  onClick={load} className="perf-btn">Refresh</button>
+        {canCheckpoint && (
+          <button onClick={createCheckpoint} disabled={creating} className="perf-btn">
+            {creating ? 'Creating…' : 'Create checkpoint now'}
+          </button>
+        )}
       </div>
+
+      <p style={mutedStyle}>
+        {pending} ballot event(s) are not yet covered by a checkpoint. Checkpoints are created automatically every few
+        minutes, so ballots from the last few minutes of voting appear in the next one.
+      </p>
+      {note && <p style={mutedStyle}>{note}</p>}
 
       {anchorFailures > 0 && (
         <p style={warnBanner}>
@@ -993,6 +1026,18 @@ export function ChainView() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {verdict && verdict.valid && verdict.checkpoints_verified === 0 && (
+        <p style={warnBanner}><Icon name="warning" /> No checkpoints exist yet, so no ballots have been verified.</p>
+      )}
+
+      {ledger && (
+        <div style={ledger.valid ? okBanner : badBanner}>
+          {ledger.valid
+            ? <><Icon name="success" /> Roster ledger valid, {ledger.entries} entr{ledger.entries === 1 ? 'y' : 'ies'}.</>
+            : <><Icon name="alarm" /> Roster ledger MISMATCH at entry {ledger.first_bad_seq}.</>}
         </div>
       )}
 
@@ -1591,7 +1636,7 @@ export function SharedTabPanels({ activeTab, canEditSchedule = false, isChief = 
   if (activeTab === 'shared_roadmap') return <RoadmapEditor canEdit={canEditSchedule} />;
   if (activeTab === 'shared_analytics') return <Analytics />;
   if (activeTab === 'shared_activity') return <ActivityLog />;
-  if (activeTab === 'shared_chain') return <ChainView />;
+  if (activeTab === 'shared_chain') return <ChainView canCheckpoint={canEditSchedule} />;
   return null;
 }
 

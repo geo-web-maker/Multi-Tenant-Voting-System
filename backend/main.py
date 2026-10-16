@@ -408,13 +408,17 @@ async def lifespan(app: FastAPI):
     closeout_task = None
     if VETTING_CLOSEOUT_SWEEP_SECONDS > 0:
         closeout_task = asyncio.create_task(_vetting_closeout_loop(VETTING_CLOSEOUT_SWEEP_SECONDS))
+    checkpoint_task = None
+    if AUDIT_CHECKPOINT_SWEEP_SECONDS > 0:
+        checkpoint_task = asyncio.create_task(_audit_checkpoint_loop(AUDIT_CHECKPOINT_SWEEP_SECONDS))
     yield
-    if closeout_task:
-        closeout_task.cancel()
-        try:
-            await closeout_task
-        except asyncio.CancelledError:
-            pass
+    for _t in (closeout_task, checkpoint_task):
+        if _t:
+            _t.cancel()
+            try:
+                await _t
+            except asyncio.CancelledError:
+                pass
     await perf_metrics.stop()
     await analytics.stop()
     await _close_sms_http()
@@ -1353,6 +1357,7 @@ class ITAdminStudentAdd(BaseModel):
     requested_by:      str
     payment_method:    str = ""
     payment_proof_url: str = ""
+    confirm_shared:    bool = False   # IT admin saw the shared-number warning and still accepts
     
 class ITAdminStudentRemove(BaseModel):
     student_id:   str
@@ -1995,7 +2000,7 @@ async def create_audit_checkpoint(request: Request) -> dict | None:
         return None
 
     await _publish_checkpoint_externally(checkpoint)
-    await log_action("audit_checkpoint_created", current_actor(request), {
+    await log_action("audit_checkpoint_created", current_actor(request) if getattr(request.state, "admin", None) else "system", {
         "event_count": len(events),
         "chain_hash": chain_hash,
     }, org_id=org_id)
@@ -2006,6 +2011,38 @@ async def verify_audit_chain(request: Request) -> dict:
     """Verify the current request tenant using the same reusable verifier as restore tests."""
     from chain_verify import chain_verify_db
     return await chain_verify_db(db, getattr(request.state, "org_id", None))
+
+
+# Seconds between automatic checkpoint sweeps (0 turns the sweep off). Every org with sealed, not-yet-checkpointed
+# ballots gets a checkpoint, so voting is covered during the election and the last ballots are folded in shortly after
+# voting closes (a bucket is sealed CHECKPOINT_SEAL_GRACE_SECONDS after it ends).
+AUDIT_CHECKPOINT_SWEEP_SECONDS = int(os.getenv("AUDIT_CHECKPOINT_SWEEP_SECONDS", "300") or 0)
+
+
+async def _sweep_audit_checkpoints() -> int:
+    """Checkpoint every organisation that has sealed, uncheckpointed ballots. Returns how many were created."""
+    from types import SimpleNamespace
+    created = 0
+    async for org in db.organizations.find({}, {"_id": 1}):
+        org_id = str(org["_id"])
+        try:
+            req = SimpleNamespace(state=SimpleNamespace(org_id=org_id, admin=None))
+            if await create_audit_checkpoint(req):
+                created += 1
+        except Exception:
+            logger.exception("Audit checkpoint sweep failed for org %s.", org_id)
+    return created
+
+
+async def _audit_checkpoint_loop(interval_s: int) -> None:
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await _sweep_audit_checkpoints()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Audit checkpoint sweep crashed; trying again next interval.")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not hashed_password:
@@ -3664,6 +3701,9 @@ _SEC_DEFAULTS = {
     "roster_freeze_at": None,
     "roster_freeze_enabled": ol.env_bool("ROSTER_FREEZE_ENABLED", True),
     "contact_change_required": ol.env_bool("CONTACT_CHANGE_REQUIRED", True),
+    # IT admin enters a number already on another voter: warn, ask for the voter's own number, and flag the
+    # request for review (student changes for a new voter, contact changes for a number change).
+    "shared_contact_review": ol.env_bool("SHARED_CONTACT_REVIEW", True),
     "otp_target_risk": ol.TARGET_RISK,
     "turnstile_mode": os.getenv("TURNSTILE_MODE", "off").strip().lower(),
     "public_results_mode": os.getenv("PUBLIC_RESULTS_MODE", "live").strip().lower(),
@@ -4523,6 +4563,11 @@ async def get_status(request: Request):
 
     vwin, awin, vetwin = schedule["phases"]["voting"], schedule["phases"]["applications"], schedule["phases"]["vetting"]
     voting_phase, applications_phase, vetting_phase = _position(vwin), _position(awin), _position(vetwin)
+    # Display only: a voting END date that has passed means the voting period is over for the public screens
+    # (results label, header buttons) even when the window is not enforced. Ballot acceptance still follows
+    # _phase_is_open / the master switch; nothing is blocked or unblocked by this.
+    if voting_phase == "open" and vwin.get("end") and now > vwin["end"]:
+        voting_phase = "ended"
     phase_info = {
         # Same reading the Timeline cards use (admin /admin/schedule): a window is "scheduled" when it has a
         # start or an end, and "active" when now sits inside it. Lets the public header say "Applications Open"
@@ -4565,11 +4610,13 @@ async def get_status(request: Request):
     if not status_doc:
         return {"is_open": True, "is_certified": round_is_certified, "is_reset_blocked": is_reset_blocked,
                 "start": None, "end": None, "voting_phase_open": voting_phase_open,
+                "public_results_mode": sec["public_results_mode"],
                 "turnstile_mode": turnstile_mode, "approval_policy": approval_policy, **phase_info}
     return {
         **phase_info,
         "turnstile_mode": turnstile_mode,
         "approval_policy": approval_policy,
+        "public_results_mode": sec["public_results_mode"],   # live | closed | certified; names the Results tab honestly
         "is_open": status_doc.get("is_open", True),
         "is_certified": round_is_certified,
         "is_reset_blocked": is_reset_blocked,
@@ -9610,6 +9657,48 @@ async def get_overseer_dashboard(request: Request, admin: dict = Depends(require
 # IT ADMIN ROUTES
 # =============================================================================
 
+async def _shared_phone_hits(request: Request, phones, exclude_sid: str | None = None) -> list[dict]:
+    """Numbers (of `phones`) already on some other voter, with who holds them. Empty when the setting is off."""
+    if not (await get_security_settings(request))["shared_contact_review"]:
+        return []
+    nums = []
+    for p in phones:
+        if str(p or "").strip():
+            n = normalize_phone_number(p)
+            if n not in nums:
+                nums.append(n)
+    if not nums:
+        return []
+    q: dict = {"phone_numbers": {"$in": nums}}
+    if exclude_sid:
+        q["student_id"] = {"$ne": normalize_student_id(exclude_sid)}
+    by: dict[str, list[dict]] = {}
+    async for v in tdb(request).voters.find(q, {"student_id": 1, "full_name": 1, "phone_numbers": 1}):
+        for n in nums:
+            if n in (v.get("phone_numbers") or []):
+                by.setdefault(n, []).append({"student_id": v.get("student_id", ""), "full_name": v.get("full_name", "")})
+    return [{"phone": n, "phone_masked": _mask_phone(n), "holders": h} for n, h in by.items()]
+
+
+def _shared_409(hits: list[dict]):
+    raise HTTPException(409, {"code": "shared_contact", "shared": hits,
+        "message": "This number is already on another voter. It will have to be reviewed. If possible, get the voter's own number; "
+                   "otherwise confirm that you still accept the shared number."})
+
+
+class SharedCheck(BaseModel):
+    phones: list[str] = Field(default_factory=list, max_length=10)
+    exclude_student_id: str = ""
+
+
+@app.post("/it-admin/shared-contacts/check")
+async def check_shared_contact(data: SharedCheck, request: Request,
+                               admin: dict = Depends(require_role("it_admin", "superadmin"))):
+    """Pre-check used by the add-voter and contact-change forms so the warning shows before anything is uploaded."""
+    enabled = (await get_security_settings(request))["shared_contact_review"]
+    return {"enabled": enabled, "shared": await _shared_phone_hits(request, data.phones, data.exclude_student_id or None)}
+
+
 @app.post("/it-admin/students/request-add")
 async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: dict = Depends(require_role("it_admin", "superadmin"))):
     await assert_roster_unfrozen(request)
@@ -9626,15 +9715,22 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
     bypass = await upload_bypass_enabled(request)
     if not bypass and not data.reason.strip():
         raise HTTPException(400, "A reason is required.")
+    shared_hits = await _shared_phone_hits(request, data.phones)
+    if shared_hits and not data.confirm_shared:
+        _shared_409(shared_hits)
+    shared_flag = ({"phones": [h["phone_masked"] for h in shared_hits],
+                    "holders": sorted({x["student_id"] for h in shared_hits for x in h["holders"]}),
+                    "confirmed_by": current_actor(request)} if shared_hits else None)
     if bypass:
         # Superadmin has switched the upload bypass on: no reason / proof of payment needed and no
         # Financial Controller approval step. The voter is added straight away, and the request is
         # still recorded (approved, flagged bypass) plus audit-logged and written to the roster ledger.
         now = datetime.utcnow()
         reason = data.reason.strip() or "Fully paid, receipt issued (upload bypass)"
-        doc = {**data.dict(), "reason": reason, "change_type": "add", "status": "approved",
+        doc = {**data.dict(exclude={"confirm_shared"}), "reason": reason, "change_type": "add", "status": "approved",
                "requested_at": now, "resolved_at": now, "decided_by": "upload_bypass",
-               "decision_reason": "Superadmin upload bypass was enabled", "bypass": True}
+               "decision_reason": "Superadmin upload bypass was enabled", "bypass": True,
+               "shared_contact": shared_flag}
         result = await tdb(request).student_changes.insert_one(dict(doc))
         await _execute_student_change(doc, request.state.org_id)
         summary = {"student_id": data.student_id, "full_name": data.full_name, "reason": reason, "bypass": True}
@@ -9652,15 +9748,17 @@ async def request_add_student(data: ITAdminStudentAdd, request: Request, admin: 
         raise HTTPException(400, "A pending add request already exists for this student.")
 
     result = await tdb(request).student_changes.insert_one({
-        **data.dict(),
+        **data.dict(exclude={"confirm_shared"}),
         "change_type":  "add",
         "status":       "pending",
-        "requested_at": datetime.utcnow()
+        "requested_at": datetime.utcnow(),
+        "shared_contact": shared_flag,
     })
     await log_action("student_add_requested", data.requested_by, {
         "student_id": data.student_id,
         "full_name":  data.full_name,
-        "reason":     data.reason
+        "reason":     data.reason,
+        "shared_contact": bool(shared_flag),
     }, org_id=request.state.org_id)
     return {"status": "requested", "id": str(result.inserted_id)}
 
@@ -12142,6 +12240,8 @@ async def get_admin_audit_verify(request: Request):
     """Independently re-derives the whole hash chain from raw vote_events."""
     result = await verify_audit_chain(request)
     result["roster_ledger"] = await verify_roster_ledger(request.state.org_id)
+    from chain_verify import count_uncheckpointed_events
+    result["uncheckpointed_events"] = await count_uncheckpointed_events(db, request.state.org_id)
     await log_action("audit_chain_verified", current_actor(request), {
         "valid": result.get("valid"),
         "checkpoints": result.get("checkpoints_verified"),
@@ -12167,7 +12267,9 @@ async def list_audit_checkpoints(request: Request, limit: int = 100):
     anchor_failures = await tdb(request).audit_log.count_documents(
         {"action": "audit_checkpoint_anchor_failed"}
     )
-    return {"checkpoints": rows, "anchor_failures": anchor_failures}
+    from chain_verify import count_uncheckpointed_events
+    return {"checkpoints": rows, "anchor_failures": anchor_failures,
+            "uncheckpointed_events": await count_uncheckpointed_events(db, request.state.org_id)}
 
 
 # =============================================================================
@@ -12630,6 +12732,7 @@ class ContactChangeRequest(BaseModel):
     new_value: str | None = None
     evidence_type: str
     evidence_note: str = ""
+    confirm_shared: bool = False      # IT admin saw the shared-number warning and still accepts
 
 
 class ContactChangeDecision(BaseModel):
@@ -12660,6 +12763,7 @@ class SecuritySettingsUpdate(BaseModel):
     clear_roster_freeze_at: bool = False
     roster_freeze_enabled: bool | None = None
     contact_change_required: bool | None = None
+    shared_contact_review: bool | None = None
     otp_target_risk: float | None = None
     turnstile_mode: str | None = None
     public_results_mode: str | None = None
@@ -12808,6 +12912,13 @@ async def request_contact_change(data: ContactChangeRequest, request: Request,
     if approved >= sec["contact_change_max_per_voter"]:
         raise HTTPException(409, f"This voter already has {approved} approved contact changes (the maximum).")
     ch = await _validate_contact_change(data, voter, org_id)
+    shared_hits = []
+    if ch["type"] in ("phone_change", "phone_add") and ch.get("new_value"):
+        shared_hits = await _shared_phone_hits(request, [ch["new_value"]], voter["student_id"])
+        if shared_hits and not data.confirm_shared:
+            _shared_409(shared_hits)
+    if shared_hits:
+        ch["shared_with"] = sorted({x["student_id"] for h in shared_hits for x in h["holders"]})
 
     now = datetime.utcnow()
     doc = {"org_id": org_id, "student_id": voter["student_id"], "student_key": str(voter["_id"]),
@@ -12882,6 +12993,7 @@ async def _cc_view(request: Request, c: dict, role: str) -> dict:
         "decision_note": c.get("decision_note", ""), "expires_at": c.get("expires_at"),
         "notice_status": c.get("notice_status"), "breakglass": bool(c.get("breakglass")),
         "otp_in_progress": live_otp,
+        "shared_contact_confirmed": bool(ch.get("shared_with")),
         "warnings": await _cc_warnings(request, c) if c.get("status") == "pending" else [],
     }
 
@@ -13961,7 +14073,7 @@ async def superadmin_put_security_settings(data: SecuritySettingsUpdate, request
     if len(reason) < 3:
         raise HTTPException(400, "A reason is required for every settings change.")
     sec, updates = await get_security_settings(request), {}
-    for f in ("roster_freeze_enabled", "contact_change_required", "superadmin_breakglass",
+    for f in ("roster_freeze_enabled", "contact_change_required", "shared_contact_review", "superadmin_breakglass",
               "sms_fallback_on_timeout"):
         if getattr(data, f) is not None:
             updates[f] = getattr(data, f)

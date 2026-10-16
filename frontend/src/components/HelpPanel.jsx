@@ -21,7 +21,7 @@ const modalContentStyle = {
  * --bottom-bar-height CSS var (see useReportedHeight), so it never needs
  * to know which page it's on.
  */
-export default function HelpPanel({ supportPhone, supportContacts = [], orgName = '', onShowGuide, page = 'voter' }) {
+export default function HelpPanel({ supportPhone, supportContacts = [], orgName = '', onShowGuide, page = 'voter', hideSampleBallot = false }) {
   const { open, close, showRegister, openRegister, closeRegister, showTimeline, openTimeline, closeTimeline, showFees, openFees, closeFees } = useHelpMenu();
   // Which reason's contact submenu is open (null = showing the main list). Reset whenever the
   // main panel closes so re-opening Help never lands on a stale submenu.
@@ -29,7 +29,7 @@ export default function HelpPanel({ supportPhone, supportContacts = [], orgName 
   React.useEffect(() => { if (!open) setSubReason(null); }, [open]);
 
   const shown = helpItemsFor(page);
-  const has = (key) => shown.includes(key);
+  const has = (key) => shown.includes(key) && !(key === 'sample-ballot' && hideSampleBallot);
   const items = [
     ...(has('sample-ballot') ? [{ label: 'Sample Ballot Paper', onClick: () => { onShowGuide(); close(); } }] : []),
     ...(has('register') ? [{ label: 'Check Voter Register', onClick: openRegister }] : []),

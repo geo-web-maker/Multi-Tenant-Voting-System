@@ -2335,6 +2335,11 @@ const handleSuperAdminRemoveStudent = async () => {
                 <p style={{ margin: '2px 0', fontSize: '11px', opacity: 0.5 }}>
                   Requested by: {change.requested_by}
                 </p>
+                {change.shared_contact && (
+                  <p style={{ margin: '6px 0', fontSize: '12px', fontWeight: 600, color: 'var(--warning)' }}>
+                    Shared number: {change.shared_contact.phones.join(', ')} is already on {change.shared_contact.holders.join(', ')}. The IT admin was warned and accepted it.
+                  </p>
+                )}
                 
                 {change.payment_method && (
                   <div style={{ marginTop: '8px', padding: '8px 12px', backgroundColor: 'var(--card-bg)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>

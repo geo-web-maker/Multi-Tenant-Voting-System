@@ -1,6 +1,7 @@
 import { safeSessionStorage, safeLocalStorage } from './storage.js';
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'; 
 import api, { API_BASE, ADMIN_TOKEN_KEY } from './api';
+import { navModel } from './phase';
 import { LoadingBlock } from './components/Spinner';
 import { loginGuidance, UNCONFIRMED_DELIVERY_NOTE } from './loginErrors';
 import { setIdText } from './idText';
@@ -704,6 +705,8 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
     resetFlow();
   };
 
+  const nav = navModel(electionStatus);   // phase-aware header buttons
+
   if (!bootReady) {
     if (!bootSplashDue) return null;   // still inside the warm-server grace period
     return <>
@@ -749,6 +752,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             supportContacts={supportContacts}
             orgName={orgName}
             onShowGuide={() => setShowGuide(true)}
+            hideSampleBallot={nav.candidateList}
             page={view}
           />
           {/* Ballot page (step 3) puts Help inside its own footer bar via
@@ -784,6 +788,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             theme={theme}
             onToggleTheme={toggleTheme}
             onVoteNow={handleVoteNow}
+            onShowCandidates={() => setShowGuide(true)}
             onNavigate={setView}
             showBackToAdmin={Boolean(adminRole && (view === "results" || view === "apply"))}
             onBackToAdmin={() => setView(adminRole)}
@@ -824,13 +829,19 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 Vote Now
               </button>
         
-              <button data-track="nav-results" onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
-                Live Results
-              </button>
+              {nav.showResults && (
+                <button data-track="nav-results" onClick={() => setView("results")} style={view === "results" ? activeNavBtnStyle : navBtnStyle}>
+                  {nav.resultsLabel}
+                </button>
+              )}
         
-              <button data-track="nav-apply" onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
-                Apply
-              </button>
+              {nav.showApply ? (
+                <button data-track="nav-apply" onClick={() => setView("apply")} style={view === "apply" ? activeNavBtnStyle : navBtnStyle}>
+                  Apply
+                </button>
+              ) : nav.candidateList && (
+                <button data-track="nav-candidates" onClick={() => setShowGuide(true)} style={navBtnStyle}>Candidate List</button>
+              )}
 
               {/* Deliberately NOT shown while view === "voter": that flow is
                   someone actively proving they're a different identity (via
@@ -1135,7 +1146,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
                 fontSize: '16px'
               }}
             >
-              Back to Login
+              {nav.candidateList ? 'Back' : 'Back to Login'}
             </button>
       
             {/* Reusing BallotBox in Preview Mode */}
@@ -1147,7 +1158,7 @@ const handleVerifyIdentity = async (selectedIdx = null) => {
             />
             
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted, #94a3b8)' }}>
-              <p>This is a guide. Log in to cast your actual vote.</p>
+              <p>{nav.candidateList ? 'Candidate list. Log in from Vote Now when voting is open.' : 'This is a guide. Log in to cast your actual vote.'}</p>
             </div>
           </div>
         </div>

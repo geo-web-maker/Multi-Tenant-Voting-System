@@ -52,6 +52,33 @@ export function derivePhase(status, now = Date.now()) {
   return { state, tz, dates, countdownTo, countdownLabel, appsClosed };
 }
 
+/** Name for the public Results tab, so it never says "Live" for an election whose votes are hidden. */
+export function resultsTabLabel(status) {
+  const mode = status?.public_results_mode;
+  if (!mode) return 'Live Results';                       // old server / unknown: keep the old name
+  const state = derivePhase(status)?.state;
+  if (status.is_certified) return 'Official Results';
+  // Votes are withheld (not live, or not yet released): the page still carries turnout and the voter roll.
+  if (mode === 'certified') return 'Turnout & Roll';
+  if (state === 'voting_closed') return 'Provisional Results';
+  return mode === 'live' && state === 'voting_open' ? 'Live Results' : mode === 'live' ? 'Results' : 'Turnout & Roll';
+}
+
+/** Which header buttons apply right now. Vote Now never changes. Apply shows while applications are open; once they
+ *  are closed AND vetting is finished, its slot becomes "Candidate List" until voting opens (Help drops its ballot-preview entry only meanwhile). Results shows from voting onward. */
+export function navModel(status, now = Date.now()) {
+  const ph = derivePhase(status);
+  if (!ph) return { resultsLabel: 'Live Results', showApply: true, candidateList: false, showResults: true };
+  const vetCloseMs = status.vetting_closes_at && parseUtc(status.vetting_closes_at) ? parseUtc(status.vetting_closes_at).getTime() : null;
+  const vettingDone = status.vetting_phase === 'ended' || (vetCloseMs != null && vetCloseMs <= now);
+  return {
+    resultsLabel: resultsTabLabel(status),
+    showApply: !ph.appsClosed,
+    candidateList: ph.appsClosed && vettingDone && ph.state === 'voting_soon',   // button: only between vetting and voting
+    showResults: ph.state === 'voting_open' || ph.state === 'voting_closed',      // Results tab: voting and beyond
+  };
+}
+
 function fmtOrNull(v, tz) {
   return v && parseUtc(v) ? fmtZoned(v, tz) : null;
 }

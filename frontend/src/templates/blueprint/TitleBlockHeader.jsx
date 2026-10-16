@@ -5,7 +5,7 @@ import { useEffect } from 'react';
 import { Stamp, StatusCell, SheetCell } from './primitives';
 import LiveStatus from './LiveStatus';
 import { setChrome, useChrome } from '../../templateChrome';
-import { derivePhase } from '../../phase';
+import { derivePhase, navModel } from '../../phase';
 
 const NAV = [
   { key: 'vote', label: 'Vote Now', track: 'nav-vote' },
@@ -15,7 +15,7 @@ const NAV = [
 
 export default function TitleBlockHeader({
   orgName, logoUrl, logoNeedsInvert = false, phase = null, status = null, view, step, theme,
-  onToggleTheme, onVoteNow, onNavigate, showBackToAdmin = false, onBackToAdmin, role = '',
+  onToggleTheme, onVoteNow, onShowCandidates, onNavigate, showBackToAdmin = false, onBackToAdmin, role = '',
 }) {
   const chrome = useChrome();
   // Applications open -> the Apply tab gets a soft highlight (replaces the old "Apply now" button in the banner).
@@ -28,7 +28,12 @@ export default function TitleBlockHeader({
 
   // Same active rule as the default nav: Vote Now is active only on the first voter step.
   const active = view === 'voter' && step === 1 ? 'vote' : (view === 'results' || view === 'apply') ? view : null;
-  const onClick = { vote: onVoteNow, results: () => onNavigate('results'), apply: () => onNavigate('apply') };
+  const model = navModel(status);
+  const items = NAV
+    .filter((n) => (n.key !== 'apply' || model.showApply || model.candidateList) && (n.key !== 'results' || model.showResults))
+    .map((n) => (n.key === 'results' ? { ...n, label: model.resultsLabel }
+      : n.key === 'apply' && !model.showApply ? { key: 'candidates', label: 'Candidate List', track: 'nav-candidates' } : n));
+  const onClick = { vote: onVoteNow, candidates: onShowCandidates, results: () => onNavigate('results'), apply: () => onNavigate('apply') };
   // D5: voter flow shows "step n / 3" (1.5 = choosing a phone, still sheet 1; the post-ballot step has no sheet).
   const sheet = view === 'voter' && step >= 1 && step < 4 ? Math.floor(step) : null;
   // D5, consoles: "active tab / tab count" once the sidebar has published it.
@@ -49,7 +54,7 @@ export default function TitleBlockHeader({
         </div>
       )}
       <nav aria-label="Main">
-        {NAV.map((n) => (
+        {items.map((n) => (
           <button
             key={n.key} type="button" data-track={n.track} onClick={onClick[n.key]}
             aria-current={active === n.key ? 'page' : undefined}

@@ -133,6 +133,7 @@ export function errMsg(e, fallback) {
 
 // ── OTP_SMS_Design_v2: roster freeze + contact-change requests ──────────────
 export const fetchRosterStatus = () => api.get('/admin/roster-status').then((r) => r.data);
+export const checkSharedContacts = (phones, excludeStudentId = '') => api.post('/it-admin/shared-contacts/check', { phones, exclude_student_id: excludeStudentId }).then((r) => r.data);
 export const submitContactChange = (body) => api.post('/it-admin/contact-changes/request', body).then((r) => r.data);
 export const listContactChanges = (status) =>
   api.get('/admin/contact-changes', { params: status ? { status } : {} }).then((r) => r.data);
