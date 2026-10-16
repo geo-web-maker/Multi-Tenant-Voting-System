@@ -202,3 +202,132 @@ async def test_round1_candidate_snapshot_preserves_closed_results_after_candidat
     assert by_id[str(original.inserted_id)]["name"] == "Original Chair"
     assert by_id[str(original.inserted_id)]["position"] == "Chair"
     assert not any(row["name"] == "Late Candidate" for row in after.json()["results"])
+
+
+async def _by_election_round(env, round_id="by-election-sched", with_tie=True):
+    tie = await env.db.ties.insert_one({"org_id": env.org_id, "round_id": "round-1", "position": "Chair",
+                                        "candidate_ids": [], "count": 2, "status": "by_election_ordered"})
+    await env.db.rounds.insert_one({"parent_tie_id": str(tie.inserted_id) if with_tie else None,
+        "org_id": env.org_id, "round_id": round_id, "kind": "by_election", "status": "scheduled",
+        "position": "Chair", "candidate_ids": [], "parent_round_id": "round-1", "phases": {}})
+    await _closed_schedule(env, end_offset=-1, round_id=round_id)
+    return round_id
+
+
+async def test_by_election_schedule_is_set_from_its_own_endpoint(env):
+    rid = await _by_election_round(env)
+    start = (main.datetime.utcnow() + timedelta(hours=1)).replace(microsecond=0)
+    end = start + timedelta(hours=4)
+    r = await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa,
+                              json={"start": start.isoformat() + "Z", "end": end.isoformat() + "Z"})
+    assert r.status_code == 200, r.text
+    got = (await env.client.get(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa)).json()
+    assert got["state"] == "upcoming" and got["is_active_round"] is True
+    assert got["voting"]["enforced"] is True
+    doc = await env.db.rounds.find_one({"round_id": rid})
+    assert doc["phases"]["voting"]["start"] == start and doc["status"] == "scheduled"
+
+
+async def test_by_election_schedule_validation_and_access(env):
+    rid = await _by_election_round(env, "by-election-sched2")
+    now = main.datetime.utcnow()
+    bad = await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa,
+        json={"start": (now + timedelta(hours=2)).isoformat() + "Z", "end": (now + timedelta(hours=1)).isoformat() + "Z"})
+    assert bad.status_code == 400
+    past = await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa,
+        json={"start": (now - timedelta(hours=3)).isoformat() + "Z", "end": (now - timedelta(hours=2)).isoformat() + "Z"})
+    assert past.status_code == 400
+    ok_body = {"start": (now + timedelta(hours=1)).isoformat() + "Z", "end": (now + timedelta(hours=2)).isoformat() + "Z"}
+    assert (await env.client.post("/superadmin/by-elections/round-1/schedule", headers=env.sa, json=ok_body)).status_code == 404
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.it, json=ok_body)).status_code == 403
+    await env.db.rounds.update_one({"round_id": rid}, {"$set": {"status": "certified"}})
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa, json=ok_body)).status_code == 409
+
+
+async def test_by_election_schedule_refused_without_a_recorded_tie(env):
+    rid = await _by_election_round(env, "by-election-orphan", with_tie=False)
+    now = main.datetime.utcnow()
+    body = {"start": (now + timedelta(hours=1)).isoformat() + "Z", "end": (now + timedelta(hours=2)).isoformat() + "Z"}
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa, json=body)).status_code == 409
+
+
+async def _voter(env, sid, name, phones, **kw):
+    await env.db.voters.insert_one({"org_id": env.org_id, "student_id": sid, "full_name": name,
+                                    "phone_numbers": phones, **kw})
+
+
+async def test_shared_contacts_work_without_a_tie_and_report_statistics(env):
+    await _voter(env, "s1", "A One", ["256772000111"], has_voted=True)
+    await _voter(env, "s2", "B Two", ["256772000111"])
+    await _voter(env, "s3", "C Three", ["256700999999"])
+    r = await env.client.get("/admin/shared-contacts", headers=env.it)
+    assert r.status_code == 200, r.text
+    st = r.json()["stats"]
+    assert st["total_voters"] >= 3 and st["shared_numbers"] == 1 and st["voters_sharing"] == 2
+    assert st["unresolved_numbers"] == 1 and st["already_voted_sharing"] == 1 and st["largest_group"] == 2
+    assert (await env.client.get("/admin/shared-contacts", headers=env.over)).status_code == 403
+
+
+async def test_shared_contacts_groups_and_recommendations(env):
+    await _voter(env, "s1", "Jane Doe", ["256772000111"], has_voted=True)
+    await _voter(env, "s2", "jane  doe", ["256772000111"])           # duplicate record
+    await _voter(env, "s3", "Amos K", ["256772000111", "256701000222"])
+    await _voter(env, "s4", "Solo", ["256700999999"])
+    r = await env.client.get("/admin/shared-contacts", headers=env.sa)
+    assert r.status_code == 200, r.text
+    groups = r.json()["groups"]
+    assert len(groups) == 1 and groups[0]["count"] == 3 and groups[0]["possible_duplicate"] is True
+    rec = {v["student_id"]: v["recommended"] for v in groups[0]["voters"]}
+    assert rec == {"s1": "keep", "s2": "delete_voter", "s3": "remove_contact"}
+    assert groups[0]["phone_masked"].endswith("111") and "256772" not in groups[0]["phone_masked"]
+    assert (await env.client.get("/admin/shared-contacts", headers=env.over)).status_code == 403
+
+
+async def test_shared_contact_can_be_acknowledged_with_a_reason(env):
+    await env.db.ties.insert_one({"org_id": env.org_id, "round_id": "round-1", "position": "Chair",
+                                  "candidate_ids": [], "count": 2, "status": "pending"})
+    await _voter(env, "s1", "A One", ["256772000111"])
+    await _voter(env, "s2", "B Two", ["256772000111"])
+    short = await env.client.post("/admin/shared-contacts/acknowledge", headers=env.sa,
+                                  json={"phone": "256772000111", "reason": "short"})
+    assert short.status_code == 422
+    ok = await env.client.post("/admin/shared-contacts/acknowledge", headers=env.sa,
+                               json={"phone": "256772000111", "reason": "Siblings share one household phone"})
+    assert ok.status_code == 200
+    g = (await env.client.get("/admin/shared-contacts", headers=env.sa)).json()["groups"][0]
+    assert g["acknowledged"] is True
+    missing = await env.client.post("/admin/shared-contacts/acknowledge", headers=env.sa,
+                                    json={"phone": "256700000000", "reason": "Not on any voter at all"})
+    assert missing.status_code == 404
+
+
+def test_otp_split_order_follows_the_ratio_and_always_keeps_a_fallback():
+    assert main.otp_split_order(100, 0.999) == ["egosms", "mambosms"]
+    assert main.otp_split_order(0, 0.0) == ["mambosms", "egosms"]
+    firsts = [main.otp_split_order(30, i / 1000)[0] for i in range(1000)]
+    assert firsts.count("egosms") == 300
+    assert all(len(main.otp_split_order(30, r)) == 2 for r in (0.1, 0.9))
+
+
+async def test_otp_split_settings_are_saved_validated_and_reported(env):
+    r = await env.client.put("/superadmin/sms-budget", headers=env.sa, json={
+        "reason": "ratio test", "otp_split_enabled": True, "otp_first_ego_pct": 30, "otp_resend_ego_pct": 100})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["otp_split_enabled"] is True and j["otp_first_ego_pct"] == 30 and j["otp_resend_ego_pct"] == 100
+    bad = await env.client.put("/superadmin/sms-budget", headers=env.sa, json={"reason": "ratio test", "otp_first_ego_pct": 130})
+    assert bad.status_code == 400
+
+
+async def test_routed_otp_uses_the_configured_split(env, monkeypatch):
+    calls = []
+    async def fake(provider, to, msg):
+        calls.append(provider); return "ok"
+    monkeypatch.setattr(main, "_sms_try_provider", fake)
+    async def noop(*a, **k): return None
+    monkeypatch.setattr(main, "_safe_count_sms", noop)
+    await env.client.put("/superadmin/sms-budget", headers=env.sa, json={
+        "reason": "ratio test", "otp_split_enabled": True, "otp_first_ego_pct": 0, "otp_resend_ego_pct": 100})
+    assert await main._send_sms_routed("256700000001", "x", env.org_id, "otp", is_resend=False) == "ok"
+    assert await main._send_sms_routed("256700000001", "x", env.org_id, "otp", is_resend=True) == "ok"
+    assert calls == ["mambosms", "egosms"]

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
+import random
 import secrets
 from collections import Counter
 import asyncio
@@ -1596,6 +1597,12 @@ def sms_provider_order(route: str, kind: str) -> list[str]:
     return ["egosms", "mambosms"] if kind in PRIORITY_SMS_KINDS else ["mambosms", "egosms"]
 
 
+def otp_split_order(ego_pct, roll: float) -> list[str]:
+    """Provider order for one voter code. `roll` is uniform in [0, 1). 100 always EgoSMS first, 0 always
+    MamboSMS first; the other provider stays as the fallback so a code is never dropped by the split."""
+    return ["egosms", "mambosms"] if roll * 100 < float(ego_pct) else ["mambosms", "egosms"]
+
+
 async def _sms_try_provider(provider: str, to_number: str, message_text: str) -> str:
     """One provider attempt -> "ok" | "failed" | "ambiguous" (only EgoSMS can report ambiguous)."""
     if provider == "egosms":
@@ -1617,7 +1624,11 @@ async def _send_sms_routed(to_number: str, message_text: str, org, kind: str, is
         logger.error(f"sms routing settings read failed, using defaults: {e}")
         sec = dict(_SEC_DEFAULTS)
     route = sec.get(f"sms_route_{sms_route_group(kind)}") or "default"
-    if kind == "otp" and not is_resend:
+    if kind == "otp" and sec.get("otp_split_enabled"):
+        pct = sec.get("otp_resend_ego_pct" if is_resend else "otp_first_ego_pct")
+        order = otp_split_order(pct if pct is not None else (0 if is_resend else 100), random.random())
+        route = f"{route}; {'resend' if is_resend else 'first'} OTP split {pct}% EgoSMS"
+    elif kind == "otp" and not is_resend:
         # The first code is always tried through EgoSMS, regardless of an org-level
         # route preference; MamboSMS is the explicit fallback for that attempt.
         order = ["egosms", "mambosms"]
@@ -3673,6 +3684,12 @@ _SEC_DEFAULTS = {
     # cost_per_part_ugx is None until the superadmin sets it: an unset price must never look like 0.
     "sms_pricing": sms_bulk.default_pricing(),
     "sms_bulk_per_second": 3,
+    # Voter-code provider split. When on, each first code / each resend picks EgoSMS with this percentage
+    # chance and MamboSMS otherwise (the other provider is still the fallback). Off = the fixed policy:
+    # first code EgoSMS, resends MamboSMS.
+    "otp_split_enabled": False,
+    "otp_first_ego_pct": 100,
+    "otp_resend_ego_pct": 0,
     "contact_change_ttl_hours": ol.env_int("CONTACT_CHANGE_TTL_HOURS", 6),
     "contact_change_max_per_voter": ol.env_int("CONTACT_CHANGE_MAX_PER_VOTER", 2),
     "approver_daily_cap": ol.env_int("CONTACT_CHANGE_APPROVER_DAILY_CAP", 30),
@@ -9340,6 +9357,174 @@ async def create_by_election(data: CreateByElectionRequest, request: Request,
             "position": tie.get("position"), "candidate_count": len(valid_ids),
             "status_detail": "Schedule this round before opening voting."}
 
+
+class ByElectionScheduleUpdate(BaseModel):
+    start: datetime
+    end: datetime
+    timezone: str | None = None
+    reason: str | None = None   # only needed when the change ends a live voting window
+
+
+async def _by_election_round_or_404(request: Request, round_id: str) -> dict:
+    doc = await tdb(request).rounds.find_one({"round_id": round_id})
+    if not doc or doc.get("kind") != "by_election":
+        raise HTTPException(404, "By-election round not found.")
+    # A by-election only exists because of a recorded tie; refuse anything that is not tied to one.
+    try:
+        tie = await tdb(request).ties.find_one({"_id": ObjectId(str(doc.get("parent_tie_id")))})
+    except Exception:
+        tie = None
+    if not tie:
+        raise HTTPException(409, "This round is not linked to a recorded tie, so it cannot be scheduled.")
+    return doc
+
+
+@app.get("/superadmin/by-elections/{round_id}/schedule")
+async def get_by_election_schedule(round_id: str, request: Request,
+                                   admin: dict = Depends(require_role("superadmin"))):
+    """The by-election's own voting window, shown inside the By-elections tab."""
+    doc = await _by_election_round_or_404(request, round_id)
+    schedule = await get_phase_schedule(request)
+    is_active = schedule["round_id"] == round_id
+    voting = schedule["phases"]["voting"] if is_active else ((doc.get("phases") or {}).get("voting") or {})
+    start, end = voting.get("start"), voting.get("end")
+    now = datetime.utcnow()
+    if start and now < start:
+        state = "upcoming"
+    elif end and now > end:
+        state = "closed"
+    elif start or end:
+        state = "active"
+    else:
+        state = "unscheduled"
+    return {"round_id": round_id, "position": doc.get("position"), "status": doc.get("status", "scheduled"),
+            "is_active_round": is_active, "timezone": (schedule["timezone"] if is_active else doc.get("timezone")) or DEFAULT_ELECTION_TZ,
+            "voting": {"start": start, "end": end, "enforced": bool(voting.get("enforced"))},
+            "state": state, "server_time": now,
+            "seconds_until_start": int((start - now).total_seconds()) if start and now < start else None,
+            "seconds_until_end": int((end - now).total_seconds()) if end and now < end else None}
+
+
+@app.post("/superadmin/by-elections/{round_id}/schedule")
+async def set_by_election_schedule(round_id: str, data: ByElectionScheduleUpdate, request: Request,
+                                   admin: dict = Depends(require_role("superadmin"))):
+    """Set only this by-election's voting window. Other phases are carried over unchanged, and the
+    existing schedule route does the validation, early-end reason rule and side effects."""
+    doc = await _by_election_round_or_404(request, round_id)
+    if doc.get("status") == "certified":
+        raise HTTPException(409, "This round is certified. Revoke certification before changing its schedule.")
+    start, end = naive_utc(data.start), naive_utc(data.end)
+    if end <= start:
+        raise HTTPException(400, "The by-election must end after it starts.")
+    if end <= datetime.utcnow():
+        raise HTTPException(400, "The closing time must be in the future.")
+    current = await get_phase_schedule(request)
+    if current["round_id"] != round_id:
+        raise HTTPException(409, "Only the current round's schedule can be changed.")
+    phases = {name: PhaseWindow(start=w["start"], end=w["end"], enforced=w["enforced"])
+              for name, w in current["phases"].items()}
+    phases["voting"] = PhaseWindow(start=start, end=end, enforced=True)
+    update = PhaseScheduleUpdate(phases=phases, round_id=round_id, timezone=data.timezone, reason=data.reason)
+    await set_phase_schedule(update, request, admin)
+    return {"status": "scheduled", "round_id": round_id}
+
+class SharedContactAck(BaseModel):
+    phone: str = Field(..., max_length=32)
+    reason: str = Field(..., min_length=10, max_length=500)
+
+
+def _phone_digits(p: str) -> str:
+    return re.sub(r"\D", "", str(p or ""))
+
+
+@app.get("/admin/shared-contacts")
+async def get_shared_contacts(request: Request, admin: dict = Depends(require_role("superadmin", "it_admin"))):
+    """Phone numbers on more than one voter, with statistics and suggested actions. One phone receiving
+    several voters' codes is a ballot-integrity risk, so IT admin and superadmin can check it at any time."""
+    voters = await tdb(request).voters.find(
+        {"phone_numbers": {"$exists": True, "$ne": []}},
+        {"student_id": 1, "full_name": 1, "phone_numbers": 1, "has_voted": 1, **{f: 1 for f in STUDENT_ROLE_FLAGS}},
+    ).to_list(length=None)
+    by_phone: dict[str, list[dict]] = {}
+    for v in voters:
+        for n in {_phone_digits(x) for x in (v.get("phone_numbers") or []) if x}:
+            if n:
+                by_phone.setdefault(n, []).append(v)
+    acks = {a.get("phone"): a async for a in tdb(request).shared_contact_acks.find({})}
+    st = await roster_status(request)
+    groups = []
+    for num, members in by_phone.items():
+        if len(members) < 2:
+            continue
+        names = [" ".join(str(m.get("full_name", "")).lower().split()) for m in members]
+        same_person = len(set(names)) < len(names)
+        rows = []
+        for m, nm in zip(members, names):
+            voted = bool(m.get("has_voted"))
+            holds_role = any(m.get(f) for f in STUDENT_ROLE_FLAGS)
+            others = len([x for x in (m.get("phone_numbers") or []) if _phone_digits(x) != num])
+            dup_name = names.count(nm) > 1
+            can_delete = not st["frozen"] and not voted and not holds_role
+            if dup_name and not voted:
+                rec, why = "delete_voter", "Same name as another record on this number, and has not voted: likely a duplicate record."
+            elif dup_name and voted:
+                rec, why = "keep", "Same name as another record but this one has voted: keep it; remove the duplicate."
+            elif others:
+                rec, why = "remove_contact", "Has another number on file: remove this shared number."
+            else:
+                rec, why = "change_contact", "Only number on file is shared: get this voter's own number and change it."
+            rows.append({"student_id": m.get("student_id", ""), "full_name": m.get("full_name", ""),
+                         "has_voted": voted, "holds_admin_role": holds_role, "other_numbers": others,
+                         "recommended": rec, "reason": why,
+                         "actions": {"change_contact": True, "remove_contact": others > 0,
+                                     "delete_voter": can_delete}})
+        # Hold at least one record on the number: never recommend stripping every holder.
+        if all(r["recommended"] in ("remove_contact", "delete_voter") for r in rows):
+            rows[0]["recommended"], rows[0]["reason"] = "keep", "Keep one holder of the number; the others are changed or removed."
+        ack = acks.get(num)
+        groups.append({"phone_masked": _mask_phone(num), "phone_key": num, "count": len(rows),
+                       "severity": "high" if (same_person or len(rows) >= 3) else "medium",
+                       "possible_duplicate": same_person, "voters": rows,
+                       "acknowledged": bool(ack), "ack_reason": (ack or {}).get("reason"),
+                       "ack_by": (ack or {}).get("by")})
+    groups.sort(key=lambda g: (g["acknowledged"], -g["count"]))
+    total_voters = await tdb(request).voters.count_documents({})
+    sharing_ids = {v["student_id"] for g in groups for v in g["voters"]}
+    open_groups = [g for g in groups if not g["acknowledged"]]
+    stats = {
+        "total_voters": total_voters,
+        "shared_numbers": len(groups),
+        "unresolved_numbers": len(open_groups),
+        "accepted_numbers": len(groups) - len(open_groups),
+        "voters_sharing": len(sharing_ids),
+        "voters_sharing_pct": round(100 * len(sharing_ids) / total_voters, 1) if total_voters else 0,
+        "possible_duplicates": sum(1 for g in groups if g["possible_duplicate"]),
+        "largest_group": max((g["count"] for g in groups), default=0),
+        "already_voted_sharing": sum(1 for g in groups for v in g["voters"] if v["has_voted"]),
+        "admin_role_sharing": sum(1 for g in groups for v in g["voters"] if v["holds_admin_role"]),
+    }
+    return {"groups": groups, "stats": stats, "roster": {"frozen": bool(st["frozen"]), "contact_change_required": bool(st["contact_change_required"]),
+                                         "phase": st["phase"]},
+            "notes": ["Change or remove a contact with the voter's edit action; delete a voter only while the roster is unfrozen and the voter has not voted.",
+                      "If the number is genuinely shared (a household or guardian), acknowledge it with a reason so it is recorded."]}
+
+
+@app.post("/admin/shared-contacts/acknowledge")
+async def acknowledge_shared_contact(data: SharedContactAck, request: Request,
+                                     admin: dict = Depends(require_role("superadmin", "it_admin"))):
+    key = _phone_digits(data.phone)
+    if not key:
+        raise HTTPException(400, "A phone number is required.")
+    holders = await tdb(request).voters.find({"phone_numbers": {"$exists": True, "$ne": []}}, {"phone_numbers": 1}).to_list(length=None)
+    if not any(_phone_digits(n) == key for v in holders for n in (v.get("phone_numbers") or [])):
+        raise HTTPException(404, "No voter has this number.")
+    await tdb(request).shared_contact_acks.update_one(
+        {"phone": key}, {"$set": org_stamp(request, {"phone": key, "reason": data.reason.strip(),
+                                                      "by": current_actor(request), "at": datetime.utcnow()})}, upsert=True)
+    await log_action("shared_contact_acknowledged", current_actor(request),
+                     {"phone_masked": _mask_phone(key), "reason": data.reason.strip()[:500]}, org_id=request.state.org_id)
+    return {"status": "acknowledged"}
+
 # =============================================================================
 # OVERSEER ROUTES  (read-only, platform-wide, anonymized)
 # =============================================================================
@@ -12506,6 +12691,9 @@ class SmsBudgetUpdate(BaseModel):
     sms_balance_floor_ugx: int | None = None
     sms_pricing: dict | None = None           # {provider: {cost_per_part_ugx, single_limit, multi_limit, ...}}
     sms_bulk_per_second: int | None = None
+    otp_split_enabled: bool | None = None
+    otp_first_ego_pct: int | None = None      # % of first codes sent via EgoSMS first (rest MamboSMS first)
+    otp_resend_ego_pct: int | None = None     # same, for resends
 
 
 _SEC_RANGES = {
@@ -13150,6 +13338,9 @@ async def _sms_usage_payload(request: Request, voters: int | None = None) -> dic
         "sms_route_otp": sec["sms_route_otp"], "sms_route_other": sec["sms_route_other"],
         "sms_pricing": {p: sms_bulk.pricing_for(sec.get("sms_pricing"), p) for p in sms_bulk.PROVIDERS},
         "sms_bulk_per_second": sec.get("sms_bulk_per_second") or 3,
+        "otp_split_enabled": bool(sec.get("otp_split_enabled")),
+        "otp_first_ego_pct": sec.get("otp_first_ego_pct", 100),
+        "otp_resend_ego_pct": sec.get("otp_resend_ego_pct", 0),
     }
 
 
@@ -13186,6 +13377,14 @@ async def superadmin_put_sms_budget(data: SmsBudgetUpdate, request: Request):
         if not 1 <= data.sms_bulk_per_second <= 20:
             raise HTTPException(400, "Bulk send rate must be between 1 and 20 messages per second.")
         updates["sms_bulk_per_second"] = data.sms_bulk_per_second
+    if data.otp_split_enabled is not None:
+        updates["otp_split_enabled"] = data.otp_split_enabled
+    for fld in ("otp_first_ego_pct", "otp_resend_ego_pct"):
+        val = getattr(data, fld)
+        if val is not None:
+            if not 0 <= val <= 100:
+                raise HTTPException(400, "A provider share must be a whole number from 0 to 100.")
+            updates[fld] = val
     if not updates:
         raise HTTPException(400, "Nothing to change.")
     await _save_security(request, updates)

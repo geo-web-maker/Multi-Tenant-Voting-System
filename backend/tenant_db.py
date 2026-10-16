@@ -57,6 +57,7 @@ TENANT_COLLECTIONS = frozenset({
     "sms_campaign_recipients",
     "rounds",
     "ties",
+    "shared_contact_acks",
 })
 
 _FORBIDDEN_STAGES = frozenset({"$lookup", "$unionWith", "$graphLookup", "$out", "$merge"})

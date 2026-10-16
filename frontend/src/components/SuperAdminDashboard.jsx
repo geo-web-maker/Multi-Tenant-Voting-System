@@ -12,6 +12,7 @@ import { Icon } from './icons.jsx';
 import DeletedApplicationsPanel from './DeletedApplicationsPanel';
 import { faceCropUrl } from '../cloudinaryImage';
 import SuperAdminStudentEdit from './SuperAdminStudentEdit';
+import SharedContactsPanel from './SharedContactsPanel';
 import VoterList from './VoterList';
 import { getTemplate } from '../template';
 import { PrintStyles, ApplicationSnapshotDoc, SampleCertificateDoc } from './CandidateStatusPortal';
@@ -2214,6 +2215,7 @@ const handleSuperAdminRemoveStudent = async () => {
         {activeTab === 'student_changes' && (
           <div>
             <SuperAdminStudentEdit initialStudentId={selectedStudentId} />
+            <SharedContactsPanel role="superadmin" />
             {rosterFrozen && <div style={{ ...card, margin: '16px 0', borderColor: 'var(--warning)' }}>Direct add / remove is disabled while the roster is frozen.</div>}
             {!rosterFrozen && <div style={twoCol}>
               <div style={card}>

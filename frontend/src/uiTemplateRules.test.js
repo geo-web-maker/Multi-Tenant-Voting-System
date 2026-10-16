@@ -13,7 +13,7 @@ const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =
 // Panels built on the shared kit (manual section 3). These must stay kit-only.
 const KIT_PANELS = [
   'AlertPanel', 'FunnelPanels', 'DeletedApplicationsPanel', 'NominationFormPanel', 'DemoControlsPanel', 'PerformancePanel', 'PerformanceSettings', 'PerfStorage', 'PerfOrgs',
-  'SecurityPanel', 'SmsPanel', 'SmsSettings', 'BackupsPanel', 'BackupJobProgress', 'BackupOverview', 'BackupConnections', 'BackupB2', 'BackupMirror', 'BackupRestoreTest', 'BackupMigration', 'BackupSettings',
+  'SecurityPanel', 'SmsPanel', 'SmsSettings', 'ByElectionsPanel', 'SharedContactsPanel', 'BackupsPanel', 'BackupJobProgress', 'BackupOverview', 'BackupConnections', 'BackupB2', 'BackupMirror', 'BackupRestoreTest', 'BackupMigration', 'BackupSettings',
 ].map((n) => `components/${n}.jsx`);
 
 // Files that may use the Blueprint card/button classes: the voter/applicant flow (Tier A) and the public turnout block.

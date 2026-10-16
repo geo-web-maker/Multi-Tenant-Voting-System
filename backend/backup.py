@@ -50,7 +50,7 @@ FULL_COLLECTIONS = [
     "panel_members", "contact_changes", "candidate_lists", "candidate_tokens",
     "certificates", "nomination_uploads", "sms_usage", "sms_campaigns",
     # Round/tie metadata must survive routine, safety and milestone restores.
-    "rounds", "ties",
+    "rounds", "ties", "shared_contact_acks",
     # Soft-deleted applications (superadmin archive; restorable).
     "deleted_applications",
 ]

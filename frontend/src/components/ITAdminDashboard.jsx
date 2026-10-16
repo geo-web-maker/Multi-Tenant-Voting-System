@@ -14,6 +14,7 @@ import PanelHatButton from './PanelHatButton';
 import usePolling from '../hooks/usePolling';
 import { Icon } from './icons.jsx';
 import ITAdminStudentEdit from './ITAdminStudentEdit';
+import SharedContactsPanel from './SharedContactsPanel';
 import ApplicationStages from './ApplicationStages';
 import ResetOtpLimitsPanel from './ResetOtpLimitsPanel';
 import useRosterStatus from '../hooks/useRosterStatus';
@@ -418,7 +419,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {activeTab === 'applications' && <ApplicationStages />}
 
-        {activeTab === 'edit' && <ITAdminStudentEdit initialStudentId={editStudentId} />}
+        {activeTab === 'edit' && <><ITAdminStudentEdit initialStudentId={editStudentId} /><SharedContactsPanel role="it_admin" requestedBy={itAdminId} /></>}
 
 
         {/* ══════════════ RESET OTP LIMITS ══════════════ */}

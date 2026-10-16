@@ -5,7 +5,7 @@ import { useToast, useConfirm } from './UIFeedback';
 import { LoadingBlock } from './Spinner.jsx';
 import { SmsUsageTile } from './SecurityPanel';
 import {
-  SmsRoutingSettings, SmsTestSettings, SmsBudgetSettings, SmsPricingSettings,
+  SmsRoutingSettings, SmsTestSettings, SmsBudgetSettings, SmsPricingSettings, SmsOtpSplitSettings,
 } from './SmsSettings.jsx';
 import { errMsg } from '../studentEdit';
 import {
@@ -422,6 +422,7 @@ export default function SmsPanel() {
 
       {/* 5. Settings */}
       <SmsPricingSettings usage={usage} onSaved={load} />
+      <SmsOtpSplitSettings usage={usage} onSaved={load} />
       <SmsRoutingSettings settings={settings} derived={derived} onSaved={load} />
       <SmsTestSettings balances={balances} onBalances={setBalances} />
       <SmsBudgetSettings usage={usage} derived={derived} onSaved={load} />

@@ -164,6 +164,8 @@ const ACTION_TITLES = {
   student_added_by_superadmin: 'Student added directly',
   student_removed_by_superadmin: 'Student removed directly',
   phases_scheduled: 'Election phases scheduled',
+  by_election_created: 'By-election created',
+  shared_contact_acknowledged: 'Shared phone number accepted',
   phase_exception_granted: 'Phase exception granted',
   phase_exception_revoked: 'Phase exception revoked',
   phase_exception_used: 'Phase exception used',
@@ -271,8 +273,13 @@ const DETAIL_DESCRIBERS = {
     const kb = d.bytes ? `${(d.bytes / 1024).toFixed(1)} KB` : null;
     return kb ? `Image uploaded (${kb})` : 'Image uploaded';
   },
+  by_election_created: d => `By-election created for ${d.position || 'a position'} (${d.candidate_count ?? '?'} candidates)`,
   phases_scheduled: d => {
     const phases = d.phases || {};
+    if (d.round_id && d.round_id !== 'round-1') {
+      const v = phases.voting;
+      return `By-election schedule set (${d.round_id})${v?.start_utc ? `: voting ${v.start_utc} to ${v.end_utc} UTC` : ''}${d.early_end ? ` — closed EARLY, reason: ${d.reason}` : ''}`;
+    }
     const names = Object.keys(phases);
     if (!names.length) return 'Phase schedule updated';
     const summary = names

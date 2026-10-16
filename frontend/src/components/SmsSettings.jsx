@@ -3,6 +3,7 @@ import api from '../api';
 import { useToast, useConfirm } from './UIFeedback';
 import { Icon } from './icons.jsx';
 import { errMsg } from '../studentEdit';
+import { estimateOtpCost } from '../otpSplitCost';
 
 // SMS settings cards (moved here from SecurityPanel): routing, test and check, budget, and the new pricing and
 // message-length card. Kit classes only (docs/UI_TEMPLATE_MANUAL.md). Every save needs a reason and is logged.
@@ -72,7 +73,7 @@ export function SmsRoutingSettings({ settings, derived, onSaved }) {
   return (
     <section className="perf-card card-pad">
       <h3 style={{ margin: '0 0 6px', fontSize: 15 }}>SMS delivery &amp; routing</h3>
-      <p className="perf-lead">Bulk messages follow “Everything else”. For the post-election OTP policy, first codes are sent through EgoSMS with MamboSMS fallback; resends prefer MamboSMS with EgoSMS fallback when <code>OTP_RESEND_VIA_MAMBO</code> is enabled. This managed first/resend policy takes precedence over the stored OTP route preference.</p>
+      <p className="perf-lead">Bulk messages follow “Everything else”. For the post-election OTP policy, first codes are sent through EgoSMS with MamboSMS fallback; resends prefer MamboSMS with EgoSMS fallback when <code>OTP_RESEND_VIA_MAMBO</code> is enabled. This managed first/resend policy takes precedence over the stored OTP route preference; to split codes by percentage, use “Voter codes: first message and resend” above.</p>
       <label style={fieldBox}><span style={lblStyle}>Stored OTP route preference (used when managed resend routing is disabled)</span>
         <select className="perf-field" value={f.otp} onChange={(e) => setF({ ...f, otp: e.target.value })}>
           {routes.map((r) => <option key={r} value={r}>{ROUTE_LABELS[r] || r}</option>)}
@@ -231,6 +232,84 @@ export function SmsPricingSettings({ usage, onSaved }) {
       <Reason value={reason} onChange={setReason} placeholder="e.g. rates from the provider's price list, October" />
       <div className="perf-btnbar" style={{ marginTop: 10 }}>
         <button type="button" className="perf-btn perf-btn-primary" onClick={save}>Save pricing</button>
+      </div>
+    </section>
+  );
+}
+
+const PRESETS = [
+  { label: 'Current policy (first 100:0, resend 0:100)', first: 100, resend: 0 },
+  { label: 'First 30:70, resend 100:0', first: 30, resend: 100 },
+  { label: 'Even 50:50 both', first: 50, resend: 50 },
+  { label: 'All EgoSMS (100:0 both)', first: 100, resend: 100 },
+  { label: 'All MamboSMS (0:100 both)', first: 0, resend: 0 },
+];
+const ugx = (n) => (n == null ? 'not set' : `UGX ${Math.round(n).toLocaleString()}`);
+const clampInt = (v) => Math.min(100, Math.max(0, Math.round(Number(v) || 0)));
+
+/** How voter codes are shared between the two providers: first send and resend each get an EgoSMS:MamboSMS ratio. */
+export function SmsOtpSplitSettings({ usage, onSaved }) {
+  const { needReason, failed, ok } = useSaver(onSaved);
+  const [on, setOn] = useState(false);
+  const [first, setFirst] = useState(100);
+  const [resend, setResend] = useState(0);
+  const [resendsPerVoter, setResendsPerVoter] = useState(0.5);
+  const [voters, setVoters] = useState('');
+  const [reason, setReason] = useState('');
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: re-seed the editable copy when the saved settings change
+    setOn(Boolean(usage.otp_split_enabled)); setFirst(usage.otp_first_ego_pct ?? 100); setResend(usage.otp_resend_ego_pct ?? 0);
+  }, [usage.otp_split_enabled, usage.otp_first_ego_pct, usage.otp_resend_ego_pct]);
+  const costPerPart = {
+    egosms: usage.sms_pricing?.egosms?.cost_per_part_ugx ?? null,
+    mambosms: usage.sms_pricing?.mambosms?.cost_per_part_ugx ?? null,
+  };
+  const n = voters === '' ? (usage.voters || 0) : Number(voters);
+  const effFirst = on ? first : 100;
+  const effResend = on ? resend : 0;
+  const est = estimateOtpCost({ voters: n, resendsPerVoter, firstEgoPct: effFirst, resendEgoPct: effResend, costPerPart });
+  const save = async () => {
+    if (!needReason(reason)) return;
+    try {
+      await api.put('/superadmin/sms-budget', {
+        reason: reason.trim(), otp_split_enabled: on, otp_first_ego_pct: clampInt(first), otp_resend_ego_pct: clampInt(resend),
+      });
+      setReason(''); ok('Voter-code delivery saved.');
+    } catch (e) { failed(e); }
+  };
+  const ratio = (v) => `${clampInt(v)}:${100 - clampInt(v)}`;
+  return (
+    <section className="perf-card card-pad" data-testid="otp-split">
+      <h3 style={{ margin: '0 0 6px', fontSize: 15 }}>Voter codes: first message and resend</h3>
+      <p className="perf-lead">Choose how many first codes and how many resends go through each provider (EgoSMS : MamboSMS). The other provider is still the fallback if the chosen one fails, so a split never drops a code.</p>
+      <div className="perf-checks">
+        <label className="perf-check"><input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} />
+          <span>Use this split. When off, the fixed policy applies: first codes via EgoSMS, resends via MamboSMS.</span></label>
+      </div>
+      <div className="perf-btnbar" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+        {PRESETS.map((pr) => (
+          <button key={pr.label} type="button" className="perf-btn" onClick={() => { setFirst(pr.first); setResend(pr.resend); setOn(true); }}>{pr.label}</button>
+        ))}
+      </div>
+      <label style={fieldBox}><span style={lblStyle}>First message: EgoSMS share (%) — ratio {ratio(first)} (EgoSMS : MamboSMS)</span>
+        <input className="perf-field" type="number" min="0" max="100" value={first} onChange={(e) => setFirst(e.target.value)} disabled={!on} aria-label="First message EgoSMS percent" /></label>
+      <label style={fieldBox}><span style={lblStyle}>Resend: EgoSMS share (%) — ratio {ratio(resend)} (EgoSMS : MamboSMS)</span>
+        <input className="perf-field" type="number" min="0" max="100" value={resend} onChange={(e) => setResend(e.target.value)} disabled={!on} aria-label="Resend EgoSMS percent" /></label>
+      <h4 style={{ margin: '14px 0 4px', fontSize: 13 }}>Estimated cost</h4>
+      <label style={fieldBox}><span style={lblStyle}>Voters getting a first code (blank = all {usage.voters ?? 0} registered)</span>
+        <input className="perf-field" type="number" min="0" value={voters} onChange={(e) => setVoters(e.target.value)} aria-label="Voters for the estimate" /></label>
+      <label style={fieldBox}><span style={lblStyle}>Average resends per voter (0.5 = one resend for every two voters)</span>
+        <input className="perf-field" type="number" min="0" step="0.1" value={resendsPerVoter} onChange={(e) => setResendsPerVoter(e.target.value)} aria-label="Resends per voter" /></label>
+      <div className="perf-row" style={{ display: 'grid', gap: 4, marginTop: 8 }} data-testid="otp-split-estimate">
+        <div className="perf-row-text">EgoSMS: {est.messages.egosms.toLocaleString()} messages · {est.messages.egosms > 0 ? ugx(costPerPart.egosms == null ? null : est.byProvider.egosms) : 'UGX 0'}</div>
+        <div className="perf-row-text">MamboSMS: {est.messages.mambosms.toLocaleString()} messages · {est.messages.mambosms > 0 ? ugx(costPerPart.mambosms == null ? null : est.byProvider.mambosms) : 'UGX 0'}</div>
+        <div className="perf-row-title">Estimated total: {ugx(est.total)}</div>
+        {est.missing.length > 0 && <div className="perf-note">Set the cost per part for {est.missing.map((m) => (m === 'egosms' ? 'EgoSMS' : 'MamboSMS')).join(' and ')} in “SMS pricing” to see a total.</div>}
+        <div className="perf-note">{est.firsts.toLocaleString()} first codes and about {est.resends.toLocaleString()} resends, one SMS part each. A real send count differs, and a failed first attempt that falls back is billed by the provider that accepted it.</div>
+      </div>
+      <Reason value={reason} onChange={setReason} placeholder="e.g. EgoSMS is cheaper per part, shifting first codes" />
+      <div className="perf-btnbar" style={{ marginTop: 10 }}>
+        <button type="button" className="perf-btn perf-btn-primary" onClick={save}>Save voter-code delivery</button>
       </div>
     </section>
   );
