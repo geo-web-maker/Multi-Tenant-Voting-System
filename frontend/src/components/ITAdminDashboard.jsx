@@ -8,7 +8,7 @@ import TabBar from './TabBar';
 import CandidateListBlock from './CandidateListBlock';
 import ConsoleFrame from './ConsoleFrame';
 import RevealGroup from './RevealGroup';
-import { RosterStats, RecentActivity } from './SharedAdminPanels';
+import { RosterStats, RecentActivity, SharedContactStats } from './SharedAdminPanels';
 import { useToast, useConfirm, usePrompt, ScrollList } from './UIFeedback';
 import PanelHatButton from './PanelHatButton';
 import usePolling from '../hooks/usePolling';
@@ -419,7 +419,7 @@ export default function ITAdminDashboard({ onLogout }) {
 
         {activeTab === 'applications' && <ApplicationStages />}
 
-        {activeTab === 'edit' && <><ITAdminStudentEdit initialStudentId={editStudentId} /><SharedContactsPanel role="it_admin" requestedBy={itAdminId} /></>}
+        {activeTab === 'edit' && <><ITAdminStudentEdit initialStudentId={editStudentId} /><SharedContactsPanel role="it_admin" requestedBy={itAdminId} showStats={false} /></>}
 
 
         {/* ══════════════ RESET OTP LIMITS ══════════════ */}
@@ -617,6 +617,7 @@ export default function ITAdminDashboard({ onLogout }) {
             </div>
             <RevealGroup text="Loading overview…">
               <RosterStats onRegisteredClick={() => setActiveTab('voters')} />
+              <SharedContactStats onOpen={() => setActiveTab('edit')} />
               <RecentActivity />
             </RevealGroup>
           </div>

@@ -1410,6 +1410,65 @@ function AnalyticsBody() {
 
 /* ══════════════ ROSTER STATS (IT Admin landing view) ══════════════ */
 
+/** Shared phone number statistics for the IT admin overview. Same cards as the roster snapshot above it;
+ *  the groups and their fix actions stay in the Edit Student tab (SharedContactsPanel). */
+export function SharedContactStats({ onOpen }) {
+  const [stats, setStats] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await api.get('/admin/shared-contacts');
+        if (alive) { setStats(res.data?.stats || null); setError(''); }
+      } catch (e) {
+        if (alive) setError(errText(e, 'Could not load the shared number statistics.'));
+      }
+    };
+    load();
+    const stop = startPolling(load, 60000);
+    return () => { alive = false; stop(); };
+  }, []);
+
+  useRevealReady(Boolean(stats) || Boolean(error));
+  if (error) return <p style={errStyle}>{error}</p>;
+  if (!stats) return <LoadingBlock text="Loading…" />;
+
+  const cards = [
+    { label: 'Shared numbers', value: stats.shared_numbers },
+    { label: 'Unresolved', value: stats.unresolved_numbers, open: true },
+    { label: 'Accepted as shared', value: stats.accepted_numbers },
+    { label: 'Voters sharing', value: `${stats.voters_sharing} (${stats.voters_sharing_pct}%)` },
+    { label: 'Possible duplicates', value: stats.possible_duplicates },
+    { label: 'Largest group', value: stats.largest_group },
+    { label: 'Sharing and already voted', value: stats.already_voted_sharing },
+    { label: 'Admins sharing a number', value: stats.admin_role_sharing },
+  ];
+
+  return (
+    <div data-testid="shared-contact-stats">
+      <h4 style={panelTitle}>
+        Shared Phone Numbers{' '}
+        <span style={{ ...roundPill, color: stats.unresolved_numbers > 0 ? 'var(--warning)' : 'var(--success)' }}>
+          {stats.unresolved_numbers > 0 ? `${stats.unresolved_numbers} to resolve` : 'None unresolved'}
+        </span>
+      </h4>
+      <div style={statGrid}>
+        {cards.map(c => {
+          const body = <>
+            <div style={{ fontSize: '24px', fontWeight: 800 }}>{c.value}</div>
+            <div style={{ fontSize: '11px', opacity: 0.7 }}>{c.label}</div>
+          </>;
+          return c.open && onOpen ? (
+            <button key={c.label} type="button" onClick={onOpen} className="perf-btn perf-btn-card" style={{ textAlign: 'center', cursor: 'pointer', width: '100%' }}>{body}</button>
+          ) : <div key={c.label} style={statCard}>{body}</div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function RosterStats({ onRegisteredClick }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');

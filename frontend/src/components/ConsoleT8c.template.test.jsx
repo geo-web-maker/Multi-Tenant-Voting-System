@@ -17,7 +17,7 @@ vi.mock('./UIFeedback', () => ({
 }));
 vi.mock('./SharedAdminPanels', () => ({
   SHARED_TAB_DEFS: [{ id: 'shared_timeline', label: 'Timeline' }],
-  SharedTabPanels: () => null, RosterStats: () => null, RecentActivity: () => null, OfficialCertificationBlock: () => null,
+  SharedTabPanels: () => null, RosterStats: () => null, SharedContactStats: () => null, RecentActivity: () => null, OfficialCertificationBlock: () => null,
 }));
 vi.mock('./ContactChangesQueue', () => ({ default: () => null }));
 vi.mock('./ResetOtpLimitsPanel', () => ({ default: () => null }));

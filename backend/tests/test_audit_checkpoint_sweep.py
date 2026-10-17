@@ -36,3 +36,25 @@ async def test_recent_ballots_wait_until_sealed_and_second_sweep_is_noop(env):
     await _ballots(env, 2, age_s=3600)
     assert await main._sweep_audit_checkpoints() == 1
     assert await main._sweep_audit_checkpoints() == 0
+
+
+async def test_public_integrity_summary_is_cached_and_never_verifies_on_request(env):
+    r = await env.client.get("/integrity-summary")
+    assert r.status_code == 200 and r.json() == {"available": False}
+
+    await _ballots(env, 3, age_s=3600)
+    await main._sweep_audit_checkpoints()          # creates the checkpoint and caches the verdict
+    await _ballots(env, 1, age_s=0)                # a fresh ballot, not yet sealed
+    body = (await env.client.get("/integrity-summary")).json()   # no auth header
+    assert body["available"] and body["chain_valid"] is True and body["ledger_valid"] is True
+    assert body["checkpoints"] == 1 and body["events_covered"] == 3 and body["uncheckpointed_events"] == 1
+    assert len(body["head_hash"]) == 64 and "first_mismatch_checkpoint_id" not in body
+
+
+async def test_manual_verify_refreshes_the_cached_summary(env):
+    await _ballots(env, 2, age_s=3600)
+    await main._sweep_audit_checkpoints()
+    await env.db.vote_events.update_many({}, {"$set": {"round_id": "round-9"}})   # tamper after checkpointing
+    assert (await env.client.get("/admin/audit/verify", headers=env.sa)).json()["valid"] is False
+    body = (await env.client.get("/integrity-summary")).json()
+    assert body["chain_valid"] is False and body["head_hash"] is None

@@ -29,6 +29,7 @@ vi.mock('./SharedAdminPanels', () => ({
   SHARED_TAB_DEFS: [{ id: 'shared_timeline', label: 'Timeline' }],
   SharedTabPanels: () => <div data-testid="shared-panels" />,
   RosterStats: () => <div data-testid="roster-stats" />,
+  SharedContactStats: () => null,
   RecentActivity: () => <div data-testid="recent-activity" />,
   OfficialCertificationBlock: () => null,
 }));

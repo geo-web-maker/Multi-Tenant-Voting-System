@@ -79,6 +79,9 @@ export default function FinalReport({
   declaration = null, signatories = null, ccList = [],
   // Signed document only: contact-change appendix + roster-ledger integrity (design Appendix I).
   contactChanges = null, rosterLedger = null,
+  // Public (unsigned) reports only: cached integrity verdict from /integrity-summary. The signed Official Document
+  // carries its own ledger appendix, so it never renders this block.
+  integrity = null,
   // Votes an unopposed candidate needs, already worked out from the server rule (see ../mandate.js),
   // and that rule in words for the footnote. 100 was the old fixed value.
   unopposedRequired = 100, unopposedText = '100 valid votes',
@@ -426,6 +429,33 @@ export default function FinalReport({
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {!declaration && integrity?.available && (
+        <div className="print-color-keep" style={{ marginTop: '30px', fontSize: '10px', breakInside: 'avoid', position: 'relative', zIndex: 1 }}>
+          <h3 style={{ fontSize: '13px', textDecoration: 'underline', marginBottom: '8px' }}>Integrity Check</h3>
+          <p style={{ margin: '3px 0' }}>
+            Ballot chain: <strong>{!integrity.checkpoints ? 'NOT YET CHECKPOINTED' : (integrity.chain_valid ? 'VERIFIED' : 'MISMATCH')}</strong>
+            {integrity.checkpoints ? ` (${integrity.checkpoints} checkpoint${integrity.checkpoints === 1 ? '' : 's'}, ${integrity.events_covered} ballot events covered)` : ''}
+          </p>
+          {integrity.head_hash && <p style={{ margin: '3px 0', wordBreak: 'break-all' }}>Head hash: {integrity.head_hash}</p>}
+          <p style={{ margin: '3px 0' }}>
+            Ballot events not yet covered by a checkpoint: {integrity.uncheckpointed_events ?? 0}
+          </p>
+          <p style={{ margin: '3px 0' }}>
+            Off-site anchoring: {integrity.anchor_failures ? `${integrity.anchor_failures} failure(s) recorded` : 'no failures recorded'}
+          </p>
+          <p style={{ margin: '3px 0' }}>
+            Roster ledger: <strong>{integrity.ledger_valid ? 'VERIFIED' : 'MISMATCH'}</strong> ({integrity.ledger_entries} entries)
+          </p>
+          {integrity.verified_at && (
+            <p style={{ margin: '3px 0' }}>Last verified: {new Date(integrity.verified_at + 'Z').toLocaleString()}</p>
+          )}
+          <p style={{ margin: '6px 0 0', fontStyle: 'italic', opacity: 0.7 }}>
+            Verified means the stored ballots still match the checkpoints recorded for them. It does not show that each
+            ballot came from an eligible voter, and ballots not yet covered by a checkpoint are not part of the check.
+          </p>
         </div>
       )}
 

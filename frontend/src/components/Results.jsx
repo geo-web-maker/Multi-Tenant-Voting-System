@@ -98,7 +98,8 @@ const fetchData = async ({ force = false, roundId } = {}) => {
     // "locked, empty roll" on any error (e.g. a 429) made the page claim the privacy lock was active
     // when 1820 people had voted.
     const roundsRequest = api.get('/election-results/rounds').catch(() => null);
-    const [resultsRes, statusRes, votersRes, brandingRes, roundsRes] = await Promise.all([
+    const integrityRequest = api.get('/integrity-summary').catch(() => null);
+    const [resultsRes, statusRes, votersRes, brandingRes, roundsRes, integrityRes] = await Promise.all([
       requestedRoundId
         ? api.get('/election-results', { params: { round_id: requestedRoundId } })
         : api.get('/election-results'),
@@ -106,6 +107,7 @@ const fetchData = async ({ force = false, roundId } = {}) => {
       wantRoll ? api.get('/election-results/voter-roll', { params: requestedRoundId ? { round_id: requestedRoundId } : {} }).catch(() => null) : Promise.resolve(null),
       wantBranding ? api.get('/superadmin/branding').catch(() => null) : Promise.resolve(null),
       roundsRequest,
+      integrityRequest,
     ]);
 
     // Keep an index of rounds so Round 1 remains selectable after a by-election.
@@ -129,6 +131,7 @@ const fetchData = async ({ force = false, roundId } = {}) => {
     setElectionData(prev => ({
       ...resultsRes.data,
       voter_roll: newRoll ?? prev.voter_roll,
+      integrity: integrityRes?.data ?? prev.integrity,
       voter_turnout: resultsRes.data.voter_turnout || 0,
       results: resultsRes.data.results || [],
       results_released: resultsRes.data.results_released !== false
@@ -532,6 +535,7 @@ const fetchData = async ({ force = false, roundId } = {}) => {
         isElectionOpen={isElectionOpen}
         isCertified={isCertified}
         resultsReleased={electionData.results_released}
+        integrity={electionData.integrity}
         unopposedRequired={unopposedRule(electionData).required}
         unopposedText={unopposedRule(electionData).text}
         logoUrl={logoUrl}

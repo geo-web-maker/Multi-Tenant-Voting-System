@@ -692,7 +692,7 @@ PUBLIC_PATHS = {
     "/verify-identity", "/verify-otp", "/vote", "/vote-bulk", "/vote-status",
     "/apply/check-eligibility", "/apply", "/apply/upload-image", "/apply/upload-document",
     "/verify-admin", "/election-results", "/election-results/voter-roll",
-    "/election-results/turnout-breakdown",
+    "/election-results/turnout-breakdown", "/integrity-summary",
     "/voter-register", "/voter-register/check-number",
     "/analytics/collect", "/client-report", "/demo/inbox",
     # Backup triggers: called by an external scheduler with a shared secret
@@ -2019,6 +2019,49 @@ async def verify_audit_chain(request: Request) -> dict:
 AUDIT_CHECKPOINT_SWEEP_SECONDS = int(os.getenv("AUDIT_CHECKPOINT_SWEEP_SECONDS", "300") or 0)
 
 
+INTEGRITY_STATUS_MAX_AGE_S = 3600   # re-verify at least this often once an org has checkpoints
+
+
+async def _refresh_integrity_status(org_id: str, chain: dict | None = None, ledger: dict | None = None) -> dict:
+    """Verify the ballot chain and roster ledger and cache the result for the public report's integrity section.
+    The public endpoint only ever reads this cache, so a visitor can never trigger a full re-derivation."""
+    from chain_verify import chain_verify_db
+    chain = chain if chain is not None else await chain_verify_db(db, org_id)
+    ledger = ledger if ledger is not None else await verify_roster_ledger(org_id)
+    cps = await db.audit_checkpoints.find({"org_id": org_id}, {"event_count": 1}).to_list(length=None)
+    failures = await tdb_for(org_id).audit_log.count_documents({"action": "audit_checkpoint_anchor_failed"})
+    status = {
+        "chain_valid": bool(chain.get("valid")),
+        "checkpoints": len(cps),
+        "events_covered": sum(int(c.get("event_count", 0) or 0) for c in cps),
+        "head_hash": chain.get("head_hash") if chain.get("valid") else None,
+        "anchor_failures": failures,
+        "ledger_valid": bool(ledger.get("valid")),
+        "ledger_entries": ledger.get("entries", 0),
+        "ledger_head_hash": ledger.get("head_hash"),
+        "verified_at": datetime.utcnow(),
+    }
+    await tdb_for(org_id).settings.update_one(
+        {"name": "integrity_status"}, {"$set": {"name": "integrity_status", "org_id": org_id, **status}}, upsert=True)
+    return status
+
+
+@app.get("/integrity-summary")
+async def get_integrity_summary(request: Request):
+    """Public, read-only: the last cached integrity verdict (no hashing happens here) for the printed reports."""
+    from chain_verify import count_uncheckpointed_events
+    org_id = require_org(request.state.org_id)
+    st = await tdb(request).settings.find_one({"name": "integrity_status"})
+    if not st:
+        return {"available": False}
+    keys = ("chain_valid", "checkpoints", "events_covered", "head_hash", "anchor_failures", "ledger_valid",
+            "ledger_entries", "ledger_head_hash", "verified_at")
+    out = {k: st.get(k) for k in keys}
+    out["available"] = True
+    out["uncheckpointed_events"] = await count_uncheckpointed_events(db, org_id)
+    return out
+
+
 async def _sweep_audit_checkpoints() -> int:
     """Checkpoint every organisation that has sealed, uncheckpointed ballots. Returns how many were created."""
     from types import SimpleNamespace
@@ -2027,8 +2070,13 @@ async def _sweep_audit_checkpoints() -> int:
         org_id = str(org["_id"])
         try:
             req = SimpleNamespace(state=SimpleNamespace(org_id=org_id, admin=None))
-            if await create_audit_checkpoint(req):
-                created += 1
+            made = bool(await create_audit_checkpoint(req))
+            created += made
+            if await db.audit_checkpoints.count_documents({"org_id": org_id}, limit=1):
+                st = await tdb_for(org_id).settings.find_one({"name": "integrity_status"})
+                at = (st or {}).get("verified_at")
+                if made or not at or (datetime.utcnow() - at).total_seconds() > INTEGRITY_STATUS_MAX_AGE_S:
+                    await _refresh_integrity_status(org_id)
         except Exception:
             logger.exception("Audit checkpoint sweep failed for org %s.", org_id)
     return created
@@ -12242,6 +12290,7 @@ async def get_admin_audit_verify(request: Request):
     result["roster_ledger"] = await verify_roster_ledger(request.state.org_id)
     from chain_verify import count_uncheckpointed_events
     result["uncheckpointed_events"] = await count_uncheckpointed_events(db, request.state.org_id)
+    await _refresh_integrity_status(request.state.org_id, chain=result, ledger=result["roster_ledger"])
     await log_action("audit_chain_verified", current_actor(request), {
         "valid": result.get("valid"),
         "checkpoints": result.get("checkpoints_verified"),

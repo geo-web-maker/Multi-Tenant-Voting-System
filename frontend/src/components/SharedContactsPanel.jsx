@@ -13,7 +13,7 @@ const REC_TEXT = {
   keep: 'Recommended: keep as is',
 };
 
-export default function SharedContactsPanel({ role = 'superadmin', requestedBy = 'superadmin' }) {
+export default function SharedContactsPanel({ role = 'superadmin', requestedBy = 'superadmin', showStats = true }) {
   const confirm = useConfirm();
   const prompt = usePrompt();
   const toast = useToast();
@@ -87,7 +87,7 @@ export default function SharedContactsPanel({ role = 'superadmin', requestedBy =
     <section className="perf-card card-pad" data-testid="shared-contacts">
       <h3 style={{ margin: '0 0 6px', fontSize: 15 }}>Shared phone numbers</h3>
       <p className="perf-lead">One phone receiving codes for several voters weakens the vote. Fix or accept each number before voting opens.</p>
-      {data?.stats && (
+      {showStats && data?.stats && (
         <div data-testid="shared-contact-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, margin: '8px 0' }}>
           {[
             ['Shared numbers', data.stats.shared_numbers],
