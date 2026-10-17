@@ -331,3 +331,58 @@ async def test_routed_otp_uses_the_configured_split(env, monkeypatch):
     assert await main._send_sms_routed("256700000001", "x", env.org_id, "otp", is_resend=False) == "ok"
     assert await main._send_sms_routed("256700000001", "x", env.org_id, "otp", is_resend=True) == "ok"
     assert calls == ["mambosms", "egosms"]
+
+
+async def test_unscheduled_by_election_is_editable_and_blocks_voting(env):
+    rid = await _by_election_round(env, "by-election-new")
+    await env.db.rounds.update_one({"round_id": rid}, {"$set": {"schedule_set": False}})
+    got = (await env.client.get(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa)).json()
+    assert got["state"] == "unscheduled" and got["voting"]["start"] is None
+    now = main.datetime.utcnow()
+    body = {"start": (now + timedelta(hours=1)).isoformat() + "Z", "end": (now + timedelta(hours=3)).isoformat() + "Z"}
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa, json=body)).status_code == 200
+    assert (await env.db.rounds.find_one({"round_id": rid}))["schedule_set"] is True
+
+
+async def test_by_election_cannot_open_before_round_one_voting_closed(env):
+    rid = await _by_election_round(env, "by-election-early")
+    now = main.datetime.utcnow()
+    await env.db.rounds.update_one({"round_id": "round-1", "org_id": env.org_id},
+        {"$set": {"kind": "general", "phases": {"voting": {"start": now - timedelta(hours=1),
+                                                          "end": now + timedelta(hours=5), "enforced": True}}}}, upsert=True)
+    early = {"start": (now + timedelta(hours=1)).isoformat() + "Z", "end": (now + timedelta(hours=2)).isoformat() + "Z"}
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa, json=early)).status_code == 400
+    ok = {"start": (now + timedelta(hours=6)).isoformat() + "Z", "end": (now + timedelta(hours=8)).isoformat() + "Z"}
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa, json=ok)).status_code == 200
+
+
+async def test_reset_schedule_repairs_old_by_election_and_refuses_after_votes(env):
+    rid = await _by_election_round(env, "by-election-old")
+    r = await env.client.post(f"/superadmin/by-elections/{rid}/reset-schedule", headers=env.sa)
+    assert r.status_code == 200, r.text
+    got = (await env.client.get(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa)).json()
+    assert got["state"] == "unscheduled"
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/reset-schedule", headers=env.it)).status_code == 403
+    await env.db.rounds.update_one({"round_id": rid}, {"$set": {"schedule_set": None}})
+    await env.db.vote_events.insert_one({"org_id": env.org_id, "round_id": rid, "candidate_id": "x"})
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/reset-schedule", headers=env.sa)).status_code == 409
+
+
+async def test_election_status_names_the_by_election_without_changing_the_ballot_gate(env):
+    rid = await _by_election_round(env, "by-election-status")
+    await env.db.rounds.update_one({"round_id": rid}, {"$set": {
+        "schedule_set": False, "position": "Deputy Projects Coordinator", "eligibility_rule": "round1_voters"}})
+    j = (await env.client.get("/election-status")).json()
+    assert j["round_kind"] == "by_election" and j["by_election_position"] == "Deputy Projects Coordinator"
+    assert j["by_election_eligibility"] == "round1_voters" and j["by_election_scheduled"] is False
+    assert j["voting_phase"] == "not_started" and j["voting_opens_at"] is None   # shown as "dates to be announced"
+    assert j["voting_phase_open"] is False                                       # ballots stay blocked
+    now = main.datetime.utcnow()
+    body = {"start": (now + timedelta(hours=1)).isoformat() + "Z", "end": (now + timedelta(hours=3)).isoformat() + "Z"}
+    assert (await env.client.post(f"/superadmin/by-elections/{rid}/schedule", headers=env.sa, json=body)).status_code == 200
+    j = (await env.client.get("/election-status")).json()
+    assert j["by_election_scheduled"] is True and j["voting_phase"] == "not_started" and j["voting_opens_at"]
+
+
+async def test_election_status_for_a_general_round_is_marked_general(env):
+    assert (await env.client.get("/election-status")).json()["round_kind"] == "general"

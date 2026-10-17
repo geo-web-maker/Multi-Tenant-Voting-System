@@ -71,6 +71,47 @@ describe('ByElectionsPanel schedule', () => {
   });
 });
 
+describe('ByElectionsPanel timeline repair', () => {
+  beforeEach(() => { mockGet.mockReset(); mockPost.mockReset(); });
+  afterEach(cleanup);
+
+  it('offers Repair timeline for an old closed by-election and posts to reset-schedule, then shows the inputs', async () => {
+    let repaired = false;
+    mockGet.mockImplementation(async (url) => {
+      if (url === '/superadmin/election-ties') return { data: { ties: [tie] } };
+      if (url.endsWith('/schedule')) return { data: sched(repaired ? { state: 'unscheduled', schedule_set: false } : { state: 'closed', schedule_set: null }) };
+      throw new Error('unexpected ' + url);
+    });
+    mockPost.mockImplementation(async () => { repaired = true; return { data: { status: 'reset' } }; });
+    render(<ByElectionsPanel />);
+    fireEvent.click(await screen.findByText('Repair timeline'));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/superadmin/by-elections/by-election-x/reset-schedule'));
+    expect(await screen.findByText(/Not scheduled yet/)).toBeTruthy();
+    expect(screen.getByText('Save by-election schedule')).toBeTruthy();
+    expect(screen.queryByText('Repair timeline')).toBeNull();
+  });
+
+  it('does not offer Repair timeline once the by-election has its own schedule, or is not the current round', async () => {
+    serve(sched({ state: 'closed', schedule_set: true }));
+    const { unmount } = render(<ByElectionsPanel />);
+    await screen.findByText(/has ended/);
+    expect(screen.queryByText('Repair timeline')).toBeNull();
+    unmount();
+    serve(sched({ state: 'closed', schedule_set: null, is_active_round: false }));
+    render(<ByElectionsPanel />);
+    await screen.findByText(/not the current round/);
+    expect(screen.queryByText('Repair timeline')).toBeNull();
+  });
+
+  it('shows the server message when the repair is refused', async () => {
+    serve(sched({ state: 'closed', schedule_set: null }));
+    mockPost.mockRejectedValue({ response: { data: { detail: 'Votes were already cast in this by-election; its schedule cannot be reset.' } } });
+    render(<ByElectionsPanel />);
+    fireEvent.click(await screen.findByText('Repair timeline'));
+    expect(await screen.findByText(/Votes were already cast/)).toBeTruthy();
+  });
+});
+
 describe('ByElectionsPanel no longer hosts shared contacts', () => {
   beforeEach(() => { mockGet.mockReset(); });
   afterEach(cleanup);

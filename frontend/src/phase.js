@@ -49,7 +49,12 @@ export function derivePhase(status, now = Date.now()) {
     countdownTo = votingOpensAt; countdownLabel = 'Voting opens in';
   }
   const appsClosed = apps === 'ended' || (apps === 'open' && !appsOpen);
-  return { state, tz, dates, countdownTo, countdownLabel, appsClosed };
+  const byElection = status.round_kind === 'by_election' ? {
+    position: status.by_election_position || '',
+    scheduled: status.by_election_scheduled !== false,
+    round1Only: status.by_election_eligibility === 'round1_voters',
+  } : null;
+  return { state, tz, dates, countdownTo, countdownLabel, appsClosed, byElection };
 }
 
 /** Name for the public Results tab, so it never says "Live" for an election whose votes are hidden. */

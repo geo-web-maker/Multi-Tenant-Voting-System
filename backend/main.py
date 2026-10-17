@@ -4652,6 +4652,20 @@ async def get_status(request: Request):
     )
     # A full reset would erase all rounds. Keep it locked if any round has been certified,
     # or if a by-election exists (its creation promises to preserve Round 1 permanently).
+    # Display only: tell the voter screen when the active round is a by-election, for which position,
+    # and who may vote. Uses the round document already read above (no extra query). A by-election
+    # that has no schedule yet shows as "not started" with no dates rather than "closed"; the real
+    # ballot gate is unchanged (its placeholder window stays closed).
+    if active_round_doc and active_round_doc.get("kind") == "by_election":
+        phase_info["round_kind"] = "by_election"
+        phase_info["by_election_position"] = str(active_round_doc.get("position") or "")
+        phase_info["by_election_eligibility"] = active_round_doc.get("eligibility_rule") or "all_registered"
+        phase_info["by_election_scheduled"] = active_round_doc.get("schedule_set") is not False
+        if active_round_doc.get("schedule_set") is False:
+            phase_info.update({"voting_phase": "not_started", "voting_opens_at": None,
+                               "voting_closes_at": None, "voting_scheduled": False})
+    else:
+        phase_info["round_kind"] = "general"
     is_reset_blocked = bool((status_doc or {}).get("is_certified", False)) or (
         await tdb(request).rounds.count_documents({"status": "certified"}) > 0
     ) or (await tdb(request).rounds.count_documents({"kind": "by_election"}) > 0)
@@ -9415,14 +9429,20 @@ async def create_by_election(data: CreateByElectionRequest, request: Request,
     by_election_snapshot = [{"id": str(c["_id"]), "name": c.get("name", "Candidate"),
                              "position": c.get("position", ""), "order": c.get("order", 0)}
                             for c in valid_candidates]
+    # The by-election gets its own voting window. It starts closed (zero-length, already past) and
+    # flagged unscheduled, so voting cannot open until the superadmin sets it in the By-elections
+    # tab. Round 1's phases are never edited for this.
+    be_phases = {k: dict(v) for k, v in old_schedule["phases"].items()}
+    be_phases["voting"] = {"start": now, "end": now, "enforced": True}
     await tdb(request).rounds.insert_one(org_stamp(request, {
         "round_id": new_round_id, "kind": "by_election", "parent_round_id": parent_round_id,
+        "schedule_set": False,
         "parent_tie_id": str(tie_oid), "reason": reason, "position": tie.get("position"),
         "candidate_ids": valid_ids, "candidate_snapshot": by_election_snapshot,
         "seats_by_position": {str(tie.get("position", "")): max(1, int(parent_seats or 1))},
         "eligibility_rule": data.eligibility_rule,
         "created_by": current_actor(request), "created_by_role": admin.get("role", "superadmin"),
-        "created_at": now, "status": "scheduled", "phases": old_schedule["phases"],
+        "created_at": now, "status": "scheduled", "phases": be_phases,
         "timezone": old_schedule["timezone"],
     }))
     # Claim the tie before switching the active schedule; a losing concurrent request must not
@@ -9434,7 +9454,7 @@ async def create_by_election(data: CreateByElectionRequest, request: Request,
         await tdb(request).rounds.delete_one({"round_id": new_round_id})
         raise HTTPException(409, "Another request already created a by-election for this tie.")
     try:
-        await _write_phase_schedule(request.state.org_id, old_schedule["phases"], old_schedule["timezone"], new_round_id)
+        await _write_phase_schedule(request.state.org_id, be_phases, old_schedule["timezone"], new_round_id)
     except Exception:
         await tdb(request).ties.update_one({"_id": tie_oid, "by_election_round_id": new_round_id},
             {"$unset": {"by_election_round_id": ""}, "$set": {"status": "pending"}})
@@ -9484,7 +9504,9 @@ async def get_by_election_schedule(round_id: str, request: Request,
     voting = schedule["phases"]["voting"] if is_active else ((doc.get("phases") or {}).get("voting") or {})
     start, end = voting.get("start"), voting.get("end")
     now = datetime.utcnow()
-    if start and now < start:
+    if doc.get("schedule_set") is False:
+        state, start, end = "unscheduled", None, None
+    elif start and now < start:
         state = "upcoming"
     elif end and now > end:
         state = "closed"
@@ -9493,7 +9515,7 @@ async def get_by_election_schedule(round_id: str, request: Request,
     else:
         state = "unscheduled"
     return {"round_id": round_id, "position": doc.get("position"), "status": doc.get("status", "scheduled"),
-            "is_active_round": is_active, "timezone": (schedule["timezone"] if is_active else doc.get("timezone")) or DEFAULT_ELECTION_TZ,
+            "is_active_round": is_active, "schedule_set": doc.get("schedule_set"), "timezone": (schedule["timezone"] if is_active else doc.get("timezone")) or DEFAULT_ELECTION_TZ,
             "voting": {"start": start, "end": end, "enforced": bool(voting.get("enforced"))},
             "state": state, "server_time": now,
             "seconds_until_start": int((start - now).total_seconds()) if start and now < start else None,
@@ -9516,12 +9538,45 @@ async def set_by_election_schedule(round_id: str, data: ByElectionScheduleUpdate
     current = await get_phase_schedule(request)
     if current["round_id"] != round_id:
         raise HTTPException(409, "Only the current round's schedule can be changed.")
+    parent = await tdb(request).rounds.find_one({"round_id": doc.get("parent_round_id") or DEFAULT_ROUND_ID}) or {}
+    parent_end = ((parent.get("phases") or {}).get("voting") or {}).get("end")
+    if parent_end and start <= parent_end:
+        raise HTTPException(400, "A by-election cannot open before the main election's voting has closed.")
     phases = {name: PhaseWindow(start=w["start"], end=w["end"], enforced=w["enforced"])
               for name, w in current["phases"].items()}
     phases["voting"] = PhaseWindow(start=start, end=end, enforced=True)
     update = PhaseScheduleUpdate(phases=phases, round_id=round_id, timezone=data.timezone, reason=data.reason)
     await set_phase_schedule(update, request, admin)
+    await tdb(request).rounds.update_one({"round_id": round_id}, {"$set": {"schedule_set": True}})
     return {"status": "scheduled", "round_id": round_id}
+
+@app.post("/superadmin/by-elections/{round_id}/reset-schedule")
+async def reset_by_election_schedule(round_id: str, request: Request,
+                                     admin: dict = Depends(require_role("superadmin"))):
+    """Repair a by-election created before it had its own timeline: give it a closed, unscheduled
+    voting window so it can be scheduled in the By-elections tab. Round 1's record is not touched.
+    Refused if the round is certified, is not current, already has a real schedule, or has votes."""
+    doc = await _by_election_round_or_404(request, round_id)
+    if doc.get("status") == "certified":
+        raise HTTPException(409, "This round is certified. Revoke certification first.")
+    if doc.get("schedule_set") is True:
+        raise HTTPException(409, "This by-election already has its own schedule; nothing to repair.")
+    current = await get_phase_schedule(request)
+    if current["round_id"] != round_id:
+        raise HTTPException(409, "Only the current round can be repaired.")
+    if await tdb(request).vote_events.count_documents({"round_id": round_id}) > 0:
+        raise HTTPException(409, "Votes were already cast in this by-election; its schedule cannot be reset.")
+    now = datetime.utcnow()
+    phases = {k: {"start": w["start"], "end": w["end"], "enforced": w["enforced"]}
+              for k, w in current["phases"].items()}
+    phases["voting"] = {"start": now, "end": now, "enforced": True}
+    await _write_phase_schedule(request.state.org_id, phases, current["timezone"], round_id)
+    await tdb(request).rounds.update_one({"round_id": round_id},
+        {"$set": {"phases": phases, "schedule_set": False}})
+    await log_action("by_election_schedule_reset", current_actor(request),
+                     {"round_id": round_id}, org_id=request.state.org_id)
+    return {"status": "reset", "round_id": round_id}
+
 
 class SharedContactAck(BaseModel):
     phone: str = Field(..., max_length=32)
@@ -12045,10 +12100,19 @@ async def set_phase_schedule(data: PhaseScheduleUpdate, request: Request,
             raise HTTPException(404, "Election round not found; schedule was not changed.")
         if round_doc.get("status") == "certified":
             raise HTTPException(409, "This round is certified. Revoke certification before changing its schedule.")
+    be_set_flag = {}
+    if round_id_to_save != DEFAULT_ROUND_ID and round_doc.get("kind") == "by_election":
+        v_s, v_e = naive_utc(new_v.get("start")), naive_utc(new_v.get("end"))
+        if v_s and v_e and v_e > v_s:      # a real window, not the zero-length placeholder
+            parent = await tdb(request).rounds.find_one({"round_id": round_doc.get("parent_round_id") or DEFAULT_ROUND_ID}) or {}
+            parent_end = ((parent.get("phases") or {}).get("voting") or {}).get("end")
+            if parent_end and v_s <= parent_end:
+                raise HTTPException(400, "A by-election cannot open before the main election's voting has closed.")
+            be_set_flag = {"schedule_set": True}
     await _write_phase_schedule(request.state.org_id, stored, tz_name, round_id_to_save)
     if round_id_to_save != DEFAULT_ROUND_ID:
         await tdb(request).rounds.update_one({"round_id": round_id_to_save},
-            {"$set": {"phases": stored, "timezone": tz_name, "status": "scheduled"}})
+            {"$set": {"phases": stored, "timezone": tz_name, "status": "scheduled", **be_set_flag}})
     await log_action("phases_scheduled", current_actor(request), {
         "round_id": data.round_id, "timezone": tz_name,
         "phases": {k: {"enforced": v["enforced"], "start_utc": v["start"].isoformat() if v["start"] else None,

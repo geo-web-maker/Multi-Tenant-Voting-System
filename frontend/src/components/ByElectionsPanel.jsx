@@ -91,6 +91,25 @@ export function ByElectionSchedule({ roundId, position }) {
     }
   };
 
+  const needsRepair = info && info.is_active_round && info.status !== 'certified'
+    && info.state === 'closed' && info.schedule_set !== true;
+  const repair = async () => {
+    const ok = await confirm(
+      'This clears the by-election\u2019s copied voting window so you can set its own. Round 1 and the main timeline are not changed. It is refused if anyone has voted.',
+      { title: 'Repair by-election timeline', confirmText: 'Repair timeline' });
+    if (!ok) return;
+    setSaving(true); setError('');
+    try {
+      await api.post(`/superadmin/by-elections/${encodeURIComponent(roundId)}/reset-schedule`);
+      setDirty(false); setStart(''); setEnd('');
+      toast('Timeline repaired. Set the by-election dates now.', { kind: 'success' });
+      await load();
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : 'Could not repair the by-election timeline.');
+    } finally { setSaving(false); }
+  };
+
   const startsIn = fmtCountdown(info?.seconds_until_start);
   const endsIn = fmtCountdown(info?.seconds_until_end);
 
@@ -105,6 +124,11 @@ export function ByElectionSchedule({ roundId, position }) {
             {info.state === 'active' && endsIn ? ` Closes in ${endsIn}.` : ''}</div>
           {info.voting?.start && info.voting?.end && parseUtc(info.voting.start) && (
             <div className="perf-note">Current window: {fmtZoned(info.voting.start, tz)} to {fmtZoned(info.voting.end, tz)}</div>
+          )}
+          {needsRepair && (
+            <div className="perf-btnbar">
+              <button type="button" className="perf-btn" disabled={saving} onClick={repair}>Repair timeline</button>
+            </div>
           )}
           {!info.is_active_round && <div className="perf-note">This is not the current round, so its schedule can no longer be changed.</div>}
           {canEdit && (

@@ -12,7 +12,18 @@ const THEME = {
 
 // Each state is a title plus short, centred "label / value" rows, so dates read as a balanced
 // list instead of one run-on sentence.
-function copy(state, d, appsClosed) {
+function copy(state, d, appsClosed, be) {
+  if (be) {
+    const what = be.position ? `By-election · ${be.position}` : 'By-election';
+    const eligible = be.round1Only && ['Who can vote', 'Only voters who voted in Round 1'];
+    if (state === 'voting_soon') {
+      return { title: what, rows: [
+        !be.scheduled ? ['Voting', 'Dates to be announced'] : d.votingOpensAt ? ['Voting opens', d.votingOpensAt] : ['Voting', 'has not started yet'],
+        eligible] };
+    }
+    if (state === 'voting_open') return { title: `${what} · voting is open`, rows: [d.votingClosesAt && ['Voting closes', d.votingClosesAt], eligible] };
+    if (state === 'voting_closed') return { title: `${what} · voting is closed`, rows: [d.votingClosesAt && ['Voting closed', d.votingClosesAt]] };
+  }
   switch (state) {
     case 'apply_open':
       return {
@@ -38,9 +49,9 @@ export default function PhaseBanner({ status, onApply, style }) {
   const { info, left } = usePhase(status);
 
   if (!info) return null;
-  const { state, dates, appsClosed } = info;
+  const { state, dates, appsClosed, byElection } = info;
   const t = THEME[state];
-  const c = copy(state, dates, appsClosed);
+  const c = copy(state, dates, appsClosed, byElection);
   const rows = c.rows.filter(Boolean);
   // Colour is set explicitly everywhere: in dark mode a global text colour was winning over the
   // banner's own, leaving light text on the light-blue box (unreadable).
